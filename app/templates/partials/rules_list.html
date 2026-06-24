@@ -1,0 +1,119 @@
+<!-- 中栏：规则列表 -->
+<div x-data="rulesManager()" style="padding:1rem">
+    <h2>📋 分类规则管理</h2>
+
+    <!-- 维度筛选 -->
+    <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+        <button class="outline" :class="{ contrast: filterDim === '' }"
+                @click="filterDim = ''; loadRules()">全部</button>
+        <template x-for="d in dimensions" :key="d.key">
+            <button class="outline" :class="{ contrast: filterDim === d.key }"
+                    @click="filterDim = d.key; loadRules()" x-text="d.label"></button>
+        </template>
+    </div>
+
+    <!-- 操作按钮行 -->
+    <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+        <button @click="showForm = !showForm" class="secondary">➕ 新建规则</button>
+        <button hx-post="/classify/run" hx-target="#classify-result" class="secondary"
+                style="background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:white">
+            🤖 运行 AI 分类
+        </button>
+    </div>
+    <div id="classify-result"></div>
+
+    <!-- 新建规则弹窗 -->
+    <div class="dialog-overlay" x-show="showForm" @click.self="showForm = false" x-cloak>
+        <div class="dialog-box">
+            <h3>新建分类规则</h3>
+            <form @submit.prevent="createRule">
+                <label>维度 <select x-model="newRule.dimension" required>
+                    <option value="">-- 选择维度 --</option>
+                    <template x-for="d in dimensions" :key="d.key">
+                        <option :value="d.key" x-text="d.label"></option>
+                    </template>
+                </select></label>
+                <label>子字段 <input type="text" x-model="newRule.sub_field" placeholder="如 specialty"></label>
+                <label>关键词 <input type="text" x-model="newRule.pattern" required
+                       placeholder="如 混凝土"></label>
+                <label>匹配方式
+                    <select x-model="newRule.match_type">
+                        <option value="keyword">关键词 (keyword)</option>
+                        <option value="exact">精确 (exact)</option>
+                        <option value="regex">正则 (regex)</option>
+                    </select>
+                </label>
+                <label>优先级 (0-10)
+                    <input type="number" x-model="newRule.priority" min="0" max="10">
+                </label>
+                <label>阈值 (0-1)
+                    <input type="number" x-model="newRule.threshold" min="0" max="1" step="0.1">
+                </label>
+                <div style="margin-top:1rem;display:flex;gap:0.5rem">
+                    <button type="submit">✅ 创建</button>
+                    <button type="button" class="secondary" @click="showForm = false">取消</button>
+                </div>
+            </form>
+            <div id="create-result"></div>
+        </div>
+    </div>
+
+    <!-- 统计面板 -->
+    <div style="margin-bottom:1rem;display:flex;gap:1rem;flex-wrap:wrap" x-show="stats.length > 0">
+        <template x-for="s in stats" :key="s.dimension">
+            <small style="background:var(--pico-secondary-background);padding:0.2rem 0.5rem;border-radius:4px">
+                <span x-text="dimLabel(s.dimension)"></span>:
+                <strong x-text="s.active + '/' + s.cnt"></strong>
+            </small>
+        </template>
+    </div>
+
+    <!-- 规则表格 -->
+    <div id="rules-table" hx-get="/rules/list" hx-trigger="load">
+        <p aria-busy="true">加载中...</p>
+    </div>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('rulesManager', () => ({
+        filterDim: '',
+        showForm: false,
+        stats: [],
+        dimensions: [
+            {key: 'dim1', label: '规范属性'},
+            {key: 'dim2', label: '工程阶段'},
+            {key: 'dim3', label: '工程类型'},
+            {key: 'dim4', label: '所属专业'},
+            {key: 'dim5', label: '工程部位'},
+            {key: 'dim6', label: '材料/工艺'},
+        ],
+        newRule: {dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6},
+
+        dimLabel(key) {
+            const d = this.dimensions.find(d => d.key === key);
+            return d ? d.label : key;
+        },
+
+        loadRules() {
+            const url = this.filterDim ? `/rules/list?dimension=${this.filterDim}` : '/rules/list';
+            fetch(url).then(r => r.text()).then(html => {
+                document.getElementById('rules-table').innerHTML = html;
+                if (window.htmx) htmx.process(document.getElementById('rules-table'));
+            });
+        },
+
+        async createRule() {
+            const fd = new FormData();
+            for (const [k, v] of Object.entries(this.newRule)) fd.append(k, v);
+            const resp = await fetch('/rules/create', {method:'POST', body:fd});
+            const html = await resp.text();
+            document.getElementById('create-result').innerHTML = html;
+            this.showForm = false;
+            this.newRule = {dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6};
+            // 触发列表刷新
+            setTimeout(() => this.loadRules(), 500);
+        },
+    }));
+});
+</script>

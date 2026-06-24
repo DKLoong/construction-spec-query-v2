@@ -43,6 +43,9 @@ app.include_router(auth_router)
 from app.routes.import_routes import router as import_router
 app.include_router(import_router)
 
+from app.routes.rules_routes import router as rules_router
+app.include_router(rules_router)
+
 
 @app.get("/")
 async def home(request: Request):

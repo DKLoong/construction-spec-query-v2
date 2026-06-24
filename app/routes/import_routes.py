@@ -7,7 +7,6 @@ from app.database import get_db
 from app.parser.md_parser import parse_markdown
 from app.ocr.pdf_extract import extract_text, is_scanned
 from app.classifier.rule_engine import classify_clause, should_use_ai
-from app.classifier.batch_queue import add_to_queue
 from app.search.vector_search import VectorStore
 
 router = APIRouter()
@@ -42,14 +41,17 @@ async def upload_file(
 async def get_progress(request: Request, task_id: str):
     p = progress_store.get(task_id, {"status": "unknown", "progress": 0, "message": "未知任务"})
     from app.main import templates
-    return templates.TemplateResponse("partials/import_progress.html", {
-        "request": request, "task_id": task_id, "progress": p,
+    return templates.TemplateResponse(request, "partials/import_progress.html", {
+        "task_id": task_id, "progress": p,
     })
 
 
 def _process_import(task_id: str, file_path: str, title: str, code: str):
     """后台任务：OCR(如需) -> 解析 -> 分类 -> 索引"""
+    conn = None
     try:
+        from app.database import get_connection
+        conn = get_connection()
         path = Path(file_path)
         ext = path.suffix.lower()
         progress_store[task_id].update(status="processing", progress=10, message="正在提取文本...")
@@ -80,54 +82,81 @@ def _process_import(task_id: str, file_path: str, title: str, code: str):
 
         progress_store[task_id].update(progress=60, message=f"正在分类 {len(clauses_data)} 条条文...")
 
-        # Step 4: 写入数据库 + 分类 + 向量索引
+        # Step 4: 加载分类规则（使用传入的连接）
+        rules_rows = conn.execute(
+            "SELECT * FROM classification_rules WHERE is_active = 1"
+        ).fetchall()
+        rules = [dict(r) for r in rules_rows]
+
+        # Step 5: 写入数据库 + 分类 + 向量索引
         output_dir = str(Path(OUTPUT_DIR) / (code or path.stem))
-        rules = _load_active_rules()
-        vs = VectorStore()
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-        with get_db() as conn:
+        conn.execute(
+            """INSERT INTO specifications (code, title, dim1_hierarchy, dim1_nature, source_path, output_dir)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (code or path.stem, title or path.stem, dim1_hierarchy, dim1_nature, file_path, output_dir),
+        )
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        classified_count = 0
+        # 向量索引（在循环外创建一次，避免重复加载模型）
+        vs = None
+        try:
+            vs = VectorStore()
+        except Exception:
+            pass
+
+        for cd in clauses_data:
+            scores = classify_clause(cd["content"], cd.get("parent_path", []), rules)
             conn.execute(
-                """INSERT INTO specifications (code, title, dim1_hierarchy, dim1_nature, source_path, output_dir)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (code or path.stem, title or path.stem, dim1_hierarchy, dim1_nature, file_path, output_dir),
+                """INSERT INTO clauses (spec_id, clause_no, title, content, parent_clause)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (spec_id, cd["clause_no"], cd["title"], cd["content"], None),
             )
-            spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            clause_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-            classified_count = 0
-            for cd in clauses_data:
-                scores = classify_clause(cd["content"], cd.get("parent_path", []), rules)
-                conn.execute(
-                    """INSERT INTO clauses (spec_id, clause_no, title, content, parent_clause)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (spec_id, cd["clause_no"], cd["title"], cd["content"], None),
-                )
-                clause_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            # 低置信度入队；高于阈值的计入 classified_count（使用同一连接）
+            for dim in ["dim4", "dim5", "dim6"]:
+                if should_use_ai(dim, scores, ADAPTIVE_THRESHOLDS):
+                    conn.execute(
+                        "INSERT INTO classification_queue (clause_id, dimension, keyword_score) VALUES (?, ?, ?)",
+                        (clause_id, dim, scores[dim]),
+                    )
+                else:
+                    classified_count += 1
 
-                # 向量索引（embedding 不可用时跳过）
+            # 向量索引（embedding 不可用时跳过）
+            if vs is not None:
                 try:
                     dim_scores_str = ",".join(f"{k}={v:.2f}" for k, v in scores.items())
                     vs.index_clause(clause_id, spec_id,
                                     f"[{cd['clause_no']}] {cd['title'] or ''} {cd['content']}",
                                     dim_scores_str)
                 except Exception:
-                    pass
+                    vs = None  # 失败后不再尝试
 
-                # 低置信度入队；高于阈值的计入 classified_count
-                for dim in ["dim4", "dim5", "dim6"]:
-                    if should_use_ai(dim, scores, ADAPTIVE_THRESHOLDS):
-                        add_to_queue(clause_id, dim, scores[dim])
-                    else:
-                        classified_count += 1
-
-            conn.execute("UPDATE specifications SET clause_count = ? WHERE id = ?",
-                        (len(clauses_data), spec_id))
+        conn.execute("UPDATE specifications SET clause_count = ? WHERE id = ?",
+                    (len(clauses_data), spec_id))
+        conn.commit()
 
         progress_store[task_id].update(
             status="done", progress=100,
             message=f"导入完成：{len(clauses_data)} 条条文已解析，{classified_count} 个维度已分类"
         )
     except Exception as e:
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         progress_store[task_id].update(status="error", progress=0, message=str(e))
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _detect_hierarchy(code: str) -> str:
@@ -140,12 +169,6 @@ def _detect_hierarchy(code: str) -> str:
     elif code.startswith("T/"):
         return "团体标准"
     return "企业标准"
-
-
-def _load_active_rules() -> list[dict]:
-    with get_db() as conn:
-        rows = conn.execute("SELECT * FROM classification_rules WHERE is_active = 1").fetchall()
-    return [dict(r) for r in rows]
 
 
 @router.get("/tree/all")

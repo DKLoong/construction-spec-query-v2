@@ -1,0 +1,72 @@
+<!-- 规则表格片段（htmx 局部刷新） -->
+{% if stats %}
+<div style="margin-bottom:0.5rem;display:flex;gap:1rem;flex-wrap:wrap">
+    {% for s in stats %}
+    <small style="background:var(--pico-secondary-background);padding:0.2rem 0.5rem;border-radius:4px">
+        {% set labels = {"dim1": "规范属性", "dim2": "工程阶段", "dim3": "工程类型",
+                         "dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"} %}
+        {{ labels.get(s.dimension, s.dimension) }}:
+        <strong>{{ s.active }}/{{ s.cnt }}</strong>
+    </small>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if rules %}
+<table class="striped" style="font-size:0.85rem">
+    <thead>
+        <tr>
+            <th>维度</th>
+            <th>子字段</th>
+            <th>关键词</th>
+            <th>类型</th>
+            <th>优先级</th>
+            <th>阈值</th>
+            <th>命中/确认</th>
+            <th>状态</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for r in rules %}
+    <tr>
+        <td><small>
+            {% set labels = {"dim1": "规范属性", "dim2": "工程阶段", "dim3": "工程类型",
+                             "dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"} %}
+            {{ labels.get(r.dimension, r.dimension) }}
+        </small></td>
+        <td><small>{{ r.sub_field or '-' }}</small></td>
+        <td><code>{{ r.pattern }}</code></td>
+        <td><small>{{ r.match_type }}</small></td>
+        <td>{{ r.priority }}</td>
+        <td>{{ r.threshold }}</td>
+        <td><small>{{ r.hit_count }}/{{ r.confirmed }}</small></td>
+        <td>
+            {% if r.is_active %}
+            <span style="color:green">● 启用</span>
+            {% else %}
+            <span style="color:gray">○ 禁用</span>
+            {% endif %}
+        </td>
+        <td>
+            <div style="display:flex;gap:0.25rem">
+                <button hx-post="/rules/{{ r.id }}/toggle" hx-swap="outerHTML"
+                        class="{% if r.is_active %}secondary{% endif %} outline"
+                        style="font-size:0.75rem;padding:0.15rem 0.4rem">
+                    {{ '禁用' if r.is_active else '启用' }}
+                </button>
+                <button hx-delete="/rules/{{ r.id }}" hx-swap="outerHTML"
+                        hx-confirm="确定删除规则「{{ r.pattern }}」？"
+                        class="secondary outline"
+                        style="font-size:0.75rem;padding:0.15rem 0.4rem;color:red">
+                    删除
+                </button>
+            </div>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p style="color:var(--pico-muted-color)">暂无规则。点击「新建规则」添加。</p>
+{% endif %}

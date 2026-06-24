@@ -8,3 +8,4 @@ data/outputs/*
 data/workspace/*
 lance_db/
 .pytest_cache/
+models/

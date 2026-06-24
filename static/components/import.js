@@ -14,7 +14,12 @@ document.addEventListener('alpine:init', () => {
             try {
                 const resp = await fetch('/import/upload', { method: 'POST', body: formData });
                 const html = await resp.text();
-                document.getElementById('import-result').innerHTML = html;
+                const resultEl = document.getElementById('import-result');
+                resultEl.innerHTML = html;
+                // 让 htmx 扫描新插入的元素，启动轮询
+                if (window.htmx) {
+                    htmx.process(resultEl);
+                }
             } catch (e) {
                 document.getElementById('import-result').innerHTML = `<p style="color:red;">上传失败: ${e.message}</p>`;
                 this.uploading = false;

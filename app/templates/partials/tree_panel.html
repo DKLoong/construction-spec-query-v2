@@ -27,6 +27,16 @@
         </div>
     </div>
 
+    <!-- 分类管理链接 -->
+    <div style="margin-bottom: 0.5rem; display: flex; gap: 0.3rem;">
+        <a href="/rules" style="flex:1;text-decoration:none">
+            <button class="outline" style="width:100%;font-size:0.8rem">📋 规则</button>
+        </a>
+        <a href="/review" style="flex:1;text-decoration:none">
+            <button class="outline" style="width:100%;font-size:0.8rem">📝 审核</button>
+        </a>
+    </div>
+
     <!-- 分类树 -->
     <div class="tree-container">
         <template x-for="dim in dimensions" :key="dim.key">

@@ -1,0 +1,51 @@
+<!-- 审核队列片段 -->
+{% if items %}
+<table class="striped" style="font-size:0.85rem">
+    <thead>
+        <tr>
+            <th>规范</th>
+            <th>条文</th>
+            <th>内容</th>
+            <th>维度</th>
+            <th>AI 建议</th>
+            <th>置信度</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for item in items %}
+    <tr>
+        <td><small>{{ item.spec_code }}</small></td>
+        <td><code>{{ item.clause_no }}</code></td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="{{ item.content }}">{{ item.content[:50] }}</td>
+        <td><small>
+            {% set labels = {"dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"} %}
+            {{ labels.get(item.dimension, item.dimension) }}
+        </small></td>
+        <td><span class="dim-tag">{{ item.ai_label }}</span></td>
+        <td>{{ "%.0f"|format(item.ai_confidence * 100) if item.ai_confidence else '-' }}%</td>
+        <td>
+            <div style="display:flex;gap:0.25rem">
+                <button hx-post="/review/{{ item.queue_id }}/confirm"
+                        hx-target="closest tr" hx-swap="outerHTML"
+                        style="font-size:0.75rem;padding:0.15rem 0.4rem;background:green;border-color:green">
+                    ✅ 确认
+                </button>
+                <button hx-post="/review/{{ item.queue_id }}/reject"
+                        hx-target="closest tr" hx-swap="outerHTML"
+                        class="secondary"
+                        style="font-size:0.75rem;padding:0.15rem 0.4rem">
+                    ❌ 驳回
+                </button>
+            </div>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p style="color:var(--pico-muted-color);text-align:center;padding:2rem">
+    🎉 暂无待审核项
+</p>
+{% endif %}

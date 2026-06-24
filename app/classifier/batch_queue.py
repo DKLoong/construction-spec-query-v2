@@ -11,7 +11,7 @@ def add_to_queue(clause_id: int, dimension: str, keyword_score: float):
         )
 
 
-def get_pending_batch(dimension: str) -> list[dict]:
+def get_pending_batch(dimension: str, force: bool = False) -> list[dict]:
     with get_db() as conn:
         rows = conn.execute(
             """SELECT q.*, c.content FROM classification_queue q
@@ -21,7 +21,11 @@ def get_pending_batch(dimension: str) -> list[dict]:
             (dimension, BATCH_SIZE),
         ).fetchall()
 
-        if len(rows) < BATCH_SIZE:
+        if not rows:
+            return []
+
+        # force=True 时不检查满批条件
+        if not force and len(rows) < BATCH_SIZE:
             return []
 
         batch_id = uuid.uuid4().hex[:12]

@@ -1,7 +1,7 @@
 // 分类树组件
 document.addEventListener('alpine:init', () => {
     Alpine.data('treeView', () => ({
-        treeData: {},
+        dimensions: [],
         searchKeyword: '',
         activeFilters: {},
         loading: false,
@@ -13,7 +13,7 @@ document.addEventListener('alpine:init', () => {
         async loadTree() {
             try {
                 const resp = await fetch('/tree/all');
-                this.treeData = await resp.json();
+                this.dimensions = await resp.json();
             } catch (e) {
                 console.error('加载分类树失败:', e);
             }

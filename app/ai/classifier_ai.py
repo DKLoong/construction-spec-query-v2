@@ -7,8 +7,8 @@ logger = logging.getLogger(__name__)
 DIMS = ["dim4", "dim5", "dim6"]
 
 
-def process_pending_batches(backend_name: str = "claude") -> int:
-    """处理所有维度的待分类批次，返回处理条数。由后台任务定期调用。"""
+def process_pending_batches(backend_name: str = "claude", force: bool = False) -> int:
+    """处理所有维度的待分类批次，返回处理条数。"""
     backend = get_backend(backend_name)
     if not backend.is_available():
         logger.warning(f"CLI ({backend_name}) 不可用，跳过批次处理")
@@ -16,7 +16,7 @@ def process_pending_batches(backend_name: str = "claude") -> int:
 
     total = 0
     for dim in DIMS:
-        batch = get_pending_batch(dim)
+        batch = get_pending_batch(dim, force=force)
         if not batch:
             continue
 
