@@ -53,6 +53,19 @@ async def rules_list(request: Request, dimension: str = ""):
     })
 
 
+@router.get("/rules/sub-fields")
+async def sub_fields(request: Request, dimension: str = ""):
+    """返回某维度下已有的子字段列表（用于自动补全）"""
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT sub_field FROM classification_rules
+               WHERE dimension = ? AND sub_field IS NOT NULL AND sub_field != ''
+               ORDER BY sub_field""",
+            (dimension,),
+        ).fetchall()
+    return [r["sub_field"] for r in rows]
+
+
 @router.post("/rules/create")
 async def create_rule(
     request: Request,

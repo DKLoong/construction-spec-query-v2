@@ -298,3 +298,51 @@ def test_queue_stats(auth_client, monkeypatch, tmp_path):
     assert "dim4" in data
     assert data["dim4"]["pending"] == 5
     assert data["dim4"]["total"] == 5
+
+
+# ===== 子字段自动补全测试 =====
+
+def test_sub_fields_returns_unique_list(auth_client, monkeypatch, tmp_path):
+    """获取某维度下已有的子字段列表"""
+    db_path = tmp_path / "test_subfields.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO classification_rules (dimension, sub_field, pattern, threshold) VALUES "
+            "('dim4', 'specialty', '结构', 0.5),"
+            "('dim4', 'specialty', '给排水', 0.5),"
+            "('dim4', 'specialty', '暖通', 0.5),"
+            "('dim4', 'material', '混凝土', 0.5),"
+            "('dim5', 'location', '基础', 0.5)"
+        )
+
+    resp = auth_client.get("/rules/sub-fields?dimension=dim4")
+    assert resp.status_code == 200
+    data = resp.json()
+    # 应该包含 specialty 和 material，且不重复
+    assert "specialty" in data
+    assert "material" in data
+    assert len(data) == 2  # 去重后只有 2 个
+
+
+def test_sub_fields_empty_for_no_match(auth_client, monkeypatch, tmp_path):
+    """无匹配维度时返回空列表"""
+    db_path = tmp_path / "test_subfields_empty.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db
+
+    init_db()
+
+    resp = auth_client.get("/rules/sub-fields?dimension=dim1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == []
+
+
+def test_sub_fields_requires_auth(client):
+    """未登录不能访问子字段接口"""
+    resp = client.get("/rules/sub-fields?dimension=dim4", follow_redirects=False)
+    assert resp.status_code == 302

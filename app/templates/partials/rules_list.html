@@ -33,7 +33,26 @@
                         <option :value="d.key" x-text="d.label"></option>
                     </template>
                 </select></label>
-                <label>子字段 <input type="text" x-model="newRule.sub_field" placeholder="如 specialty"></label>
+                <label>子字段
+                    <div style="position:relative">
+                        <input type="text" x-model="newRule.sub_field" placeholder="如 specialty"
+                               @input="fetchSubFields(newRule.dimension, newRule.sub_field)"
+                               @focus="fetchSubFields(newRule.dimension, newRule.sub_field)"
+                               @blur="hideSubFieldDropdown()">
+                        <ul x-show="subFieldSuggestions.length > 0 && subFieldOpen"
+                            x-transition
+                            @mousedown.prevent
+                            style="position:absolute;top:100%;left:0;right:0;background:var(--pico-form-element-background-color);border:1px solid var(--pico-form-element-border-color);border-radius:0 0 4px 4px;max-height:150px;overflow-y:auto;z-index:100;list-style:none;padding:0;margin:0">
+                            <template x-for="s in subFieldSuggestions" :key="s">
+                                <li @click="newRule.sub_field = s; subFieldOpen = false"
+                                    style="padding:0.3rem 0.5rem;cursor:pointer"
+                                    @mouseover="$el.style.background='var(--pico-primary-focus)'"
+                                    @mouseout="$el.style.background=''"
+                                    x-text="s"></li>
+                            </template>
+                        </ul>
+                    </div>
+                </label>
                 <label>关键词 <input type="text" x-model="newRule.pattern" required
                        placeholder="如 混凝土"></label>
                 <label>匹配方式
@@ -80,6 +99,9 @@ document.addEventListener('alpine:init', () => {
         filterDim: '',
         showForm: false,
         stats: [],
+        subFieldSuggestions: [],
+        subFieldOpen: false,
+        subFieldTimer: null,
         dimensions: [
             {key: 'dim1', label: '规范属性'},
             {key: 'dim2', label: '工程阶段'},
@@ -101,6 +123,29 @@ document.addEventListener('alpine:init', () => {
                 document.getElementById('rules-table').innerHTML = html;
                 if (window.htmx) htmx.process(document.getElementById('rules-table'));
             });
+        },
+
+        fetchSubFields(dimension, typed) {
+            if (!dimension) { this.subFieldSuggestions = []; return; }
+            clearTimeout(this.subFieldTimer);
+            this.subFieldTimer = setTimeout(async () => {
+                try {
+                    const resp = await fetch(`/rules/sub-fields?dimension=${dimension}`);
+                    const all = await resp.json();
+                    // 按已键入内容过滤
+                    this.subFieldSuggestions = typed
+                        ? all.filter(s => s.toLowerCase().includes(typed.toLowerCase()))
+                        : all;
+                    this.subFieldOpen = this.subFieldSuggestions.length > 0;
+                } catch (e) {
+                    console.error('获取子字段列表失败:', e);
+                }
+            }, 150);
+        },
+
+        hideSubFieldDropdown() {
+            // 延迟关闭以便 click 事件能触发
+            setTimeout(() => { this.subFieldOpen = false; }, 200);
         },
 
         async createRule() {
