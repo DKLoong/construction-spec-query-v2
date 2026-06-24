@@ -1,0 +1,39 @@
+<!-- 右栏：AI 问答 -->
+<div x-data="qaPanel()" class="qa-panel-content">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+        <strong>AI 助手</strong>
+        <select x-model="backend" style="width: auto; margin-bottom: 0;">
+            <option value="claude">Claude Code</option>
+            <option value="codex">Codex</option>
+        </select>
+    </div>
+    <div class="qa-messages" id="qa-messages">
+        <template x-for="msg in messages" :key="msg.content">
+            <div class="qa-msg" :class="msg.role">
+                <template x-if="msg.role === 'user'">
+                    <div><strong>你：</strong><span x-text="msg.content"></span></div>
+                </template>
+                <template x-if="msg.role === 'assistant'">
+                    <div>
+                        <strong>AI：</strong>
+                        <div x-html="marked.parse(msg.content)"></div>
+                        <template x-if="msg.sources && msg.sources.length">
+                            <small style="color: var(--pico-muted-color);">
+                                来源：
+                                <template x-for="src in msg.sources">
+                                    <span x-text="src.code + ' ' + src.clause_no"></span>
+                                </template>
+                            </small>
+                        </template>
+                    </div>
+                </template>
+            </div>
+        </template>
+    </div>
+    <div class="qa-input">
+        <textarea x-model="question" @keydown.enter.prevent="sendQuestion()"
+                  placeholder="输入问题，基于规范内容回答..." rows="2"></textarea>
+        <button @click="sendQuestion()" :disabled="loading"
+                x-text="loading ? '...' : '发送'"></button>
+    </div>
+</div>

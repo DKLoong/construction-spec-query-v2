@@ -1,0 +1,11 @@
+<div id="import-status">
+    <progress value="{{ progress.progress }}" max="100"></progress>
+    <p>{{ progress.message }}</p>
+    {% if progress.status == "done" %}
+    <p style="color: green; font-weight: bold;">导入完成！<a href="/">刷新页面</a>查看新导入的规范。</p>
+    {% elif progress.status == "error" %}
+    <p style="color: red;">导入失败: {{ progress.message }}</p>
+    {% else %}
+    <div hx-get="/import/progress/{{ task_id }}" hx-trigger="every 2s" hx-swap="outerHTML"></div>
+    {% endif %}
+</div>

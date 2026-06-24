@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - 施工规范查询系统</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+    <main class="container" style="max-width: 400px; margin-top: 10vh;">
+        <h1>施工规范查询系统</h1>
+        {% if error %}
+        <article style="background: #fee; color: #c00;">{{ error }}</article>
+        {% endif %}
+        <form method="post">
+            <label>用户名 <input type="text" name="username" required autofocus></label>
+            <label>密码 <input type="password" name="password" required></label>
+            <button type="submit">登 录</button>
+        </form>
+    </main>
+</body>
+</html>

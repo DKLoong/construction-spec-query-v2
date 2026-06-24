@@ -1,0 +1,58 @@
+<!-- 左栏：分类树 + 搜索 + 导入 -->
+<div x-data="treeView()" class="left-panel-content">
+    <!-- 搜索框 -->
+    <div class="search-box" x-data="searchBox()">
+        <input type="search" x-model="keyword" @keyup.enter="search()"
+               placeholder="输入关键词搜索条文...">
+    </div>
+
+    <!-- 导入按钮 -->
+    <div style="margin-bottom: 0.5rem;" x-data="importDialog()">
+        <button class="contrast" style="width: 100%;" @click="openDialog()">📥 导入规范</button>
+        <!-- 导入对话框 -->
+        <div class="dialog-overlay" x-show="open" x-cloak @click.self="closeDialog()">
+            <div class="dialog-box">
+                <h3>导入规范文件</h3>
+                <form @submit.prevent="handleUpload">
+                    <label>规范编号 <input type="text" name="code" placeholder="如 GB 50204-2015"></label>
+                    <label>规范名称 <input type="text" name="title" placeholder="如 混凝土结构工程施工质量验收规范"></label>
+                    <label>选择文件 <input type="file" name="file" accept=".md,.pdf"></label>
+                    <div style="margin-top: 1rem;">
+                        <button type="submit" :disabled="uploading">开始导入</button>
+                        <button type="button" class="secondary" @click="closeDialog()">取消</button>
+                    </div>
+                </form>
+                <div id="import-result"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 分类树 -->
+    <div class="tree-container">
+        <template x-for="dim in dimensions" :key="dim.key">
+            <details>
+                <summary x-text="dim.label"></summary>
+                <template x-for="node in dim.nodes" :key="node.value">
+                    <div class="tree-node">
+                        <span class="tree-label"
+                              :class="{ active: activeFilters[dim.key] === node.value }"
+                              @click="selectFilter(dim.key, node.value)">
+                            <span x-text="node.label"></span>
+                            <span class="tree-count" x-text="'(' + node.count + ')'"></span>
+                        </span>
+                        <template x-for="child in node.children" :key="child.value">
+                            <div class="tree-node">
+                                <span class="tree-label"
+                                      :class="{ active: activeFilters[dim.key] === child.value }"
+                                      @click="selectFilter(dim.key, child.value)">
+                                    <span x-text="child.label"></span>
+                                    <span class="tree-count" x-text="'(' + child.count + ')'"></span>
+                                </span>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+            </details>
+        </template>
+    </div>
+</div>

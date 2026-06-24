@@ -46,8 +46,7 @@ app.include_router(import_router)
 
 @app.get("/")
 async def home(request: Request):
-    return templates.TemplateResponse("base.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "base.html", {
         "left_content": "partials/tree_panel.html",
         "center_content": "partials/welcome.html",
         "right_content": "partials/qa_panel.html",
