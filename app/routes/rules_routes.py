@@ -108,17 +108,11 @@ async def toggle_rule(request: Request, rule_id: int):
             "SELECT * FROM classification_rules WHERE id = ?", (rule_id,)
         ).fetchone()
 
-    status_text = "已启用" if rule["is_active"] else "已禁用"
-    active_class = "active" if rule["is_active"] else "inactive"
+    # 返回整行 HTML，让 htmx 替换整个 <tr>，状态指示器和按钮一起更新
     from app.main import templates
-    return HTMLResponse(
-        f"""<span class="rule-status {active_class}" hx-swap-oob="true">{status_text}</span>
-        <button hx-post="/rules/{rule_id}/toggle" hx-swap="outerHTML"
-                class="{'secondary' if rule['is_active'] else ''} outline"
-                style="font-size:0.8rem;padding:0.2rem 0.5rem">
-            {'禁用' if rule['is_active'] else '启用'}
-        </button>"""
-    )
+    return templates.TemplateResponse(request, "partials/rules_row.html", {
+        "rule": dict(rule),
+    })
 
 
 @router.delete("/rules/{rule_id}")

@@ -236,8 +236,9 @@ document.addEventListener('alpine:init', () => {
                     const html = await resp.text();
                     const rowEl = document.querySelector(`tr:has(button[data-id="${this.editRule.id}"])`);
                     if (rowEl) {
+                        const parent = rowEl.parentElement;  // outerHTML 后 rowEl 脱离 DOM，提前保存引用
                         rowEl.outerHTML = html;
-                        if (window.htmx) htmx.process(rowEl.parentElement);
+                        if (window.htmx) htmx.process(parent);
                     }
                     this.showEditForm = false;
                     document.getElementById('edit-result').innerHTML = '';

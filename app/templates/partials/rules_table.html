@@ -50,7 +50,8 @@
         </td>
         <td>
             <div style="display:flex;gap:0.25rem">
-                <button hx-post="/rules/{{ r.id }}/toggle" hx-swap="outerHTML"
+                <button hx-post="/rules/{{ r.id }}/toggle"
+                        hx-target="closest tr" hx-swap="outerHTML"
                         class="{% if r.is_active %}secondary{% endif %} outline"
                         style="font-size:0.75rem;padding:0.15rem 0.4rem">
                     {{ '禁用' if r.is_active else '启用' }}
