@@ -1,0 +1,59 @@
+import re
+from app.config import ADAPTIVE_THRESHOLDS
+
+
+def _match_score(text: str, rule: dict) -> float:
+    """单条规则对文本的匹配得分"""
+    pattern = rule["pattern"]
+    match_type = rule.get("match_type", "keyword")
+    priority = rule.get("priority", 1)
+
+    if match_type == "exact":
+        if pattern == text.strip():
+            return 1.0 * (1 + 0.1 * priority)
+        return 0.0
+    elif match_type == "regex":
+        try:
+            matches = list(re.finditer(pattern, text))
+            if matches:
+                coverage = sum(m.end() - m.start() for m in matches) / max(len(text), 1)
+                return min(1.0, coverage * 2) * (1 + 0.1 * priority)
+        except re.error:
+            return 0.0
+        return 0.0
+    else:  # keyword
+        count = text.count(pattern)
+        if count == 0:
+            return 0.0
+        return min(1.0, 0.3 + count * 0.15) * (1 + 0.1 * priority)
+
+
+def classify_clause(clause_text: str, parent_path: list[str],
+                    active_rules: list[dict]) -> dict[str, float]:
+    """对单条条文执行规则匹配，返回六维得分 {dim1..dim6}"""
+    dims = ["dim1", "dim2", "dim3", "dim4", "dim5", "dim6"]
+    scores = {d: 0.0 for d in dims}
+
+    # 父路径关键词也加入匹配文本（标签继承）
+    augmented_text = clause_text + " " + " ".join(parent_path)
+
+    for rule in active_rules:
+        if not rule.get("is_active", 1):
+            continue
+        dim = rule["dimension"]
+        if dim not in scores:
+            continue
+        score = _match_score(augmented_text, rule)
+        if score > scores[dim]:
+            scores[dim] = score
+
+    return scores
+
+
+def should_use_ai(dimension: str, scores: dict[str, float],
+                  thresholds: dict[str, float] | None = None) -> bool:
+    """判断该维度是否需要 AI 辅助分类"""
+    if thresholds is None:
+        thresholds = ADAPTIVE_THRESHOLDS
+    threshold = thresholds.get(dimension, 0.6)
+    return scores.get(dimension, 0.0) < threshold
