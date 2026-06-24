@@ -1,5 +1,5 @@
 def test_import_page_protected(client):
-    resp = client.get("/import")
+    resp = client.get("/import", follow_redirects=False)
     assert resp.status_code in (302, 303, 401)
 
 

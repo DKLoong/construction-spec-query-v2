@@ -6,18 +6,24 @@ _model: Optional[object] = None
 
 
 def get_model():
-    """懒加载 BGE-small-zh 模型（单例）"""
+    """懒加载 BGE-small-zh 模型（单例）。仅使用本地缓存，不自动下载。"""
     global _model
     if _model is None:
         try:
             from sentence_transformers import SentenceTransformer
-            _model = SentenceTransformer("BAAI/bge-small-zh-v1.5")
+            # local_files_only=True 避免网络下载超时阻塞
+            _model = SentenceTransformer(
+                "BAAI/bge-small-zh-v1.5",
+                local_files_only=True
+            )
             logger.info("BGE-small-zh 模型加载完成")
         except ImportError:
             logger.warning("sentence-transformers 未安装，向量检索不可用")
             _model = False
         except Exception as e:
-            logger.error(f"BGE 模型加载失败: {e}")
+            logger.warning(f"BGE 模型加载失败（首次使用需手动下载: "
+                           f"python -c \"from sentence_transformers import SentenceTransformer; "
+                           f"SentenceTransformer('BAAI/bge-small-zh-v1.5')\"）: {e}")
             _model = False
     return _model if _model is not False else None
 
