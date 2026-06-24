@@ -169,6 +169,20 @@ class SearchRequest(BaseModel):
     page_size: int = 20
 
 
+class SearchQuery(BaseModel):
+    """内部搜索查询参数（供 sql_search / vector_search 使用）"""
+    keyword: Optional[str] = None
+    dim1_hierarchy: Optional[str] = None
+    dim1_nature: Optional[str] = None
+    dim2_stage: Optional[str] = None
+    dim3_usage: Optional[str] = None
+    dim4_specialty: Optional[str] = None
+    dim5_location: Optional[str] = None
+    dim6_material: Optional[str] = None
+    page: int = 1
+    per_page: int = 20
+
+
 class SearchResponse(BaseModel):
     total: int
     page: int
