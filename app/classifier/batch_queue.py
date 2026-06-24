@@ -31,7 +31,10 @@ def get_pending_batch(dimension: str) -> list[dict]:
             f"UPDATE classification_queue SET batch_id = ?, status = 'ai_processing' WHERE id IN ({placeholders})",
             [batch_id] + ids,
         )
-        return [dict(r) for r in rows]
+        rows_with_batch = [dict(r) for r in rows]
+        for d in rows_with_batch:
+            d["batch_id"] = batch_id
+        return rows_with_batch
 
 
 def apply_ai_results(batch_id: str, results: list[dict]):
