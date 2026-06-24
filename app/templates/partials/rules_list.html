@@ -77,6 +77,62 @@
         </div>
     </div>
 
+    <!-- 编辑规则弹窗 -->
+    <div class="dialog-overlay" x-show="showEditForm" @click.self="showEditForm = false" x-cloak>
+        <div class="dialog-box">
+            <h3>编辑分类规则</h3>
+            <form @submit.prevent="updateRule">
+                <input type="hidden" x-model="editRule.id">
+                <label>维度 <select x-model="editRule.dimension" required>
+                    <option value="">-- 选择维度 --</option>
+                    <template x-for="d in dimensions" :key="d.key">
+                        <option :value="d.key" x-text="d.label"></option>
+                    </template>
+                </select></label>
+                <label>子字段
+                    <div style="position:relative">
+                        <input type="text" x-model="editRule.sub_field" placeholder="如 specialty"
+                               @input="fetchSubFields(editRule.dimension, editRule.sub_field)"
+                               @focus="fetchSubFields(editRule.dimension, editRule.sub_field)"
+                               @blur="hideSubFieldDropdown()">
+                        <ul x-show="subFieldSuggestions.length > 0 && subFieldOpen"
+                            x-transition
+                            @mousedown.prevent
+                            style="position:absolute;top:100%;left:0;right:0;background:var(--pico-form-element-background-color);border:1px solid var(--pico-form-element-border-color);border-radius:0 0 4px 4px;max-height:150px;overflow-y:auto;z-index:100;list-style:none;padding:0;margin:0">
+                            <template x-for="s in subFieldSuggestions" :key="s">
+                                <li @click="editRule.sub_field = s; subFieldOpen = false"
+                                    style="padding:0.3rem 0.5rem;cursor:pointer"
+                                    @mouseover="$el.style.background='var(--pico-primary-focus)'"
+                                    @mouseout="$el.style.background=''"
+                                    x-text="s"></li>
+                            </template>
+                        </ul>
+                    </div>
+                </label>
+                <label>关键词 <input type="text" x-model="editRule.pattern" required
+                       placeholder="如 混凝土"></label>
+                <label>匹配方式
+                    <select x-model="editRule.match_type">
+                        <option value="keyword">关键词 (keyword)</option>
+                        <option value="exact">精确 (exact)</option>
+                        <option value="regex">正则 (regex)</option>
+                    </select>
+                </label>
+                <label>优先级 (0-10)
+                    <input type="number" x-model="editRule.priority" min="0" max="10">
+                </label>
+                <label>阈值 (0-1)
+                    <input type="number" x-model="editRule.threshold" min="0" max="1" step="0.1">
+                </label>
+                <div style="margin-top:1rem;display:flex;gap:0.5rem">
+                    <button type="submit">💾 保存</button>
+                    <button type="button" class="secondary" @click="showEditForm = false">取消</button>
+                </div>
+            </form>
+            <div id="edit-result"></div>
+        </div>
+    </div>
+
     <!-- 统计面板 -->
     <div style="margin-bottom:1rem;display:flex;gap:1rem;flex-wrap:wrap" x-show="stats.length > 0">
         <template x-for="s in stats" :key="s.dimension">
@@ -98,10 +154,12 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('rulesManager', () => ({
         filterDim: '',
         showForm: false,
+        showEditForm: false,
         stats: [],
         subFieldSuggestions: [],
         subFieldOpen: false,
         subFieldTimer: null,
+        editRule: {id:'', dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6},
         dimensions: [
             {key: 'dim1', label: '规范属性'},
             {key: 'dim2', label: '工程阶段'},
@@ -146,6 +204,50 @@ document.addEventListener('alpine:init', () => {
         hideSubFieldDropdown() {
             // 延迟关闭以便 click 事件能触发
             setTimeout(() => { this.subFieldOpen = false; }, 200);
+        },
+
+        openEdit(dataset) {
+            this.editRule = {
+                id: dataset.id,
+                dimension: dataset.dimension,
+                sub_field: dataset.sub_field || '',
+                pattern: dataset.pattern,
+                match_type: dataset.match_type,
+                priority: parseInt(dataset.priority) || 0,
+                threshold: parseFloat(dataset.threshold) || 0.6,
+            };
+            this.showEditForm = true;
+        },
+
+        async updateRule() {
+            const fd = new FormData();
+            fd.append('dimension', this.editRule.dimension);
+            fd.append('sub_field', this.editRule.sub_field);
+            fd.append('pattern', this.editRule.pattern);
+            fd.append('match_type', this.editRule.match_type);
+            fd.append('priority', this.editRule.priority);
+            fd.append('threshold', this.editRule.threshold);
+            try {
+                const resp = await fetch(`/rules/${this.editRule.id}`, {
+                    method: 'PUT',
+                    body: fd,
+                });
+                if (resp.ok) {
+                    const html = await resp.text();
+                    const rowEl = document.querySelector(`tr:has(button[data-id="${this.editRule.id}"])`);
+                    if (rowEl) {
+                        rowEl.outerHTML = html;
+                        if (window.htmx) htmx.process(rowEl.parentElement);
+                    }
+                    this.showEditForm = false;
+                    document.getElementById('edit-result').innerHTML = '';
+                } else {
+                    const err = await resp.json();
+                    document.getElementById('edit-result').innerHTML = `<p style="color:red">❌ ${err.detail || '编辑失败'}</p>`;
+                }
+            } catch (e) {
+                document.getElementById('edit-result').innerHTML = `<p style="color:red">❌ 编辑失败: ${e.message}</p>`;
+            }
         },
 
         async createRule() {

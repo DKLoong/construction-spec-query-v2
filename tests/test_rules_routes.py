@@ -346,3 +346,97 @@ def test_sub_fields_requires_auth(client):
     """未登录不能访问子字段接口"""
     resp = client.get("/rules/sub-fields?dimension=dim4", follow_redirects=False)
     assert resp.status_code == 302
+
+
+# ===== 规则编辑测试 =====
+
+def test_update_rule_all_fields(auth_client, monkeypatch, tmp_path):
+    """编辑规则所有字段"""
+    db_path = tmp_path / "test_update_rule.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO classification_rules "
+            "(dimension, sub_field, pattern, match_type, priority, threshold) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("dim4", "specialty", "旧关键词", "keyword", 1, 0.5),
+        )
+        rule_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    resp = auth_client.put(f"/rules/{rule_id}", data={
+        "dimension": "dim5",
+        "sub_field": "location",
+        "pattern": "新关键词",
+        "match_type": "exact",
+        "priority": 5,
+        "threshold": 0.8,
+    })
+    assert resp.status_code == 200
+
+    with get_db() as conn:
+        rule = conn.execute(
+            "SELECT * FROM classification_rules WHERE id = ?", (rule_id,)
+        ).fetchone()
+    assert rule["dimension"] == "dim5"
+    assert rule["sub_field"] == "location"
+    assert rule["pattern"] == "新关键词"
+    assert rule["match_type"] == "exact"
+    assert rule["priority"] == 5
+    assert rule["threshold"] == 0.8
+
+
+def test_update_rule_partial(auth_client, monkeypatch, tmp_path):
+    """更新规则（可只改部分字段，未传字段保持默认值）"""
+    db_path = tmp_path / "test_update_partial.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO classification_rules "
+            "(dimension, sub_field, pattern, match_type, priority, threshold) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("dim6", "material", "原关键词", "keyword", 3, 0.7),
+        )
+        rule_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    # 只改 pattern 和 threshold，其他字段传原值
+    resp = auth_client.put(f"/rules/{rule_id}", data={
+        "dimension": "dim6",
+        "sub_field": "material",
+        "pattern": "改动关键词",
+        "match_type": "keyword",
+        "priority": 3,
+        "threshold": 0.9,
+    })
+    assert resp.status_code == 200
+
+    with get_db() as conn:
+        rule = conn.execute(
+            "SELECT * FROM classification_rules WHERE id = ?", (rule_id,)
+        ).fetchone()
+    assert rule["pattern"] == "改动关键词"
+    assert rule["threshold"] == 0.9
+    assert rule["dimension"] == "dim6"
+
+
+def test_update_rule_not_found(auth_client, monkeypatch, tmp_path):
+    """编辑不存在的规则返回 404"""
+    db_path = tmp_path / "test_update_notfound.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db
+    init_db()
+
+    resp = auth_client.put("/rules/99999", data={"dimension": "dim4", "pattern": "x"})
+    assert resp.status_code == 404
+
+
+def test_update_rule_requires_auth(client):
+    """未登录不能编辑规则"""
+    resp = client.put("/rules/1", data={"dimension": "dim4", "pattern": "x"},
+                      follow_redirects=False)
+    assert resp.status_code == 302

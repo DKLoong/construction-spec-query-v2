@@ -129,6 +129,45 @@ async def delete_rule(request: Request, rule_id: int):
     return HTMLResponse("")
 
 
+@router.put("/rules/{rule_id}")
+async def update_rule(
+    request: Request,
+    rule_id: int,
+    dimension: str = Form(...),
+    pattern: str = Form(...),
+    sub_field: str = Form(""),
+    match_type: str = Form("keyword"),
+    priority: int = Form(0),
+    threshold: float = Form(0.6),
+):
+    """编辑规则"""
+    from fastapi.responses import JSONResponse
+
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT * FROM classification_rules WHERE id = ?", (rule_id,)
+        ).fetchone()
+        if not existing:
+            return JSONResponse({"detail": "规则不存在"}, status_code=404)
+
+        conn.execute(
+            """UPDATE classification_rules
+               SET dimension = ?, sub_field = ?, pattern = ?, match_type = ?,
+                   priority = ?, threshold = ?, updated_at = datetime('now','localtime')
+               WHERE id = ?""",
+            (dimension, sub_field, pattern, match_type, priority, threshold, rule_id),
+        )
+
+    # 返回更新后的规则行 HTML 片段（供 htmx 替换）
+    from app.main import templates
+    return templates.TemplateResponse(request, "partials/rules_row.html", {
+        "rule": dict(existing) | {
+            "dimension": dimension, "sub_field": sub_field, "pattern": pattern,
+            "match_type": match_type, "priority": priority, "threshold": threshold,
+        }
+    })
+
+
 # ═══════════════════════════════════════════
 # 审核队列
 # ═══════════════════════════════════════════

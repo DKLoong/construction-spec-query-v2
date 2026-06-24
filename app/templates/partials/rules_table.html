@@ -55,6 +55,18 @@
                         style="font-size:0.75rem;padding:0.15rem 0.4rem">
                     {{ '禁用' if r.is_active else '启用' }}
                 </button>
+                <button class="secondary outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                        data-id="{{ r.id }}"
+                        data-dimension="{{ r.dimension }}"
+                        data-sub_field="{{ r.sub_field or '' }}"
+                        data-pattern="{{ r.pattern }}"
+                        data-match_type="{{ r.match_type }}"
+                        data-priority="{{ r.priority }}"
+                        data-threshold="{{ r.threshold }}"
+                        data-is_active="{{ r.is_active }}"
+                        @click="openEdit($el.dataset)">
+                    编辑
+                </button>
                 <button hx-delete="/rules/{{ r.id }}" hx-swap="outerHTML"
                         hx-confirm="确定删除规则「{{ r.pattern }}」？"
                         class="secondary outline"
