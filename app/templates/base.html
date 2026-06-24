@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>施工规范查询系统 V2</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <link rel="stylesheet" href="/static/pico.custom.css">
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/htmx.min.js"></script>
+    <script src="/static/alpine.min.js" defer></script>
+    <script src="/static/marked.min.js"></script>
+</head>
+<body>
+    <div x-data="appLayout()" class="app-layout">
+        <aside class="left-panel" :class="{ collapsed: sidebarCollapsed }">
+            {% if left_content %}{% include left_content %}{% endif %}
+        </aside>
+        <main class="center-panel">
+            {% if center_content %}{% include center_content %}{% endif %}
+        </main>
+        <aside class="right-panel" :class="{ collapsed: qaCollapsed }">
+            {% if right_content %}{% include right_content %}{% endif %}
+        </aside>
+    </div>
+    <script>
+        function appLayout() {
+            return {
+                sidebarCollapsed: false,
+                qaCollapsed: false,
+                toggleSidebar() { this.sidebarCollapsed = !this.sidebarCollapsed; },
+                toggleQA() { this.qaCollapsed = !this.qaCollapsed; },
+            }
+        }
+    </script>
+    <!-- component scripts -->
+    <script src="/static/components/tree.js"></script>
+    <script src="/static/components/qa.js"></script>
+    <script src="/static/components/search.js"></script>
+    <script src="/static/components/import.js"></script>
+</body>
+</html>
