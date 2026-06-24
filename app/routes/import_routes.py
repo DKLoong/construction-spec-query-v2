@@ -174,41 +174,52 @@ def _detect_hierarchy(code: str) -> str:
 @router.get("/tree/all")
 async def get_tree(request: Request):
     """返回分类树数据"""
+    # dim1/2/3 在 specifications 表，dim4/5/6 在 clauses 表
+    spec_dims = [
+        {"key": "dim1_hierarchy", "label": "规范层级", "field": "dim1_hierarchy"},
+        {"key": "dim1_nature", "label": "规范性质", "field": "dim1_nature"},
+        {"key": "dim2_stage", "label": "工程阶段", "field": "dim2_stage"},
+        {"key": "dim3_usage", "label": "工程用途", "field": "dim3_usage"},
+    ]
+    clause_dims = [
+        {"key": "dim4_specialty", "label": "所属专业", "field": "dim4_specialty"},
+        {"key": "dim5_location", "label": "工程部位", "field": "dim5_location"},
+        {"key": "dim6_material", "label": "材料/工艺", "field": "dim6_material"},
+    ]
+    result = []
+
     with get_db() as conn:
-        dims = [
-            {"key": "dim1_hierarchy", "label": "规范层级", "field": "dim1_hierarchy"},
-            {"key": "dim1_nature", "label": "规范性质", "field": "dim1_nature"},
-            {"key": "dim2_stage", "label": "工程阶段", "field": "dim2_stage"},
-            {"key": "dim4_specialty", "label": "所属专业", "field": "dim4_specialty"},
-            {"key": "dim5_location", "label": "工程部位", "field": "dim5_location"},
-            {"key": "dim6_material", "label": "材料/工艺", "field": "dim6_material"},
-        ]
-        result = []
-        for dim in dims:
-            nodes = []
-            if dim["field"].startswith("dim"):
-                # 条文级维度，查 clauses 表
-                rows = conn.execute(
-                    f"SELECT {dim['field']}, COUNT(*) as cnt FROM clauses "
-                    f"WHERE {dim['field']} IS NOT NULL AND {dim['field']} != '' "
-                    f"GROUP BY {dim['field']} ORDER BY cnt DESC LIMIT 30"
-                ).fetchall()
-            else:
-                # 规范级维度，查 specifications 表
-                rows = conn.execute(
-                    f"SELECT {dim['field']}, COUNT(*) as cnt FROM specifications "
-                    f"WHERE {dim['field']} IS NOT NULL AND {dim['field']} != '' "
-                    f"GROUP BY {dim['field']} ORDER BY cnt DESC LIMIT 30"
-                ).fetchall()
-            for r in rows:
-                val = r[dim["field"]]
-                # Handle comma-separated values
-                if val and "," in val:
-                    for sub in val.split(","):
-                        sub = sub.strip()
-                        if sub:
-                            nodes.append({"label": sub, "value": sub, "count": r["cnt"], "children": []})
-                else:
-                    nodes.append({"label": val or "(未分类)", "value": val, "count": r["cnt"], "children": []})
+        for dim in spec_dims:
+            rows = conn.execute(
+                f"SELECT {dim['field']}, COUNT(*) as cnt FROM specifications "
+                f"WHERE {dim['field']} IS NOT NULL AND {dim['field']} != '' "
+                f"GROUP BY {dim['field']} ORDER BY cnt DESC LIMIT 30"
+            ).fetchall()
+            nodes = _build_tree_nodes(rows, dim["field"])
             result.append({"key": dim["key"], "label": dim["label"], "nodes": nodes})
-        return result
+
+    with get_db() as conn:
+        for dim in clause_dims:
+            rows = conn.execute(
+                f"SELECT {dim['field']}, COUNT(*) as cnt FROM clauses "
+                f"WHERE {dim['field']} IS NOT NULL AND {dim['field']} != '' "
+                f"GROUP BY {dim['field']} ORDER BY cnt DESC LIMIT 30"
+            ).fetchall()
+            nodes = _build_tree_nodes(rows, dim["field"])
+            result.append({"key": dim["key"], "label": dim["label"], "nodes": nodes})
+    return result
+
+
+def _build_tree_nodes(rows, field: str) -> list[dict]:
+    """将查询结果转为树节点（处理逗号分隔的多值字段）"""
+    nodes = []
+    for r in rows:
+        val = r[field]
+        if val and "," in val:
+            for sub in val.split(","):
+                sub = sub.strip()
+                if sub:
+                    nodes.append({"label": sub, "value": sub, "count": r["cnt"], "children": []})
+        else:
+            nodes.append({"label": val or "(未分类)", "value": val, "count": r["cnt"], "children": []})
+    return nodes
