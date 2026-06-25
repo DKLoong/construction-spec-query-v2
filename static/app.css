@@ -1,4 +1,8 @@
-/* 三栏布局 */
+/* ═══════════════════════════════════════════════════════════════
+   施工规范查询系统 V2 — 莫兰蒂色系布局 & 组件样式
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 三栏布局 ── */
 .app-layout {
     display: grid;
     grid-template-columns: 25% 45% 30%;
@@ -12,6 +16,7 @@
     padding: 1rem;
     display: flex;
     flex-direction: column;
+    background: #faf7f3;   /* 比页面背景略亮 */
 }
 
 .center-panel {
@@ -25,13 +30,14 @@
     padding: 1rem;
     display: flex;
     flex-direction: column;
+    background: #faf7f3;
 }
 
-/* 面板折叠 */
+/* ── 面板折叠 ── */
 .left-panel.collapsed { display: none; }
 .right-panel.collapsed { display: none; }
 
-/* 面板折叠按钮 */
+/* ── 折叠按钮 ── */
 .panel-toggle {
     position: absolute;
     top: 0.5rem;
@@ -45,7 +51,13 @@
     font-size: 0.8rem;
 }
 
-/* 分类树 */
+/* ── 搜索框 ── */
+.search-box { margin-bottom: 0.5rem; }
+.search-box input { width: 100%; }
+
+/* ═══════════════════════════════════════════════════════════════
+   分类树
+   ═══════════════════════════════════════════════════════════════ */
 .tree-container {
     flex: 1;
     overflow-y: auto;
@@ -54,44 +66,87 @@
 
 .tree-node { margin-left: 1rem; }
 .tree-toggle { cursor: pointer; user-select: none; }
-.tree-label { cursor: pointer; padding: 2px 4px; border-radius: 3px; }
-.tree-label:hover { background: var(--pico-secondary-hover-background); }
-.tree-label.active { background: var(--pico-primary-background); color: var(--pico-primary-inverse); }
-.tree-count { color: var(--pico-muted-color); font-size: 0.75rem; margin-left: 0.25rem; }
-
-/* 搜索结果 */
-.search-box { margin-bottom: 0.5rem; }
-.search-box input { width: 100%; }
-
-.result-item {
-    padding: 0.75rem;
-    border-bottom: 1px solid var(--pico-muted-border-color);
+.tree-label {
     cursor: pointer;
+    padding: 3px 6px;
+    border-radius: 4px;
+    transition: background 0.15s;
+    color: var(--pico-color);
 }
-.result-item:hover { background: var(--pico-secondary-hover-background); }
-.result-item .clause-no { font-weight: bold; color: var(--pico-primary); }
-.result-item .clause-title { font-size: 0.9rem; color: var(--pico-muted-color); }
-.result-item .clause-content { font-size: 0.85rem; margin-top: 0.25rem; }
-.result-item .dim-tags { margin-top: 0.25rem; }
+.tree-label:hover {
+    background: rgba(138, 158, 139, 0.12);  /* sage green tint */
+}
+.tree-label.active {
+    background: var(--pico-primary-background);
+    color: var(--pico-primary-inverse);
+}
+.tree-count {
+    color: var(--pico-muted-color);
+    font-size: 0.75rem;
+    margin-left: 0.25rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   搜索结果
+   ═══════════════════════════════════════════════════════════════ */
+.result-item {
+    padding: 0.85rem;
+    margin-bottom: 0.5rem;
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    background: var(--pico-card-background-color);
+}
+.result-item:hover {
+    background: rgba(138, 158, 139, 0.08);
+    border-color: var(--pico-primary-border);
+}
+.result-item .clause-no {
+    font-weight: 600;
+    color: var(--pico-primary);
+    font-size: 0.9rem;
+}
+.result-item .clause-title {
+    font-size: 0.85rem;
+    color: var(--pico-muted-color);
+    margin-top: 0.15rem;
+}
+.result-item .clause-content {
+    font-size: 0.85rem;
+    margin-top: 0.35rem;
+    line-height: 1.55;
+    color: var(--pico-color);
+}
+.result-item .dim-tags { margin-top: 0.4rem; }
 .result-item .dim-tag {
     display: inline-block;
     font-size: 0.7rem;
-    padding: 1px 6px;
-    margin-right: 4px;
-    border-radius: 10px;
-    background: var(--pico-secondary-background);
-    color: var(--pico-secondary);
+    padding: 2px 8px;
+    margin-right: 5px;
+    margin-bottom: 3px;
+    border-radius: 12px;
+    background: rgba(138, 158, 139, 0.18);
+    color: #5d7a60;
 }
 
-/* 分页 */
+/* ── 分页 ── */
 .pagination {
     display: flex;
     justify-content: center;
-    gap: 0.5rem;
-    margin-top: 1rem;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1.25rem;
 }
+.pagination a {
+    color: var(--pico-primary);
+    text-decoration: none;
+    font-weight: 500;
+}
+.pagination a:hover { text-decoration: underline; }
+.pagination span { color: var(--pico-muted-color); font-size: 0.9rem; }
 
-/* 欢迎页面 */
+/* ── 欢迎/空结果 ── */
 .welcome {
     display: flex;
     flex-direction: column;
@@ -101,37 +156,165 @@
     color: var(--pico-muted-color);
 }
 
-/* 对话框 */
+/* ═══════════════════════════════════════════════════════════════
+   对话框（导入、新建规则等）
+   ═══════════════════════════════════════════════════════════════ */
 .dialog-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(74, 68, 84, 0.45);  /* 莫兰蒂深灰半透明 */
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1000;
+    backdrop-filter: blur(2px);
 }
 .dialog-box {
-    background: var(--pico-background-color);
+    background: #faf7f3;
     padding: 2rem;
-    border-radius: 8px;
+    border-radius: 10px;
     max-width: 500px;
     width: 90%;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+    box-shadow: 0 6px 32px rgba(74, 68, 84, 0.18);
+    border: 1px solid var(--pico-card-border-color);
 }
 
-/* QA 面板 */
+/* ═══════════════════════════════════════════════════════════════
+   AI 问答面板 — 聊天气泡（高对比度）
+   ═══════════════════════════════════════════════════════════════ */
+.qa-panel-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
 .qa-messages {
     flex: 1;
     overflow-y: auto;
+    margin-bottom: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+}
+
+.qa-msg {
+    padding: 0.7rem 0.85rem;
+    border-radius: 10px;
+    line-height: 1.6;
+    font-size: 0.88rem;
+    max-width: 92%;
+    word-break: break-word;
+    position: relative;
+}
+
+/* 用户消息 — 鼠尾草绿底白字 */
+.qa-msg.user {
+    align-self: flex-end;
+    background: #7d917e;             /* 莫兰蒂绿 (sage green) */
+    color: #faf8f5;                 /* 暖白 — 高对比度 */
+    border-bottom-right-radius: 3px;
+}
+.qa-msg.user strong {
+    color: #faf8f5;
+}
+
+/* AI 消息 — 暖米灰底深字 */
+.qa-msg.assistant {
+    align-self: flex-start;
+    background: #ede5d7;            /* 暖米色 — 高于页面背景 */
+    color: #3d3740;                 /* 深灰紫 — 高对比度文字 */
+    border-bottom-left-radius: 3px;
+    border: 1px solid #ddd3c2;      /* 微妙的边框增加层次 */
+}
+.qa-msg.assistant strong {
+    color: #3d3740;
+}
+
+/* AI 消息中的引用来源 */
+.qa-msg.assistant small {
+    display: block;
+    margin-top: 0.5rem;
+    color: #8c8694;
+    font-size: 0.78rem;
+    border-top: 1px solid #ddd3c2;
+    padding-top: 0.4rem;
+}
+
+/* 消息内的链接 */
+.qa-msg a {
+    color: var(--pico-primary);
+    text-decoration: underline;
+}
+
+/* ── QA 输入区 ── */
+.qa-input {
+    display: flex;
+    gap: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--pico-muted-border-color);
+}
+.qa-input textarea {
+    flex: 1;
+    resize: none;
+    font-size: 0.88rem;
+    border-radius: 8px;
+    padding: 0.55rem 0.7rem;
+}
+
+/* ── QA 后端选择器 ── */
+.qa-input-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     margin-bottom: 0.5rem;
 }
-.qa-msg {
-    margin-bottom: 0.75rem;
+
+/* ═══════════════════════════════════════════════════════════════
+   条文详情
+   ═══════════════════════════════════════════════════════════════ */
+.clause-detail {
     padding: 0.5rem;
-    border-radius: 6px;
 }
-.qa-msg.user { background: var(--pico-primary-background); color: var(--pico-primary-inverse); }
-.qa-msg.assistant { background: var(--pico-secondary-background); }
-.qa-input { display: flex; gap: 0.5rem; }
-.qa-input textarea { flex: 1; resize: none; }
+.clause-detail h3 { color: var(--pico-primary); }
+.clause-detail .dim-tag {
+    display: inline-block;
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    margin-right: 5px;
+    border-radius: 12px;
+    background: rgba(138, 158, 139, 0.18);
+    color: #5d7a60;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   进度条 / 状态指示
+   ═══════════════════════════════════════════════════════════════ */
+[x-cloak] { display: none !important; }
+
+/* 导入进度 */
+.import-progress {
+    padding: 1rem;
+    text-align: center;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   规则管理表格微调
+   ═══════════════════════════════════════════════════════════════ */
+table.striped tbody tr:nth-child(odd) {
+    background: rgba(138, 158, 139, 0.05);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   响应式 — 移动端堆叠
+   ═══════════════════════════════════════════════════════════════ */
+@media (max-width: 900px) {
+    .app-layout {
+        grid-template-columns: 1fr;
+        height: auto;
+    }
+    .left-panel, .right-panel {
+        border: none;
+        border-bottom: 1px solid var(--pico-muted-border-color);
+        max-height: 40vh;
+    }
+}

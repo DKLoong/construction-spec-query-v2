@@ -1,4 +1,142 @@
-/* Pico.css custom overrides for 施工规范查询系统 */
+/* ═══════════════════════════════════════════════════════════════
+   莫兰蒂色系 (Morandi Color Scheme)
+   低饱和度、暖灰基调、优雅克制的配色
+   ═══════════════════════════════════════════════════════════════ */
+
 :root {
+    /* ── 排版 ── */
     --pico-font-size: 90%;
+    --pico-border-radius: 0.35rem;
+
+    /* ── 页面背景 & 文字 ── */
+    --pico-background-color: #f4f0ea;      /* 暖奶油白 */
+    --pico-color: #4a4454;                 /* 深灰紫 — 主文字 */
+    --pico-muted-color: #8c8694;           /* 灰紫 — 次要文字 */
+    --pico-muted-border-color: #d6cfc6;    /* 暖灰 — 边框/分割线 */
+
+    /* ── 文本选择 ── */
+    --pico-text-selection-color: rgba(138, 158, 139, 0.25); /* sage green tint */
+
+    /* ── 主色：鼠尾草绿 (Sage Green) ── */
+    --pico-primary: #7d917e;
+    --pico-primary-background: #8a9e8b;
+    --pico-primary-border: #7a8f7b;
+    --pico-primary-underline: rgba(138, 158, 139, 0.4);
+    --pico-primary-hover: #718573;
+    --pico-primary-hover-background: #7d917e;
+    --pico-primary-hover-border: #6d806e;
+    --pico-primary-focus: rgba(138, 158, 139, 0.25);
+    --pico-primary-inverse: #faf8f5;
+
+    /* ── 次色：暖灰褐 (Warm Taupe) ── */
+    --pico-secondary: #9a8c80;
+    --pico-secondary-background: #e8e2d8;
+    --pico-secondary-border: #d5cdc1;
+    --pico-secondary-underline: rgba(154, 140, 128, 0.4);
+    --pico-secondary-hover: #8b7d71;
+    --pico-secondary-hover-background: #ded7cc;
+    --pico-secondary-hover-border: #cbc3b6;
+    --pico-secondary-focus: rgba(154, 140, 128, 0.25);
+    --pico-secondary-inverse: #4a4454;
+
+    /* ── 强调：莫兰蒂烟粉 (Dusty Rose) ── */
+    --pico-contrast: #4a4454;
+    --pico-contrast-background: #4a4454;
+    --pico-contrast-border: #3d3747;
+    --pico-contrast-underline: rgba(74, 68, 84, 0.4);
+    --pico-contrast-hover: #3d3747;
+    --pico-contrast-hover-background: #3d3747;
+    --pico-contrast-hover-border: #302b3a;
+    --pico-contrast-focus: rgba(74, 68, 84, 0.25);
+    --pico-contrast-inverse: #faf8f5;
+
+    /* ── 表单 ── */
+    --pico-form-element-background-color: #faf7f3;
+    --pico-form-element-border-color: #d6cfc6;
+    --pico-form-element-color: #4a4454;
+    --pico-form-element-placeholder-color: #b0a9b4;
+    --pico-form-element-active-background-color: #fff;
+    --pico-form-element-active-border-color: #8a9e8b;
+    --pico-form-element-disabled-background-color: #eee9e3;
+    --pico-form-element-disabled-border-color: #e0d9d1;
+
+    /* ── 表格 ── */
+    --pico-table-row-stripped-background-color: rgba(138, 158, 139, 0.06);
+
+    /* ── 卡片 ── */
+    --pico-card-background-color: #faf7f3;
+    --pico-card-border-color: #e8e2d8;
+    --pico-card-sectioning-background-color: #f4f0ea;
+
+    /* ── 代码 ── */
+    --pico-code-background-color: #ede7df;
+    --pico-code-color: #7a6e5e;
+    --pico-code-kbd-background-color: #4a4454;
+    --pico-code-kbd-color: #faf8f5;
+
+    /* ── 标记 (mark) ── */
+    --pico-mark-background-color: #e8d8c8;
+    --pico-mark-color: #4a4454;
+
+    /* ── 分隔线 ── */
+    --pico-hr-background-color: #d6cfc6;
+
+    /* ── 加载动画 ── */
+    --pico-loading-spinner-opacity: 0.2;
+
+    /* ── 开关 ── */
+    --pico-switch-color: #faf8f5;
+    --pico-switch-checked-background-color: #8a9e8b;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   深色模式（低对比度暖暗色）
+   ═══════════════════════════════════════════════════════════════ */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --pico-background-color: #2b272e;
+        --pico-color: #d5cfda;
+        --pico-muted-color: #a098a8;
+        --pico-muted-border-color: #3d3747;
+
+        --pico-primary: #8a9e8b;
+        --pico-primary-background: #7d917e;
+        --pico-primary-border: #6d806e;
+        --pico-primary-hover: #95a896;
+        --pico-primary-hover-background: #8a9e8b;
+        --pico-primary-hover-border: #7d917e;
+        --pico-primary-inverse: #f4f0ea;
+
+        --pico-secondary: #b0a590;
+        --pico-secondary-background: #3a353d;
+        --pico-secondary-border: #4d4650;
+        --pico-secondary-hover: #bcb19c;
+        --pico-secondary-hover-background: #423d45;
+        --pico-secondary-hover-border: #554e58;
+
+        --pico-contrast: #e0d9d1;
+        --pico-contrast-background: #e0d9d1;
+        --pico-contrast-border: #d5cdc4;
+        --pico-contrast-hover: #ede7df;
+        --pico-contrast-hover-background: #ede7df;
+        --pico-contrast-hover-border: #e0d9d1;
+        --pico-contrast-inverse: #2b272e;
+
+        --pico-form-element-background-color: #353038;
+        --pico-form-element-border-color: #4d4650;
+        --pico-form-element-color: #d5cfda;
+        --pico-form-element-placeholder-color: #8c8694;
+        --pico-form-element-active-background-color: #3a353d;
+        --pico-form-element-disabled-background-color: #302b33;
+        --pico-form-element-disabled-border-color: #423d45;
+
+        --pico-table-row-stripped-background-color: rgba(138, 158, 139, 0.08);
+        --pico-card-background-color: #353038;
+        --pico-card-border-color: #423d45;
+        --pico-card-sectioning-background-color: #2b272e;
+        --pico-code-background-color: #353038;
+        --pico-code-color: #bcb19c;
+        --pico-mark-background-color: #4a3d38;
+        --pico-hr-background-color: #3d3747;
+    }
 }

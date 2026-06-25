@@ -21,7 +21,7 @@
                         <strong>AI：</strong>
                         <div x-html="marked.parse(msg.content)"></div>
                         <template x-if="msg.sources && msg.sources.length">
-                            <small style="color: var(--pico-muted-color);">
+                            <small>
                                 来源：
                                 <template x-for="src in msg.sources">
                                     <span x-text="src.code + ' ' + src.clause_no"></span>
