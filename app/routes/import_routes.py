@@ -85,8 +85,8 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
         # Step 1: 获取 MD 文本
         if ext == ".md":
             md_text = path.read_text(encoding="utf-8")
-            # MD 文件直接继续 Phase 2
-            _process_import_phase2(task_id, md_text, title, code, file_path, file_hash, conn)
+            # MD 文件直接继续 Phase 2（同一线程内安全）
+            _process_import_phase2(task_id, md_text, title, code, file_path, file_hash)
             return
         elif ext == ".pdf":
             if is_scanned(file_path):
@@ -107,13 +107,11 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
         progress_store[task_id]["file_path"] = file_path
         progress_store[task_id]["file_name"] = path.name
         progress_store[task_id]["file_hash"] = file_hash
-        progress_store[task_id]["conn"] = conn  # 复用连接
 
         progress_store[task_id].update(
             status="review_needed", progress=50,
             message="OCR 完成，请审查识别结果",
         )
-        # conn 不关闭，由 Phase 2 继续使用
         return
     except Exception as e:
         if conn:
@@ -123,7 +121,7 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
                 pass
         progress_store[task_id].update(status="error", progress=0, message=str(e))
     finally:
-        if progress_store[task_id].get("status") != "review_needed" and conn:
+        if conn:
             try:
                 conn.close()
             except Exception:
@@ -131,13 +129,12 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
 
 
 def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
-                            file_path: str, file_hash: str = "", conn=None):
-    """后台任务 Phase 2：解析 → 分类 → 索引（审查确认后调用或 MD 文件直接调用）"""
-    own_conn = conn is None
+                            file_path: str, file_hash: str = ""):
+    """后台任务 Phase 2：解析 → 分类 → 索引（始终创建新连接，线程安全）"""
+    conn = None
     try:
         from app.database import get_connection
-        if own_conn:
-            conn = get_connection()
+        conn = get_connection()
 
         progress_store[task_id].update(progress=60, message="正在解析条文...")
 
@@ -217,7 +214,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 pass
         progress_store[task_id].update(status="error", progress=0, message=str(e))
     finally:
-        if conn and own_conn:
+        if conn:
             try:
                 conn.close()
             except Exception:
@@ -282,19 +279,25 @@ async def confirm_review(
     if not task:
         return HTMLResponse("<p style='color:red'>任务不存在或已过期</p>")
 
+    # 防止重复点击确认按钮
+    if task.get("status") in ("processing", "done"):
+        return HTMLResponse(
+            f"""<div id="import-status" hx-get="/import/progress/{task_id}" hx-trigger="every 2s" hx-swap="outerHTML">
+            <p style="color:#c08552">⏳ 导入正在处理中，请勿重复提交...</p></div>"""
+        )
+
     title = task.get("title", "")
     code = task.get("code", "")
     file_path = task.get("file_path", "")
     file_hash = task.get("file_hash", "")
-    conn = task.pop("conn", None)
 
     # 更新为审查后的文本
     task["md_text"] = content
     task.update(status="processing", progress=55, message="审查完成，正在继续导入...")
 
-    # 启动 Phase 2
+    # 启动 Phase 2（不再跨线程传递 conn，Phase 2 自己创建连接）
     background_tasks.add_task(
-        _process_import_phase2, task_id, content, title, code, file_path, file_hash, conn
+        _process_import_phase2, task_id, content, title, code, file_path, file_hash
     )
 
     return HTMLResponse(

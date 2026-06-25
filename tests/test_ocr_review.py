@@ -56,3 +56,29 @@ def test_confirm_review_resumes_import(auth_client, monkeypatch, tmp_path):
     # 验证状态已更新
     task = progress_store.get(task_id, {})
     assert task.get("status") in ("processing", "done", "error")
+
+
+def test_confirm_review_rejects_duplicate(auth_client):
+    """审查确认时重复点击应被拒绝"""
+    from app.routes.import_routes import progress_store
+
+    task_id = "test_review_dup_confirm"
+    # 模拟已经处于 processing 状态的任务
+    progress_store[task_id] = {
+        "status": "processing",
+        "progress": 55,
+        "message": "审查完成，正在继续导入...",
+        "md_text": "# 测试规范\n## 1.1 条文\n内容",
+        "title": "测试规范",
+        "code": "GB-TEST",
+        "file_path": "/tmp/test.pdf",
+        "file_name": "test.pdf",
+    }
+
+    resp = auth_client.post(
+        f"/import/review/{task_id}/confirm",
+        data={"content": "# 再次提交的内容"},
+    )
+    assert resp.status_code == 200
+    # 应提示正在处理中
+    assert "处理中" in resp.text or "请勿重复" in resp.text
