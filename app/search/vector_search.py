@@ -67,3 +67,63 @@ class VectorStore:
     def delete_clause(self, clause_id: int):
         if self._table_exists():
             self._get_table().delete(f"clause_id = {clause_id}")
+
+    def clear_all(self):
+        """删除整个向量表，用于完全重建索引"""
+        if self._table_exists():
+            self.db.drop_table("clause_embeddings")
+
+    def batch_index(self, clauses: list[dict], batch_size: int = 32):
+        """批量索引条文（先建表再逐批插入）
+
+        clauses: [{"clause_id": int, "spec_id": int, "text": str, "dim_scores": str}, ...]
+        """
+        import numpy as np
+
+        if not clauses:
+            return
+
+        # 先清空旧表
+        self.clear_all()
+
+        # 计算第一批嵌入以确定向量维度
+        first_batch = clauses[:batch_size]
+        first_embs = embed_texts([c["text"] for c in first_batch])
+        vec_dim = len(first_embs[0])
+
+        # 建表
+        schema = pa.schema([
+            pa.field("clause_id", pa.int64()),
+            pa.field("spec_id", pa.int64()),
+            pa.field("text", pa.string()),
+            pa.field("embedding", pa.list_(pa.float32(), vec_dim)),
+            pa.field("dim_scores", pa.string()),
+        ])
+        tbl = self.db.create_table("clause_embeddings", schema=schema)
+
+        # 写入第一批
+        records = []
+        for i, c in enumerate(first_batch):
+            records.append({
+                "clause_id": c["clause_id"],
+                "spec_id": c["spec_id"],
+                "text": c["text"],
+                "embedding": np.array(first_embs[i], dtype=np.float32),
+                "dim_scores": c.get("dim_scores", ""),
+            })
+        tbl.add(records)
+
+        # 逐批写入剩余
+        for start in range(batch_size, len(clauses), batch_size):
+            batch = clauses[start:start + batch_size]
+            embs = embed_texts([c["text"] for c in batch])
+            records = []
+            for i, c in enumerate(batch):
+                records.append({
+                    "clause_id": c["clause_id"],
+                    "spec_id": c["spec_id"],
+                    "text": c["text"],
+                    "embedding": np.array(embs[i], dtype=np.float32),
+                    "dim_scores": c.get("dim_scores", ""),
+                })
+            tbl.add(records)

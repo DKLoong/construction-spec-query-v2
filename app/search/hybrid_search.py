@@ -26,12 +26,15 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
         try:
             from app.search.vector_search import VectorStore
             vs = VectorStore()
-            vector_raw = vs.search(keyword, top_k=50)
+            vector_raw = vs.search(keyword, top_k=20)
         except (ImportError, OSError, RuntimeError, ValueError) as e:
             logger.warning("向量搜索不可用，降级为仅 LIKE 搜索: %s", e)
 
     # ── 3. 合并去重 ──
-    _VECTOR_THRESHOLD = 1.2  # 余弦距离阈值：< 1.2 视为语义相关，>= 1.2 视为噪音
+    # L2 距离阈值（嵌入向量已归一化，BGE 模型 normalize_embeddings=True）：
+    #   L2 < 1.0  → 余弦相似度 > 0.5，视为语义相关
+    #   L2 >= 1.0 → 余弦相似度 ≤ 0.5，视为噪音（正交或相反方向）
+    _VECTOR_THRESHOLD = 1.0
     sql_ids = {r["id"] for r in sql_results}
     new_ids = [
         v["clause_id"] for v in vector_raw
