@@ -26,7 +26,7 @@ def setup_search_data(conn):
 
 
 def test_hybrid_search_keyword(monkeypatch, tmp_path):
-    """FTS5 关键词搜索正常工作"""
+    """关键词搜索正常工作"""
     db_path = tmp_path / "test_hybrid.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
     init_db()
@@ -124,8 +124,8 @@ def test_hybrid_search_per_page_cap(monkeypatch, tmp_path):
     assert len(results) <= 100
 
 
-def test_hybrid_search_fts5_special_chars(monkeypatch, tmp_path):
-    """FTS5 特殊字符被安全处理"""
+def test_hybrid_search_like_special_chars(monkeypatch, tmp_path):
+    """LIKE 搜索正确处理特殊字符（如点号、斜线、连字符）"""
     db_path = tmp_path / "test_hybrid_special.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
     init_db()
@@ -133,8 +133,12 @@ def test_hybrid_search_fts5_special_chars(monkeypatch, tmp_path):
         setup_search_data(conn)
 
     from app.search.hybrid_search import hybrid_search
-    # 含 FTS5 特殊字符 * " ( ) 的查询不应报错
-    results, total = hybrid_search(SearchQuery(keyword="钢筋* (测试)"))
-    # 不应抛出异常，正常返回
-    assert isinstance(results, list)
-    assert isinstance(total, int)
+    # 搜索含点号的条文编号 "5.1.1" — LIKE 下应能精确匹配
+    results, total = hybrid_search(SearchQuery(keyword="5.1.1"))
+    assert total >= 1
+    assert any(r["clause_no"] == "5.1.1" for r in results)
+
+    # 含其他特殊字符的关键词不应抛异常
+    results2, total2 = hybrid_search(SearchQuery(keyword="GB 50204-2015"))
+    assert isinstance(results2, list)
+    assert isinstance(total2, int)

@@ -44,8 +44,12 @@ async def search(
         "results": results,
         "total": total,
         "page": page,
-        "page_size": page_size,
+        "page_size": min(page_size, 100),  # 与 per_page 上限一致，避免分页计算错误
         "keyword": keyword,
+        "dim1_hierarchy": dim1_hierarchy,
+        "dim1_nature": dim1_nature,
+        "dim2_stage": dim2_stage,
+        "dim3_usage": dim3_usage,
         "dim4_specialty": dim4_specialty,
         "dim5_location": dim5_location,
         "dim6_material": dim6_material,

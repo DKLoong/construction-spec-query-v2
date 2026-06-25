@@ -3,7 +3,7 @@ from app.models import SearchQuery
 
 
 def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
-    """多维筛选 + FTS5 关键词搜索，返回 (结果列表, 总数)"""
+    """多维筛选 + LIKE 关键词搜索，返回 (结果列表, 总数)"""
     with get_db() as conn:
         conditions = []
         params = []
