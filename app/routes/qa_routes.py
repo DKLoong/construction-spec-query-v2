@@ -73,8 +73,11 @@ async def qa_ask(request: Request, body: QaRequest):
     )
 
     # 5. 处理响应
-    if resp.success:
+    if resp.success and resp.content.strip():
         answer = resp.content
+    elif resp.success and not resp.content.strip():
+        logger.warning("QA CLI returned empty content (command=%s)", cli_used)
+        answer = "抱歉，AI 服务返回了空内容，请确认 CLI 已登录并可用。"
     else:
         logger.warning("QA CLI error (command=%s): %s", cli_used, resp.error)
         answer = (

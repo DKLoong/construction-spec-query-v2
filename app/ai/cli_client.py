@@ -86,6 +86,7 @@ class CLIBackend(ABC):
             cmd = [self.command, "--print", prompt]
             result = subprocess.run(
                 cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
                 timeout=timeout, cwd=work_dir
             )
             duration = (time.time() - start) * 1000

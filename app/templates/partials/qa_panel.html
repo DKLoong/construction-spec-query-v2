@@ -2,10 +2,13 @@
 <div x-data="qaPanel()" class="qa-panel-content">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
         <strong>AI 助手</strong>
-        <select x-model="backend" style="width: auto; margin-bottom: 0;">
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex</option>
-        </select>
+        <div style="display:flex;gap:0.3rem;align-items:center">
+            <button @click="clearMessages()" class="outline secondary" style="font-size:0.7rem;padding:0.1rem 0.4rem" title="清空对话">🗑</button>
+            <select x-model="backend" @change="_save()" style="width: auto; margin-bottom: 0;">
+                <option value="claude">Claude Code</option>
+                <option value="codex">Codex</option>
+            </select>
+        </div>
     </div>
     <div class="qa-messages" id="qa-messages">
         <template x-for="msg in messages" :key="msg.content">
