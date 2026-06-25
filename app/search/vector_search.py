@@ -23,6 +23,13 @@ class VectorStore:
         vectors = embed_texts([text])
         emb = np.array(vectors[0], dtype=np.float32)
 
+        # 先删旧记录，防止同一 clause_id 重复出现
+        if self._table_exists():
+            try:
+                self._get_table().delete(f"clause_id = {clause_id}")
+            except Exception:
+                pass
+
         if not self._table_exists():
             # 显式指定 schema，确保 embedding 列是固定大小向量类型
             schema = pa.schema([

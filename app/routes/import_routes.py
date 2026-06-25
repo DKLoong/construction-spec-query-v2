@@ -130,9 +130,9 @@ def _process_import(task_id: str, file_path: str, title: str, code: str):
             if vs is not None:
                 try:
                     dim_scores_str = ",".join(f"{k}={v:.2f}" for k, v in scores.items())
-                    vs.index_clause(clause_id, spec_id,
-                                    f"[{cd['clause_no']}] {cd['title'] or ''} {cd['content']}",
-                                    dim_scores_str)
+                    # 嵌入文本包含规范名，与 reindex_vectors.py 保持一致
+                    embed_text = f"{code or ''} {title or ''} [{cd['clause_no']}] {cd['title'] or ''} {cd['content']}"
+                    vs.index_clause(clause_id, spec_id, embed_text, dim_scores_str)
                 except Exception:
                     vs = None  # 失败后不再尝试
 
