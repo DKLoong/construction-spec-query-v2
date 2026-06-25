@@ -11,7 +11,8 @@ document.addEventListener('alpine:init', () => {
             try {
                 const resp = await fetch(`/search?${params.toString()}`);
                 const html = await resp.text();
-                document.getElementById('search-results').innerHTML = html;
+                const target = document.querySelector('.center-panel');
+                if (target) target.innerHTML = html;
             } catch (e) {
                 console.error('搜索失败:', e);
             } finally {

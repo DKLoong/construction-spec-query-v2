@@ -37,13 +37,17 @@ document.addEventListener('alpine:init', () => {
             for (const [k, v] of Object.entries(this.activeFilters)) {
                 params.append(k, v);
             }
-            if (this.searchKeyword) {
-                params.append('keyword', this.searchKeyword);
+            // 从搜索框读取关键词，使维度筛选也能带上搜索词
+            const keywordInput = this.$el.querySelector('input[type="search"]');
+            const kw = keywordInput ? keywordInput.value.trim() : '';
+            if (kw) {
+                params.append('keyword', kw);
             }
             try {
                 const resp = await fetch(`/search?${params.toString()}`);
                 const html = await resp.text();
-                document.getElementById('search-results').innerHTML = html;
+                const target = document.querySelector('.center-panel');
+                if (target) target.innerHTML = html;
             } catch (e) {
                 console.error('搜索失败:', e);
             }
