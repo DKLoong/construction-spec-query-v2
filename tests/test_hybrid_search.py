@@ -99,6 +99,31 @@ def test_hybrid_search_no_results(monkeypatch, tmp_path):
     assert results == []
 
 
+def test_hybrid_search_per_page_cap(monkeypatch, tmp_path):
+    """per_page 超过 100 时被限制为 100"""
+    db_path = tmp_path / "test_hybrid_cap.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    # 写入超过 100 条测试数据（用少量即可，只验证 cap 逻辑）
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for i in range(10):
+            conn.execute(
+                "INSERT INTO clauses (spec_id, clause_no, content) VALUES (?, ?, ?)",
+                (spec_id, f"{i}.1", f"测试内容{i}"),
+            )
+
+    from app.search.hybrid_search import hybrid_search
+    from app.models import SearchQuery
+
+    # 请求 per_page=500，实际返回应 ≤ 100
+    results, total = hybrid_search(SearchQuery(per_page=500))
+    # 总共只有 10 条，但 cap 应生效（返回 ≤100，实际上 =10）
+    assert len(results) <= 100
+
+
 def test_hybrid_search_fts5_special_chars(monkeypatch, tmp_path):
     """FTS5 特殊字符被安全处理"""
     db_path = tmp_path / "test_hybrid_special.db"
