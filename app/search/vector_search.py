@@ -69,9 +69,19 @@ class VectorStore:
             self._get_table().delete(f"clause_id = {clause_id}")
 
     def clear_all(self):
-        """删除整个向量表，用于完全重建索引"""
+        """删除整个向量表及磁盘文件，用于完全重建索引"""
+        import shutil
+        from pathlib import Path
+        from app.config import LANCE_DB_PATH
+
+        # 先通过 LanceDB API 删表
         if self._table_exists():
             self.db.drop_table("clause_embeddings")
+
+        # 清理可能残留的 WAL/日志文件，防止旧数据被重放到新表
+        table_dir = Path(LANCE_DB_PATH) / "clause_embeddings.lance"
+        if table_dir.exists():
+            shutil.rmtree(table_dir, ignore_errors=True)
 
     def batch_index(self, clauses: list[dict], batch_size: int = 32):
         """批量索引条文（先建表再逐批插入）
