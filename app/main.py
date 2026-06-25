@@ -4,9 +4,15 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import BASE_DIR
 from app.auth import decode_access_token
+from app.database import init_db
 from jose import JWTError
 
 app = FastAPI(title="施工规范查询系统 V2")
+
+# 应用启动时初始化数据库
+@app.on_event("startup")
+def startup():
+    init_db()
 
 # 静态文件
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
