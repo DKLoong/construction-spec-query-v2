@@ -46,6 +46,9 @@ app.include_router(import_router)
 from app.routes.rules_routes import router as rules_router
 app.include_router(rules_router)
 
+from app.routes.search_routes import router as search_router
+app.include_router(search_router)
+
 
 @app.get("/")
 async def home(request: Request):

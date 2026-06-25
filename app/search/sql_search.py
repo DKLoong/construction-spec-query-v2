@@ -10,9 +10,10 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
 
         if query.keyword:
             conditions.append(
-                "c.id IN (SELECT rowid FROM clauses_fts WHERE clauses_fts MATCH ?)"
+                "(c.content LIKE ? OR c.title LIKE ? OR c.clause_no LIKE ?)"
             )
-            params.append(query.keyword)
+            kw = f"%{query.keyword}%"
+            params.extend([kw, kw, kw])
 
         dim_filters = {
             "dim4_specialty": query.dim4_specialty,
