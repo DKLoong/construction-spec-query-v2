@@ -190,6 +190,11 @@ class SearchResponse(BaseModel):
     results: list[ClauseResponse]
 
 
+class QaRequest(BaseModel):
+    question: str
+    backend: str = "claude"
+
+
 class QAResponse(BaseModel):
     answer: str
     sources: list[dict] = []

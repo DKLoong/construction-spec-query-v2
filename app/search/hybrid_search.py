@@ -5,6 +5,9 @@ from app.database import get_db
 
 logger = logging.getLogger(__name__)
 
+# LIKE 搜索取全部结果时的一次性获取上限
+_FETCH_LIMIT = 10000
+
 
 def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
     """混合搜索：SQL LIKE 模糊匹配 + 向量语义补充，合并去重后分页"""
@@ -16,7 +19,7 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
     sql_query = query.model_copy()
     sql_query.keyword = keyword
     sql_query.page = 1
-    sql_query.per_page = 10000  # 先取全部，在合并后统一分页
+    sql_query.per_page = _FETCH_LIMIT  # 先取全部，在合并后统一分页
 
     sql_results, sql_total = search_clauses(sql_query)
 
@@ -90,7 +93,7 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
                     d["_source"] = "semantic"
                     vector_results.append(d)
 
-    merged = list(sql_results) + vector_results
+    merged = sql_results + vector_results
     total = len(merged)
 
     # ── 4. 分页 ──

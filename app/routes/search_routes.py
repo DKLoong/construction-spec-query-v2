@@ -47,6 +47,8 @@ async def search(
             "empty_search": True,
         })
 
+    effective_page_size = min(page_size, 100)
+
     sq = SearchQuery(
         keyword=keyword,
         dim1_hierarchy=dim1_hierarchy,
@@ -57,7 +59,7 @@ async def search(
         dim5_location=dim5_location,
         dim6_material=dim6_material,
         page=page,
-        per_page=min(page_size, 100),
+        per_page=effective_page_size,
     )
 
     results, total = hybrid_search(sq)
@@ -67,7 +69,7 @@ async def search(
         "results": results,
         "total": total,
         "page": page,
-        "page_size": min(page_size, 100),  # 与 per_page 上限一致，避免分页计算错误
+        "page_size": effective_page_size,
         "keyword": keyword,
         "dim1_hierarchy": dim1_hierarchy,
         "dim1_nature": dim1_nature,

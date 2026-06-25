@@ -41,3 +41,24 @@ def auth_client(client, monkeypatch, tmp_path):
     if "set-cookie" in resp.headers:
         client.cookies.set("access_token", resp.cookies.get("access_token"))
     return client
+
+
+def setup_search_data(conn):
+    """写入 3 条测试条文（共享 helper，供搜索相关测试使用）"""
+    conn.execute("INSERT INTO specifications (code, title) VALUES ('GB 50204', '混凝土规范')")
+    spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    clauses_data = [
+        ("5.1.1", "模板设计", "模板及其支架应根据工程结构形式进行设计。",
+         "结构专业", "主体结构", "模板工程"),
+        ("5.2.1", "钢筋原材料", "钢筋进场时应抽取试件作屈服强度检验。",
+         "结构专业", "主体结构", "金属材料,钢筋"),
+        ("6.1.1", "屋面防水", "屋面防水层应采用卷材或涂膜防水。",
+         "建筑专业", "屋面", "防水材料"),
+    ]
+    for no, title, content, dim4, dim5, dim6 in clauses_data:
+        conn.execute(
+            """INSERT INTO clauses (spec_id, clause_no, title, content,
+               dim4_specialty, dim5_location, dim6_material)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (spec_id, no, title, content, dim4, dim5, dim6),
+        )
