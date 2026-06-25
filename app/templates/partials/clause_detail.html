@@ -1,0 +1,38 @@
+<!-- app/templates/partials/clause_detail.html -->
+<div id="clause-detail">
+    {% if clause %}
+    <article>
+        <header>
+            <h4>{{ clause.spec_code }} — {{ clause.clause_no }}</h4>
+            {% if clause.title %}<p><strong>{{ clause.title }}</strong></p>{% endif %}
+        </header>
+        <div class="clause-body" style="white-space:pre-wrap;line-height:1.8">
+            {{ clause.content }}
+        </div>
+        <footer style="margin-top:1rem">
+            <div class="dim-tags">
+                {% if clause.dim4_specialty %}
+                <span class="dim-tag" style="background:var(--pico-primary-background);color:white;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.8rem">
+                    专业：{{ clause.dim4_specialty }}
+                </span>
+                {% endif %}
+                {% if clause.dim5_location %}
+                <span class="dim-tag" style="background:var(--pico-primary-background);color:white;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.8rem">
+                    部位：{{ clause.dim5_location }}
+                </span>
+                {% endif %}
+                {% if clause.dim6_material %}
+                <span class="dim-tag" style="background:var(--pico-primary-background);color:white;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.8rem">
+                    材料/工艺：{{ clause.dim6_material }}
+                </span>
+                {% endif %}
+            </div>
+            <small style="color:var(--pico-muted-color)">
+                来源：{{ clause.spec_title or clause.spec_code }}
+            </small>
+        </footer>
+    </article>
+    {% else %}
+    <p style="color:var(--pico-muted-color)">条文不存在</p>
+    {% endif %}
+</div>
