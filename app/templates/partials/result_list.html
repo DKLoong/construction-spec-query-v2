@@ -6,7 +6,7 @@
         <div class="result-item"
              hx-get="/clause/{{ r.id }}" hx-target="#clause-detail" hx-swap="innerHTML"
              style="cursor: pointer;">
-            <div class="clause-no">{{ r.spec_code }} — {{ r.clause_no }}</div>
+            <div class="clause-no">{{ r.spec_code }}{% if r.spec_title %} {{ r.spec_title }}{% endif %} — {{ r.clause_no }}</div>
             {% if r.title %}<div class="clause-title">{{ r.title }}</div>{% endif %}
             <div class="clause-content">{{ r.content[:200] }}{% if r.content|length > 200 %}...{% endif %}</div>
             <div class="dim-tags">

@@ -31,8 +31,12 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
             logger.warning("向量搜索不可用，降级为仅 LIKE 搜索: %s", e)
 
     # ── 3. 合并去重 ──
+    _VECTOR_THRESHOLD = 1.2  # 余弦距离阈值：< 1.2 视为语义相关，>= 1.2 视为噪音
     sql_ids = {r["id"] for r in sql_results}
-    new_ids = [v["clause_id"] for v in vector_raw if v["clause_id"] not in sql_ids]
+    new_ids = [
+        v["clause_id"] for v in vector_raw
+        if v["clause_id"] not in sql_ids and v.get("_distance", 0) < _VECTOR_THRESHOLD
+    ]
 
     vector_results = []
     if new_ids:
