@@ -36,10 +36,13 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
     #   L2 >= 1.0 → 余弦相似度 ≤ 0.5，视为噪音（正交或相反方向）
     _VECTOR_THRESHOLD = 1.0
     sql_ids = {r["id"] for r in sql_results}
-    new_ids = [
-        v["clause_id"] for v in vector_raw
-        if v["clause_id"] not in sql_ids and v.get("_distance", 0) < _VECTOR_THRESHOLD
-    ]
+    new_ids = []
+    for v in vector_raw:
+        dist = v.get("_distance", 0)
+        not_in_like = v["clause_id"] not in sql_ids
+        dist_ok = dist < _VECTOR_THRESHOLD
+        if not_in_like and dist_ok:
+            new_ids.append(v["clause_id"])
 
     vector_results = []
     if new_ids:
