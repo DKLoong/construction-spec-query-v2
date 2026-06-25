@@ -1,0 +1,9 @@
+<!-- 规范管理主页 -->
+<div x-data style="padding:1rem">
+    <h2>📚 规范管理</h2>
+    <p style="color:var(--pico-muted-color);margin-bottom:1rem">管理已导入的规范文件，查看条文、编辑或删除。</p>
+    <div id="specs-table" hx-get="/specs/list" hx-trigger="load">
+        <p aria-busy="true">加载中...</p>
+    </div>
+    <div id="clause-detail-area"></div>
+</div>

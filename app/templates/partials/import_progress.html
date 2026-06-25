@@ -3,6 +3,13 @@
     <p>{{ progress.message }}</p>
     {% if progress.status == "done" %}
     <p style="color: green; font-weight: bold;">导入完成！<a href="/">刷新页面</a>查看新导入的规范。</p>
+    {% elif progress.status == "review_needed" %}
+    <p style="color: var(--pico-muted-color);">PDF 已转换为 Markdown 文本，请审查并修正识别错误。</p>
+    <a href="/import/review/{{ task_id }}">
+        <button style="background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:var(--pico-primary-inverse)">
+            📝 审查 OCR 结果
+        </button>
+    </a>
     {% elif progress.status == "error" %}
     <p style="color: red;">导入失败: {{ progress.message }}</p>
     {% else %}

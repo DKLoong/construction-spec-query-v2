@@ -1,0 +1,187 @@
+<!-- OCR 审查页面 -->
+<div x-data="ocrReview()" class="ocr-review">
+    <h2>📝 OCR 审查 <small x-text="fileName" style="color:var(--pico-muted-color);font-size:0.8rem"></small></h2>
+
+    <!-- 搜索/替换工具栏 -->
+    <div class="review-toolbar">
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+            <input type="search" x-model="searchQuery" @input="findMatches()"
+                   placeholder="搜索..." style="width:200px">
+            <small x-text="matchInfo" style="color:var(--pico-muted-color);min-width:60px"></small>
+            <button class="outline" @click="prevMatch()" :disabled="!hasMatches" style="font-size:0.8rem">◀ 上一个</button>
+            <button class="outline" @click="nextMatch()" :disabled="!hasMatches" style="font-size:0.8rem">下一个 ▶</button>
+            <input type="text" x-model="replaceText" placeholder="替换为..." style="width:180px">
+            <button class="secondary outline" @click="replaceCurrent()" :disabled="!hasMatches" style="font-size:0.8rem">替换</button>
+            <button class="secondary outline" @click="replaceAll()" :disabled="!hasMatches" style="font-size:0.8rem">全部替换</button>
+        </div>
+    </div>
+
+    <!-- 左右双栏：编辑 | 预览 -->
+    <div class="review-panels">
+        <textarea x-model="mdContent" @input="updatePreview()" @scroll="syncScroll($event)"
+                  class="review-editor" spellcheck="false"></textarea>
+        <div x-html="renderedHtml" class="review-preview" id="review-preview"></div>
+    </div>
+
+    <!-- 确认提交 -->
+    <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--pico-muted-border-color);
+                display:flex;justify-content:space-between;align-items:center">
+        <small style="color:var(--pico-muted-color)">审查完毕后点击确认继续导入流程（解析 + 分类 + 索引）</small>
+        <form hx-post="/import/review/{{ task_id }}/confirm"
+              hx-target="#review-result" hx-swap="innerHTML"
+              @submit="prepareSubmit">
+            <input type="hidden" name="content" :value="mdContent">
+            <button type="submit">✅ 确认并继续导入</button>
+        </form>
+    </div>
+    <div id="review-result" style="margin-top:0.5rem"></div>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('ocrReview', () => ({
+        mdContent: '',
+        fileName: '',
+        renderedHtml: '',
+        searchQuery: '',
+        replaceText: '',
+        matches: [],
+        currentMatchIdx: -1,
+        hasMatches: false,
+        matchInfo: '',
+
+        async init() {
+            try {
+                // 从进度接口加载 OCR 内容
+                const taskId = window.location.pathname.split('/').pop();
+                const resp = await fetch(`/import/review/${taskId}/content`);
+                const data = await resp.json();
+                this.mdContent = data.content || '';
+                this.fileName = data.file_name || '';
+                this.updatePreview();
+            } catch (e) {
+                this.mdContent = '(加载失败)';
+            }
+        },
+
+        updatePreview() {
+            try {
+                this.renderedHtml = marked.parse(this.mdContent || '');
+            } catch (e) {
+                this.renderedHtml = '<p style="color:red">渲染错误</p>';
+            }
+        },
+
+        findMatches() {
+            this.matches = [];
+            this.currentMatchIdx = -1;
+            if (!this.searchQuery || !this.mdContent) {
+                this.hasMatches = false;
+                this.matchInfo = '';
+                return;
+            }
+            const escaped = this.searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(escaped, 'gi');
+            let m;
+            while ((m = regex.exec(this.mdContent)) !== null) {
+                this.matches.push({ index: m.index, length: m[0].length });
+            }
+            this.hasMatches = this.matches.length > 0;
+            this.matchInfo = this.matches.length > 0
+                ? `${this.matches.length} 个匹配`
+                : '无匹配';
+            this._highlightInPreview();
+        },
+
+        _highlightInPreview() {
+            if (!this.searchQuery) {
+                this.updatePreview();
+                return;
+            }
+            const escaped = this.searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(`(${escaped})`, 'gi');
+            let html = (this.mdContent || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            html = html.replace(regex, '<mark class="search-highlight">$1</mark>');
+            // 标记当前选中
+            if (this.currentMatchIdx >= 0 && this.currentMatchIdx < this.matches.length) {
+                // 简单策略：重新解析 markdown 后高亮可能错位，此处用原始标记
+            }
+            try {
+                this.renderedHtml = marked.parse(html.replace(/<mark /g, '<mark '));
+            } catch (e) {
+                this.renderedHtml = html;
+            }
+        },
+
+        prevMatch() {
+            if (!this.hasMatches) return;
+            this.currentMatchIdx = this.currentMatchIdx <= 0
+                ? this.matches.length - 1
+                : this.currentMatchIdx - 1;
+            this._scrollToMatch();
+            this._highlightInPreview();
+        },
+
+        nextMatch() {
+            if (!this.hasMatches) return;
+            this.currentMatchIdx = this.currentMatchIdx >= this.matches.length - 1
+                ? 0
+                : this.currentMatchIdx + 1;
+            this._scrollToMatch();
+            this._highlightInPreview();
+        },
+
+        _scrollToMatch() {
+            if (this.currentMatchIdx < 0 || this.currentMatchIdx >= this.matches.length) return;
+            const match = this.matches[this.currentMatchIdx];
+            const textarea = document.querySelector('.review-editor');
+            if (!textarea) return;
+            // 找到匹配位置在 textarea 中的行
+            const before = this.mdContent.substring(0, match.index);
+            const lineNum = before.split('\n').length - 1;
+            const lineHeight = 20; // 近似
+            textarea.scrollTop = lineNum * lineHeight - textarea.clientHeight / 2;
+            textarea.setSelectionRange(match.index, match.index + match.length);
+            textarea.focus();
+            this.matchInfo = `${this.currentMatchIdx + 1}/${this.matches.length}`;
+        },
+
+        replaceCurrent() {
+            if (!this.hasMatches || this.currentMatchIdx < 0) return;
+            const match = this.matches[this.currentMatchIdx];
+            this.mdContent =
+                this.mdContent.substring(0, match.index) +
+                this.replaceText +
+                this.mdContent.substring(match.index + match.length);
+            this.updatePreview();
+            this.findMatches();
+        },
+
+        replaceAll() {
+            if (!this.hasMatches) return;
+            const escaped = this.searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(escaped, 'gi');
+            this.mdContent = this.mdContent.replace(regex, this.replaceText);
+            this.updatePreview();
+            this.findMatches();
+        },
+
+        prepareSubmit(event) {
+            // 确保 hidden input 在提交前取到最新 mdContent
+            const form = event.target;
+            const hidden = form.querySelector('input[name="content"]');
+            if (hidden) hidden.value = this.mdContent;
+        },
+
+        syncScroll(event) {
+            const preview = document.getElementById('review-preview');
+            if (!preview) return;
+            const ratio = event.target.scrollTop / (event.target.scrollHeight - event.target.clientHeight);
+            preview.scrollTop = ratio * (preview.scrollHeight - preview.clientHeight);
+        },
+    }));
+});
+</script>

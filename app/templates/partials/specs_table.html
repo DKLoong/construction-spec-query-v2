@@ -1,0 +1,45 @@
+<!-- 规范列表表格 -->
+{% if specs %}
+<table class="striped" style="font-size:0.85rem">
+    <thead>
+        <tr>
+            <th>编号</th>
+            <th>名称</th>
+            <th>条文数</th>
+            <th>导入时间</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for s in specs %}
+    <tr>
+        <td><code>{{ s.code }}</code></td>
+        <td>{{ s.title }}</td>
+        <td>{{ s.clause_count }}</td>
+        <td>{{ s.created_at[:10] if s.created_at else '-' }}</td>
+        <td>
+            <div style="display:flex;gap:0.25rem">
+                <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                        hx-get="/specs/{{ s.id }}/clauses"
+                        hx-target="#clause-detail-area"
+                        hx-swap="innerHTML">
+                    查看条文
+                </button>
+                <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem;color:var(--pico-del-color, #c44)"
+                        hx-delete="/specs/{{ s.id }}"
+                        hx-confirm="确定删除规范「{{ s.code }} {{ s.title }}」及其所有条文？此操作不可撤销！"
+                        hx-target="closest tr"
+                        hx-swap="outerHTML">
+                    🗑 删除
+                </button>
+            </div>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p style="color:var(--pico-muted-color);text-align:center;padding:2rem">
+    暂无已导入的规范
+</p>
+{% endif %}

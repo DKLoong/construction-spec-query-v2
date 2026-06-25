@@ -1,0 +1,55 @@
+<!-- 条文行内编辑表单 -->
+{% if saved %}
+{# 保存成功后恢复为普通行 #}
+<tr id="clause-row-{{ clause.id }}">
+    <td><code>{{ clause.clause_no }}</code></td>
+    <td>{{ clause.title or '-' }}</td>
+    <td style="max-width:250px">
+        <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="{{ clause.content }}">
+            {{ (clause.content or '')[:60] }}{% if (clause.content or '')|length > 60 %}...{% endif %}
+        </span>
+    </td>
+    <td>
+        <div style="display:flex;gap:0.25rem">
+            <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                    hx-get="/specs/{{ spec_id }}/clauses/{{ clause.id }}/edit"
+                    hx-target="#clause-row-{{ clause.id }}"
+                    hx-swap="outerHTML">
+                编辑
+            </button>
+            <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem;color:#c44"
+                    hx-delete="/specs/{{ spec_id }}/clauses/{{ clause.id }}"
+                    hx-confirm="确定删除条文「{{ clause.clause_no }}」？"
+                    hx-target="#clause-row-{{ clause.id }}"
+                    hx-swap="outerHTML">
+                🗑
+            </button>
+        </div>
+    </td>
+</tr>
+{% else %}
+{# 编辑表单行 #}
+<tr id="clause-row-{{ clause.id }}">
+    <td><input type="text" name="clause_no" value="{{ clause.clause_no }}" style="width:100%;font-size:0.8rem"></td>
+    <td><input type="text" name="title" value="{{ clause.title or '' }}" style="width:100%;font-size:0.8rem"></td>
+    <td><textarea name="content" style="width:100%;font-size:0.8rem" rows="2">{{ clause.content }}</textarea></td>
+    <td>
+        <div style="display:flex;gap:0.25rem">
+            <button style="font-size:0.75rem;padding:0.15rem 0.4rem;background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:var(--pico-primary-inverse)"
+                    hx-put="/specs/{{ spec_id }}/clauses/{{ clause.id }}"
+                    hx-include="closest tr"
+                    hx-target="#clause-row-{{ clause.id }}"
+                    hx-swap="outerHTML">
+                💾 保存
+            </button>
+            <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                    hx-get="/specs/{{ spec_id }}/clauses"
+                    hx-target="#clause-detail-area"
+                    hx-swap="innerHTML">
+                取消
+            </button>
+        </div>
+    </td>
+</tr>
+{% endif %}
