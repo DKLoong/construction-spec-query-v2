@@ -1,6 +1,9 @@
 """混合搜索编排：LIKE 模糊搜索 + LanceDB 向量语义"""
+import logging
 from app.models import SearchQuery
 from app.database import get_db
+
+logger = logging.getLogger(__name__)
 
 
 def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
@@ -24,8 +27,8 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
             from app.search.vector_search import VectorStore
             vs = VectorStore()
             vector_raw = vs.search(keyword, top_k=50)
-        except Exception:
-            pass  # 向量搜索不可用时静默降级
+        except (ImportError, OSError, RuntimeError, ValueError) as e:
+            logger.warning("向量搜索不可用，降级为仅 LIKE 搜索: %s", e)
 
     # ── 3. 合并去重 ──
     sql_ids = {r["id"] for r in sql_results}
@@ -34,13 +37,40 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
     vector_results = []
     if new_ids:
         with get_db() as conn:
+            # 构建维度筛选条件（向量结果也需应用维度筛选，与 FTS5 层一致）
+            dim_conditions = []
+            dim_params = []
+
+            clause_filters = {
+                "dim4_specialty": query.dim4_specialty,
+                "dim5_location": query.dim5_location,
+                "dim6_material": query.dim6_material,
+            }
+            for col, val in clause_filters.items():
+                if val:
+                    dim_conditions.append(f"c.{col} LIKE ?")
+                    dim_params.append(f"%{val}%")
+
+            spec_filters = {
+                "dim1_hierarchy": query.dim1_hierarchy,
+                "dim1_nature": query.dim1_nature,
+                "dim2_stage": query.dim2_stage,
+                "dim3_usage": query.dim3_usage,
+            }
+            for col, val in spec_filters.items():
+                if val:
+                    dim_conditions.append(f"s.{col} LIKE ?")
+                    dim_params.append(f"%{val}%")
+
+            dim_where = (" AND " + " AND ".join(dim_conditions)) if dim_conditions else ""
+
             placeholders = ",".join("?" * len(new_ids))
             rows = conn.execute(
                 f"""SELECT c.*, s.code as spec_code, s.title as spec_title
                     FROM clauses c
                     JOIN specifications s ON c.spec_id = s.id
-                    WHERE c.id IN ({placeholders})""",
-                new_ids,
+                    WHERE c.id IN ({placeholders}){dim_where}""",
+                new_ids + dim_params,
             ).fetchall()
             seen = set()
             for r in rows:

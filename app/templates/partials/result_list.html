@@ -19,16 +19,20 @@
         {% if total > page_size %}
         <div class="pagination">
             {% if page > 1 %}
-            <a hx-get="/search?keyword={{ keyword }}&dim1_hierarchy={{ dim1_hierarchy }}&dim1_nature={{ dim1_nature }}&dim2_stage={{ dim2_stage }}&dim3_usage={{ dim3_usage }}&dim4_specialty={{ dim4_specialty }}&dim5_location={{ dim5_location }}&dim6_material={{ dim6_material }}&page_size={{ page_size }}&page={{ page - 1 }}"
+            <a hx-get="/search?keyword={{ keyword|urlencode }}&dim1_hierarchy={{ dim1_hierarchy|urlencode }}&dim1_nature={{ dim1_nature|urlencode }}&dim2_stage={{ dim2_stage|urlencode }}&dim3_usage={{ dim3_usage|urlencode }}&dim4_specialty={{ dim4_specialty|urlencode }}&dim5_location={{ dim5_location|urlencode }}&dim6_material={{ dim6_material|urlencode }}&page_size={{ page_size }}&page={{ page - 1 }}"
                hx-target="#search-results" hx-swap="innerHTML">上一页</a>
             {% endif %}
             <span>第 {{ page }}/{{ (total + page_size - 1) // page_size }} 页</span>
             {% if page * page_size < total %}
-            <a hx-get="/search?keyword={{ keyword }}&dim1_hierarchy={{ dim1_hierarchy }}&dim1_nature={{ dim1_nature }}&dim2_stage={{ dim2_stage }}&dim3_usage={{ dim3_usage }}&dim4_specialty={{ dim4_specialty }}&dim5_location={{ dim5_location }}&dim6_material={{ dim6_material }}&page_size={{ page_size }}&page={{ page + 1 }}"
+            <a hx-get="/search?keyword={{ keyword|urlencode }}&dim1_hierarchy={{ dim1_hierarchy|urlencode }}&dim1_nature={{ dim1_nature|urlencode }}&dim2_stage={{ dim2_stage|urlencode }}&dim3_usage={{ dim3_usage|urlencode }}&dim4_specialty={{ dim4_specialty|urlencode }}&dim5_location={{ dim5_location|urlencode }}&dim6_material={{ dim6_material|urlencode }}&page_size={{ page_size }}&page={{ page + 1 }}"
                hx-target="#search-results" hx-swap="innerHTML">下一页</a>
             {% endif %}
         </div>
         {% endif %}
+    {% elif empty_search %}
+        <div class="welcome">
+            <p>请输入关键词或选择筛选条件</p>
+        </div>
     {% else %}
         <div class="welcome">
             <p>暂无搜索结果</p>

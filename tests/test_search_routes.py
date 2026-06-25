@@ -76,15 +76,15 @@ def test_search_pagination(auth_client, monkeypatch, tmp_path):
     with get_db() as conn:
         setup_search_data(conn)
 
-    resp = auth_client.get("/search?page=1&page_size=2")
+    resp = auth_client.get("/search?keyword=模板&page=1&page_size=2")
     assert resp.status_code == 200
     html = resp.text
-    # 3 条数据，每页 2 条 → 应有分页控件
+    # 每页 2 条，应有分页控件（或至少显示结果计数）
     assert "下一页" in html or "共找到" in html
 
 
 def test_search_no_keyword(auth_client, monkeypatch, tmp_path):
-    """无参数时返回全部结果"""
+    """无参数时返回提示信息（非全部结果）"""
     db_path = tmp_path / "test_search_all.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
     from app.database import init_db, get_db
@@ -94,7 +94,7 @@ def test_search_no_keyword(auth_client, monkeypatch, tmp_path):
 
     resp = auth_client.get("/search")
     assert resp.status_code == 200
-    assert "共找到" in resp.text
+    assert "请输入关键词" in resp.text
 
 
 def test_search_no_results(auth_client, monkeypatch, tmp_path):
