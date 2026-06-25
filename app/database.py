@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS specifications (
     status          TEXT DEFAULT '现行',
     source_path     TEXT,
     output_dir      TEXT,
+    file_hash       TEXT,
     clause_count    INTEGER DEFAULT 0,
     created_at      TEXT DEFAULT (datetime('now','localtime')),
     updated_at      TEXT DEFAULT (datetime('now','localtime'))
@@ -135,3 +136,8 @@ def init_db():
     with get_db() as conn:
         conn.executescript(SCHEMA_SQL)
         conn.executescript(TRIGGERS_SQL)
+        # 迁移：为已有数据库添加 file_hash 列
+        try:
+            conn.execute("ALTER TABLE specifications ADD COLUMN file_hash TEXT")
+        except Exception:
+            pass  # 列已存在

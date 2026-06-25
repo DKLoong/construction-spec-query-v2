@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Request, UploadFile, File, Form, BackgroundTasks
@@ -13,6 +14,11 @@ router = APIRouter()
 progress_store = {}
 
 
+def _compute_file_hash(file_bytes: bytes) -> str:
+    """计算文件的 SHA256 哈希值"""
+    return hashlib.sha256(file_bytes).hexdigest()
+
+
 @router.post("/import/upload")
 async def upload_file(
     request: Request,
@@ -21,16 +27,35 @@ async def upload_file(
     title: str = Form(""),
     code: str = Form(""),
 ):
+    content = await file.read()
+    file_hash = _compute_file_hash(content)
+
+    # 检查是否已导入过相同文件
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT id, code, title, created_at FROM specifications WHERE file_hash = ?",
+            (file_hash,),
+        ).fetchone()
+
+    if existing:
+        return HTMLResponse(
+            f"""<div id="import-status" style="color:#c08552;font-weight:bold">
+            ⚠️ 该文件已导入过<br>
+            <small>规范编号：{existing['code']} | 名称：{existing['title']}<br>
+            导入时间：{existing['created_at']}</small><br>
+            <a href="/specs">前往规范管理 →</a>
+            </div>"""
+        )
+
     task_id = uuid.uuid4().hex[:8]
     progress_store[task_id] = {"status": "uploading", "progress": 0, "message": "正在上传..."}
 
     ext = Path(file.filename).suffix.lower()
     save_path = Path(UPLOAD_DIR) / f"{task_id}{ext}"
-    content = await file.read()
     save_path.write_bytes(content)
 
     background_tasks.add_task(
-        _process_import, task_id, str(save_path), title, code
+        _process_import, task_id, str(save_path), title, code, file_hash
     )
     return HTMLResponse(
         f'<div id="import-status" hx-get="/import/progress/{task_id}" hx-trigger="every 2s" hx-swap="outerHTML">处理中...</div>'
@@ -46,7 +71,8 @@ async def get_progress(request: Request, task_id: str):
     })
 
 
-def _process_import(task_id: str, file_path: str, title: str, code: str):
+def _process_import(task_id: str, file_path: str, title: str, code: str,
+                    file_hash: str = ""):
     """后台任务 Phase 1：OCR(如需) → 暂停等待审查 → 审查后继续 Phase 2"""
     conn = None
     try:
@@ -60,7 +86,7 @@ def _process_import(task_id: str, file_path: str, title: str, code: str):
         if ext == ".md":
             md_text = path.read_text(encoding="utf-8")
             # MD 文件直接继续 Phase 2
-            _process_import_phase2(task_id, md_text, title, code, file_path, conn)
+            _process_import_phase2(task_id, md_text, title, code, file_path, file_hash, conn)
             return
         elif ext == ".pdf":
             if is_scanned(file_path):
@@ -80,6 +106,7 @@ def _process_import(task_id: str, file_path: str, title: str, code: str):
         progress_store[task_id]["code"] = code
         progress_store[task_id]["file_path"] = file_path
         progress_store[task_id]["file_name"] = path.name
+        progress_store[task_id]["file_hash"] = file_hash
         progress_store[task_id]["conn"] = conn  # 复用连接
 
         progress_store[task_id].update(
@@ -104,7 +131,7 @@ def _process_import(task_id: str, file_path: str, title: str, code: str):
 
 
 def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
-                            file_path: str, conn=None):
+                            file_path: str, file_hash: str = "", conn=None):
     """后台任务 Phase 2：解析 → 分类 → 索引（审查确认后调用或 MD 文件直接调用）"""
     own_conn = conn is None
     try:
@@ -134,10 +161,10 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         conn.execute(
-            """INSERT INTO specifications (code, title, dim1_hierarchy, dim1_nature, source_path, output_dir)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO specifications (code, title, dim1_hierarchy, dim1_nature, source_path, output_dir, file_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (code or Path(file_path).stem, title or Path(file_path).stem,
-             dim1_hierarchy, dim1_nature, file_path, output_dir),
+             dim1_hierarchy, dim1_nature, file_path, output_dir, file_hash),
         )
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -258,6 +285,7 @@ async def confirm_review(
     title = task.get("title", "")
     code = task.get("code", "")
     file_path = task.get("file_path", "")
+    file_hash = task.get("file_hash", "")
     conn = task.pop("conn", None)
 
     # 更新为审查后的文本
@@ -266,7 +294,7 @@ async def confirm_review(
 
     # 启动 Phase 2
     background_tasks.add_task(
-        _process_import_phase2, task_id, content, title, code, file_path, conn
+        _process_import_phase2, task_id, content, title, code, file_path, file_hash, conn
     )
 
     return HTMLResponse(
