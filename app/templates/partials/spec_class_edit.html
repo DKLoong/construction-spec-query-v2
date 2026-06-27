@@ -1,0 +1,34 @@
+<!-- 规范分类编辑表单 -->
+{% if saved %}
+<div style="padding:0.5rem;background:rgba(138,158,139,0.15);border-radius:6px;margin-top:0.5rem">
+    <p style="margin:0;font-size:0.85rem">✅ 分类已保存</p>
+    <p style="margin:0.25rem 0 0 0;font-size:0.8rem;color:var(--pico-muted-color)">
+        工程阶段: {{ spec.dim2_stage or '(未设置)' }} | 工程用途: {{ spec.dim3_usage or '(未设置)' }}
+    </p>
+</div>
+{% else %}
+<div style="padding:0.75rem;background:var(--pico-card-background-color);border:1px solid var(--pico-card-border-color);border-radius:6px;margin-top:0.5rem">
+    <h4 style="margin:0 0 0.5rem 0">✏️ 编辑规范分类</h4>
+    <form hx-put="/specs/{{ spec.id }}/class"
+          hx-target="closest div"
+          hx-swap="outerHTML">
+        <label style="font-size:0.85rem">工程阶段 (dim2)
+            <input type="text" name="dim2_stage" value="{{ spec.dim2_stage or '' }}"
+                   placeholder="如 设计、施工、验收、监理" style="font-size:0.85rem">
+        </label>
+        <label style="font-size:0.85rem">工程用途 (dim3)
+            <input type="text" name="dim3_usage" value="{{ spec.dim3_usage or '' }}"
+                   placeholder="如 民用建筑、工业建筑、市政工程" style="font-size:0.85rem">
+        </label>
+        <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
+            <button type="submit" style="font-size:0.8rem;padding:0.25rem 0.6rem">💾 保存</button>
+            <button type="button" class="secondary" style="font-size:0.8rem;padding:0.25rem 0.6rem"
+                    hx-get="/specs/list"
+                    hx-target="#specs-table"
+                    hx-swap="innerHTML">
+                取消
+            </button>
+        </div>
+    </form>
+</div>
+{% endif %}

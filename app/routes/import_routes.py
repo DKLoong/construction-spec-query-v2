@@ -153,15 +153,24 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         ).fetchall()
         rules = [dict(r) for r in rules_rows]
 
-        # Step 5: 写入数据库 + 分类 + 向量索引
+        # Step 5: 规范级分类 (dim2/dim3)
+        spec_classify_text = f"{code} {title}"
+        spec_scores, spec_labels = classify_clause(spec_classify_text, [], rules)
+        dim2_stage = spec_labels.get("dim2", "")
+        dim3_usage = spec_labels.get("dim3", "")
+
+        # Step 6: 写入数据库 + 分类 + 向量索引
         output_dir = str(Path(OUTPUT_DIR) / (code or Path(file_path).stem))
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         conn.execute(
-            """INSERT INTO specifications (code, title, dim1_hierarchy, dim1_nature, source_path, output_dir, file_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO specifications (code, title, dim1_hierarchy, dim1_nature,
+               dim2_stage, dim3_usage, source_path, output_dir, file_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (code or Path(file_path).stem, title or Path(file_path).stem,
-             dim1_hierarchy, dim1_nature, file_path, output_dir, file_hash),
+             dim1_hierarchy, dim1_nature,
+             dim2_stage, dim3_usage,
+             file_path, output_dir, file_hash),
         )
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -175,11 +184,17 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         # 第一步：先插入所有条文到 SQLite，收集需要 embedding 的记录
         embedding_records = []
         for cd in clauses_data:
-            scores = classify_clause(cd["content"], cd.get("parent_path", []), rules)
+            scores, best_labels = classify_clause(cd["content"], cd.get("parent_path", []), rules)
+            dim4_val = best_labels.get("dim4", "")
+            dim5_val = best_labels.get("dim5", "")
+            dim6_val = best_labels.get("dim6", "")
+
             conn.execute(
-                """INSERT INTO clauses (spec_id, clause_no, title, content, parent_clause)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (spec_id, cd["clause_no"], cd["title"], cd["content"], None),
+                """INSERT INTO clauses (spec_id, clause_no, title, content, parent_clause,
+                   dim4_specialty, dim5_location, dim6_material)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (spec_id, cd["clause_no"], cd["title"], cd["content"], None,
+                 dim4_val, dim5_val, dim6_val),
             )
             clause_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -189,7 +204,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                         "INSERT INTO classification_queue (clause_id, dimension, keyword_score) VALUES (?, ?, ?)",
                         (clause_id, dim, scores[dim]),
                     )
-                else:
+                elif best_labels.get(dim):
                     classified_count += 1
 
             if vs is not None:

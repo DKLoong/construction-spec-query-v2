@@ -11,7 +11,7 @@ SAMPLE_RULES = [
 
 
 def test_classify_clause_returns_all_dims():
-    scores = classify_clause("混凝土结构施工", [], SAMPLE_RULES)
+    scores, labels = classify_clause("混凝土结构施工", [], SAMPLE_RULES)
     assert "dim1" in scores
     assert "dim2" in scores
     assert "dim3" in scores
@@ -21,19 +21,21 @@ def test_classify_clause_returns_all_dims():
 
 
 def test_classify_clause_keyword_match():
-    scores = classify_clause("屋面防水施工应满足设计要求", [], SAMPLE_RULES)
+    scores, labels = classify_clause("屋面防水施工应满足设计要求", [], SAMPLE_RULES)
     assert scores["dim5"] > 0  # 屋面匹配工程部位
+    assert labels.get("dim5") == "屋面"
 
 
 def test_classify_clause_material_match():
-    scores = classify_clause("混凝土强度等级不应低于C30", [], SAMPLE_RULES)
+    scores, labels = classify_clause("混凝土强度等级不应低于C30", [], SAMPLE_RULES)
     assert scores["dim6"] > 0  # 混凝土匹配材料维度
     assert scores["dim4"] > 0  # 混凝土也匹配专业维度
 
 
 def test_classify_clause_no_match():
-    scores = classify_clause("某某某无意义文本", [], SAMPLE_RULES)
+    scores, labels = classify_clause("某某某无意义文本", [], SAMPLE_RULES)
     assert all(v == 0.0 for v in scores.values())
+    assert labels == {}
 
 
 def test_should_use_ai_returns_true_for_low_score():
@@ -48,7 +50,7 @@ def test_should_use_ai_returns_false_for_high_score():
 
 def test_classify_clause_parent_path_boost():
     """标签继承：父路径包含关键词时提高得分"""
-    scores = classify_clause(
+    scores, labels = classify_clause(
         "模板安装应符合要求",
         ["混凝土分项工程", "模板"],
         SAMPLE_RULES,

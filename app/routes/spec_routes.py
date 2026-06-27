@@ -124,8 +124,11 @@ async def update_clause(
     clause_no: str = Form(""),
     title: str = Form(""),
     content: str = Form(""),
+    dim4_specialty: str = Form(""),
+    dim5_location: str = Form(""),
+    dim6_material: str = Form(""),
 ):
-    """更新条文"""
+    """更新条文（含分类字段）"""
     with get_db() as conn:
         existing = conn.execute(
             "SELECT * FROM clauses WHERE id = ? AND spec_id = ?",
@@ -135,9 +138,12 @@ async def update_clause(
             return JSONResponse({"detail": "条文不存在"}, status_code=404)
 
         conn.execute(
-            """UPDATE clauses SET clause_no = ?, title = ?, content = ?
+            """UPDATE clauses SET clause_no = ?, title = ?, content = ?,
+               dim4_specialty = ?, dim5_location = ?, dim6_material = ?
                WHERE id = ?""",
-            (clause_no, title, content, clause_id),
+            (clause_no, title, content,
+             dim4_specialty, dim5_location, dim6_material,
+             clause_id),
         )
 
         # 重索引向量
@@ -153,7 +159,11 @@ async def update_clause(
             logger.warning("向量重索引失败: %s", e)
 
         updated = dict(existing)
-        updated.update({"clause_no": clause_no, "title": title, "content": content})
+        updated.update({
+            "clause_no": clause_no, "title": title, "content": content,
+            "dim4_specialty": dim4_specialty, "dim5_location": dim5_location,
+            "dim6_material": dim6_material,
+        })
 
     from app.main import templates
     return templates.TemplateResponse(request, "partials/clause_edit_form.html", {
@@ -189,3 +199,54 @@ async def delete_clause(request: Request, spec_id: int, clause_id: int):
         )
 
     return HTMLResponse("")
+
+
+# ═══════════════════════════════════════════
+# 分类编辑
+# ═══════════════════════════════════════════
+
+@router.get("/specs/{spec_id}/edit-class")
+async def edit_spec_class_form(request: Request, spec_id: int):
+    """规范分类编辑表单"""
+    with get_db() as conn:
+        spec = conn.execute(
+            "SELECT * FROM specifications WHERE id = ?", (spec_id,)
+        ).fetchone()
+        if not spec:
+            return HTMLResponse("<p>规范不存在</p>", status_code=404)
+
+    from app.main import templates
+    return templates.TemplateResponse(request, "partials/spec_class_edit.html", {
+        "spec": dict(spec),
+    })
+
+
+@router.put("/specs/{spec_id}/class")
+async def update_spec_class(
+    request: Request,
+    spec_id: int,
+    dim2_stage: str = Form(""),
+    dim3_usage: str = Form(""),
+):
+    """更新规范分类 (dim2/dim3)"""
+    with get_db() as conn:
+        spec = conn.execute(
+            "SELECT * FROM specifications WHERE id = ?", (spec_id,)
+        ).fetchone()
+        if not spec:
+            return JSONResponse({"detail": "规范不存在"}, status_code=404)
+
+        conn.execute(
+            """UPDATE specifications SET dim2_stage = ?, dim3_usage = ?
+               WHERE id = ?""",
+            (dim2_stage, dim3_usage, spec_id),
+        )
+
+    from app.main import templates
+    updated = dict(spec)
+    updated["dim2_stage"] = dim2_stage
+    updated["dim3_usage"] = dim3_usage
+    return templates.TemplateResponse(request, "partials/spec_class_edit.html", {
+        "spec": updated,
+        "saved": True,
+    })

@@ -209,3 +209,82 @@ def test_delete_clause(auth_client, monkeypatch, tmp_path):
             "SELECT clause_count FROM specifications WHERE id = ?", (spec_id,)
         ).fetchone()
         assert spec["clause_count"] == 2  # 3 → 2
+
+
+# ═══════════════════════════════════════════
+# 分类编辑
+# ═══════════════════════════════════════════
+
+def test_edit_spec_class_form(auth_client, monkeypatch, tmp_path):
+    """规范分类编辑表单"""
+    db_path = tmp_path / "test_spec_class_edit.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        spec_id = _setup_spec_data(conn)
+
+    resp = auth_client.get(f"/specs/{spec_id}/edit-class")
+    assert resp.status_code == 200
+    assert "编辑规范分类" in resp.text
+
+
+def test_update_spec_class(auth_client, monkeypatch, tmp_path):
+    """更新规范分类 dim2/dim3"""
+    db_path = tmp_path / "test_update_spec_class.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        spec_id = _setup_spec_data(conn)
+
+    resp = auth_client.put(
+        f"/specs/{spec_id}/class",
+        data={"dim2_stage": "施工", "dim3_usage": "民用建筑"},
+    )
+    assert resp.status_code == 200
+    assert "分类已保存" in resp.text
+
+    with get_db() as conn:
+        spec = conn.execute(
+            "SELECT * FROM specifications WHERE id = ?", (spec_id,)
+        ).fetchone()
+    assert spec["dim2_stage"] == "施工"
+    assert spec["dim3_usage"] == "民用建筑"
+
+
+def test_update_clause_class(auth_client, monkeypatch, tmp_path):
+    """更新条文分类字段 dim4/dim5/dim6"""
+    db_path = tmp_path / "test_update_clause_class.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr(
+        "app.search.vector_search.VectorStore.__init__", lambda self: None,
+    )
+    monkeypatch.setattr(
+        "app.search.vector_search.VectorStore.index_clause",
+        lambda self, a, b, c, d="": None,
+    )
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        spec_id = _setup_spec_data(conn)
+        clause = conn.execute(
+            "SELECT id FROM clauses WHERE spec_id = ? LIMIT 1", (spec_id,)
+        ).fetchone()
+
+    resp = auth_client.put(
+        f"/specs/{spec_id}/clauses/{clause['id']}",
+        data={
+            "clause_no": "1.1", "title": "条文1", "content": "第1条内容测试",
+            "dim4_specialty": "结构", "dim5_location": "基础", "dim6_material": "混凝土",
+        },
+    )
+    assert resp.status_code == 200
+
+    with get_db() as conn:
+        updated = conn.execute(
+            "SELECT * FROM clauses WHERE id = ?", (clause["id"],)
+        ).fetchone()
+    assert updated["dim4_specialty"] == "结构"
+    assert updated["dim5_location"] == "基础"
+    assert updated["dim6_material"] == "混凝土"

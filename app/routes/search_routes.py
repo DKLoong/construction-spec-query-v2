@@ -64,8 +64,13 @@ async def search(
 
     results, total = hybrid_search(sq)
 
+    # HTMX 请求（翻页）：返回不带外层 #search-results 包装的内容，避免嵌套
+    # 首次加载（dispatchSearch / 浏览器直接访问）：返回完整包装
+    is_htmx = request.headers.get("HX-Request") == "true"
+    template_name = "partials/result_content.html" if is_htmx else "partials/result_list.html"
+
     from app.main import templates
-    return templates.TemplateResponse(request, "partials/result_list.html", {
+    return templates.TemplateResponse(request, template_name, {
         "results": results,
         "total": total,
         "page": page,

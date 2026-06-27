@@ -5,6 +5,7 @@
         <tr>
             <th>编号</th>
             <th>名称</th>
+            <th>分类</th>
             <th>条文数</th>
             <th>导入时间</th>
             <th>操作</th>
@@ -15,6 +16,11 @@
     <tr>
         <td><code>{{ s.code }}</code></td>
         <td>{{ s.title }}</td>
+        <td style="font-size:0.75rem">
+            {% if s.dim2_stage %}<span class="dim-tag">{{ s.dim2_stage }}</span>{% endif %}
+            {% if s.dim3_usage %}<span class="dim-tag">{{ s.dim3_usage }}</span>{% endif %}
+            {% if not s.dim2_stage and not s.dim3_usage %}<span style="color:#999">-</span>{% endif %}
+        </td>
         <td>{{ s.clause_count }}</td>
         <td>{{ s.created_at[:10] if s.created_at else '-' }}</td>
         <td>
@@ -24,6 +30,12 @@
                         hx-target="#clause-detail-area"
                         hx-swap="innerHTML">
                     查看条文
+                </button>
+                <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                        hx-get="/specs/{{ s.id }}/edit-class"
+                        hx-target="#spec-class-area"
+                        hx-swap="innerHTML">
+                    📋 分类
                 </button>
                 <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem;color:var(--pico-del-color, #c44)"
                         hx-delete="/specs/{{ s.id }}"

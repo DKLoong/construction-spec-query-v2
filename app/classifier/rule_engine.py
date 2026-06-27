@@ -29,10 +29,11 @@ def _match_score(text: str, rule: dict) -> float:
 
 
 def classify_clause(clause_text: str, parent_path: list[str],
-                    active_rules: list[dict]) -> dict[str, float]:
-    """对单条条文执行规则匹配，返回六维得分 {dim1..dim6}"""
+                    active_rules: list[dict]) -> tuple[dict[str, float], dict[str, str]]:
+    """对单条条文执行规则匹配，返回 (六维得分, 最佳标签) 元组"""
     dims = ["dim1", "dim2", "dim3", "dim4", "dim5", "dim6"]
     scores = {d: 0.0 for d in dims}
+    best_labels: dict[str, str] = {}
 
     # 父路径关键词也加入匹配文本（标签继承）
     augmented_text = clause_text + " " + " ".join(parent_path)
@@ -46,8 +47,9 @@ def classify_clause(clause_text: str, parent_path: list[str],
         score = _match_score(augmented_text, rule)
         if score > scores[dim]:
             scores[dim] = score
+            best_labels[dim] = rule["pattern"]
 
-    return scores
+    return scores, best_labels
 
 
 def should_use_ai(dimension: str, scores: dict[str, float],

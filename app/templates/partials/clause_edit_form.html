@@ -1,4 +1,4 @@
-<!-- 条文行内编辑表单 -->
+<!-- 条文行内编辑表单（含分类弹窗） -->
 {% if saved %}
 {# 保存成功后恢复为普通行 #}
 <tr id="clause-row-{{ clause.id }}">
@@ -10,6 +10,9 @@
             {{ (clause.content or '')[:60] }}{% if (clause.content or '')|length > 60 %}...{% endif %}
         </span>
     </td>
+    <td>{% if clause.dim4_specialty %}<span class="dim-tag">{{ clause.dim4_specialty }}</span>{% else %}<span style="color:#999">-</span>{% endif %}</td>
+    <td>{% if clause.dim5_location %}<span class="dim-tag">{{ clause.dim5_location }}</span>{% else %}<span style="color:#999">-</span>{% endif %}</td>
+    <td>{% if clause.dim6_material %}<span class="dim-tag">{{ clause.dim6_material }}</span>{% else %}<span style="color:#999">-</span>{% endif %}</td>
     <td>
         <div style="display:flex;gap:0.25rem">
             <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
@@ -29,21 +32,66 @@
     </td>
 </tr>
 {% else %}
-{# 编辑表单行 #}
-<tr id="clause-row-{{ clause.id }}">
+{# 编辑表单行（分类用弹窗） #}
+<tr id="clause-row-{{ clause.id }}" x-data="clauseClassEditor({{ clause.dim4_specialty|tojson }}, {{ clause.dim5_location|tojson }}, {{ clause.dim6_material|tojson }})">
     <td><input type="text" name="clause_no" value="{{ clause.clause_no }}" style="width:100%;font-size:0.8rem"></td>
     <td><input type="text" name="title" value="{{ clause.title or '' }}" style="width:100%;font-size:0.8rem"></td>
     <td><textarea name="content" style="width:100%;font-size:0.8rem" rows="2">{{ clause.content }}</textarea></td>
+    <td colspan="3">
+        <!-- 隐藏的 classification 输入 -->
+        <input type="hidden" name="dim4_specialty" :value="dim4">
+        <input type="hidden" name="dim5_location" :value="dim5">
+        <input type="hidden" name="dim6_material" :value="dim6">
+        <!-- 分类标签显示 + 弹窗按钮 -->
+        <div style="display:flex;gap:0.25rem;flex-wrap:wrap;align-items:center">
+            <template x-if="dim4">
+                <span class="dim-tag" x-text="'专:'+dim4" @click="showModal=true"></span>
+            </template>
+            <template x-if="dim5">
+                <span class="dim-tag" x-text="'部:'+dim5" @click="showModal=true"></span>
+            </template>
+            <template x-if="dim6">
+                <span class="dim-tag" x-text="'材:'+dim6" @click="showModal=true"></span>
+            </template>
+            <button type="button" class="outline" style="font-size:0.7rem;padding:0.15rem 0.4rem"
+                    @click="showModal=true">
+                📋 分类
+            </button>
+        </div>
+        <!-- 分类编辑弹窗 -->
+        <div class="dialog-overlay" x-show="showModal" x-cloak @click.self="showModal=false">
+            <div class="dialog-box" style="max-width:360px" @click.stop>
+                <h4 style="margin:0 0 0.5rem 0">✏️ 编辑条文分类</h4>
+                <label style="font-size:0.85rem">所属专业 (dim4)
+                    <input type="text" x-model="dim4" placeholder="如 结构、电气、给排水"
+                           style="font-size:0.85rem" @keydown.enter.prevent="$refs.focusDim5.focus()">
+                </label>
+                <label style="font-size:0.85rem">工程部位 (dim5)
+                    <input type="text" x-model="dim5" placeholder="如 基础、屋面、梁柱"
+                           style="font-size:0.85rem" x-ref="focusDim5" @keydown.enter.prevent="$refs.focusDim6.focus()">
+                </label>
+                <label style="font-size:0.85rem">材料/工艺 (dim6)
+                    <input type="text" x-model="dim6" placeholder="如 混凝土、钢筋、模板"
+                           style="font-size:0.85rem" x-ref="focusDim6">
+                </label>
+                <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
+                    <button style="font-size:0.85rem;padding:0.3rem 0.8rem" @click="showModal=false">✅ 确认</button>
+                    <button type="button" class="secondary" style="font-size:0.85rem;padding:0.3rem 0.8rem"
+                            @click="dim4=dim4Orig; dim5=dim5Orig; dim6=dim6Orig; showModal=false">取消</button>
+                </div>
+            </div>
+        </div>
+    </td>
     <td>
         <div style="display:flex;gap:0.25rem">
-            <button style="font-size:0.75rem;padding:0.15rem 0.4rem;background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:var(--pico-primary-inverse)"
+            <button style="font-size:0.7rem;padding:0.15rem 0.3rem;background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:var(--pico-primary-inverse)"
                     hx-put="/specs/{{ spec_id }}/clauses/{{ clause.id }}"
                     hx-include="closest tr"
                     hx-target="#clause-row-{{ clause.id }}"
                     hx-swap="outerHTML">
                 💾 保存
             </button>
-            <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+            <button class="outline" style="font-size:0.7rem;padding:0.15rem 0.3rem"
                     hx-get="/specs/{{ spec_id }}/clauses"
                     hx-target="#clause-detail-area"
                     hx-swap="innerHTML">
@@ -52,4 +100,17 @@
         </div>
     </td>
 </tr>
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('clauseClassEditor', (d4, d5, d6) => ({
+        dim4Orig: d4 || '',
+        dim5Orig: d5 || '',
+        dim6Orig: d6 || '',
+        dim4: d4 || '',
+        dim5: d5 || '',
+        dim6: d6 || '',
+        showModal: false,
+    }));
+});
+</script>
 {% endif %}

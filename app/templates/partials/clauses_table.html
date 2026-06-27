@@ -1,15 +1,19 @@
 <!-- 条文列表（某规范下） -->
-<div style="margin-top:1rem;padding:1rem;background:var(--pico-card-background-color);border:1px solid var(--pico-card-border-color);border-radius:6px">
+<div class="spec-detail-card">
     <h3 style="margin-top:0">{{ spec.code }} — {{ spec.title }}</h3>
     <p style="color:var(--pico-muted-color);font-size:0.85rem">共 {{ clauses|length }} 条条文</p>
 
     {% if clauses %}
-    <table class="striped" style="font-size:0.85rem">
+    <div class="clause-table-wrapper">
+    <table class="striped clause-table">
         <thead>
             <tr>
                 <th>条文号</th>
                 <th>标题</th>
                 <th>内容</th>
+                <th>专业(dim4)</th>
+                <th>部位(dim5)</th>
+                <th>材料(dim6)</th>
                 <th>操作</th>
             </tr>
         </thead>
@@ -18,21 +22,23 @@
         <tr id="clause-row-{{ c.id }}">
             <td><code>{{ c.clause_no }}</code></td>
             <td>{{ c.title or '-' }}</td>
-            <td style="max-width:250px">
-                <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                      title="{{ c.content }}">
-                    {{ (c.content or '')[:60] }}{% if (c.content or '')|length > 60 %}...{% endif %}
+            <td class="clause-preview">
+                <span title="{{ c.content }}">
+                    {{ (c.content or '')[:50] }}{% if (c.content or '')|length > 50 %}...{% endif %}
                 </span>
             </td>
+            <td>{% if c.dim4_specialty %}<span class="dim-tag">{{ c.dim4_specialty }}</span>{% else %}<span style="color:#999">-</span>{% endif %}</td>
+            <td>{% if c.dim5_location %}<span class="dim-tag">{{ c.dim5_location }}</span>{% else %}<span style="color:#999">-</span>{% endif %}</td>
+            <td>{% if c.dim6_material %}<span class="dim-tag">{{ c.dim6_material }}</span>{% else %}<span style="color:#999">-</span>{% endif %}</td>
             <td>
                 <div style="display:flex;gap:0.25rem">
-                    <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                    <button class="outline" style="font-size:0.7rem;padding:0.15rem 0.3rem"
                             hx-get="/specs/{{ spec.id }}/clauses/{{ c.id }}/edit"
                             hx-target="#clause-row-{{ c.id }}"
                             hx-swap="outerHTML">
                         编辑
                     </button>
-                    <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem;color:#c44"
+                    <button class="outline" style="font-size:0.7rem;padding:0.15rem 0.3rem;color:#c44"
                             hx-delete="/specs/{{ spec.id }}/clauses/{{ c.id }}"
                             hx-confirm="确定删除条文「{{ c.clause_no }}」？"
                             hx-target="#clause-row-{{ c.id }}"
@@ -45,6 +51,7 @@
         {% endfor %}
         </tbody>
     </table>
+    </div>
     {% else %}
     <p style="color:var(--pico-muted-color)">此规范暂无条文</p>
     {% endif %}
