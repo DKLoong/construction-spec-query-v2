@@ -43,14 +43,11 @@ document.addEventListener('alpine:init', () => {
             if (kw) {
                 params.append('keyword', kw);
             }
-            try {
-                const resp = await fetch(`/search?${params.toString()}`);
-                const html = await resp.text();
-                const target = document.querySelector('.center-panel');
-                if (target) target.innerHTML = html;
-            } catch (e) {
-                console.error('搜索失败:', e);
-            }
+            // 使用 htmx.ajax() 而非 fetch()，确保 HTMX 正确初始化新元素上的 hx-* 属性
+            htmx.ajax('GET', `/search?${params.toString()}`, {
+                target: '.center-panel',
+                swap: 'innerHTML'
+            });
         },
     }));
 });
