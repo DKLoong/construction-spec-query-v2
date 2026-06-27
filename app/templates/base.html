@@ -33,6 +33,27 @@
             }
         }
     </script>
+    <!-- 条文详情弹窗 -->
+    <div x-data="clauseModal"
+         x-show="open"
+         @keydown.escape.window="if(open) close()"
+         @click.self="close()"
+         class="clause-modal-overlay"
+         x-cloak>
+        <div class="clause-modal-box" @click.stop="">
+            <div class="clause-modal-header">
+                <span class="clause-modal-title">📋 条文详情</span>
+                <button @click="close()" class="clause-modal-close" aria-label="关闭">&times;</button>
+            </div>
+            <div class="clause-modal-body">
+                <!-- 加载中指示 -->
+                <div x-show="loading" class="clause-modal-loading">加载中...</div>
+                <!-- HTMX 加载条文内容到这里 -->
+                <div id="clause-modal-content"></div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/components/clause-modal.js"></script>
     <!-- component scripts -->
     <script src="/static/components/tree.js"></script>
     <script src="/static/components/qa.js"></script>
