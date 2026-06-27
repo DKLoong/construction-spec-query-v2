@@ -288,3 +288,53 @@ def test_update_clause_class(auth_client, monkeypatch, tmp_path):
     assert updated["dim4_specialty"] == "结构"
     assert updated["dim5_location"] == "基础"
     assert updated["dim6_material"] == "混凝土"
+
+
+def test_edit_clause_class_form(auth_client, monkeypatch, tmp_path):
+    """条文分类编辑表单返回 HTML"""
+    db_path = tmp_path / "test_edit_clause_class.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        spec_id = _setup_spec_data(conn)
+        clause = conn.execute(
+            "SELECT id FROM clauses WHERE spec_id = ? LIMIT 1", (spec_id,)
+        ).fetchone()
+
+    resp = auth_client.get(f"/specs/{spec_id}/clauses/{clause['id']}/edit-class")
+    assert resp.status_code == 200
+    assert "专业" in resp.text
+
+
+def test_update_clause_class_only(auth_client, monkeypatch, tmp_path):
+    """仅更新条文分类（不修改内容）"""
+    db_path = tmp_path / "test_update_clause_class_only.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        spec_id = _setup_spec_data(conn)
+        clause = conn.execute(
+            "SELECT * FROM clauses WHERE spec_id = ? LIMIT 1", (spec_id,)
+        ).fetchone()
+
+    resp = auth_client.put(
+        f"/specs/{spec_id}/clauses/{clause['id']}/class",
+        data={"dim4_specialty": "结构", "dim5_location": "基础", "dim6_material": "混凝土"},
+    )
+    assert resp.status_code == 200
+    assert "结构" in resp.text
+    assert "基础" in resp.text
+    assert "混凝土" in resp.text
+
+    with get_db() as conn:
+        updated = conn.execute(
+            "SELECT * FROM clauses WHERE id = ?", (clause["id"],)
+        ).fetchone()
+    assert updated["dim4_specialty"] == "结构"
+    assert updated["dim5_location"] == "基础"
+    assert updated["dim6_material"] == "混凝土"
+    # 确认内容未被修改
+    assert updated["clause_no"] == clause["clause_no"]
+    assert updated["title"] == clause["title"]

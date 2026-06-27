@@ -11,9 +11,7 @@
                 <th>条文号</th>
                 <th>标题</th>
                 <th>内容</th>
-                <th>专业(dim4)</th>
-                <th>部位(dim5)</th>
-                <th>材料(dim6)</th>
+                <th>分类</th>
                 <th>操作</th>
             </tr>
         </thead>
@@ -27,9 +25,15 @@
                     {{ (c.content or '')[:50] }}{% if (c.content or '')|length > 50 %}...{% endif %}
                 </span>
             </td>
-            <td>{% if c.dim4_specialty %}<span class="dim-tag">{{ c.dim4_specialty }}</span>{% else %}<span style="color:#999">-</span>{% endif %}</td>
-            <td>{% if c.dim5_location %}<span class="dim-tag">{{ c.dim5_location }}</span>{% else %}<span style="color:#999">-</span>{% endif %}</td>
-            <td>{% if c.dim6_material %}<span class="dim-tag">{{ c.dim6_material }}</span>{% else %}<span style="color:#999">-</span>{% endif %}</td>
+            <td>
+                {% if c.dim4_specialty or c.dim5_location or c.dim6_material %}
+                    {% if c.dim4_specialty %}<span class="dim-tag">{{ c.dim4_specialty }}</span>{% endif %}
+                    {% if c.dim5_location %}<span class="dim-tag">{{ c.dim5_location }}</span>{% endif %}
+                    {% if c.dim6_material %}<span class="dim-tag">{{ c.dim6_material }}</span>{% endif %}
+                {% else %}
+                    <span style="color:#999">-</span>
+                {% endif %}
+            </td>
             <td>
                 <div style="display:flex;gap:0.25rem">
                     <button class="outline" style="font-size:0.7rem;padding:0.15rem 0.3rem"
@@ -37,6 +41,12 @@
                             hx-target="#clause-row-{{ c.id }}"
                             hx-swap="outerHTML">
                         编辑
+                    </button>
+                    <button class="outline" style="font-size:0.7rem;padding:0.15rem 0.3rem"
+                            hx-get="/specs/{{ spec.id }}/clauses/{{ c.id }}/edit-class"
+                            hx-target="#clause-row-{{ c.id }}"
+                            hx-swap="outerHTML">
+                        📋 分类
                     </button>
                     <button class="outline" style="font-size:0.7rem;padding:0.15rem 0.3rem;color:#c44"
                             hx-delete="/specs/{{ spec.id }}/clauses/{{ c.id }}"

@@ -250,3 +250,56 @@ async def update_spec_class(
         "spec": updated,
         "saved": True,
     })
+
+
+@router.get("/specs/{spec_id}/clauses/{clause_id}/edit-class")
+async def edit_clause_class_form(request: Request, spec_id: int, clause_id: int):
+    """条文分类编辑表单"""
+    with get_db() as conn:
+        clause = conn.execute(
+            "SELECT * FROM clauses WHERE id = ? AND spec_id = ?",
+            (clause_id, spec_id),
+        ).fetchone()
+        if not clause:
+            return HTMLResponse("<tr><td colspan='5'>条文不存在</td></tr>", status_code=404)
+
+    from app.main import templates
+    return templates.TemplateResponse(request, "partials/clause_class_edit.html", {
+        "clause": dict(clause),
+        "spec_id": spec_id,
+    })
+
+
+@router.put("/specs/{spec_id}/clauses/{clause_id}/class")
+async def update_clause_class(
+    request: Request,
+    spec_id: int,
+    clause_id: int,
+    dim4_specialty: str = Form(""),
+    dim5_location: str = Form(""),
+    dim6_material: str = Form(""),
+):
+    """仅更新条文分类 (dim4/dim5/dim6)"""
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT * FROM clauses WHERE id = ? AND spec_id = ?",
+            (clause_id, spec_id),
+        ).fetchone()
+        if not existing:
+            return JSONResponse({"detail": "条文不存在"}, status_code=404)
+
+        conn.execute(
+            """UPDATE clauses SET dim4_specialty = ?, dim5_location = ?, dim6_material = ?
+               WHERE id = ?""",
+            (dim4_specialty, dim5_location, dim6_material, clause_id),
+        )
+
+    from app.main import templates
+    updated = dict(existing)
+    updated.update({"dim4_specialty": dim4_specialty, "dim5_location": dim5_location,
+                    "dim6_material": dim6_material})
+    return templates.TemplateResponse(request, "partials/clause_class_edit.html", {
+        "clause": updated,
+        "spec_id": spec_id,
+        "saved": True,
+    })
