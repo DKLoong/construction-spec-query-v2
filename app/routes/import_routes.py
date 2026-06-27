@@ -172,6 +172,8 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         except Exception:
             pass
 
+        # 第一步：先插入所有条文到 SQLite，收集需要 embedding 的记录
+        embedding_records = []
         for cd in clauses_data:
             scores = classify_clause(cd["content"], cd.get("parent_path", []), rules)
             conn.execute(
@@ -191,12 +193,63 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                     classified_count += 1
 
             if vs is not None:
-                try:
-                    dim_scores_str = ",".join(f"{k}={v:.2f}" for k, v in scores.items())
-                    embed_text = f"{code or ''} {title or ''} [{cd['clause_no']}] {cd['title'] or ''} {cd['content']}"
-                    vs.index_clause(clause_id, spec_id, embed_text, dim_scores_str)
-                except Exception:
-                    vs = None
+                dim_scores_str = ",".join(f"{k}={v:.2f}" for k, v in scores.items())
+                embed_text = f"{code or ''} {title or ''} [{cd['clause_no']}] {cd['title'] or ''} {cd['content']}"
+                embedding_records.append({
+                    "clause_id": clause_id,
+                    "spec_id": spec_id,
+                    "text": embed_text,
+                    "dim_scores": dim_scores_str,
+                })
+
+        # 第二步：批量计算 embedding（比逐条快一个数量级）
+        if vs is not None and embedding_records:
+            try:
+                from app.ai.embedding import embed_texts
+                import numpy as np
+
+                texts = [r["text"] for r in embedding_records]
+                embeddings = embed_texts(texts)
+
+                # 批量添加到 LanceDB
+                if vs._table_exists():
+                    # 表已存在，逐条添加
+                    for i, r in enumerate(embedding_records):
+                        emb = np.array(embeddings[i], dtype=np.float32)
+                        vs._get_table().add([{
+                            "clause_id": r["clause_id"],
+                            "spec_id": r["spec_id"],
+                            "text": r["text"],
+                            "embedding": emb,
+                            "dim_scores": r["dim_scores"],
+                        }])
+                else:
+                    # 表不存在，创建 schema 并批量添加
+                    first_emb = np.array(embeddings[0], dtype=np.float32)
+                    import pyarrow as pa
+                    schema = pa.schema([
+                        pa.field("clause_id", pa.int64()),
+                        pa.field("spec_id", pa.int64()),
+                        pa.field("text", pa.string()),
+                        pa.field("embedding", pa.list_(pa.float32(), len(first_emb))),
+                        pa.field("dim_scores", pa.string()),
+                    ])
+                    tbl = vs.db.create_table("clause_embeddings", schema=schema)
+                    records = []
+                    for i, r in enumerate(embedding_records):
+                        records.append({
+                            "clause_id": r["clause_id"],
+                            "spec_id": r["spec_id"],
+                            "text": r["text"],
+                            "embedding": np.array(embeddings[i], dtype=np.float32),
+                            "dim_scores": r["dim_scores"],
+                        })
+                    tbl.add(records)
+            except Exception as e:
+                # 批量失败静默降级，不影响导入完成
+                progress_store[task_id].update(
+                    progress=85, message=f"向量索引部分失败: {str(e)}"
+                )
 
         conn.execute("UPDATE specifications SET clause_count = ? WHERE id = ?",
                     (len(clauses_data), spec_id))
