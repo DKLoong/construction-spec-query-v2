@@ -1,4 +1,9 @@
-<div id="import-status">
+<div id="import-status"
+     {% if progress.status not in ("done", "review_needed", "error", "unknown") %}
+     hx-get="/import/progress/{{ task_id }}"
+     hx-trigger="every 2s"
+     hx-swap="outerHTML"
+     {% endif %}>
     <progress value="{{ progress.progress }}" max="100"></progress>
     <p>{{ progress.message }}</p>
     {% if progress.status == "done" %}
@@ -12,7 +17,6 @@
     </a>
     {% elif progress.status == "error" %}
     <p style="color: red;">导入失败: {{ progress.message }}</p>
-    {% else %}
-    <div hx-get="/import/progress/{{ task_id }}" hx-trigger="every 2s" hx-swap="outerHTML"></div>
     {% endif %}
+    {# 处理中状态：外层 div 自带的 hx-get 负责轮询，无需内层 div #}
 </div>
