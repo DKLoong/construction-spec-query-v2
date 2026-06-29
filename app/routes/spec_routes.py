@@ -19,7 +19,6 @@ async def specs_page(request: Request):
     return templates.TemplateResponse(request, "base.html", {
         "left_content": "partials/tree_panel.html",
         "center_content": "partials/specs_list.html",
-        "right_content": "partials/qa_panel.html",
     })
 
 

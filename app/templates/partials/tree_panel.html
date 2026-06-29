@@ -1,4 +1,4 @@
-<!-- 左栏：分类树 + 搜索 + 导入 -->
+﻿<!-- 左栏：分类树 + 搜索 + 导入 -->
 <div x-data="treeView()" class="left-panel-content">
     <!-- 搜索框 -->
     <div class="search-box" x-data="searchBox()">
@@ -27,17 +27,20 @@
         </div>
     </div>
 
-    <!-- 管理链接 -->
-    <div style="margin-bottom: 0.5rem; display: flex; gap: 0.3rem;">
-        <a href="/specs" style="flex:1;text-decoration:none">
+    <!-- 功能按钮 — 两行两列 -->
+    <div style="margin-bottom: 0.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem;">
+        <a href="/specs" style="text-decoration:none">
             <button class="outline" style="width:100%;font-size:0.8rem">📚 规范</button>
         </a>
-        <a href="/rules" style="flex:1;text-decoration:none">
+        <a href="/rules" style="text-decoration:none">
             <button class="outline" style="width:100%;font-size:0.8rem">📋 规则</button>
         </a>
-        <a href="/review" style="flex:1;text-decoration:none">
+        <a href="/review" style="text-decoration:none">
             <button class="outline" style="width:100%;font-size:0.8rem">📝 审核</button>
         </a>
+        <button class="outline" style="width:100%;font-size:0.8rem" @click="openQA()">
+            🤖 AI问答
+        </button>
     </div>
 
     <!-- 分类树 -->

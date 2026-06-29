@@ -18,7 +18,6 @@ async def rules_page(request: Request):
     return templates.TemplateResponse(request, "base.html", {
         "left_content": "partials/tree_panel.html",
         "center_content": "partials/rules_list.html",
-        "right_content": "partials/qa_panel.html",
     })
 
 
@@ -173,7 +172,6 @@ async def review_page(request: Request):
     return templates.TemplateResponse(request, "base.html", {
         "left_content": "partials/tree_panel.html",
         "center_content": "partials/review_list.html",
-        "right_content": "partials/qa_panel.html",
     })
 
 

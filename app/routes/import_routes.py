@@ -314,14 +314,12 @@ async def review_page(request: Request, task_id: str):
         return templates.TemplateResponse(request, "base.html", {
             "left_content": "partials/tree_panel.html",
             "center_content": "partials/welcome.html",
-            "right_content": "partials/qa_panel.html",
         })
 
     from app.main import templates
     return templates.TemplateResponse(request, "base.html", {
         "left_content": "partials/tree_panel.html",
         "center_content": "partials/ocr_review.html",
-        "right_content": "partials/qa_panel.html",
         "task_id": task_id,
     })
 

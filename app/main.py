@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+﻿from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -7,17 +7,15 @@ from app.auth import decode_access_token
 from app.database import init_db
 from jose import JWTError
 
-app = FastAPI(title="施工规范查询系统 V2")
+app = FastAPI(title="鏂藉伐瑙勮寖鏌ヨ绯荤粺 V2")
 
-# 应用启动时初始化数据库
-@app.on_event("startup")
+# 搴旂敤鍚姩鏃跺垵濮嬪寲鏁版嵁搴?@app.on_event("startup")
 def startup():
     init_db()
 
-# 静态文件
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+# 闈欐€佹枃浠?app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
-# Jinja2 模板
+# Jinja2 妯℃澘
 from fastapi.templating import Jinja2Templates
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
@@ -67,7 +65,7 @@ async def home(request: Request):
     return templates.TemplateResponse(request, "base.html", {
         "left_content": "partials/tree_panel.html",
         "center_content": "partials/welcome.html",
-        "right_content": "partials/qa_panel.html",
+        
     })
 
 

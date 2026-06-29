@@ -1,548 +1,63 @@
-/* ═══════════════════════════════════════════════════════════════
-   施工规范查询系统 V2 — 莫兰蒂色系布局 & 组件样式
-   ═══════════════════════════════════════════════════════════════ */
-
-/* ── 三栏布局 ── */
+﻿/* ── 两栏布局 (3:7) ── */
 .app-layout {
     display: grid;
-    grid-template-columns: 25% 45% 30%;
+    grid-template-columns: 30% 70%;
     height: 100vh;
     overflow: hidden;
 }
-
 .left-panel {
     border-right: 1px solid var(--pico-muted-border-color);
     overflow-y: auto;
     padding: 1rem;
     display: flex;
     flex-direction: column;
-    background: #faf7f3;   /* 比页面背景略亮 */
+    background: #faf7f3;
 }
-
-.center-panel {
+.center-panel-v2 {
     overflow-y: auto;
     padding: 1.5rem;
 }
-
-.right-panel {
-    border-left: 1px solid var(--pico-muted-border-color);
-    overflow-y: auto;
-    padding: 1rem;
-    display: flex;
-    flex-direction: column;
-    background: #faf7f3;
-}
-
-/* ── 面板折叠 ── */
-.left-panel.collapsed { display: none; }
-.right-panel.collapsed { display: none; }
-
-/* ── 折叠按钮 ── */
-.panel-toggle {
-    position: absolute;
-    top: 0.5rem;
-    z-index: 10;
-    background: var(--pico-primary-background);
-    color: var(--pico-primary-inverse);
-    border: none;
-    border-radius: 4px;
-    padding: 0.25rem 0.5rem;
-    cursor: pointer;
-    font-size: 0.8rem;
-}
-
-/* ── 搜索框 ── */
-.search-box { margin-bottom: 0.5rem; }
-.search-box input { width: 100%; }
-
-/* ═══════════════════════════════════════════════════════════════
-   分类树
-   ═══════════════════════════════════════════════════════════════ */
-.tree-container {
-    flex: 1;
-    overflow-y: auto;
-    font-size: 0.9rem;
-}
-
-.tree-node { margin-left: 1rem; }
-.tree-toggle { cursor: pointer; user-select: none; }
-.tree-label {
-    cursor: pointer;
-    padding: 3px 6px;
-    border-radius: 4px;
-    transition: background 0.15s;
-    color: var(--pico-color);
-}
-.tree-label:hover {
-    background: rgba(138, 158, 139, 0.12);  /* sage green tint */
-}
-.tree-label.active {
-    background: var(--pico-primary-background);
-    color: var(--pico-primary-inverse);
-}
-.tree-count {
-    color: var(--pico-muted-color);
-    font-size: 0.75rem;
-    margin-left: 0.25rem;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   搜索结果
-   ═══════════════════════════════════════════════════════════════ */
-.result-item {
-    padding: 0.85rem;
-    margin-bottom: 0.5rem;
-    border: 1px solid var(--pico-muted-border-color);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
-    background: var(--pico-card-background-color);
-}
-.result-item:hover {
-    background: rgba(138, 158, 139, 0.08);
-    border-color: var(--pico-primary-border);
-}
-.result-item .clause-no {
-    font-weight: 600;
-    color: var(--pico-primary);
-    font-size: 0.9rem;
-}
-.result-item .clause-title {
-    font-size: 0.85rem;
-    color: var(--pico-muted-color);
-    margin-top: 0.15rem;
-}
-.result-item .clause-content {
-    font-size: 0.85rem;
-    margin-top: 0.35rem;
-    line-height: 1.55;
-    color: var(--pico-color);
-}
-.result-item .dim-tags { margin-top: 0.4rem; }
-.result-item .dim-tag {
-    display: inline-block;
-    font-size: 0.7rem;
-    padding: 2px 8px;
-    margin-right: 5px;
-    margin-bottom: 3px;
-    border-radius: 12px;
-    background: rgba(138, 158, 139, 0.18);
-    color: #5d7a60;
-}
-
-/* ── 分页 ── */
-.pagination {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 0.75rem;
-    margin-top: 1.25rem;
-}
-.pagination a {
-    color: var(--pico-primary);
-    text-decoration: none;
-    font-weight: 500;
-}
-.pagination a:hover { text-decoration: underline; }
-.pagination span { color: var(--pico-muted-color); font-size: 0.9rem; }
-
-/* ── 欢迎/空结果 ── */
-.welcome {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: var(--pico-muted-color);
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   对话框（导入、新建规则等）
-   ═══════════════════════════════════════════════════════════════ */
-.dialog-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(74, 68, 84, 0.45);  /* 莫兰蒂深灰半透明 */
+/* ── AI 问答弹窗 ── */
+.qa-modal-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 9999;
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
-    backdrop-filter: blur(2px);
 }
-.dialog-box {
-    background: #faf7f3;
-    padding: 2rem;
-    border-radius: 10px;
-    max-width: 500px;
-    width: 90%;
-    box-shadow: 0 6px 32px rgba(74, 68, 84, 0.18);
-    border: 1px solid var(--pico-card-border-color);
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   AI 问答面板 — 聊天气泡（高对比度）
-   ═══════════════════════════════════════════════════════════════ */
-.qa-panel-content {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-}
-
-.qa-messages {
-    flex: 1;
-    overflow-y: auto;
-    margin-bottom: 0.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.65rem;
-}
-
-.qa-msg {
-    padding: 0.7rem 0.85rem;
-    border-radius: 10px;
-    line-height: 1.6;
-    font-size: 0.88rem;
-    max-width: 92%;
-    word-break: break-word;
-    position: relative;
-}
-
-/* 用户消息 — 鼠尾草绿底白字 */
-.qa-msg.user {
-    align-self: flex-end;
-    background: #7d917e;             /* 莫兰蒂绿 (sage green) */
-    color: #faf8f5;                 /* 暖白 — 高对比度 */
-    border-bottom-right-radius: 3px;
-}
-.qa-msg.user strong {
-    color: #faf8f5;
-}
-
-/* AI 消息 — 暖米灰底深字 */
-.qa-msg.assistant {
-    align-self: flex-start;
-    background: #ede5d7;            /* 暖米色 — 高于页面背景 */
-    color: #3d3740;                 /* 深灰紫 — 高对比度文字 */
-    border-bottom-left-radius: 3px;
-    border: 1px solid #ddd3c2;      /* 微妙的边框增加层次 */
-}
-.qa-msg.assistant strong {
-    color: #3d3740;
-}
-
-/* AI 消息中的引用来源 */
-.qa-msg.assistant small {
-    display: block;
-    margin-top: 0.5rem;
-    color: #8c8694;
-    font-size: 0.78rem;
-    border-top: 1px solid #ddd3c2;
-    padding-top: 0.4rem;
-}
-
-/* 消息内的链接 */
-.qa-msg a {
-    color: var(--pico-primary);
-    text-decoration: underline;
-}
-
-/* ── QA 输入区 ── */
-.qa-input {
-    display: flex;
-    gap: 0.5rem;
-    padding-top: 0.5rem;
-    border-top: 1px solid var(--pico-muted-border-color);
-}
-.qa-input textarea {
-    flex: 1;
-    resize: none;
-    font-size: 0.88rem;
+.qa-modal-box {
+    background: var(--pico-card-background-color, #fff);
     border-radius: 8px;
-    padding: 0.55rem 0.7rem;
+    width: min(800px, 90vw);
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
 }
-
-/* ── QA 后端选择器 ── */
-.qa-input-header {
+.qa-modal-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 0.5rem;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   条文详情
-   ═══════════════════════════════════════════════════════════════ */
-.clause-detail {
-    padding: 0.5rem;
-}
-.clause-detail h3 { color: var(--pico-primary); }
-.clause-detail .dim-tag {
-    display: inline-block;
-    font-size: 0.72rem;
-    padding: 2px 8px;
-    margin-right: 5px;
-    border-radius: 12px;
-    background: rgba(138, 158, 139, 0.18);
-    color: #5d7a60;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   进度条 / 状态指示
-   ═══════════════════════════════════════════════════════════════ */
-[x-cloak] { display: none !important; }
-
-/* 导入进度 */
-.import-progress {
-    padding: 1rem;
-    text-align: center;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   规范管理 — 条文表格
-   ═══════════════════════════════════════════════════════════════ */
-.spec-detail-card {
-    margin-top: 1rem;
-    padding: 1rem;
-    background: var(--pico-card-background-color);
-    border: 1px solid var(--pico-card-border-color);
-    border-radius: 6px;
-}
-
-.clause-table-wrapper {
-    max-height: 55vh;
-    overflow: auto;
-    border: 1px solid var(--pico-muted-border-color);
-    border-radius: 4px;
-}
-
-.clause-table {
-    font-size: 0.8rem;
-    width: 100%;
-    border-collapse: separate;
-    border-spacing: 0;
-}
-
-.clause-table thead {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-}
-
-.clause-table thead th {
-    background: var(--pico-card-background-color);
-    border-bottom: 2px solid var(--pico-muted-border-color);
-    white-space: nowrap;
-}
-
-.clause-table tbody td.clause-preview {
-    max-width: 200px;
-}
-
-.clause-table tbody td.clause-preview span {
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   规则管理表格微调
-   ═══════════════════════════════════════════════════════════════ */
-table.striped tbody tr:nth-child(odd) {
-    background: rgba(138, 158, 139, 0.05);
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   OCR 审查页
-   ═══════════════════════════════════════════════════════════════ */
-.ocr-review {
-    padding: 1rem;
-    height: calc(100vh - 3rem);
-    display: flex;
-    flex-direction: column;
-}
-.ocr-review h2 { margin-top: 0; }
-
-.review-toolbar {
-    padding: 0.6rem 0.8rem;
-    background: var(--pico-card-background-color);
-    border: 1px solid var(--pico-muted-border-color);
-    border-radius: 6px;
-    margin-bottom: 0.75rem;
-    position: sticky;
-    top: 0;
-    z-index: 5;
-}
-
-.review-panels {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1rem;
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-}
-
-.review-editor {
-    width: 100%;
-    height: 100%;
-    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 0.85rem;
-    line-height: 1.7;
-    resize: none;
-    border: 1px solid var(--pico-muted-border-color);
-    border-radius: 6px;
-    padding: 0.75rem;
-    background: var(--pico-card-background-color);
-    color: var(--pico-color);
-    tab-size: 4;
-}
-
-.review-preview {
-    width: 100%;
-    height: 100%;
-    overflow-y: auto;
-    border: 1px solid var(--pico-muted-border-color);
-    border-radius: 6px;
     padding: 0.75rem 1rem;
-    background: var(--pico-card-background-color);
-    font-size: 0.88rem;
-    line-height: 1.7;
-}
-
-.review-preview h1, .review-preview h2, .review-preview h3 {
-    color: var(--pico-primary);
-}
-
-/* 搜索高亮 */
-.search-highlight {
-    background: #d4b896;
-    color: #3d3740;
-    padding: 0 2px;
-    border-radius: 2px;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   条文详情弹窗
-   ═══════════════════════════════════════════════════════════════ */
-.clause-modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(74, 68, 84, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 2000;
-    backdrop-filter: blur(3px);
-    animation: modal-fade-in 0.2s ease;
-}
-
-@keyframes modal-fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
-}
-
-.clause-modal-box {
-    background: #faf7f3;
-    border-radius: 12px;
-    max-width: 720px;
-    width: 90%;
-    max-height: 80vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 8px 40px rgba(74, 68, 84, 0.22);
-    border: 1px solid var(--pico-card-border-color);
-    animation: modal-slide-up 0.25s ease;
-}
-
-@keyframes modal-slide-up {
-    from { transform: translateY(20px); opacity: 0; }
-    to { transform: translateY(0); opacity: 1; }
-}
-
-.clause-modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 1rem 1.5rem;
     border-bottom: 1px solid var(--pico-muted-border-color);
-}
-
-.clause-modal-title {
     font-weight: 600;
     font-size: 1rem;
-    color: var(--pico-primary);
 }
-
-.clause-modal-close {
-    background: none;
-    border: none;
-    font-size: 1.5rem;
-    color: var(--pico-muted-color);
-    cursor: pointer;
-    padding: 0;
-    line-height: 1;
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 6px;
-    transition: background 0.15s, color 0.15s;
+.qa-modal-close {
+    background: none; border: none; font-size: 1.5rem; cursor: pointer;
+    color: var(--pico-muted-color); line-height: 1;
 }
-.clause-modal-close:hover {
-    background: rgba(138, 158, 139, 0.12);
-    color: var(--pico-color);
-}
-
-.clause-modal-body {
+.qa-modal-close:hover { color: var(--pico-color); }
+.qa-modal-body {
+    padding: 1rem;
     overflow-y: auto;
-    padding: 1.5rem;
     flex: 1;
 }
-
-.clause-modal-loading {
-    text-align: center;
-    color: var(--pico-muted-color);
-    padding: 2rem;
-    font-size: 0.9rem;
-}
-
-/* 弹窗内的条文样式 */
-.clause-modal-body .clause-body {
-    white-space: pre-wrap;
-    line-height: 1.9;
-    font-size: 0.92rem;
-    color: var(--pico-color);
-}
-
-.clause-modal-body h4 {
-    margin: 0 0 0.5rem 0;
-    color: var(--pico-primary);
-}
-
-.clause-modal-body .dim-tag {
-    display: inline-block;
-    font-size: 0.72rem;
-    padding: 2px 10px;
-    margin-right: 5px;
-    margin-bottom: 3px;
-    border-radius: 12px;
-    background: rgba(138, 158, 139, 0.18);
-    color: #5d7a60;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   响应式 — 移动端堆叠
-   ═══════════════════════════════════════════════════════════════ */
-@media (max-width: 900px) {
-    .app-layout {
-        grid-template-columns: 1fr;
-        height: auto;
-    }
-    .left-panel, .right-panel {
-        border: none;
-        border-bottom: 1px solid var(--pico-muted-border-color);
-        max-height: 40vh;
-    }
-}
+/* ── QA 消息样式 ── */
+.qa-msg { margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.9rem; line-height: 1.6; }
+.qa-user { background: var(--pico-primary-background); color: var(--pico-primary-inverse); margin-left: 2rem; }
+.qa-bot { background: var(--pico-card-sectioning-background-color, #f3f4f5); margin-right: 2rem; }
+.qa-msg p { margin: 0.3rem 0; }
+.qa-msg pre { background: #1e1e1e; color: #d4d4d4; padding: 0.5rem; border-radius: 4px; overflow-x: auto; font-size: 0.8rem; }
+.qa-msg code { font-size: 0.85rem; }
