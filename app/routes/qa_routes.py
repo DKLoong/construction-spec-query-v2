@@ -7,8 +7,13 @@ from app.models import QaRequest, QAResponse, SearchQuery
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# 上下文构建参数
+_CONTEXT_MAX_RESULTS = 5       # 送入 AI 的最多条文数
+_CONTEXT_MAX_CHARS = 200        # 每条条文最多截取字符数
+_CANDIDATE_POOL_SIZE = 30       # 初筛候选池大小（供重排序）
 
-def _build_context(results: list[dict], max_chars: int = 500) -> str:
+
+def _build_context(results: list[dict], max_chars: int = _CONTEXT_MAX_CHARS) -> str:
     """将搜索结果格式化为 AI 上下文字符串"""
     if not results:
         return ""
@@ -33,9 +38,39 @@ def _extract_sources(results: list[dict]) -> list[dict]:
     return sources
 
 
+def _rerank_by_vector(question: str, candidates: list[dict],
+                      top_k: int = _CONTEXT_MAX_RESULTS) -> list[dict]:
+    """向量重排序：用 BGE 模型编码问题+条文，余弦相似度排序取 Top-K"""
+    if len(candidates) <= top_k:
+        return candidates
+
+    try:
+        from app.ai.embedding import embed_texts
+        import numpy as np
+
+        # 编码问题
+        q_vec = np.array(embed_texts([question])[0], dtype=np.float32)
+
+        # 批量编码所有候选条文
+        texts = [(c.get("content") or "")[:300] for c in candidates]
+        emb = np.array(embed_texts(texts), dtype=np.float32)
+
+        # 余弦相似度（嵌入已归一化，点积即余弦相似度）
+        scores = np.dot(emb, q_vec)
+
+        # 按相似度降序排列
+        ranked = sorted(
+            zip(candidates, scores), key=lambda x: x[1], reverse=True
+        )
+        return [c for c, _ in ranked[:top_k]]
+    except Exception as e:
+        logger.warning("向量重排序失败，降级为原始顺序: %s", e)
+        return candidates[:top_k]
+
+
 @router.post("/qa/ask")
 async def qa_ask(request: Request, body: QaRequest):
-    """AI 问答：检索相关条文 → CLI 推理 → 返回答案"""
+    """AI 问答：检索 → 向量重排序 → 精简上下文 → CLI 推理 → 返回答案"""
     from app.search.hybrid_search import hybrid_search
     from app.ai.cli_client import get_backend
     from app.config import WORKSPACE_DIR
@@ -44,18 +79,21 @@ async def qa_ask(request: Request, body: QaRequest):
     if not question:
         return JSONResponse({"detail": "问题不能为空"}, status_code=400)
 
-    # 1. 检索相关条文
-    sq = SearchQuery(keyword=question, per_page=10)
+    # 1. 宽泛检索（候选池 > 最终送入数）
+    sq = SearchQuery(keyword=question, per_page=_CANDIDATE_POOL_SIZE)
     try:
-        results, _ = hybrid_search(sq)
+        candidates, _ = hybrid_search(sq)
     except Exception as e:
         logger.error("QA hybrid_search failed: %s", e)
-        results, _ = [], 0
+        candidates = []
 
-    # 2. 构建上下文
+    # 2. 向量重排序 → 取最相关的 Top-K
+    results = _rerank_by_vector(question, candidates)
+
+    # 3. 构建精简上下文
     context_str = _build_context(results)
 
-    # 3. 选择后端
+    # 4. 选择后端
     backend = get_backend(body.backend)
     cli_used = backend.command
 
@@ -65,14 +103,14 @@ async def qa_ask(request: Request, body: QaRequest):
             status_code=503,
         )
 
-    # 4. 调用 CLI
+    # 5. 调用 CLI
     resp = await backend.ask(
         prompt=question,
         context=context_str,
         work_dir=WORKSPACE_DIR,
     )
 
-    # 5. 处理响应
+    # 6. 处理响应
     if resp.success and resp.content.strip():
         answer = resp.content
     elif resp.success and not resp.content.strip():

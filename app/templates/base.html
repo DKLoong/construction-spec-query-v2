@@ -12,7 +12,7 @@
     <script src="/static/marked.min.js"></script>
 </head>
 <body>
-    <div x-data="appLayout()" class="app-layout">
+    <div x-data="appLayout()" class="app-layout" @open-qa-modal="openQA()">
         <aside class="left-panel">
             {% if left_content %}{% include left_content %}{% endif %}
         </aside>
@@ -27,22 +27,25 @@
                 qaCollapsed: false,
                 toggleSidebar() { this.sidebarCollapsed = !this.sidebarCollapsed; },
                 openQA() {
-                    const modal = document.getElementById(''qa-modal-overlay'');
-                    if (modal) modal.style.display = ''flex'';
+                    const modal = document.getElementById('qa-modal-overlay');
+                    if (modal) modal.style.display = 'flex';
                 },
                 closeQA() {
-                    const modal = document.getElementById(''qa-modal-overlay'');
-                    if (modal) modal.style.display = ''none'';
+                    const modal = document.getElementById('qa-modal-overlay');
+                    if (modal) modal.style.display = 'none';
                 },
             }
         }
     </script>
     <!-- AI 问答弹窗（非常驻） -->
-    <div id="qa-modal-overlay" class="qa-modal-overlay" style="display:none" @click.self="closeQA()">
+    <div id="qa-modal-overlay" class="qa-modal-overlay" style="display:none"
+         onclick="if(event.target===this)this.style.display='none'">
         <div class="qa-modal-box">
             <div class="qa-modal-header">
                 <span>🤖 AI 智能问答</span>
-                <button class="qa-modal-close" @click="closeQA()" aria-label="关闭">&times;</button>
+                <button class="qa-modal-close"
+                        onclick="document.getElementById('qa-modal-overlay').style.display='none'"
+                        aria-label="关闭">&times;</button>
             </div>
             <div class="qa-modal-body">
                 {% include "partials/qa_panel.html" %}

@@ -2,11 +2,11 @@
 <div x-data="qaView()" class="qa-panel-content">
     <div class="qa-messages" x-ref="msgBox" style="min-height: 50vh; max-height: 55vh; overflow-y: auto; padding: 0.5rem; border: 1px solid var(--pico-muted-border-color); border-radius: 6px; margin-bottom: 0.5rem; background: var(--pico-card-background-color)">
         <template x-for="(msg, i) in messages" :key="i">
-            <div class="qa-msg" :class="msg.role === ''user'' ? ''qa-user'' : ''qa-bot''">
-                <template x-if="msg.role === ''bot''">
+            <div class="qa-msg" :class="msg.role === 'user' ? 'qa-user' : 'qa-bot'">
+                <template x-if="msg.role === 'bot'">
                     <div x-html="renderMarkdown(msg.content)"></div>
                 </template>
-                <template x-if="msg.role === ''user''">
+                <template x-if="msg.role === 'user'">
                     <div x-text="msg.content"></div>
                 </template>
             </div>

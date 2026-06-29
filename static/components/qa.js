@@ -1,28 +1,28 @@
-﻿// AI 问答组件
-document.addEventListener(''alpine:init'', () => {
-    Alpine.data(''qaView'', () => ({
+// AI 问答组件
+document.addEventListener('alpine:init', () => {
+    Alpine.data('qaView', () => ({
         messages: [],
-        input: '''',
+        input: '',
         loading: false,
 
         async send() {
             const q = this.input.trim();
             if (!q || this.loading) return;
-            this.messages.push({ role: ''user'', content: q });
-            this.input = '''';
+            this.messages.push({ role: 'user', content: q });
+            this.input = '';
             this.loading = true;
             this.scrollToBottom();
 
             try {
-                const resp = await fetch(''/qa/ask'', {
-                    method: ''POST'',
-                    headers: { ''Content-Type'': ''application/json'' },
+                const resp = await fetch('/qa/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ question: q }),
                 });
                 const data = await resp.json();
-                this.messages.push({ role: ''bot'', content: data.answer || ''(AI 未返回回答)'' });
+                this.messages.push({ role: 'bot', content: data.answer || '(AI 未返回回答)' });
             } catch (e) {
-                this.messages.push({ role: ''bot'', content: ''请求失败，请稍后重试'' });
+                this.messages.push({ role: 'bot', content: '请求失败，请稍后重试' });
             } finally {
                 this.loading = false;
                 this.scrollToBottom();
@@ -31,7 +31,7 @@ document.addEventListener(''alpine:init'', () => {
 
         clearChat() {
             this.messages = [];
-            this.input = '''';
+            this.input = '';
         },
 
         scrollToBottom() {
@@ -42,10 +42,10 @@ document.addEventListener(''alpine:init'', () => {
         },
 
         renderMarkdown(text) {
-            if (typeof marked !== ''undefined'') {
-                return marked.parse(text || '''');
+            if (typeof marked !== 'undefined') {
+                return marked.parse(text || '');
             }
-            return ''<pre>'' + (text || '''') + ''</pre>'';
+            return '<pre>' + (text || '') + '</pre>';
         },
     }));
 });

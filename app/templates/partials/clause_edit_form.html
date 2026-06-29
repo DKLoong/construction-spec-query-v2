@@ -20,20 +20,20 @@
         {% endif %}
     </td>
     <td>
-        <div style="display:flex;gap:0.25rem">
-            <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+        <div style="display:flex;flex-direction:column;gap:0.2rem">
+            <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;width:100%"
                     hx-get="/specs/{{ spec_id }}/clauses/{{ clause.id }}/edit"
                     hx-target="#clause-row-{{ clause.id }}"
                     hx-swap="outerHTML">
                 编辑
             </button>
-            <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+            <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;width:100%"
                     hx-get="/specs/{{ spec_id }}/clauses/{{ clause.id }}/edit-class"
                     hx-target="#clause-row-{{ clause.id }}"
                     hx-swap="outerHTML">
-                📋 分类
+                分类
             </button>
-            <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem;color:#c44"
+            <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;color:#c44;width:100%"
                     hx-delete="/specs/{{ spec_id }}/clauses/{{ clause.id }}"
                     hx-confirm="确定删除条文「{{ clause.clause_no }}」？"
                     hx-target="#clause-row-{{ clause.id }}"

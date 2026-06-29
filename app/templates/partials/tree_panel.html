@@ -38,7 +38,7 @@
         <a href="/review" style="text-decoration:none">
             <button class="outline" style="width:100%;font-size:0.8rem">📝 审核</button>
         </a>
-        <button class="outline" style="width:100%;font-size:0.8rem" @click="openQA()">
+        <button class="outline" style="width:100%;font-size:0.8rem" @click="$dispatch('open-qa-modal')">
             🤖 AI问答
         </button>
     </div>
