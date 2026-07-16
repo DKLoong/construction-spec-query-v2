@@ -13,9 +13,10 @@ app = FastAPI(title="鏂藉伐瑙勮寖鏌ヨ绯荤粺 V2")
 def startup():
     init_db()
 
-# 闈欐€佹枃浠?app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+# 静态文件
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
-# Jinja2 妯℃澘
+# Jinja2 模板
 from fastapi.templating import Jinja2Templates
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
