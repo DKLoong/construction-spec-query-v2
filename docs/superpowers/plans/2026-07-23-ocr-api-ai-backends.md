@@ -164,8 +164,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# 单页处理上限
-_MAX_PAGES = 100
+# 每批最大页数
+_BATCH_PAGES = 99
 
 
 def get_setting(key: str) -> str:
@@ -225,9 +225,9 @@ class PaddleStudioAPI:
         return asyncio.run(self._ocr_image_async(img_path))
 
     def ocr_pdf_to_md(self, pdf_path: str, output_dir: str | None = None) -> str:
-        """PDF 逐页渲染 PNG → 每页调 OCR API → 拼 Markdown
+        """PDF 逐页渲染 PNG → 分批调 OCR API → 拼 Markdown
 
-        最多处理前 _MAX_PAGES 页，超出部分忽略。
+        每批 _BATCH_PAGES 页，分批处理避免超时，完成后合并为完整结果。
         """
         import fitz
         from app.config import OUTPUT_DIR
@@ -238,26 +238,38 @@ class PaddleStudioAPI:
 
         md_path = str(Path(output_dir) / f"{Path(pdf_path).stem}.md")
         doc = fitz.open(pdf_path)
-        total_pages = min(len(doc), _MAX_PAGES)
-        if len(doc) > _MAX_PAGES:
-            logger.warning(
-                "PDF 共 %d 页，超过 %d 页上限，仅处理前 %d 页",
-                len(doc), _MAX_PAGES, _MAX_PAGES,
+        total_pages = len(doc)
+        total_batches = (total_pages + _BATCH_PAGES - 1) // _BATCH_PAGES
+
+        if total_batches > 1:
+            logger.info(
+                "PDF 共 %d 页，将分 %d 批处理（每批 %d 页）",
+                total_pages, total_batches, _BATCH_PAGES,
             )
 
         md_parts = []
-        for i in range(total_pages):
-            page = doc[i]
-            pix = page.get_pixmap(dpi=200)
-            img_path = str(Path(output_dir) / f"page_{i + 1:04d}.png")
-            pix.save(img_path)
-            try:
-                text = self.ocr_image(img_path)
-                md_parts.append(f"## 第{i + 1}页\n\n{text}\n")
-            except Exception as e:
-                md_parts.append(f"## 第{i + 1}页\n\n_[OCR 失败: {e}]_\n")
-            finally:
-                Path(img_path).unlink(missing_ok=True)
+        for batch_idx in range(total_batches):
+            start_page = batch_idx * _BATCH_PAGES
+            end_page = min(start_page + _BATCH_PAGES, total_pages)
+
+            if total_batches > 1:
+                logger.info(
+                    "OCR 批次 %d/%d: 第 %d-%d 页",
+                    batch_idx + 1, total_batches, start_page + 1, end_page,
+                )
+
+            for i in range(start_page, end_page):
+                page = doc[i]
+                pix = page.get_pixmap(dpi=200)
+                img_path = str(Path(output_dir) / f"page_{i + 1:04d}.png")
+                pix.save(img_path)
+                try:
+                    text = self.ocr_image(img_path)
+                    md_parts.append(f"## 第{i + 1}页\n\n{text}\n")
+                except Exception as e:
+                    md_parts.append(f"## 第{i + 1}页\n\n_[OCR 失败: {e}]_\n")
+                finally:
+                    Path(img_path).unlink(missing_ok=True)
 
         doc.close()
 
@@ -1405,7 +1417,7 @@ document.addEventListener('alpine:init', () => {
                 </div>
                 <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--pico-muted-color);line-height:1.5">
                     <p style="margin:0.25rem 0">💡 每个接口每日有调用上限，超出将返回 429 错误（免费约 20000 页/天）</p>
-                    <p style="margin:0.25rem 0">💡 文件大小无限制，但为避免处理超时，单文件请控制在 100 页以内，超出部分将被忽略</p>
+                    <p style="margin:0.25rem 0">💡 文件大小无限制，超长 PDF 将按每批 99 页自动拆分处理，识别完成后合并显示</p>
                     <p style="margin:0.25rem 0">🔗 前往 <a href="https://aistudio.baidu.com" target="_blank">aistudio.baidu.com</a> 创建令牌</p>
                 </div>
             </div>
