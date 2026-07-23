@@ -99,8 +99,10 @@ class PaddleStudioAPI:
 ```
 
 要点：
-- 使用百度 OCR `accurate_basic` 接口（高精度通用文字识别，500次/天免费）
+- 使用百度 OCR `accurate_basic` 接口（高精度通用文字识别）
+- 免费版每日约 500 次调用；付费资源包可达 20000 页/天，超限返回 429 错误
 - `ocr_pdf_to_md()` 流程与旧版相同：渲染 PNG → OCR → 拼 MD → 删 PNG
+- `ocr_pdf_to_md()` 最多处理前 100 页，超出部分忽略（文件大小无限制，但避免处理超时）
 - access_token 从 `settings` 表读取 key `ocr.access_token`
 - 如果 token 未配置，导入时在进度信息中提示用户先到设置页配置
 
@@ -243,7 +245,9 @@ CREATE TABLE IF NOT EXISTS settings (
 全局设置弹窗（Alpine.js 组件），在 `base.html` 中引入（与 QA 弹窗同级）：
 
 - 双标签页：OCR 识别 / AI 问答
-- OCR 标签：access_token 输入框 + 测试连接按钮 + 提示链接
+- OCR 标签：access_token 输入框 + 测试连接按钮 + 两条使用提示
+  - 提示1：每个接口每日有调用上限，超出将返回 429 错误（免费约 500 次/天，付费可达 20000 页/天）
+  - 提示2：文件大小无限制，但为避免处理超时，单文件请控制在 100 页以内，超出部分将被忽略
 - AI 标签：后端选择（radio 列表，选中后展开 API Key 输入框）+ 测试连接按钮
 - 底部保存/取消按钮
 
