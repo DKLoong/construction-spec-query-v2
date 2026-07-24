@@ -22,6 +22,10 @@
                         <button type="button" class="secondary" @click="closeDialog()">取消</button>
                     </div>
                 </form>
+                <div style="text-align:right;margin-top:0.3rem">
+                    <a href="#" @click.prevent="closeDialog(); $dispatch('open-settings', {tab:'ocr'})"
+                       style="font-size:0.75rem;color:var(--pico-muted-color)">⚙️ API 设置</a>
+                </div>
                 <div id="import-result"></div>
             </div>
         </div>
