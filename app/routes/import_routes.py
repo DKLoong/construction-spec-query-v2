@@ -93,6 +93,12 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
                 progress_store[task_id].update(progress=20, message="正在 OCR 识别...")
                 from app.ocr.paddle_api import PaddleStudioAPI, get_setting
                 access_token = get_setting("ocr.access_token")
+                if not access_token:
+                    progress_store[task_id].update(
+                        status="error", progress=0,
+                        message="OCR API 令牌未配置，请在设置页面配置百度 AI Studio access_token"
+                    )
+                    return
                 api = PaddleStudioAPI(access_token=access_token)
                 md_path = api.ocr_pdf_to_md(file_path)
                 md_text = Path(md_path).read_text(encoding="utf-8")
