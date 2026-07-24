@@ -122,7 +122,41 @@ class CodexCLI(CLIBackend):
         return self._run_cli(full_prompt, work_dir=work_dir, timeout=60)
 
 
-def get_backend(name: str) -> CLIBackend:
+def get_backend(name: str | None = None) -> CLIBackend:
+    """获取 AI 后端实例
+
+    Args:
+        name: 后端名称 (claude/codex/doubao/deepseek/glm/kimi/custom)
+              为空时从 settings 表读取 ai.backend
+    """
+    from app.ocr.paddle_api import get_setting
+
+    if name is None:
+        name = get_setting("ai.backend") or "claude"
+
     if name == "codex":
         return CodexCLI()
-    return ClaudeCodeCLI()
+    elif name == "claude":
+        return ClaudeCodeCLI()
+    elif name == "custom":
+        from app.ai.api_client import APIBackend
+        return APIBackend(
+            base_url=get_setting("ai.custom.base_url"),
+            api_key=get_setting("ai.custom.api_key"),
+            model=get_setting("ai.custom.model") or "gpt-3.5-turbo",
+        )
+    else:
+        # 预置厂商 (doubao/deepseek/glm/kimi)
+        from app.ai.provider_presets import PROVIDERS
+        from app.ai.api_client import APIBackend
+
+        preset = PROVIDERS.get(name)
+        if preset:
+            api_key = get_setting(f"{preset['setting_key_prefix']}.api_key")
+            return APIBackend(
+                base_url=preset["base_url"],
+                api_key=api_key,
+                model=preset["default_model"],
+            )
+        # 未知后端，回退到默认
+        return ClaudeCodeCLI()
