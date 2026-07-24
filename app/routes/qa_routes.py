@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from app.models import QaRequest, QAResponse, SearchQuery
+from app.ai.api_client import APIBackend
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -95,7 +96,12 @@ async def qa_ask(request: Request, body: QaRequest):
 
     # 4. 选择后端
     backend = get_backend(body.backend)
-    cli_used = backend.command
+    if isinstance(backend, APIBackend):
+        from app.ai.provider_presets import PROVIDERS
+        preset = PROVIDERS.get(body.backend)
+        cli_used = preset["name"] if preset else "自定义"
+    else:
+        cli_used = backend.command
 
     if not backend.is_available():
         return JSONResponse(
