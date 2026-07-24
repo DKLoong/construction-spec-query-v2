@@ -68,8 +68,9 @@ async def test_ocr(request: Request):
                 )
             return {"status": "ok", "message": "OCR API 连接正常"}
     except Exception as e:
+        logger.error(f"OCR 测试异常: {e}")
         return JSONResponse(
-            {"detail": f"连接失败: {e}"}, status_code=400
+            {"detail": "OCR API 连接失败，请检查网络连接或稍后重试"}, status_code=400
         )
 
 
@@ -81,6 +82,13 @@ async def test_ai(request: Request):
     api_key = body.get("api_key", "")
     base_url = body.get("base_url", "")
     model = body.get("model", "")
+
+    # CLI 后端无需测试 API 连通性
+    if backend_name in ("claude", "codex"):
+        return JSONResponse(
+            {"detail": "CLI 后端 (claude/codex) 通过本地命令行运行，无需测试 API 连通性"},
+            status_code=400,
+        )
 
     if not api_key:
         return JSONResponse(
@@ -124,6 +132,7 @@ async def test_ai(request: Request):
                     {"detail": f"连接失败: {error_msg}"}, status_code=400
                 )
     except Exception as e:
+        logger.error(f"AI 测试异常: {e}")
         return JSONResponse(
-            {"detail": f"连接失败: {e}"}, status_code=400
+            {"detail": "AI API 连接失败，请检查网络连接或稍后重试"}, status_code=400
         )
