@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS users (
     is_active       INTEGER DEFAULT 1,
     created_at      TEXT DEFAULT (datetime('now','localtime'))
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY NOT NULL,
+    value TEXT DEFAULT ''
+);
 """
 
 TRIGGERS_SQL = """
