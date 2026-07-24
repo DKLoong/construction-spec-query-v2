@@ -91,8 +91,10 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
         elif ext == ".pdf":
             if is_scanned(file_path):
                 progress_store[task_id].update(progress=20, message="正在 OCR 识别...")
-                from app.ocr.paddle_ocr import ocr_pdf_to_md
-                md_path = ocr_pdf_to_md(file_path)
+                from app.ocr.paddle_api import PaddleStudioAPI, get_setting
+                access_token = get_setting("ocr.access_token")
+                api = PaddleStudioAPI(access_token=access_token)
+                md_path = api.ocr_pdf_to_md(file_path)
                 md_text = Path(md_path).read_text(encoding="utf-8")
             else:
                 md_text = extract_text(file_path)
