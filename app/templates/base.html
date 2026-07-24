@@ -12,7 +12,7 @@
     <script src="/static/marked.min.js"></script>
 </head>
 <body>
-    <div x-data="appLayout()" class="app-layout" @open-qa-modal="openQA()">
+    <div x-data="appLayout()" class="app-layout" @open-qa-modal="openQA()" @open-settings.window="openSettings()">
         <aside class="left-panel">
             {% if left_content %}{% include left_content %}{% endif %}
         </aside>
@@ -34,6 +34,9 @@
                     const modal = document.getElementById('qa-modal-overlay');
                     if (modal) modal.style.display = 'none';
                 },
+                openSettings() {
+                    window.dispatchEvent(new CustomEvent('open-settings'));
+                },
             }
         }
     </script>
@@ -52,6 +55,8 @@
             </div>
         </div>
     </div>
+    <!-- 设置弹窗 -->
+    {% include "partials/settings_dialog.html" %}
     <!-- 条文详情弹窗 -->
     <div x-data="clauseModal"
          x-show="open"
@@ -71,6 +76,7 @@
         </div>
     </div>
     <script src="/static/components/clause-modal.js"></script>
+    <script src="/static/components/settings.js"></script>
     <script src="/static/components/tree.js"></script>
     <script src="/static/components/qa.js"></script>
     <script src="/static/components/search.js"></script>
