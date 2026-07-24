@@ -140,7 +140,8 @@ async def rules_stats(request: Request):
 
     from fastapi.responses import HTMLResponse
     return HTMLResponse(
-        f'<div id="rules-stats" style="margin-bottom:0.5rem;display:flex;gap:1rem;flex-wrap:wrap">'
+        f'<div id="rules-stats" style="margin-bottom:0.5rem;display:flex;gap:1rem;flex-wrap:wrap"'
+        f' hx-get="/rules/stats" hx-trigger="refreshStats from:body" hx-swap="outerHTML">'
         f'{"".join(parts)}</div>'
     )
 

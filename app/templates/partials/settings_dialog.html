@@ -16,12 +16,12 @@
             <div style="display:flex;gap:0;margin-bottom:1rem;border-bottom:2px solid var(--pico-muted-border-color)">
                 <button @click="activeTab='ocr'"
                         :style="{borderBottom: activeTab==='ocr' ? '2px solid var(--pico-primary-background)' : '2px solid transparent', fontWeight: activeTab==='ocr' ? 'bold' : 'normal'}"
-                        style="flex:1;padding:0.5rem;border:none;background:none;cursor:pointer;margin-bottom:-2px;font-size:0.85rem">
+                        style="flex:1;padding:0.5rem;border:none;background:none;cursor:pointer;margin-bottom:-2px;font-size:0.85rem;color:var(--pico-color)">
                     📷 OCR 识别
                 </button>
                 <button @click="activeTab='ai'"
                         :style="{borderBottom: activeTab==='ai' ? '2px solid var(--pico-primary-background)' : '2px solid transparent', fontWeight: activeTab==='ai' ? 'bold' : 'normal'}"
-                        style="flex:1;padding:0.5rem;border:none;background:none;cursor:pointer;margin-bottom:-2px;font-size:0.85rem">
+                        style="flex:1;padding:0.5rem;border:none;background:none;cursor:pointer;margin-bottom:-2px;font-size:0.85rem;color:var(--pico-color)">
                     🤖 AI 问答
                 </button>
             </div>
