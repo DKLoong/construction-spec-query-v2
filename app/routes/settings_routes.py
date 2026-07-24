@@ -35,9 +35,19 @@ async def save_settings(request: Request):
 @router.post("/settings/test-ocr")
 async def test_ocr(request: Request):
     """测试 OCR API 连通性"""
-    from app.ocr.paddle_api import get_setting
+    # 尝试从请求体获取 token，JSON 解析失败或为空时回退到数据库
+    access_token = ""
+    try:
+        body = await request.json()
+        access_token = body.get("access_token", "").strip()
+    except Exception:
+        pass
 
-    access_token = get_setting("ocr.access_token")
+    # 请求体为空时回退到数据库读取（兼容旧行为）
+    if not access_token:
+        from app.ocr.paddle_api import get_setting
+        access_token = get_setting("ocr.access_token")
+
     if not access_token:
         return JSONResponse(
             {"detail": "请先配置 AI Studio access_token"}, status_code=400

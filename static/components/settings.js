@@ -14,6 +14,9 @@ document.addEventListener('alpine:init', () => {
         aiTesting: false,
         aiTestResult: '',
 
+        // 保存状态
+        saveError: '',
+
         init() {
             window.addEventListener('open-settings', (e) => {
                 this.activeTab = e.detail?.tab || 'ocr';
@@ -43,6 +46,7 @@ document.addEventListener('alpine:init', () => {
         },
 
         async save() {
+            this.saveError = '';
             const payload = {
                 'ocr.access_token': this.ocrToken,
                 'ai.backend': this.aiBackend,
@@ -55,14 +59,19 @@ document.addEventListener('alpine:init', () => {
                 'ai.custom.model': this.aiKeys.custom_model,
             };
             try {
-                await fetch('/settings', {
+                const resp = await fetch('/settings', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
-                this.open = false;
+                if (resp.ok) {
+                    this.open = false;
+                } else {
+                    const data = await resp.json().catch(() => ({}));
+                    this.saveError = data.detail || '保存失败，请稍后重试';
+                }
             } catch (e) {
-                console.error('保存设置失败', e);
+                this.saveError = '网络连接失败，请检查网络后重试';
             }
         },
 
@@ -70,7 +79,11 @@ document.addEventListener('alpine:init', () => {
             this.ocrTesting = true;
             this.ocrTestResult = '';
             try {
-                const resp = await fetch('/settings/test-ocr', { method: 'POST' });
+                const resp = await fetch('/settings/test-ocr', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ access_token: this.ocrToken }),
+                });
                 const data = await resp.json();
                 if (resp.ok) {
                     this.ocrTestResult = '✅ ' + data.message;

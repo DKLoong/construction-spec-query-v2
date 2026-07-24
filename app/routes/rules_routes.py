@@ -107,11 +107,38 @@ async def toggle_rule(request: Request, rule_id: int):
             "SELECT * FROM classification_rules WHERE id = ?", (rule_id,)
         ).fetchone()
 
-    # 返回整行 HTML，让 htmx 替换整个 <tr>，状态指示器和按钮一起更新
+        # 查询更新后的统计数据
+        stats_rows = conn.execute(
+            "SELECT dimension, COUNT(*) as cnt, "
+            "SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) as active "
+            "FROM classification_rules GROUP BY dimension ORDER BY dimension"
+        ).fetchall()
+
+    # 渲染规则行 HTML
     from app.main import templates
-    return templates.TemplateResponse(request, "partials/rules_row.html", {
+    row_html = templates.get_template("partials/rules_row.html").render({
         "rule": dict(rule),
     })
+
+    # 构建 OOB 统计面板 HTML
+    dim_labels = {"dim1": "规范属性", "dim2": "工程阶段", "dim3": "工程类型",
+                  "dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"}
+    stats_parts = []
+    for s in stats_rows:
+        label = dim_labels.get(s["dimension"], s["dimension"])
+        stats_parts.append(
+            f'<small style="background:var(--pico-secondary-background);'
+            f'padding:0.2rem 0.5rem;border-radius:4px">'
+            f'{label}: <strong>{s["active"]}/{s["cnt"]}</strong></small>'
+        )
+    stats_html = (
+        f'<div id="rules-stats" hx-swap-oob="true"'
+        f' style="margin-bottom:0.5rem;display:flex;gap:1rem;flex-wrap:wrap">'
+        f'{"".join(stats_parts)}</div>'
+    )
+
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(row_html + stats_html)
 
 
 @router.delete("/rules/{rule_id}")

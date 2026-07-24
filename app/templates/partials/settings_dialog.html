@@ -126,9 +126,12 @@
             </div>
 
             <!-- 底部按钮 -->
-            <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:1.5rem;padding-top:0.75rem;border-top:1px solid var(--pico-muted-border-color)">
-                <button class="outline" @click="close()" style="font-size:0.8rem">取消</button>
-                <button @click="save()" style="font-size:0.8rem">💾 保存</button>
+            <div style="margin-top:1.5rem;padding-top:0.75rem;border-top:1px solid var(--pico-muted-border-color)">
+                <div style="display:flex;justify-content:flex-end;gap:0.5rem">
+                    <button class="outline" @click="close()" style="font-size:0.8rem">取消</button>
+                    <button @click="save()" style="font-size:0.8rem">💾 保存</button>
+                </div>
+                <small x-show="saveError" style="color:red;display:block;margin-top:0.4rem" x-text="saveError"></small>
             </div>
         </div>
     </div>
