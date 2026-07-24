@@ -53,15 +53,37 @@ async def test_ocr(request: Request):
             {"detail": "请先配置 AI Studio access_token"}, status_code=400
         )
 
-    # 发送最小测试请求
-    import httpx
+    # 生成含文字的微小测试图片 (15x15, 黑色横条模拟文字)
+    # 百度 OCR API 会拒绝纯透明/纯色图片,需要模拟真实文档内容
     import base64
+    import struct
+    import zlib
 
-    # 生成 1x1 像素的测试图片 (最小 PNG)
-    test_png = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-    )
-    img_b64 = base64.b64encode(test_png).decode("utf-8")
+    def _make_test_png_b64() -> str:
+        w, h = 15, 15
+        raw = b""
+        for y in range(h):
+            raw += b"\x00"  # filter: none
+            for x in range(w):
+                if 3 <= y <= 11 and 2 <= x <= 12:
+                    raw += b"\x00\x00\x00\xff"  # 黑色
+                else:
+                    raw += b"\xff\xff\xff\xff"  # 白色
+        ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+
+        def _chunk(ctype, data):
+            c = ctype + data
+            return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xffffffff)
+
+        png = b"\x89PNG\r\n\x1a\n"
+        png += _chunk(b"IHDR", ihdr)
+        png += _chunk(b"IDAT", zlib.compress(raw))
+        png += _chunk(b"IEND", b"")
+        return base64.b64encode(png).decode()
+
+    img_b64 = _make_test_png_b64()
+
+    import httpx
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
