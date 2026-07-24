@@ -107,14 +107,43 @@ async def toggle_rule(request: Request, rule_id: int):
             "SELECT * FROM classification_rules WHERE id = ?", (rule_id,)
         ).fetchone()
 
-    # 返回整行 HTML + HX-Trigger 触发统计面板刷新
+    # 返回整行 HTML + OOB 统计面板（HTMX 自动替换 #rules-stats）
     from app.main import templates
-    from fastapi.responses import HTMLResponse
-    response = templates.TemplateResponse(request, "partials/rules_row.html", {
+
+    # 查询更新后的统计（必须在 with 块内）
+    with get_db() as conn2:
+        stats_rows = conn2.execute(
+            "SELECT dimension, COUNT(*) as cnt, "
+            "SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) as active "
+            "FROM classification_rules GROUP BY dimension ORDER BY dimension"
+        ).fetchall()
+
+    dim_labels = {"dim1": "规范属性", "dim2": "工程阶段", "dim3": "工程类型",
+                  "dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"}
+    parts = []
+    for s in stats_rows:
+        label = dim_labels.get(s["dimension"], s["dimension"])
+        parts.append(
+            f'<small style="background:var(--pico-secondary-background);'
+            f'padding:0.2rem 0.5rem;border-radius:4px">'
+            f'{label}: <strong>{s["active"]}/{s["cnt"]}</strong></small>'
+        )
+
+    # 渲染行模板
+    row_html = templates.get_template("partials/rules_row.html").render({
         "rule": dict(rule),
     })
-    response.headers["HX-Trigger"] = "refreshStats"
-    return response
+
+    stats_html = (
+        f'<div id="rules-stats" hx-swap-oob="true"'
+        f' style="margin-bottom:0.5rem;display:flex;gap:1rem;flex-wrap:wrap">'
+        f'{"".join(parts)}</div>'
+    )
+
+    from fastapi.responses import HTMLResponse
+    resp = HTMLResponse(row_html + stats_html)
+    resp.headers["HX-Trigger"] = "rulesStatsRefresh"
+    return resp
 
 
 @router.get("/rules/stats")

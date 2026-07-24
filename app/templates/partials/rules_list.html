@@ -263,5 +263,13 @@ document.addEventListener('alpine:init', () => {
             setTimeout(() => this.loadRules(), 500);
         },
     }));
+
+    // 规则 toggle 后自动刷新统计面板（兜底方案，配合 HX-Trigger 使用）
+    document.body.addEventListener('rulesStatsRefresh', () => {
+        fetch('/rules/stats').then(r => r.text()).then(html => {
+            const el = document.getElementById('rules-stats');
+            if (el) el.outerHTML = html;
+        });
+    });
 });
 </script>
