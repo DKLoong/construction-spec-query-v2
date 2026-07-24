@@ -18,7 +18,8 @@ def get_setting(key: str) -> str:
                 "SELECT value FROM settings WHERE key = ?", (key,)
             ).fetchone()
             return row["value"] if row else ""
-    except Exception:
+    except Exception as e:
+        logger.warning("get_setting('%s') 读取失败: %s", key, e)
         return ""
 
 
@@ -79,40 +80,41 @@ class PaddleStudioAPI:
 
         md_path = str(Path(output_dir) / f"{Path(pdf_path).stem}.md")
         doc = fitz.open(pdf_path)
-        total_pages = len(doc)
-        total_batches = (total_pages + _BATCH_PAGES - 1) // _BATCH_PAGES
-
-        if total_batches > 1:
-            logger.info(
-                "PDF 共 %d 页，将分 %d 批处理（每批 %d 页）",
-                total_pages, total_batches, _BATCH_PAGES,
-            )
-
-        md_parts = []
-        for batch_idx in range(total_batches):
-            start_page = batch_idx * _BATCH_PAGES
-            end_page = min(start_page + _BATCH_PAGES, total_pages)
+        try:
+            total_pages = len(doc)
+            total_batches = (total_pages + _BATCH_PAGES - 1) // _BATCH_PAGES
 
             if total_batches > 1:
                 logger.info(
-                    "OCR 批次 %d/%d: 第 %d-%d 页",
-                    batch_idx + 1, total_batches, start_page + 1, end_page,
+                    "PDF 共 %d 页，将分 %d 批处理（每批 %d 页）",
+                    total_pages, total_batches, _BATCH_PAGES,
                 )
 
-            for i in range(start_page, end_page):
-                page = doc[i]
-                pix = page.get_pixmap(dpi=200)
-                img_path = str(Path(output_dir) / f"page_{i + 1:04d}.png")
-                pix.save(img_path)
-                try:
-                    text = self.ocr_image(img_path)
-                    md_parts.append(f"## 第{i + 1}页\n\n{text}\n")
-                except Exception as e:
-                    md_parts.append(f"## 第{i + 1}页\n\n_[OCR 失败: {e}]_\n")
-                finally:
-                    Path(img_path).unlink(missing_ok=True)
+            md_parts = []
+            for batch_idx in range(total_batches):
+                start_page = batch_idx * _BATCH_PAGES
+                end_page = min(start_page + _BATCH_PAGES, total_pages)
 
-        doc.close()
+                if total_batches > 1:
+                    logger.info(
+                        "OCR 批次 %d/%d: 第 %d-%d 页",
+                        batch_idx + 1, total_batches, start_page + 1, end_page,
+                    )
+
+                for i in range(start_page, end_page):
+                    page = doc[i]
+                    pix = page.get_pixmap(dpi=200)
+                    img_path = str(Path(output_dir) / f"page_{i + 1:04d}.png")
+                    pix.save(img_path)
+                    try:
+                        text = self.ocr_image(img_path)
+                        md_parts.append(f"## 第{i + 1}页\n\n{text}\n")
+                    except Exception as e:
+                        md_parts.append(f"## 第{i + 1}页\n\n_[OCR 失败: {e}]_\n")
+                    finally:
+                        Path(img_path).unlink(missing_ok=True)
+        finally:
+            doc.close()
 
         with open(md_path, "w", encoding="utf-8") as f:
             f.write("\n".join(md_parts))

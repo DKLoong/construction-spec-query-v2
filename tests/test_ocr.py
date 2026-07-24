@@ -1,3 +1,5 @@
+import pytest
+
 def test_get_setting_returns_value(monkeypatch, tmp_path):
     """get_setting 从数据库读取值"""
     db_path = tmp_path / "test_settings.db"
@@ -58,6 +60,53 @@ def test_paddle_studio_api_ocr_image(monkeypatch, tmp_path):
     text = asyncio.run(api._ocr_image_async(str(test_img)))
     assert "第一条" in text
     assert "第二条" in text
+
+
+def test_ocr_image_async_raises_on_api_error(monkeypatch, tmp_path):
+    """_ocr_image_async 在 API 返回 error_code 时抛出 RuntimeError"""
+    from app.ocr.paddle_api import PaddleStudioAPI
+    import httpx
+    import asyncio
+
+    api = PaddleStudioAPI(access_token="test-token")
+
+    class MockErrorResponse:
+        status_code = 200
+        def json(self):
+            return {"error_code": 282000, "error_msg": "image format not supported"}
+        def raise_for_status(self):
+            pass
+
+    async def mock_post(*args, **kwargs):
+        return MockErrorResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+    test_img = tmp_path / "test.png"
+    test_img.write_bytes(b"fake_image_data")
+
+    with pytest.raises(RuntimeError, match="OCR API 返回错误"):
+        asyncio.run(api._ocr_image_async(str(test_img)))
+
+
+def test_ocr_image_async_raises_on_network_error(monkeypatch, tmp_path):
+    """_ocr_image_async 在网络错误时抛出异常"""
+    from app.ocr.paddle_api import PaddleStudioAPI
+    import httpx
+    import asyncio
+
+    api = PaddleStudioAPI(access_token="test-token")
+
+    async def mock_post(*args, **kwargs):
+        raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+    test_img = tmp_path / "test.png"
+    test_img.write_bytes(b"fake_image_data")
+
+    with pytest.raises(httpx.ConnectError, match="Connection refused"):
+        asyncio.run(api._ocr_image_async(str(test_img)))
 
 
 def test_pdf_extract_import():

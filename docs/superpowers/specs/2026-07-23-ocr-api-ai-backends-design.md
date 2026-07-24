@@ -33,7 +33,7 @@
 
 ## 二、架构
 
-```
+```text
 改造涉及的文件：
 
 app/ocr/                              app/ai/
@@ -59,7 +59,7 @@ app/templates/                        static/
 
 ### 数据流
 
-```
+```text
 OCR 导入:
   上传 PDF → is_scanned() → ocr_pdf_to_md() → HTTP POST AI Studio
   → 每页返回识别文本 → 拼 Markdown → 审查页 → 确认 → 解析入库
@@ -99,6 +99,7 @@ class PaddleStudioAPI:
 ```
 
 要点：
+
 - 使用百度 OCR `accurate_basic` 接口（高精度通用文字识别）
 - 免费版每日约 20000 页，超限返回 429 错误
 - `ocr_pdf_to_md()` 流程与旧版相同：渲染 PNG → OCR → 拼 MD → 删 PNG
@@ -220,7 +221,7 @@ CREATE TABLE IF NOT EXISTS settings (
 ### 5.2 `settings` 表 Key 设计
 
 | Key | 说明 | 默认值 |
-|-----|------|--------|
+| --- | --- | --- |
 | `ocr.access_token` | AI Studio 令牌 | 空 |
 | `ai.backend` | 当前选择的后端 | `claude` |
 | `ai.doubao.api_key` | 豆包 API Key | 空 |
@@ -234,7 +235,7 @@ CREATE TABLE IF NOT EXISTS settings (
 ### 5.3 新增 `app/routes/settings_routes.py`
 
 | 路由 | 方法 | 功能 |
-|------|------|------|
+| --- | --- | --- |
 | `/settings` | GET | 获取所有 settings（JSON） |
 | `/settings` | PUT | 批量保存 settings（JSON） |
 | `/settings/test-ocr` | POST | 测试 OCR API 连通性 |
@@ -247,7 +248,7 @@ CREATE TABLE IF NOT EXISTS settings (
 - 双标签页：OCR 识别 / AI 问答
 - OCR 标签：access_token 输入框 + 测试连接按钮 + 两条使用提示
   - 提示1：每个接口每日有调用上限，超出将返回 429 错误（免费约 20000 页/天）
-  - 提示2：文件大小无限制，超长 PDF 将按每批 99 页自动拆分处理，识别完成后合并显示
+  - 提示2：文件大小无限制，但为避免处理超时，单文件请控制在 100 页以内，超出部分将被忽略
 - AI 标签：后端选择（radio 列表，选中后展开 API Key 输入框）+ 测试连接按钮
 - 底部保存/取消按钮
 
