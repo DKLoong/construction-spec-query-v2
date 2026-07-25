@@ -133,16 +133,6 @@
         </div>
     </div>
 
-    <!-- 统计面板 -->
-    <div style="margin-bottom:1rem;display:flex;gap:1rem;flex-wrap:wrap" x-show="stats.length > 0">
-        <template x-for="s in stats" :key="s.dimension">
-            <small style="background:var(--pico-secondary-background);padding:0.2rem 0.5rem;border-radius:4px">
-                <span x-text="dimLabel(s.dimension)"></span>:
-                <strong x-text="s.active + '/' + s.cnt"></strong>
-            </small>
-        </template>
-    </div>
-
     <!-- 规则表格 -->
     <div id="rules-table" hx-get="/rules/list" hx-trigger="load">
         <p aria-busy="true">加载中...</p>
@@ -264,12 +254,5 @@ document.addEventListener('alpine:init', () => {
         },
     }));
 
-    // 规则 toggle 后自动刷新统计面板（兜底方案，配合 HX-Trigger 使用）
-    document.body.addEventListener('rulesStatsRefresh', () => {
-        fetch('/rules/stats').then(r => r.text()).then(html => {
-            const el = document.getElementById('rules-stats');
-            if (el) el.outerHTML = html;
-        });
-    });
 });
 </script>

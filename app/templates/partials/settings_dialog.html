@@ -28,14 +28,80 @@
 
             <!-- OCR 标签页 -->
             <div x-show="activeTab==='ocr'">
+                <!-- OCR 后端选择 -->
+                <label style="font-size:0.85rem;margin-bottom:0.5rem">选择 OCR 后端</label>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;margin-bottom:0.75rem">
+                    <label style="font-size:0.8rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
+                           :style="{background: ocrBackend==='paddle-vl' ? 'var(--pico-primary-background)' : '', color: ocrBackend==='paddle-vl' ? 'var(--pico-primary-inverse)' : ''}">
+                        <input type="radio" x-model="ocrBackend" value="paddle-vl" style="display:none"> PaddleOCR-VL (推荐)
+                    </label>
+                    <label style="font-size:0.8rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
+                           :style="{background: ocrBackend==='accurate-basic' ? 'var(--pico-primary-background)' : '', color: ocrBackend==='accurate-basic' ? 'var(--pico-primary-inverse)' : ''}">
+                        <input type="radio" x-model="ocrBackend" value="accurate-basic" style="display:none"> accurate_basic (旧版)
+                    </label>
+                    <label style="font-size:0.8rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
+                           :style="{background: ocrBackend==='custom' ? 'var(--pico-primary-background)' : '', color: ocrBackend==='custom' ? 'var(--pico-primary-inverse)' : ''}">
+                        <input type="radio" x-model="ocrBackend" value="custom" style="display:none"> 自定义
+                    </label>
+                </div>
+
+                <!-- 后端描述 -->
+                <small style="color:var(--pico-muted-color);display:block;margin-bottom:0.5rem">
+                    <span x-show="ocrBackend==='paddle-vl'">📄 文档解析引擎，输出结构化 Markdown（保留表格/标题/公式/图表），异步处理</span>
+                    <span x-show="ocrBackend==='accurate-basic'">📝 通用文字识别，纯文本输出，无格式保留，同步处理</span>
+                    <span x-show="ocrBackend==='custom'">🔧 使用自定义 OCR 端点，支持 OpenAI Vision 兼容 API</span>
+                </small>
+
+                <!-- Access Token -->
                 <label style="font-size:0.85rem">
-                    百度 AI Studio Access Token
-                    <input type="password" x-model="ocrToken"
-                           placeholder="输入你的 AI Studio 令牌..."
+                    <span x-show="ocrBackend==='custom'">API Key / Access Token</span>
+                    <span x-show="ocrBackend!=='custom'">百度 AI Studio Access Token</span>
+                    <input type="password" x-model="currentOCRToken"
+                           placeholder="输入 access_token..."
                            style="font-family:monospace;font-size:0.8rem">
                 </label>
+
+                <!-- PaddleOCR-VL 高级选项 -->
+                <div x-show="ocrBackend==='paddle-vl'" style="margin-top:0.5rem;font-size:0.8rem">
+                    <p style="margin:0.25rem 0;font-weight:bold">高级选项</p>
+                    <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;margin:0.15rem 0">
+                        <input type="checkbox" x-model="ocrPaddleVLParams.analysis_chart"> 识别统计图表
+                    </label>
+                    <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;margin:0.15rem 0">
+                        <input type="checkbox" x-model="ocrPaddleVLParams.merge_tables"> 合并跨页表格
+                    </label>
+                    <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;margin:0.15rem 0">
+                        <input type="checkbox" x-model="ocrPaddleVLParams.relevel_titles"> 段落标题层级识别
+                    </label>
+                    <label style="display:flex;align-items:center;gap:0.3rem;cursor:pointer;margin:0.15rem 0">
+                        <input type="checkbox" x-model="ocrPaddleVLParams.recognize_seal"> 印章识别
+                    </label>
+                </div>
+
+                <!-- 自定义后端配置 -->
+                <div x-show="ocrBackend==='custom'" style="margin-top:0.5rem">
+                    <label style="font-size:0.85rem">
+                        Base URL
+                        <input type="text" x-model="ocrKeys.custom_base_url"
+                               placeholder="https://api.example.com/v1"
+                               style="font-family:monospace;font-size:0.8rem">
+                    </label>
+                    <label style="font-size:0.85rem;margin-top:0.3rem">
+                        Model
+                        <input type="text" x-model="ocrKeys.custom_model"
+                               placeholder="gpt-4o / claude-sonnet-5 / ..."
+                               style="font-family:monospace;font-size:0.8rem">
+                    </label>
+                    <label style="font-size:0.85rem;margin-top:0.3rem">
+                        额外参数 (JSON)
+                        <textarea x-model="ocrKeys.custom_params" rows="2"
+                                  placeholder='{"temperature": 0}'
+                                  style="font-family:monospace;font-size:0.75rem"></textarea>
+                    </label>
+                </div>
+
                 <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.5rem">
-                    <button class="outline" @click="testOCR()" :disabled="ocrTesting || !ocrToken"
+                    <button class="outline" @click="testOCR()" :disabled="ocrTesting || !currentOCRToken"
                             style="font-size:0.75rem;padding:0.25rem 0.75rem">
                         <span x-show="!ocrTesting">🔍 测试连接</span>
                         <span x-show="ocrTesting">⏳ 测试中...</span>
@@ -43,9 +109,9 @@
                     <small x-text="ocrTestResult" style="font-size:0.75rem"></small>
                 </div>
                 <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--pico-muted-color);line-height:1.5">
-                    <p style="margin:0.25rem 0">💡 每个接口每日有调用上限，超出将返回 429 错误（免费约 20000 页/天）</p>
-                    <p style="margin:0.25rem 0">💡 文件大小无限制，超长 PDF 将按每批 99 页自动拆分处理，识别完成后合并显示</p>
-                    <p style="margin:0.25rem 0">🔗 前往 <a href="https://aistudio.baidu.com" target="_blank">aistudio.baidu.com</a> 创建令牌</p>
+                    <p style="margin:0.25rem 0" x-show="ocrBackend!=='custom'">💡 PaddleOCR-VL 每个接口每日有调用上限（免费约 20000 页/天）</p>
+                    <p style="margin:0.25rem 0" x-show="ocrBackend!=='custom'">💡 文件大小无限制，超长 PDF 自动异步处理，识别完成后合并显示</p>
+                    <p style="margin:0.25rem 0" x-show="ocrBackend!=='custom'">🔗 前往 <a href="https://aistudio.baidu.com" target="_blank">aistudio.baidu.com</a> 创建令牌</p>
                 </div>
             </div>
 

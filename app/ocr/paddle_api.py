@@ -1,5 +1,7 @@
-"""百度 AI Studio OCR API 客户端"""
+"""百度 AI Studio OCR API 客户端 — 支持多后端（PaddleOCR-VL / accurate_basic / 自定义）"""
+import asyncio
 import base64
+import json
 import logging
 from pathlib import Path
 
@@ -24,7 +26,7 @@ def get_setting(key: str) -> str:
 
 
 class PaddleStudioAPI:
-    """百度 AI Studio OCR API 客户端"""
+    """百度 AI Studio OCR API 客户端 — accurate_basic 同步接口"""
 
     BASE_URL = "https://aip.baidubce.com/rest/2.0/ocr/v1"
 
@@ -44,7 +46,7 @@ class PaddleStudioAPI:
             "image": img_b64,
             "language_type": "CHN_ENG",
             "detect_direction": "true",
-            "paragraph": "false",
+            "paragraph": "true",  # 修复：启用段落检测保留基本格式
         }
 
         async with httpx.AsyncClient(timeout=30) as client:
@@ -63,7 +65,6 @@ class PaddleStudioAPI:
 
     def ocr_image(self, img_path: str) -> str:
         """同步封装（供后台任务调用）"""
-        import asyncio
         return asyncio.run(self._ocr_image_async(img_path))
 
     def ocr_pdf_to_md(self, pdf_path: str, output_dir: str | None = None) -> str:
@@ -120,3 +121,295 @@ class PaddleStudioAPI:
             f.write("\n".join(md_parts))
 
         return md_path
+
+
+# ═══════════════════════════════════════════
+# PaddleOCR-VL 文档解析客户端
+# ═══════════════════════════════════════════
+
+class PaddleVLClient:
+    """PaddleOCR-VL 文档解析 API 客户端（异步：提交 → 轮询 → 下载 Markdown）
+
+    相比 accurate_basic，输出包含：
+    - 结构化 Markdown（标题层级）
+    - 表格（自动识别 Markdown 表格格式）
+    - 公式（LaTeX 格式）
+    - 图表识别
+    - 阅读顺序保持
+    """
+
+    SUBMIT_URL = "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task"
+    QUERY_URL = "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task/query"
+
+    def __init__(self, access_token: str, params: dict | None = None):
+        self.access_token = access_token
+        self.params = params or {}
+
+    async def _submit_task(self, file_path: str) -> str:
+        """提交文档解析任务，返回 task_id"""
+        import httpx
+
+        with open(file_path, "rb") as f:
+            file_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        file_name = Path(file_path).name
+        payload = {
+            "file_data": file_b64,
+            "file_name": file_name,
+        }
+        # 合并用户自定义参数
+        for k, v in self.params.items():
+            payload[k] = str(v).lower() if isinstance(v, bool) else str(v)
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                self.SUBMIT_URL,
+                params={"access_token": self.access_token},
+                data=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        if "error_code" in data:
+            error_msg = data.get("error_msg", "未知错误")
+            logger.error("PaddleOCR-VL 任务提交失败 (code=%s): %s",
+                         data["error_code"], error_msg)
+            raise RuntimeError(f"OCR 任务提交失败: {error_msg}")
+
+        result = data.get("result", {})
+        task_id = result.get("task_id", "")
+        if not task_id:
+            raise RuntimeError("OCR 任务提交失败: 未返回 task_id")
+        return task_id
+
+    async def _poll_result(self, task_id: str, max_wait: int = 600,
+                           interval: int = 5) -> dict:
+        """轮询直到任务完成或超时，返回结果 dict"""
+        import httpx
+
+        waited = 0
+        while waited < max_wait:
+            await asyncio.sleep(interval)
+            waited += interval
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    self.QUERY_URL,
+                    params={"access_token": self.access_token},
+                    data={"task_id": task_id},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            if "error_code" in data:
+                raise RuntimeError(f"OCR 查询失败: {data.get('error_msg')}")
+
+            result = data.get("result", {})
+            status = result.get("task_status", "")
+
+            if status == "SUCCESS":
+                logger.info("PaddleOCR-VL 任务完成 (task_id=%s, 耗时 %ds)", task_id, waited)
+                return result
+            elif status == "FAILED":
+                raise RuntimeError(f"OCR 任务失败: {result.get('error_msg', '未知错误')}")
+
+            logger.debug("PaddleOCR-VL 轮询中 (task_id=%s, 已等待 %ds, 状态=%s)",
+                         task_id, waited, status)
+
+        raise TimeoutError(f"OCR 任务超时 (已等待 {max_wait}s, task_id={task_id})")
+
+    async def _download_markdown(self, url: str) -> str:
+        """从 URL 下载 Markdown 结果"""
+        import httpx
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.text
+
+    def ocr_pdf_to_md(self, pdf_path: str, output_dir: str | None = None) -> str:
+        """PDF 文档解析 → Markdown（同步封装，供后台任务调用）
+
+        与 PaddleStudioAPI.ocr_pdf_to_md 保持相同签名以便工厂函数互换。
+        """
+        return asyncio.run(self._ocr_pdf_to_md_async(pdf_path, output_dir))
+
+    async def _ocr_pdf_to_md_async(self, pdf_path: str,
+                                   output_dir: str | None = None) -> str:
+        """异步 PDF 文档解析 → 下载 Markdown → 保存到文件"""
+        from app.config import OUTPUT_DIR
+
+        if output_dir is None:
+            output_dir = str(Path(OUTPUT_DIR) / Path(pdf_path).stem)
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        # 提交任务
+        task_id = await self._submit_task(pdf_path)
+        logger.info("PaddleOCR-VL 任务已提交: task_id=%s, 文件=%s",
+                    task_id, Path(pdf_path).name)
+
+        # 轮询结果
+        result = await self._poll_result(task_id)
+
+        # 下载 Markdown
+        markdown_url = result.get("markdown_url", "")
+        if not markdown_url:
+            raise RuntimeError("OCR 结果中缺少 markdown_url")
+
+        md_text = await self._download_markdown(markdown_url)
+
+        md_path = str(Path(output_dir) / f"{Path(pdf_path).stem}.md")
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(md_text)
+
+        logger.info("PaddleOCR-VL Markdown 已保存: %s (%d 字符)", md_path, len(md_text))
+        return md_path
+
+
+# ═══════════════════════════════════════════
+# 工厂函数
+# ═══════════════════════════════════════════
+
+def create_ocr_client() -> object:
+    """根据 settings 中的 ocr.backend 配置创建 OCR 客户端。
+
+    返回实现了 ocr_pdf_to_md(pdf_path, output_dir=None) -> str 的客户端实例。
+
+    支持的后端:
+        paddle-vl   — PaddleOCR-VL 文档解析（推荐，结构化 Markdown）
+        accurate-basic — 通用文字识别（旧版兼容，纯文本）
+        custom      — 自定义 OCR 端点
+
+    Raises:
+        RuntimeError: OCR 令牌未配置或后端未知
+    """
+    from app.ocr.provider_presets import OCR_PROVIDERS
+
+    backend = get_setting("ocr.backend") or "paddle-vl"
+
+    # 向后兼容：新 key (ocr.{backend}.access_token) 未配置时回退到 ocr.access_token
+    token = (get_setting(f"ocr.{backend}.access_token")
+             or get_setting("ocr.access_token"))
+
+    if not token:
+        raise RuntimeError(
+            "OCR 令牌未配置，请在设置页面选择 OCR 后端并配置 access_token"
+        )
+
+    if backend == "accurate-basic":
+        return PaddleStudioAPI(access_token=token)
+
+    if backend == "custom":
+        preset = OCR_PROVIDERS.get("custom", {})
+        base_url = get_setting("ocr.custom.base_url") or preset.get("url", "")
+        model = get_setting("ocr.custom.model") or ""
+        params_str = get_setting("ocr.custom.params") or "{}"
+        try:
+            extra_params = json.loads(params_str)
+        except json.JSONDecodeError:
+            extra_params = {}
+
+        # 自定义后端使用通用 OCR 客户端
+        return CustomOCRClient(
+            access_token=token,
+            base_url=base_url,
+            model=model,
+            extra_params=extra_params,
+        )
+
+    # 默认使用 paddle-vl
+    provider = OCR_PROVIDERS.get(backend, OCR_PROVIDERS["paddle-vl"])
+    params_str = get_setting(f"ocr.{backend}.params") or ""
+    if params_str:
+        try:
+            params = json.loads(params_str)
+        except json.JSONDecodeError:
+            params = dict(provider.get("default_params", {}))
+    else:
+        params = dict(provider.get("default_params", {}))
+
+    return PaddleVLClient(access_token=token, params=params)
+
+
+class CustomOCRClient:
+    """自定义 OCR 客户端 — 支持任意 OpenAI Vision 兼容 API"""
+
+    def __init__(self, access_token: str = "", base_url: str = "",
+                 model: str = "", extra_params: dict | None = None):
+        self.access_token = access_token
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.extra_params = extra_params or {}
+
+    def ocr_pdf_to_md(self, pdf_path: str, output_dir: str | None = None) -> str:
+        """PDF → 逐页渲染 → 自定义 API → Markdown"""
+        import fitz
+        from app.config import OUTPUT_DIR
+
+        if output_dir is None:
+            output_dir = str(Path(OUTPUT_DIR) / Path(pdf_path).stem)
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        md_path = str(Path(output_dir) / f"{Path(pdf_path).stem}.md")
+        doc = fitz.open(pdf_path)
+        try:
+            md_parts = []
+            for i in range(len(doc)):
+                page = doc[i]
+                pix = page.get_pixmap(dpi=200)
+                img_path = str(Path(output_dir) / f"page_{i + 1:04d}.png")
+                pix.save(img_path)
+                try:
+                    text = asyncio.run(self._ocr_page_async(img_path))
+                    md_parts.append(f"## 第{i + 1}页\n\n{text}\n")
+                except Exception as e:
+                    md_parts.append(f"## 第{i + 1}页\n\n_[OCR 失败: {e}]_\n")
+                finally:
+                    Path(img_path).unlink(missing_ok=True)
+        finally:
+            doc.close()
+
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(md_parts))
+
+        return md_path
+
+    async def _ocr_page_async(self, img_path: str) -> str:
+        """调用自定义 API 识别单页图片"""
+        import httpx
+
+        with open(img_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        headers = {"Content-Type": "application/json"}
+        if self.access_token:
+            headers["Authorization"] = f"Bearer {self.access_token}"
+
+        payload = {
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text",
+                     "text": "请识别图片中的文字，输出为 Markdown 格式，保留表格和标题结构。"},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                ],
+            }],
+            "max_tokens": 4096,
+            **self.extra_params,
+        }
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        choices = data.get("choices", [])
+        if choices:
+            return choices[0].get("message", {}).get("content", "")
+        return ""

@@ -1,6 +1,7 @@
 <!-- 规则表格片段（htmx 局部刷新） -->
 {% if stats %}
-<div id="rules-stats" style="margin-bottom:0.5rem;display:flex;gap:1rem;flex-wrap:wrap">
+<div id="rules-stats" style="margin-bottom:0.5rem;display:flex;gap:1rem;flex-wrap:wrap"
+     hx-get="/rules/stats" hx-trigger="statsRefresh from:body" hx-swap="outerHTML">
     {% for s in stats %}
     <small style="background:var(--pico-secondary-background);padding:0.2rem 0.5rem;border-radius:4px">
         {% set labels = {"dim1": "规范属性", "dim2": "工程阶段", "dim3": "工程类型",

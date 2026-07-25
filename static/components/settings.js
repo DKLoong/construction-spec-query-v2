@@ -4,7 +4,22 @@ document.addEventListener('alpine:init', () => {
         activeTab: 'ocr',
 
         // OCR
-        ocrToken: '',
+        ocrBackend: 'paddle-vl',
+        ocrToken: '',               // 通用 access_token（向后兼容，所有后端共用）
+        ocrKeys: {                   // 各后端独立 token
+            'paddle-vl': '',
+            'accurate-basic': '',
+            custom_access_token: '',
+            custom_base_url: '',
+            custom_model: '',
+            custom_params: '{}',
+        },
+        ocrPaddleVLParams: {        // PaddleOCR-VL 高级选项
+            analysis_chart: true,
+            merge_tables: true,
+            relevel_titles: true,
+            recognize_seal: false,
+        },
         ocrTesting: false,
         ocrTestResult: '',
 
@@ -30,6 +45,20 @@ document.addEventListener('alpine:init', () => {
                 const resp = await fetch('/settings');
                 const data = await resp.json();
                 this.ocrToken = data['ocr.access_token'] || '';
+                this.ocrBackend = data['ocr.backend'] || 'paddle-vl';
+                this.ocrKeys = {
+                    'paddle-vl': data['ocr.paddle-vl.access_token'] || data['ocr.access_token'] || '',
+                    'accurate-basic': data['ocr.accurate-basic.access_token'] || data['ocr.access_token'] || '',
+                    custom_access_token: data['ocr.custom.access_token'] || '',
+                    custom_base_url: data['ocr.custom.base_url'] || '',
+                    custom_model: data['ocr.custom.model'] || '',
+                    custom_params: data['ocr.custom.params'] || '{}',
+                };
+                // PaddleOCR-VL 高级参数
+                const vlParamsStr = data['ocr.paddle-vl.params'] || '';
+                if (vlParamsStr) {
+                    try { Object.assign(this.ocrPaddleVLParams, JSON.parse(vlParamsStr)); } catch (e) {}
+                }
                 this.aiBackend = data['ai.backend'] || 'claude';
                 this.aiKeys = {
                     doubao: data['ai.doubao.api_key'] || '',
@@ -49,6 +78,14 @@ document.addEventListener('alpine:init', () => {
             this.saveError = '';
             const payload = {
                 'ocr.access_token': this.ocrToken,
+                'ocr.backend': this.ocrBackend,
+                'ocr.paddle-vl.access_token': this.ocrKeys['paddle-vl'],
+                'ocr.paddle-vl.params': JSON.stringify(this.ocrPaddleVLParams),
+                'ocr.accurate-basic.access_token': this.ocrKeys['accurate-basic'],
+                'ocr.custom.access_token': this.ocrKeys.custom_access_token,
+                'ocr.custom.base_url': this.ocrKeys.custom_base_url,
+                'ocr.custom.model': this.ocrKeys.custom_model,
+                'ocr.custom.params': this.ocrKeys.custom_params,
                 'ai.backend': this.aiBackend,
                 'ai.doubao.api_key': this.aiKeys.doubao,
                 'ai.deepseek.api_key': this.aiKeys.deepseek,
@@ -82,7 +119,10 @@ document.addEventListener('alpine:init', () => {
                 const resp = await fetch('/settings/test-ocr', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ access_token: this.ocrToken }),
+                    body: JSON.stringify({
+                        backend: this.ocrBackend,
+                        access_token: this.currentOCRToken,
+                    }),
                 });
                 const data = await resp.json();
                 if (resp.ok) {
@@ -147,6 +187,19 @@ document.addEventListener('alpine:init', () => {
             else if (['doubao', 'deepseek', 'glm', 'kimi'].includes(this.aiBackend)) {
                 this.aiKeys[this.aiBackend] = val;
             }
+        },
+
+        // OCR 当前后端对应的 access_token（类似 currentAIKey）
+        get currentOCRToken() {
+            if (this.ocrBackend === 'custom') return this.ocrKeys.custom_access_token;
+            if (this.ocrBackend === 'paddle-vl') return this.ocrKeys['paddle-vl'];
+            if (this.ocrBackend === 'accurate-basic') return this.ocrKeys['accurate-basic'];
+            return this.ocrToken;  // 向后兼容
+        },
+        set currentOCRToken(val) {
+            if (this.ocrBackend === 'custom') this.ocrKeys.custom_access_token = val;
+            else if (this.ocrBackend === 'paddle-vl') this.ocrKeys['paddle-vl'] = val;
+            else if (this.ocrBackend === 'accurate-basic') this.ocrKeys['accurate-basic'] = val;
         },
     }));
 });
