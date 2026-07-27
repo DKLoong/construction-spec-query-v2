@@ -29,11 +29,15 @@ def _match_score(text: str, rule: dict) -> float:
 
 
 def classify_clause(clause_text: str, parent_path: list[str],
-                    active_rules: list[dict]) -> tuple[dict[str, float], dict[str, str]]:
-    """对单条条文执行规则匹配，返回 (六维得分, 最佳标签) 元组"""
+                    active_rules: list[dict]) -> tuple[dict[str, float], dict[str, str], dict[str, int]]:
+    """对单条条文执行规则匹配，返回 (六维得分, 最佳标签, 最佳规则ID) 元组
+
+    每一条规则必须满足「匹配得分 ≥ 规则自身的阈值」才参与竞争。
+    """
     dims = ["dim1", "dim2", "dim3", "dim4", "dim5", "dim6"]
     scores = {d: 0.0 for d in dims}
     best_labels: dict[str, str] = {}
+    best_rule_ids: dict[str, int] = {}
 
     # 父路径关键词也加入匹配文本（标签继承）
     augmented_text = clause_text + " " + " ".join(parent_path)
@@ -45,11 +49,14 @@ def classify_clause(clause_text: str, parent_path: list[str],
         if dim not in scores:
             continue
         score = _match_score(augmented_text, rule)
-        if score > scores[dim]:
+        rule_threshold = rule.get("threshold", 0.6)
+        # 必须超过规则自身的阈值才参与该维度的竞争
+        if score >= rule_threshold and score > scores[dim]:
             scores[dim] = score
             best_labels[dim] = rule["pattern"]
+            best_rule_ids[dim] = rule["id"]
 
-    return scores, best_labels
+    return scores, best_labels, best_rule_ids
 
 
 def should_use_ai(dimension: str, scores: dict[str, float],

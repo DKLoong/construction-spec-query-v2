@@ -1,4 +1,5 @@
 import hashlib
+import re
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Request, UploadFile, File, Form, BackgroundTasks
@@ -151,7 +152,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
         # Step 3: 规范级分类
         dim1_hierarchy = _detect_hierarchy(code)
-        dim1_nature = "推荐性" if "/T" in code else "强制性"
+        dim1_nature = _detect_nature(code)
 
         progress_store[task_id].update(progress=70, message=f"正在分类 {len(clauses_data)} 条条文...")
 
@@ -163,9 +164,18 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
         # Step 5: 规范级分类 (dim2/dim3)
         spec_classify_text = f"{code} {title}"
-        spec_scores, spec_labels = classify_clause(spec_classify_text, [], rules)
+        spec_scores, spec_labels, spec_rule_ids = classify_clause(spec_classify_text, [], rules)
         dim2_stage = spec_labels.get("dim2", "")
         dim3_usage = spec_labels.get("dim3", "")
+
+        # 更新规范级规则统计
+        for dim in ("dim2", "dim3"):
+            rule_id = spec_rule_ids.get(dim)
+            if rule_id:
+                conn.execute(
+                    "UPDATE classification_rules SET hit_count = hit_count + 1, confirmed = confirmed + 1 WHERE id = ?",
+                    (rule_id,),
+                )
 
         # Step 6: 写入数据库 + 分类 + 向量索引
         output_dir = str(Path(OUTPUT_DIR) / (code or Path(file_path).stem))
@@ -192,7 +202,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         # 第一步：先插入所有条文到 SQLite，收集需要 embedding 的记录
         embedding_records = []
         for cd in clauses_data:
-            scores, best_labels = classify_clause(cd["content"], cd.get("parent_path", []), rules)
+            scores, best_labels, best_rule_ids = classify_clause(cd["content"], cd.get("parent_path", []), rules)
             dim4_val = best_labels.get("dim4", "")
             dim5_val = best_labels.get("dim5", "")
             dim6_val = best_labels.get("dim6", "")
@@ -207,13 +217,26 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
             clause_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
             for dim in ["dim4", "dim5", "dim6"]:
+                rule_id = best_rule_ids.get(dim)
                 if should_use_ai(dim, scores, ADAPTIVE_THRESHOLDS):
                     conn.execute(
                         "INSERT INTO classification_queue (clause_id, dimension, keyword_score) VALUES (?, ?, ?)",
                         (clause_id, dim, scores[dim]),
                     )
+                    # 规则匹配到但得分不足 → 仅记录命中
+                    if rule_id:
+                        conn.execute(
+                            "UPDATE classification_rules SET hit_count = hit_count + 1 WHERE id = ?",
+                            (rule_id,),
+                        )
                 elif best_labels.get(dim):
                     classified_count += 1
+                    # 规则匹配到且得分达标 → 命中 + 确认
+                    if rule_id:
+                        conn.execute(
+                            "UPDATE classification_rules SET hit_count = hit_count + 1, confirmed = confirmed + 1 WHERE id = ?",
+                            (rule_id,),
+                        )
 
             if vs is not None:
                 dim_scores_str = ",".join(f"{k}={v:.2f}" for k, v in scores.items())
@@ -298,15 +321,90 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
 
 def _detect_hierarchy(code: str) -> str:
-    if code.startswith("GB"):
-        return "国家标准"
-    elif code.startswith("JGJ") or code.startswith("CJJ"):
-        return "行业标准"
-    elif code.startswith("DB"):
-        return "地方标准"
-    elif code.startswith("T/"):
+    """根据规范编号前缀判断规范层级"""
+    if not code:
+        return ""
+
+    # 规范化：去掉可能存在的斜杠（Windows 不允许文件名含 /）
+    c = code.replace("/", "").strip()
+    if not c:
+        return ""
+
+    # 前缀按长度降序排列，确保最长前缀优先匹配
+    # 例如 JTG 必须在 JT 之前检查，GBT 必须在 GB 之前检查
+    PREFIX_MAP = [
+        ("JTGT", "公路工程"),
+        ("JTG", "公路工程"),
+        ("JTT", "交通运输"),
+        ("JT", "交通运输"),
+        ("JGT", "建筑工业"),
+        ("JG", "建筑工业"),
+        ("JGJ", "建筑工程"),
+        ("CJT", "城镇建设"),
+        ("CJ", "城镇建设"),
+        ("JBT", "机械"),
+        ("JB", "机械"),
+        ("NYT", "农业"),
+        ("NY", "农业"),
+        ("GBT", "国家标准"),
+        ("GB", "国家标准"),
+        ("TB", "铁路"),
+        ("MH", "民用航空"),
+        ("YZ", "邮政"),
+        ("DB", "地方标准"),
+    ]
+
+    for prefix, hierarchy in PREFIX_MAP:
+        if c.startswith(prefix):
+            return hierarchy
+
+    # 单字母前缀
+    if c.startswith("T"):
         return "团体标准"
-    return "企业标准"
+    if c.startswith("Q"):
+        return "企业标准"
+
+    return ""
+
+
+def _detect_nature(code: str) -> str:
+    """根据规范编号判断强制性/推荐性"""
+    if not code:
+        return ""
+
+    c = code.replace("/", "").strip()
+    if not c:
+        return ""
+
+    # 企业标准：无强制/推荐之分
+    if c.startswith("Q"):
+        return ""
+
+    # 团体标准：始终推荐性（T 后不能紧跟字母，以区分 TB）
+    if re.match(r"^T($|\s|\d)", c):
+        return "推荐性"
+
+    # 邮政标准：始终推荐性
+    if c.startswith("YZ"):
+        return "推荐性"
+
+    # 提取前缀字母段
+    m = re.match(r"^([A-Za-z]+)", c)
+    if not m:
+        return "强制性"
+
+    letters = m.group(1)
+
+    # 已知的推荐性变体（前缀字母段精确匹配）
+    RECOMMENDED = {"GBT", "JTT", "JTGT", "JGT", "CJT", "JBT", "NYT", "DBT"}
+    if letters in RECOMMENDED:
+        return "推荐性"
+
+    # 原始字符串中包含 "/T" 模式（如 DB13/T 这种非规范写法）
+    if "/T" in code:
+        return "推荐性"
+
+    return "强制性"
 
 
 # ═══════════════════════════════════════════

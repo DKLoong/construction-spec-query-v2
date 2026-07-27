@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 DIMS = ["dim4", "dim5", "dim6"]
 
 
-def process_pending_batches(backend_name: str = "claude", force: bool = False) -> int:
+def process_pending_batches(backend_name: str | None = None, force: bool = False) -> int:
     """处理所有维度的待分类批次，返回处理条数。"""
     backend = get_backend(backend_name)
     if not backend.is_available():

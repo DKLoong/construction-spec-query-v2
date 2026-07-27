@@ -25,6 +25,8 @@ document.addEventListener('alpine:init', () => {
 
         // AI
         aiBackend: 'claude',
+        aiBackendQA: '',
+        aiBackendClassify: '',
         aiKeys: {},
         aiTesting: false,
         aiTestResult: '',
@@ -60,6 +62,8 @@ document.addEventListener('alpine:init', () => {
                     try { Object.assign(this.ocrPaddleVLParams, JSON.parse(vlParamsStr)); } catch (e) {}
                 }
                 this.aiBackend = data['ai.backend'] || 'claude';
+                this.aiBackendQA = data['ai.backend.qa'] || '';
+                this.aiBackendClassify = data['ai.backend.classify'] || '';
                 this.aiKeys = {
                     doubao: data['ai.doubao.api_key'] || '',
                     deepseek: data['ai.deepseek.api_key'] || '',
@@ -87,6 +91,8 @@ document.addEventListener('alpine:init', () => {
                 'ocr.custom.model': this.ocrKeys.custom_model,
                 'ocr.custom.params': this.ocrKeys.custom_params,
                 'ai.backend': this.aiBackend,
+                'ai.backend.qa': this.aiBackendQA,
+                'ai.backend.classify': this.aiBackendClassify,
                 'ai.doubao.api_key': this.aiKeys.doubao,
                 'ai.deepseek.api_key': this.aiKeys.deepseek,
                 'ai.glm.api_key': this.aiKeys.glm,
@@ -134,6 +140,13 @@ document.addEventListener('alpine:init', () => {
                 this.ocrTestResult = '❌ 网络错误';
             }
             this.ocrTesting = false;
+        },
+
+        toggleBackendQA(backend) {
+            this.aiBackendQA = this.aiBackendQA === backend ? '' : backend;
+        },
+        toggleBackendClassify(backend) {
+            this.aiBackendClassify = this.aiBackendClassify === backend ? '' : backend;
         },
 
         async testAI() {

@@ -98,7 +98,8 @@ async def qa_ask(request: Request, body: QaRequest):
     backend = get_backend(body.backend)
     if isinstance(backend, APIBackend):
         from app.ai.provider_presets import PROVIDERS
-        preset = PROVIDERS.get(body.backend)
+        backend_name = body.backend or ""
+        preset = PROVIDERS.get(backend_name)
         cli_used = preset["name"] if preset else "自定义"
     else:
         cli_used = backend.command

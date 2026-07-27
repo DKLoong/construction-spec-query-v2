@@ -192,7 +192,7 @@ class SearchResponse(BaseModel):
 
 class QaRequest(BaseModel):
     question: str
-    backend: str = "claude"
+    backend: str | None = None
 
 
 class QAResponse(BaseModel):

@@ -69,7 +69,7 @@
                         @click="openEdit($el.dataset)">
                     编辑
                 </button>
-                <button hx-delete="/rules/{{ r.id }}" hx-swap="outerHTML"
+                <button hx-delete="/rules/{{ r.id }}" hx-target="#rules-table" hx-swap="innerHTML"
                         hx-confirm="确定删除规则「{{ r.pattern }}」？"
                         class="secondary outline"
                         style="font-size:0.75rem;padding:0.15rem 0.4rem;color:red">

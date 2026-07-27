@@ -1,6 +1,9 @@
 <!-- 中栏：规则列表 -->
 <div x-data="rulesManager()" style="padding:1rem">
-    <h2>📋 分类规则管理</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0">📋 分类规则管理</h2>
+        <button @click="window.dispatchEvent(new CustomEvent('open-settings', {detail: {tab: 'ai'}}))" class="outline secondary" style="font-size:0.75rem;padding:0.2rem 0.5rem">⚙️ 设置</button>
+    </div>
 
     <!-- 维度筛选 -->
     <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
