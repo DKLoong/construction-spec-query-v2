@@ -6,10 +6,11 @@
      class="qa-modal-overlay"
      style="display:none"
      x-cloak>
-    <div class="qa-modal-box" style="max-width:520px" ="">
+    <div class="qa-modal-box" style="max-width:520px">
         <div class="qa-modal-header">
             <span>⚙️ 系统设置</span>
             <button class="qa-modal-close" @click="close()" aria-label="关闭">&times;</button>
+            
         </div>
         <div class="qa-modal-body">
             <!-- 标签页 -->
@@ -27,7 +28,7 @@
             </div>
 
             <!-- OCR 标签页 -->
-            <div x-show="activeTab==='ocr'">
+            <div x-show.important="activeTab==='ocr'">
                 <!-- OCR 后端选择 -->
                 <label style="font-size:0.85rem;margin-bottom:0.5rem">选择 OCR 后端</label>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;margin-bottom:0.75rem">
@@ -80,7 +81,7 @@
 
                 </div>
 
-            <div x-show="activeTab==='ai'">
+            <div x-show.important="activeTab==='ai'">
                 <label style="font-size:0.85rem;margin-bottom:0.5rem">选择后端及模块分配</label>
                 <div style="display:flex;flex-direction:column;gap:0.3rem;margin-bottom:0.75rem">
                 <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
@@ -89,7 +90,7 @@
                         <input type="radio" x-model="aiBackend" value="claude" style="width:auto"> Claude Code
                     </label>
                     <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
-                        <span @click="aiBackendQA = 'claude'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                        <span @click="aiBackendQA = aiBackendQA === 'claude' ? '' : 'claude'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
 
                             <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'claude' ? '\u2713' : ''"></span>
 
