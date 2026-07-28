@@ -63,19 +63,15 @@
     </div>
     <!-- 设置弹窗 -->
     {% include "partials/settings_dialog.html" %}
-    <!-- 条文详情弹窗（使用 style.display 替代 x-show 避免 Alpine 懒加载 bug） -->
-    <div x-data="clauseModal"
-         @keydown.escape.window="close()"
-         @click.self="close()"
-         class="clause-modal-overlay"
-         style="display:none">
-        <div class="clause-modal-box" @click.stop="">
+    <!-- 条文详情弹窗（纯 JS 控制显示/隐藏，不依赖 Alpine 可见性控制） -->
+    <div id="clause-modal-overlay" class="clause-modal-overlay" style="display:none">
+        <div class="clause-modal-box">
             <div class="clause-modal-header">
                 <span class="clause-modal-title">📋 条文详情</span>
-                <button @click="close()" class="clause-modal-close" aria-label="关闭">&times;</button>
+                <button onclick="window.closeClauseModal()" class="clause-modal-close" aria-label="关闭">&times;</button>
             </div>
             <div class="clause-modal-body">
-                <div x-show="loading" class="clause-modal-loading">加载中...</div>
+                <div class="clause-modal-loading" style="display:none">加载中...</div>
                 <div id="clause-modal-content"></div>
             </div>
         </div>

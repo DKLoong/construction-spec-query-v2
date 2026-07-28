@@ -1,44 +1,87 @@
-// 条文详情弹窗组件
-document.addEventListener('alpine:init', () => {
-    Alpine.data('clauseModal', () => ({
-        loading: false,
+// 条文详情弹窗 — 纯 JS 实现，不依赖 Alpine 可见性控制
+(function () {
+    'use strict';
 
-        init() {
-            // 监听来自搜索结果项的自定义事件
-            window.addEventListener('view-clause', (e) => {
-                this.viewClause(e.detail.id);
-            });
-            // 页面加载时隐藏弹窗（style.display 兜底，避免 x-show 与 x-cloak 交互的 Alpine 懒加载问题）
-            const el = this.$el;
-            if (el) el.style.display = 'none';
-        },
+    const OVERLAY_ID = 'clause-modal-overlay';
+    const CONTENT_ID = 'clause-modal-content';
+    const LOADING_CLASS = 'clause-modal-loading';
 
-        viewClause(id) {
-            const el = this.$el;
-            if (!el) return;
-            this.loading = true;
-            // 直接操作 style.display 绕过 Alpine x-show（后者在特定场景与 x-cloak 配合时可见性切换失效）
-            el.style.display = 'flex';
-            // 通过 HTMX 加载条文详情到弹窗内
-            htmx.ajax('GET', `/clause/${id}`, {
-                target: '#clause-modal-content',
-                swap: 'innerHTML'
-            });
-            // 内容加载完成后取消 loading
-            const content = document.getElementById('clause-modal-content');
-            const self = this;
-            content.addEventListener('htmx:afterSettle', () => {
-                self.loading = false;
-            }, { once: true });
-        },
+    let overlay = null;
+    let loadingEl = null;
+    let contentEl = null;
 
-        close() {
-            const el = this.$el;
-            if (el) el.style.display = 'none';
-            this.loading = false;
-            // 清空弹窗内容
-            const content = document.getElementById('clause-modal-content');
-            if (content) content.innerHTML = '';
+    function getEls() {
+        overlay = document.getElementById(OVERLAY_ID);
+        if (overlay) {
+            loadingEl = overlay.querySelector('.' + LOADING_CLASS);
+            contentEl = document.getElementById(CONTENT_ID);
         }
-    }));
-});
+    }
+
+    function show(id) {
+        getEls();
+        if (!overlay) return;
+
+        // 显示弹窗
+        overlay.style.display = 'flex';
+
+        // 显示加载中
+        if (loadingEl) loadingEl.style.display = 'block';
+
+        // 通过 HTMX 加载条文详情
+        htmx.ajax('GET', '/clause/' + id, {
+            target: '#' + CONTENT_ID,
+            swap: 'innerHTML'
+        });
+
+        // 内容加载完成后隐藏加载状态
+        if (contentEl) {
+            contentEl.addEventListener('htmx:afterSettle', function onSettle() {
+                if (loadingEl) loadingEl.style.display = 'none';
+                contentEl.removeEventListener('htmx:afterSettle', onSettle);
+            });
+        }
+    }
+
+    function hide() {
+        getEls();
+        if (!overlay) return;
+        overlay.style.display = 'none';
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (contentEl) contentEl.innerHTML = '';
+    }
+
+    // 初始化：监听事件 + 键盘/点击关闭
+    function init() {
+        getEls();
+
+        // 监听搜索结果点击
+        window.addEventListener('view-clause', function (e) {
+            show(e.detail.id);
+        });
+
+        if (!overlay) return;
+
+        // ESC 关闭
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && overlay.style.display === 'flex') {
+                hide();
+            }
+        });
+
+        // 点击遮罩关闭
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) hide();
+        });
+    }
+
+    // 在 DOM 加载完成后初始化
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+
+    // 导出 hide 以供 Alpine 组件（loading 指示器）调用
+    window.closeClauseModal = hide;
+})();
