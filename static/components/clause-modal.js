@@ -28,6 +28,9 @@
 
         console.log('[clause-modal] overlay found, setting display=flex');
         overlay.style.display = 'flex';
+        // 诊断：检查内联样式 vs 计算后样式（如果 computed 是 none，说明有 !important 覆盖）
+        console.log('[clause-modal] inline display:', overlay.style.display);
+        console.log('[clause-modal] computed display:', getComputedStyle(overlay).display);
 
         // 显示加载中
         if (loadingEl) loadingEl.style.display = 'block';
