@@ -162,7 +162,7 @@
    条文详情弹窗
    ═══════════════════════════════════════════════════════════════ */
 .clause-modal-overlay {
-    position: fixed; inset: 0;
+    position: fixed; top: 0; right: 0; bottom: 0; left: 0;
     background: rgba(74, 68, 84, 0.5);
     display: flex; align-items: center; justify-content: center;
     z-index: 2000; backdrop-filter: blur(3px);

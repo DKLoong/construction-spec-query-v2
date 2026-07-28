@@ -34,6 +34,7 @@
         // 诊断：位置/尺寸/z-index/opacity
         var cs = getComputedStyle(overlay);
         console.log('[clause-modal] z-index:', cs.zIndex, '| opacity:', cs.opacity, '| visibility:', cs.visibility);
+        console.log('[clause-modal] top/right/bottom/left:', cs.top, cs.right, cs.bottom, cs.left);
         var rect = overlay.getBoundingClientRect();
         console.log('[clause-modal] rect:', JSON.stringify({x:rect.x, y:rect.y, w:rect.width, h:rect.height}));
         // 诊断：弹窗内的内容
