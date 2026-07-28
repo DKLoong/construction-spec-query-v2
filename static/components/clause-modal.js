@@ -47,8 +47,15 @@
         console.log('[clause-modal] inline style:', overlay.getAttribute('style'));
         console.log('[clause-modal] viewport:', window.innerWidth + 'x' + window.innerHeight);
         console.log('[clause-modal] body rect:', JSON.stringify({w:document.body.getBoundingClientRect().width, h:document.body.getBoundingClientRect().height}));
-        console.log('[clause-modal] in DOM:', document.contains(overlay), '| parent:', overlay.parentElement?.tagName);
-        console.log('[clause-modal] rect:', JSON.stringify({x:rect.x, y:rect.y, w:rect.width, h:rect.height}));
+        var parent = overlay.parentElement;
+        var pcs = parent ? getComputedStyle(parent) : null;
+        console.log('[clause-modal] parent:', parent?.tagName, parent?.id ? '#'+parent.id : '', parent?.className ? '.'+parent.className : '', '| pos:', pcs?.position, '| overflow:', pcs?.overflow, '| h:', pcs?.height, '| transform:', pcs?.transform);
+        if (parent) {
+            var pr = parent.getBoundingClientRect();
+            console.log('[clause-modal] parent rect:', JSON.stringify({x:pr.x, y:pr.y, w:pr.width, h:pr.height}));
+        }
+        console.log('[clause-modal] in DOM:', document.contains(overlay));
+        console.log('[clause-modal] cs.position:', getComputedStyle(overlay).position, '| rect:', JSON.stringify({x:rect.x, y:rect.y, w:rect.width, h:rect.height}));
         // 诊断：弹窗内的内容
         var box = overlay.querySelector('.clause-modal-box');
         if (box) {
