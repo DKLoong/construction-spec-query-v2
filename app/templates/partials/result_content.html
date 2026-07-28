@@ -3,7 +3,7 @@
     <p>共找到 {{ total }} 条结果</p>
     {% for r in results %}
     <div class="result-item"
-         @click="window.dispatchEvent(new CustomEvent('view-clause', {detail: {id: {{ r.id }}}}))"
+         onclick="window.dispatchEvent(new CustomEvent('view-clause', {detail: {id: {{ r.id }}}}))"
          style="cursor: pointer;">
         <div class="clause-no">{{ r.spec_code }}{% if r.spec_title %} {{ r.spec_title }}{% endif %} — {{ r.clause_no }}</div>
         {% if r.title %}<div class="clause-title">{{ r.title }}</div>{% endif %}
