@@ -57,12 +57,16 @@
 
     // 初始化：监听事件 + 键盘/点击关闭
     function init() {
+        console.log('[clause-modal] init() called');
         getEls();
+        console.log('[clause-modal] overlay found:', !!overlay);
 
         // 监听搜索结果点击
         window.addEventListener('view-clause', function (e) {
+            console.log('[clause-modal] view-clause event received, id=' + e.detail?.id);
             show(e.detail.id);
         });
+        console.log('[clause-modal] listener registered');
 
         if (!overlay) return;
 
