@@ -63,13 +63,12 @@
     </div>
     <!-- 设置弹窗 -->
     {% include "partials/settings_dialog.html" %}
-    <!-- 条文详情弹窗 -->
+    <!-- 条文详情弹窗（使用 style.display 替代 x-show 避免 Alpine 懒加载 bug） -->
     <div x-data="clauseModal"
-         x-show="open"
-         @keydown.escape.window="if(open) close()"
+         @keydown.escape.window="close()"
          @click.self="close()"
          class="clause-modal-overlay"
-         x-cloak>
+         style="display:none">
         <div class="clause-modal-box" @click.stop="">
             <div class="clause-modal-header">
                 <span class="clause-modal-title">📋 条文详情</span>
