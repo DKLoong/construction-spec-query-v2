@@ -26,26 +26,34 @@
             return;
         }
 
-        console.log('[clause-modal] overlay found, setting display=flex');
         overlay.style.display = 'flex';
-        // 强制回流，确保浏览器完成布局计算
+        // 最简诊断 — 用 Object.assign 一次性设置所有关键样式，绕过 CSS 级联
+        Object.assign(overlay.style, {
+            display: 'flex',
+            position: 'fixed',
+            top: '0', left: '0',
+            width: '100vw',
+            height: '100vh',
+            zIndex: '2000',
+            background: 'rgba(74, 68, 84, 0.5)',
+            alignItems: 'center',
+            justifyContent: 'center'
+        });
+        // 强制回流 + 测量
         void overlay.offsetHeight;
-        void getComputedStyle(overlay).transform;
-        // 诊断：检查内联样式 vs 计算后样式（如果 computed 是 none，说明有 !important 覆盖）
-        console.log('[clause-modal] inline display:', overlay.style.display);
-        console.log('[clause-modal] computed display:', getComputedStyle(overlay).display);
-        // 诊断：位置/尺寸/z-index/opacity
         var cs = getComputedStyle(overlay);
-        console.log('[clause-modal] z-index:', cs.zIndex, '| opacity:', cs.opacity, '| visibility:', cs.visibility);
-        console.log('[clause-modal] top/right/bottom/left:', cs.top, cs.right, cs.bottom, cs.left);
         var rect = overlay.getBoundingClientRect();
+        console.log('[clause-modal] cs.width:', cs.width, '| cs.height:', cs.height);
+        console.log('[clause-modal] inline style:', overlay.getAttribute('style'));
+        console.log('[clause-modal] viewport:', window.innerWidth + 'x' + window.innerHeight);
+        console.log('[clause-modal] body rect:', JSON.stringify({w:document.body.getBoundingClientRect().width, h:document.body.getBoundingClientRect().height}));
+        console.log('[clause-modal] in DOM:', document.contains(overlay), '| parent:', overlay.parentElement?.tagName);
         console.log('[clause-modal] rect:', JSON.stringify({x:rect.x, y:rect.y, w:rect.width, h:rect.height}));
         // 诊断：弹窗内的内容
         var box = overlay.querySelector('.clause-modal-box');
         if (box) {
-            var bcs = getComputedStyle(box);
             var br = box.getBoundingClientRect();
-            console.log('[clause-modal] box display:', bcs.display, '| rect:', JSON.stringify({x:br.x, y:br.y, w:br.width, h:br.height}));
+            console.log('[clause-modal] box rect:', JSON.stringify({x:br.x, y:br.y, w:br.width, h:br.height}));
         }
 
         // 显示加载中
