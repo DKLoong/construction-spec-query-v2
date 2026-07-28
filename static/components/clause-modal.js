@@ -19,10 +19,14 @@
     }
 
     function show(id) {
+        console.log('[clause-modal] show() called with id=' + id);
         getEls();
-        if (!overlay) return;
+        if (!overlay) {
+            console.warn('[clause-modal] overlay not found! id=' + OVERLAY_ID);
+            return;
+        }
 
-        // 显示弹窗
+        console.log('[clause-modal] overlay found, setting display=flex');
         overlay.style.display = 'flex';
 
         // 显示加载中
