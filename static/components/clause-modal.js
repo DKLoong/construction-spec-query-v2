@@ -31,6 +31,18 @@
         // 诊断：检查内联样式 vs 计算后样式（如果 computed 是 none，说明有 !important 覆盖）
         console.log('[clause-modal] inline display:', overlay.style.display);
         console.log('[clause-modal] computed display:', getComputedStyle(overlay).display);
+        // 诊断：位置/尺寸/z-index/opacity
+        var cs = getComputedStyle(overlay);
+        console.log('[clause-modal] z-index:', cs.zIndex, '| opacity:', cs.opacity, '| visibility:', cs.visibility);
+        var rect = overlay.getBoundingClientRect();
+        console.log('[clause-modal] rect:', JSON.stringify({x:rect.x, y:rect.y, w:rect.width, h:rect.height}));
+        // 诊断：弹窗内的内容
+        var box = overlay.querySelector('.clause-modal-box');
+        if (box) {
+            var bcs = getComputedStyle(box);
+            var br = box.getBoundingClientRect();
+            console.log('[clause-modal] box display:', bcs.display, '| rect:', JSON.stringify({x:br.x, y:br.y, w:br.width, h:br.height}));
+        }
 
         // 显示加载中
         if (loadingEl) loadingEl.style.display = 'block';
