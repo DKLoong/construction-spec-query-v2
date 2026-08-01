@@ -128,7 +128,12 @@ class PaddleStudioAPI:
 # ═══════════════════════════════════════════
 
 class PaddleVLClient:
-    """PaddleOCR-VL 文档解析 API 客户端（异步：提交 → 轮询 → 下载 Markdown）
+    """PaddleOCR 官网 V2 文档解析 API 客户端（异步：提交 → 轮询 → 下载 JSONL）
+
+    接口：https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
+    - multipart 上传 PDF + Authorization: bearer {token}
+    - GET 轮询 /jobs/{jobId}，state 流转 pending/running/done/failed
+    - done 后从 resultUrl.jsonUrl 下载 JSONL，逐页拼接 layoutParsingResults
 
     相比 accurate_basic，输出包含：
     - 结构化 Markdown（标题层级）
@@ -138,94 +143,139 @@ class PaddleVLClient:
     - 阅读顺序保持
     """
 
-    SUBMIT_URL = "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task"
-    QUERY_URL = "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task/query"
+    SUBMIT_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+    MODEL = "PaddleOCR-VL-1.6"
+
+    # 旧 snake_case 参数 → 官网 camelCase 参数映射（兼容旧版 ocr.paddle-vl.params 配置）
+    _PARAM_MAP = {
+        "analysis_chart": "useChartRecognition",
+        "merge_tables": "mergeTables",
+        "relevel_titles": "relevelTitles",
+        "recognize_seal": "useSealRecognition",
+    }
+
+    # 官网 V2 API 推荐参数（与官方示例保持一致；ignoreLabels 忽略页眉页脚页码等噪声）
+    DEFAULT_PARAMS = {
+        "markdownIgnoreLabels": [
+            "header", "header_image", "footer", "footer_image",
+            "number", "footnote", "aside_text",
+        ],
+        "useDocOrientationClassify": False,
+        "useDocUnwarping": False,
+        "useLayoutDetection": True,
+        "useChartRecognition": False,
+        "useSealRecognition": False,
+        "useOcrForImageBlock": False,
+        "mergeTables": True,
+        "relevelTitles": True,
+        "layoutShapeMode": "auto",
+        "promptLabel": "ocr",
+        "repetitionPenalty": 1,
+        "temperature": 0,
+        "topP": 1,
+        "minPixels": 147384,
+        "maxPixels": 2822400,
+        "layoutNms": True,
+        "restructurePages": True,
+    }
 
     def __init__(self, access_token: str, params: dict | None = None):
         self.access_token = access_token
-        self.params = params or {}
+        self.params = self._normalize_params(params or {})
+
+    def _normalize_params(self, params: dict) -> dict:
+        """将旧 snake_case 参数名映射为官网 camelCase，未知参数原样透传"""
+        return {self._PARAM_MAP.get(k, k): v for k, v in params.items()}
+
+    def _optional_payload(self) -> dict:
+        """合并默认参数与用户自定义参数"""
+        payload = dict(self.DEFAULT_PARAMS)
+        payload.update(self.params)
+        return payload
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"bearer {self.access_token}"}
 
     async def _submit_task(self, file_path: str) -> str:
-        """提交文档解析任务，返回 task_id"""
+        """multipart 上传 PDF，返回 jobId"""
         import httpx
-
-        with open(file_path, "rb") as f:
-            file_b64 = base64.b64encode(f.read()).decode("utf-8")
 
         file_name = Path(file_path).name
-        payload = {
-            "file_data": file_b64,
-            "file_name": file_name,
-        }
-        # 合并用户自定义参数
-        for k, v in self.params.items():
-            payload[k] = str(v).lower() if isinstance(v, bool) else str(v)
+        optional = json.dumps(self._optional_payload())
 
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                self.SUBMIT_URL,
-                params={"access_token": self.access_token},
-                data=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        with open(file_path, "rb") as f:
+            files = {"file": (file_name, f, "application/pdf")}
+            data = {"model": self.MODEL, "optionalPayload": optional}
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    self.SUBMIT_URL,
+                    headers=self._headers(),
+                    data=data,
+                    files=files,
+                )
 
-        if "error_code" in data:
-            error_msg = data.get("error_msg", "未知错误")
-            logger.error("PaddleOCR-VL 任务提交失败 (code=%s): %s",
-                         data["error_code"], error_msg)
-            raise RuntimeError(f"OCR 任务提交失败: {error_msg}")
+        if resp.status_code != 200:
+            logger.error("PaddleOCR-VL 任务提交失败 (HTTP %s): %s",
+                         resp.status_code, resp.text[:500])
+            raise RuntimeError(f"OCR 任务提交失败 (HTTP {resp.status_code})")
 
-        result = data.get("result", {})
-        task_id = result.get("task_id", "")
-        if not task_id:
-            raise RuntimeError("OCR 任务提交失败: 未返回 task_id")
-        return task_id
+        body = resp.json()
+        job_id = (body.get("data") or {}).get("jobId", "")
+        if not job_id:
+            raise RuntimeError("OCR 任务提交失败: 未返回 jobId")
+        return job_id
 
-    async def _poll_result(self, task_id: str, max_wait: int = 600,
+    async def _poll_result(self, job_id: str, max_wait: int = 600,
                            interval: int = 5) -> dict:
-        """轮询直到任务完成或超时，返回结果 dict"""
+        """GET 轮询直到 state=done/failed 或超时，返回 data dict"""
         import httpx
 
+        url = f"{self.SUBMIT_URL}/{job_id}"
         waited = 0
         while waited < max_wait:
             await asyncio.sleep(interval)
             waited += interval
 
             async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    self.QUERY_URL,
-                    params={"access_token": self.access_token},
-                    data={"task_id": task_id},
-                )
+                resp = await client.get(url, headers=self._headers())
                 resp.raise_for_status()
-                data = resp.json()
+                body = resp.json()
 
-            if "error_code" in data:
-                raise RuntimeError(f"OCR 查询失败: {data.get('error_msg')}")
+            data = body.get("data") or {}
+            state = data.get("state", "")
 
-            result = data.get("result", {})
-            status = result.get("task_status", "")
+            if state == "done":
+                logger.info("PaddleOCR-VL 任务完成 (job_id=%s, 耗时 %ds)", job_id, waited)
+                return data
+            if state == "failed":
+                raise RuntimeError(f"OCR 任务失败: {data.get('errorMsg', '未知错误')}")
 
-            if status == "SUCCESS":
-                logger.info("PaddleOCR-VL 任务完成 (task_id=%s, 耗时 %ds)", task_id, waited)
-                return result
-            elif status == "FAILED":
-                raise RuntimeError(f"OCR 任务失败: {result.get('error_msg', '未知错误')}")
+            logger.debug("PaddleOCR-VL 轮询中 (job_id=%s, 已等待 %ds, 状态=%s)",
+                         job_id, waited, state)
 
-            logger.debug("PaddleOCR-VL 轮询中 (task_id=%s, 已等待 %ds, 状态=%s)",
-                         task_id, waited, status)
-
-        raise TimeoutError(f"OCR 任务超时 (已等待 {max_wait}s, task_id={task_id})")
+        raise TimeoutError(f"OCR 任务超时 (已等待 {max_wait}s, job_id={job_id})")
 
     async def _download_markdown(self, url: str) -> str:
-        """从 URL 下载 Markdown 结果"""
+        """从 jsonUrl 下载 JSONL，逐页拼接 markdown 文本"""
         import httpx
 
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-            return resp.text
+
+        parts = []
+        for line in resp.text.strip().split("\n"):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for lp in record.get("result", {}).get("layoutParsingResults", []):
+                md = lp.get("markdown", {})
+                if md.get("text"):
+                    parts.append(md["text"])
+        return "\n".join(parts)
 
     def ocr_pdf_to_md(self, pdf_path: str, output_dir: str | None = None) -> str:
         """PDF 文档解析 → Markdown（同步封装，供后台任务调用）
@@ -236,7 +286,7 @@ class PaddleVLClient:
 
     async def _ocr_pdf_to_md_async(self, pdf_path: str,
                                    output_dir: str | None = None) -> str:
-        """异步 PDF 文档解析 → 下载 Markdown → 保存到文件"""
+        """异步 PDF 文档解析 → 下载 JSONL → 拼接保存 Markdown"""
         from app.config import OUTPUT_DIR
 
         if output_dir is None:
@@ -244,19 +294,19 @@ class PaddleVLClient:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         # 提交任务
-        task_id = await self._submit_task(pdf_path)
-        logger.info("PaddleOCR-VL 任务已提交: task_id=%s, 文件=%s",
-                    task_id, Path(pdf_path).name)
+        job_id = await self._submit_task(pdf_path)
+        logger.info("PaddleOCR-VL 任务已提交: job_id=%s, 文件=%s",
+                    job_id, Path(pdf_path).name)
 
         # 轮询结果
-        result = await self._poll_result(task_id)
+        result = await self._poll_result(job_id)
 
-        # 下载 Markdown
-        markdown_url = result.get("markdown_url", "")
-        if not markdown_url:
-            raise RuntimeError("OCR 结果中缺少 markdown_url")
+        # 下载 JSONL → 拼接 Markdown
+        json_url = (result.get("resultUrl") or {}).get("jsonUrl", "")
+        if not json_url:
+            raise RuntimeError("OCR 结果中缺少 resultUrl.jsonUrl")
 
-        md_text = await self._download_markdown(markdown_url)
+        md_text = await self._download_markdown(json_url)
 
         md_path = str(Path(output_dir) / f"{Path(pdf_path).stem}.md")
         with open(md_path, "w", encoding="utf-8") as f:
