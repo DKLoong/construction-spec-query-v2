@@ -61,6 +61,23 @@
                            style="font-family:monospace;font-size:0.8rem">
                 </label>
 
+                <!-- 测试连通性 -->
+                <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.5rem">
+                    <button class="outline" @click="testOCR()" :disabled="ocrTesting || !currentOCRToken"
+                            style="font-size:0.75rem;padding:0.25rem 0.75rem">
+                        <span x-show="!ocrTesting">🔍 测试连接</span>
+                        <span x-show="ocrTesting">⏳ 测试中...</span>
+                    </button>
+                    <small x-text="ocrTestResult" style="font-size:0.75rem"></small>
+                </div>
+
+                <!-- OCR 使用提示 -->
+                <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--pico-muted-color);line-height:1.5">
+                    <p style="margin:0.25rem 0">💡 每个接口每日有调用上限，超出将返回 429 错误（免费约 20000 页/天）</p>
+                    <p style="margin:0.25rem 0">💡 文件大小无限制，超长 PDF 将按每批 99 页自动拆分处理，识别完成后合并显示</p>
+                    <p style="margin:0.25rem 0">🔗 前往 <a href="https://aistudio.baidu.com" target="_blank">aistudio.baidu.com</a> 创建令牌</p>
+                </div>
+
                 <!-- PaddleOCR-VL 高级选项 -->
                 <div x-show="ocrBackend==='paddle-vl'" style="margin-top:0.5rem;font-size:0.8rem">
                     <p style="margin:0.25rem 0;font-weight:bold">高级选项</p>
