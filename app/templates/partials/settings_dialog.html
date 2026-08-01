@@ -10,7 +10,6 @@
         <div class="qa-modal-header">
             <span>⚙️ 系统设置</span>
             <button class="qa-modal-close" @click="close()" aria-label="关闭">&times;</button>
-            
         </div>
         <div class="qa-modal-body">
             <!-- 标签页 -->
@@ -78,160 +77,125 @@
                         <input type="checkbox" x-model="ocrPaddleVLParams.recognize_seal"> 印章识别
                     </label>
                 </div>
+            </div>
 
-                </div>
-
+            <!-- AI 标签页 -->
             <div x-show.important="activeTab==='ai'">
                 <label style="font-size:0.85rem;margin-bottom:0.5rem">选择后端及模块分配</label>
                 <div style="display:flex;flex-direction:column;gap:0.3rem;margin-bottom:0.75rem">
-                <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
-                     :style="{background: aiBackend==='claude' ? 'var(--pico-primary-background)' : '', color: aiBackend==='claude' ? 'var(--pico-primary-inverse)' : ''}">
-                    <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
-                        <input type="radio" x-model="aiBackend" value="claude" style="width:auto"> Claude Code
-                    </label>
-                    <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
-                        <span @click="aiBackendQA = aiBackendQA === 'claude' ? '' : 'claude'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'claude' ? '\u2713' : ''"></span>
-
-                            AI问答
-
-                        </span>
-                        <span @click="aiBackendClassify = aiBackendClassify === 'claude' ? '' : 'claude'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'claude' ? '\u2713' : ''"></span>
-
-                            AI分类
-
-                        </span>
+                    <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
+                         :style="{background: aiBackend==='claude' ? 'var(--pico-primary-background)' : '', color: aiBackend==='claude' ? 'var(--pico-primary-inverse)' : ''}">
+                        <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
+                            <input type="radio" x-model="aiBackend" value="claude" style="width:auto"> Claude Code
+                        </label>
+                        <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
+                            <span @click="aiBackendQA = aiBackendQA === 'claude' ? '' : 'claude'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'claude' ? '\u2713' : ''"></span>
+                                AI问答
+                            </span>
+                            <span @click="aiBackendClassify = aiBackendClassify === 'claude' ? '' : 'claude'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'claude' ? '\u2713' : ''"></span>
+                                AI分类
+                            </span>
+                        </div>
                     </div>
-                </div>                <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
-                     :style="{background: aiBackend==='codex' ? 'var(--pico-primary-background)' : '', color: aiBackend==='codex' ? 'var(--pico-primary-inverse)' : ''}">
-                    <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
-                        <input type="radio" x-model="aiBackend" value="codex" style="width:auto"> Codex
-                    </label>
-                    <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
-                        <span @click="aiBackendQA = aiBackendQA === 'codex' ? '' : 'codex'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'codex' ? '\u2713' : ''"></span>
-
-                            AI问答
-
-                        </span>
-                        <span @click="aiBackendClassify = aiBackendClassify === 'codex' ? '' : 'codex'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'codex' ? '\u2713' : ''"></span>
-
-                            AI分类
-
-                        </span>
+                    <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
+                         :style="{background: aiBackend==='codex' ? 'var(--pico-primary-background)' : '', color: aiBackend==='codex' ? 'var(--pico-primary-inverse)' : ''}">
+                        <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
+                            <input type="radio" x-model="aiBackend" value="codex" style="width:auto"> Codex
+                        </label>
+                        <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
+                            <span @click="aiBackendQA = aiBackendQA === 'codex' ? '' : 'codex'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'codex' ? '\u2713' : ''"></span>
+                                AI问答
+                            </span>
+                            <span @click="aiBackendClassify = aiBackendClassify === 'codex' ? '' : 'codex'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'codex' ? '\u2713' : ''"></span>
+                                AI分类
+                            </span>
+                        </div>
                     </div>
-                </div>                <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
-                     :style="{background: aiBackend==='doubao' ? 'var(--pico-primary-background)' : '', color: aiBackend==='doubao' ? 'var(--pico-primary-inverse)' : ''}">
-                    <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
-                        <input type="radio" x-model="aiBackend" value="doubao" style="width:auto"> 豆包
-                    </label>
-                    <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
-                        <span @click="aiBackendQA = aiBackendQA === 'doubao' ? '' : 'doubao'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'doubao' ? '\u2713' : ''"></span>
-
-                            AI问答
-
-                        </span>
-                        <span @click="aiBackendClassify = aiBackendClassify === 'doubao' ? '' : 'doubao'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'doubao' ? '\u2713' : ''"></span>
-
-                            AI分类
-
-                        </span>
+                    <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
+                         :style="{background: aiBackend==='doubao' ? 'var(--pico-primary-background)' : '', color: aiBackend==='doubao' ? 'var(--pico-primary-inverse)' : ''}">
+                        <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
+                            <input type="radio" x-model="aiBackend" value="doubao" style="width:auto"> 豆包
+                        </label>
+                        <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
+                            <span @click="aiBackendQA = aiBackendQA === 'doubao' ? '' : 'doubao'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'doubao' ? '\u2713' : ''"></span>
+                                AI问答
+                            </span>
+                            <span @click="aiBackendClassify = aiBackendClassify === 'doubao' ? '' : 'doubao'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'doubao' ? '\u2713' : ''"></span>
+                                AI分类
+                            </span>
+                        </div>
                     </div>
-                </div>                <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
-                     :style="{background: aiBackend==='deepseek' ? 'var(--pico-primary-background)' : '', color: aiBackend==='deepseek' ? 'var(--pico-primary-inverse)' : ''}">
-                    <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
-                        <input type="radio" x-model="aiBackend" value="deepseek" style="width:auto"> DeepSeek
-                    </label>
-                    <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
-                        <span @click="aiBackendQA = aiBackendQA === 'deepseek' ? '' : 'deepseek'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'deepseek' ? '\u2713' : ''"></span>
-
-                            AI问答
-
-                        </span>
-                        <span @click="aiBackendClassify = aiBackendClassify === 'deepseek' ? '' : 'deepseek'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'deepseek' ? '\u2713' : ''"></span>
-
-                            AI分类
-
-                        </span>
+                    <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
+                         :style="{background: aiBackend==='deepseek' ? 'var(--pico-primary-background)' : '', color: aiBackend==='deepseek' ? 'var(--pico-primary-inverse)' : ''}">
+                        <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
+                            <input type="radio" x-model="aiBackend" value="deepseek" style="width:auto"> DeepSeek
+                        </label>
+                        <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
+                            <span @click="aiBackendQA = aiBackendQA === 'deepseek' ? '' : 'deepseek'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'deepseek' ? '\u2713' : ''"></span>
+                                AI问答
+                            </span>
+                            <span @click="aiBackendClassify = aiBackendClassify === 'deepseek' ? '' : 'deepseek'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'deepseek' ? '\u2713' : ''"></span>
+                                AI分类
+                            </span>
+                        </div>
                     </div>
-                </div>                <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
-                     :style="{background: aiBackend==='glm' ? 'var(--pico-primary-background)' : '', color: aiBackend==='glm' ? 'var(--pico-primary-inverse)' : ''}">
-                    <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
-                        <input type="radio" x-model="aiBackend" value="glm" style="width:auto"> GLM (智谱)
-                    </label>
-                    <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
-                        <span @click="aiBackendQA = aiBackendQA === 'glm' ? '' : 'glm'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'glm' ? '\u2713' : ''"></span>
-
-                            AI问答
-
-                        </span>
-                        <span @click="aiBackendClassify = aiBackendClassify === 'glm' ? '' : 'glm'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'glm' ? '\u2713' : ''"></span>
-
-                            AI分类
-
-                        </span>
+                    <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
+                         :style="{background: aiBackend==='glm' ? 'var(--pico-primary-background)' : '', color: aiBackend==='glm' ? 'var(--pico-primary-inverse)' : ''}">
+                        <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
+                            <input type="radio" x-model="aiBackend" value="glm" style="width:auto"> GLM (智谱)
+                        </label>
+                        <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
+                            <span @click="aiBackendQA = aiBackendQA === 'glm' ? '' : 'glm'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'glm' ? '\u2713' : ''"></span>
+                                AI问答
+                            </span>
+                            <span @click="aiBackendClassify = aiBackendClassify === 'glm' ? '' : 'glm'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'glm' ? '\u2713' : ''"></span>
+                                AI分类
+                            </span>
+                        </div>
                     </div>
-                </div>                <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
-                     :style="{background: aiBackend==='kimi' ? 'var(--pico-primary-background)' : '', color: aiBackend==='kimi' ? 'var(--pico-primary-inverse)' : ''}">
-                    <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
-                        <input type="radio" x-model="aiBackend" value="kimi" style="width:auto"> Kimi (月暗)
-                    </label>
-                    <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
-                        <span @click="aiBackendQA = aiBackendQA === 'kimi' ? '' : 'kimi'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'kimi' ? '\u2713' : ''"></span>
-
-                            AI问答
-
-                        </span>
-                        <span @click="aiBackendClassify = aiBackendClassify === 'kimi' ? '' : 'kimi'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'kimi' ? '\u2713' : ''"></span>
-
-                            AI分类
-
-                        </span>
+                    <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
+                         :style="{background: aiBackend==='kimi' ? 'var(--pico-primary-background)' : '', color: aiBackend==='kimi' ? 'var(--pico-primary-inverse)' : ''}">
+                        <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
+                            <input type="radio" x-model="aiBackend" value="kimi" style="width:auto"> Kimi (月暗)
+                        </label>
+                        <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
+                            <span @click="aiBackendQA = aiBackendQA === 'kimi' ? '' : 'kimi'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'kimi' ? '\u2713' : ''"></span>
+                                AI问答
+                            </span>
+                            <span @click="aiBackendClassify = aiBackendClassify === 'kimi' ? '' : 'kimi'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'kimi' ? '\u2713' : ''"></span>
+                                AI分类
+                            </span>
+                        </div>
                     </div>
-                </div>                <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
-                     :style="{background: aiBackend==='custom' ? 'var(--pico-primary-background)' : '', color: aiBackend==='custom' ? 'var(--pico-primary-inverse)' : ''}">
-                    <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
-                        <input type="radio" x-model="aiBackend" value="custom" style="width:auto"> 自定义
-                    </label>
-                    <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
-                        <span @click="aiBackendQA = aiBackendQA === 'custom' ? '' : 'custom'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'custom' ? '\u2713' : ''"></span>
-
-                            AI问答
-
-                        </span>
-                        <span @click="aiBackendClassify = aiBackendClassify === 'custom' ? '' : 'custom'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
-
-                            <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'custom' ? '\u2713' : ''"></span>
-
-                            AI分类
-
-                        </span>
+                    <div style="display:flex;align-items:center;gap:0.3rem;padding:0.3rem;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer"
+                         :style="{background: aiBackend==='custom' ? 'var(--pico-primary-background)' : '', color: aiBackend==='custom' ? 'var(--pico-primary-inverse)' : ''}">
+                        <label style="cursor:pointer;display:flex;align-items:center;gap:0.3rem;flex:1">
+                            <input type="radio" x-model="aiBackend" value="custom" style="width:auto"> 自定义
+                        </label>
+                        <div style="display:flex;gap:0.5rem;font-size:0.7rem;white-space:nowrap">
+                            <span @click="aiBackendQA = aiBackendQA === 'custom' ? '' : 'custom'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendQA === 'custom' ? '\u2713' : ''"></span>
+                                AI问答
+                            </span>
+                            <span @click="aiBackendClassify = aiBackendClassify === 'custom' ? '' : 'custom'" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem;user-select:none;font-size:0.7rem;white-space:nowrap">
+                                <span style="display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border:1.5px solid currentColor;border-radius:2px;font-size:10px;line-height:1" x-text="aiBackendClassify === 'custom' ? '\u2713' : ''"></span>
+                                AI分类
+                            </span>
+                        </div>
                     </div>
-                </div>                </div>
+                </div>
 
                 <!-- API Key 输入 (仅云后端显示) -->
                 <div x-show="['doubao','deepseek','glm','kimi','custom'].includes(aiBackend)">
@@ -272,7 +236,8 @@
                     <p>使用本地 CLI 工具，请确保已安装并登录对应命令行。</p>
                 </div>
             </div>
-<!-- 底部按钮 -->
+
+            <!-- 底部按钮 -->
             <div style="margin-top:1.5rem;padding-top:0.75rem;border-top:1px solid var(--pico-muted-border-color)">
                 <div style="display:flex;justify-content:flex-end;gap:0.5rem">
                     <button class="outline" @click="close()" style="font-size:0.8rem">取消</button>
