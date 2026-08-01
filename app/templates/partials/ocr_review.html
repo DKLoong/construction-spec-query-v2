@@ -66,10 +66,19 @@ document.addEventListener('alpine:init', () => {
 
         updatePreview() {
             try {
-                this.renderedHtml = marked.parse(this.mdContent || '');
+                this.renderedHtml = marked.parse(this._rewriteImgPaths(this.mdContent || ''));
             } catch (e) {
                 this.renderedHtml = '<p style="color:red">渲染错误</p>';
             }
+        },
+
+        // 官网 markdown 的图片为相对路径（imgs/xxx.jpg），改写为带任务ID的绝对路径，
+        // 使预览能够通过 /import/review/{task_id}/imgs/ 路由加载图片
+        _rewriteImgPaths(md) {
+            const taskId = window.location.pathname.split('/').pop();
+            const base = `/import/review/${taskId}/`;
+            return md.replace(/(src=["'])imgs\//g, `$1${base}`)
+                     .replace(/!\[([^\]]*)\]\(imgs\//g, `![$1](${base}`);
         },
 
         findMatches() {

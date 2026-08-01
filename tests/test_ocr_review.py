@@ -82,3 +82,49 @@ def test_confirm_review_rejects_duplicate(auth_client):
     assert resp.status_code == 200
     # 应提示正在处理中
     assert "处理中" in resp.text or "请勿重复" in resp.text
+
+
+def test_review_image_serves_markdown_image(auth_client, tmp_path, monkeypatch):
+    """markdown 图片路由返回 OUTPUT_DIR/{task_id}/imgs 下的文件"""
+    from app.routes import import_routes
+
+    monkeypatch.setattr(import_routes, "OUTPUT_DIR", str(tmp_path))
+
+    task_id = "aabbccdd"
+    img_dir = tmp_path / task_id / "imgs"
+    img_dir.mkdir(parents=True)
+    (img_dir / "img_in_image_box_test.jpg").write_bytes(b"fake-image-data")
+
+    resp = auth_client.get(
+        f"/import/review/{task_id}/imgs/img_in_image_box_test.jpg"
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"fake-image-data"
+
+
+def test_review_image_404_when_missing(auth_client, tmp_path, monkeypatch):
+    """图片文件不存在 → 404"""
+    from app.routes import import_routes
+
+    monkeypatch.setattr(import_routes, "OUTPUT_DIR", str(tmp_path))
+    resp = auth_client.get("/import/review/aabbccdd/imgs/nonexistent.jpg")
+    assert resp.status_code == 404
+
+
+def test_review_image_rejects_path_traversal(auth_client, tmp_path, monkeypatch):
+    """filename 含 ../（URL 编码）或 task_id 非法 → 404，不越权读取"""
+    from app.routes import import_routes
+
+    monkeypatch.setattr(import_routes, "OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "secret.txt").write_bytes(b"top-secret")
+
+    # filename 带 ..%2F：若解码则 Path().name 截断为文件名，越权访问无效
+    resp = auth_client.get(
+        "/import/review/aabbccdd/imgs/..%2Fsecret.txt"
+    )
+    assert resp.status_code == 404
+    assert b"top-secret" not in resp.content
+
+    # task_id 非 8 位 hex → 拒绝
+    resp2 = auth_client.get("/import/review/BAD!/imgs/a.jpg")
+    assert resp2.status_code in (404, 400)

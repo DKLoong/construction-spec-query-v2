@@ -444,6 +444,27 @@ async def review_content(request: Request, task_id: str):
     return {"content": task["md_text"], "file_name": task.get("file_name", "")}
 
 
+@router.get("/import/review/{task_id}/imgs/{filename}")
+async def review_image(request: Request, task_id: str, filename: str):
+    """服务 OCR 审查页 markdown 中引用的图片
+
+    OCR 阶段已把官网 markdown.images 的图片按相对路径 imgs/xxx.jpg 保存到
+    OUTPUT_DIR/{task_id}/imgs/；审查页前端把相对引用改写为
+    /import/review/{task_id}/imgs/{filename} 后由本路由返回文件。
+    """
+    from fastapi.responses import FileResponse
+
+    # task_id 为 uuid4().hex[:8]（8 位十六进制），校验防止目录拼接越权
+    if not re.fullmatch(r"[0-9a-f]{8}", task_id):
+        return JSONResponse({"detail": "任务ID非法"}, status_code=404)
+    # 仅取文件名，防路径穿越
+    safe_name = Path(filename).name
+    img_path = Path(OUTPUT_DIR) / task_id / "imgs" / safe_name
+    if not img_path.is_file():
+        return JSONResponse({"detail": "图片不存在"}, status_code=404)
+    return FileResponse(str(img_path))
+
+
 @router.post("/import/review/{task_id}/confirm")
 async def confirm_review(
     request: Request,
