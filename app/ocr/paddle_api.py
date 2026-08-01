@@ -299,8 +299,13 @@ class PaddleVLClient:
 
         raise TimeoutError(f"OCR 任务超时 (已等待 {max_wait}s, job_id={job_id})")
 
-    async def _download_markdown(self, url: str) -> str:
-        """从 jsonUrl 下载 JSONL，逐页拼接 markdown 文本"""
+    async def _download_markdown(self, url: str, output_dir: str | None = None) -> str:
+        """从 jsonUrl 下载 JSONL，逐页拼接 markdown 文本，并下载 markdown.images 中的图片
+
+        官网返回的 markdown.text 中图片以相对路径引用（如 imgs/img_in_image_box_*.jpg），
+        实际图片文件需从 markdown.images（相对路径 → 图片 URL 映射）逐个下载到 output_dir，
+        保持相对路径一致，markdown 内的引用才能正常显示。图片缺失/下载失败不影响文本拼接。
+        """
         import httpx
 
         async with httpx.AsyncClient(timeout=60) as client:
@@ -319,7 +324,51 @@ class PaddleVLClient:
                 md = lp.get("markdown", {})
                 if md.get("text"):
                     parts.append(md["text"])
+                if output_dir and isinstance(md.get("images"), dict):
+                    for img_rel, img_url in md["images"].items():
+                        await self._save_image(img_rel, img_url, output_dir)
         return "\n".join(parts)
+
+    async def _save_image(self, img_rel: str, img_url: str, output_dir: str) -> None:
+        """下载 markdown 引用的单个图片到 output_dir/img_rel（参考官网官方示例）
+
+        支持 http(s) URL 与 data:image 的 Base64 两种形式；单个图片失败不影响整体解析。
+        对外部提供的相对路径做路径穿越防护（拒绝绝对路径与 .. 段）。
+        """
+        import httpx
+
+        # 路径安全校验：仅允许普通相对路径（防止路径穿越写入任意位置）
+        rel = Path(img_rel)
+        if rel.is_absolute() or ".." in rel.parts:
+            logger.warning("OCR 图片路径非法，跳过: %s", img_rel)
+            return
+
+        if isinstance(img_url, str) and img_url.startswith("data:"):
+            # data URL 形式：data:image/jpeg;base64,xxx
+            try:
+                b64_part = img_url.split(",", 1)[1]
+                img_bytes = base64.b64decode(b64_part)
+            except (IndexError, ValueError) as e:
+                logger.warning("OCR 图片 data URL 解析失败 (%s): %s", img_rel, e)
+                return
+        else:
+            # http(s) URL 形式：直接下载
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.get(img_url)
+                    resp.raise_for_status()
+                    img_bytes = resp.content
+            except (httpx.HTTPError, OSError) as e:
+                logger.warning("OCR 图片下载失败 (%s): %s", img_rel, e)
+                return
+
+        target = Path(output_dir) / rel
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(img_bytes)
+            logger.info("OCR 图片已保存: %s (%d 字节)", target, len(img_bytes))
+        except OSError as e:
+            logger.warning("OCR 图片写入失败 (%s): %s", target, e)
 
     def ocr_pdf_to_md(self, pdf_path: str, output_dir: str | None = None) -> str:
         """PDF 文档解析 → Markdown（同步封装，供后台任务调用）
@@ -350,7 +399,7 @@ class PaddleVLClient:
         if not json_url:
             raise RuntimeError("OCR 结果中缺少 resultUrl.jsonUrl")
 
-        md_text = await self._download_markdown(json_url)
+        md_text = await self._download_markdown(json_url, output_dir)
 
         md_path = str(Path(output_dir) / f"{Path(pdf_path).stem}.md")
         with open(md_path, "w", encoding="utf-8") as f:

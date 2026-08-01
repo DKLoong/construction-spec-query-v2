@@ -17,12 +17,16 @@ TOKEN = "test-token"
 
 
 class MockResponse:
-    """httpx 响应模拟：json() / text / raise_for_status()"""
+    """httpx 响应模拟：json() / text / content / raise_for_status()"""
 
-    def __init__(self, payload=None, text="", status_code=200):
+    def __init__(self, payload=None, text="", status_code=200, content=None):
         self._payload = payload if payload is not None else {}
         self._text = text
         self.status_code = status_code
+        # content 未显式指定时，从 text 派生（兼容图片二进制场景需显式传入）
+        self.content = content if content is not None else (
+            self._text.encode() if isinstance(self._text, str) else self._text
+        )
 
     def json(self):
         return self._payload
@@ -185,6 +189,100 @@ def test_download_handles_empty_jsonl(monkeypatch):
 
     md = asyncio.run(_new_client()._download_markdown("http://x/jsonl"))
     assert md == ""
+
+
+def test_download_saves_markdown_images(monkeypatch, tmp_path):
+    """markdown.images 中的图片下载到 output_dir/相对路径（URL 与 data URL 两种）"""
+    import base64
+
+    b64 = base64.b64encode(b"fakejpeg").decode()
+    jsonl = "\n".join([
+        json.dumps({"result": {"layoutParsingResults": [
+            {"markdown": {
+                "text": "### 页1\n\n正文1\n",
+                "images": {
+                    "imgs/img_in_image_box_a.jpg": "http://img/a.jpg",
+                    "imgs/img_in_image_box_b.jpg": f"data:image/jpeg;base64,{b64}",
+                },
+            }},
+        ]}}),
+    ])
+
+    async def mock_get(self, url, **kwargs):
+        if url == "http://x/jsonl":
+            return MockResponse(text=jsonl)
+        return MockResponse(content=b"image-bytes")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    md = asyncio.run(_new_client()._download_markdown("http://x/jsonl", str(tmp_path)))
+
+    assert "### 页1" in md
+    assert "正文1" in md
+    # URL 形式图片下载到对应相对路径
+    assert (tmp_path / "imgs" / "img_in_image_box_a.jpg").read_bytes() == b"image-bytes"
+    # data URL 形式图片 base64 解码落盘
+    assert (tmp_path / "imgs" / "img_in_image_box_b.jpg").read_bytes() == b"fakejpeg"
+
+
+def test_download_skips_failed_images(monkeypatch, tmp_path):
+    """图片下载失败只记日志，不影响 text 拼接与后续图片"""
+    jsonl = "\n".join([
+        json.dumps({"result": {"layoutParsingResults": [
+            {"markdown": {
+                "text": "正文",
+                "images": {
+                    "imgs/bad.jpg": "http://img/bad.jpg",
+                    "imgs/good.jpg": "http://img/good.jpg",
+                },
+            }},
+        ]}}),
+    ])
+
+    async def mock_get(self, url, **kwargs):
+        if url == "http://x/jsonl":
+            return MockResponse(text=jsonl)
+        if url == "http://img/good.jpg":
+            return MockResponse(content=b"good")
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    md = asyncio.run(_new_client()._download_markdown("http://x/jsonl", str(tmp_path)))
+
+    assert md == "正文"
+    assert not (tmp_path / "imgs" / "bad.jpg").exists()
+    assert (tmp_path / "imgs" / "good.jpg").read_bytes() == b"good"
+
+
+def test_download_rejects_path_traversal_images(monkeypatch, tmp_path):
+    """恶意相对路径（含 .. 或绝对路径）不被写入，防路径穿越"""
+    jsonl = "\n".join([
+        json.dumps({"result": {"layoutParsingResults": [
+            {"markdown": {
+                "text": "正文",
+                "images": {
+                    "../evil.jpg": "http://img/evil.jpg",
+                    "/abs/evil2.jpg": "http://img/evil2.jpg",
+                },
+            }},
+        ]}}),
+    ])
+
+    async def mock_get(self, url, **kwargs):
+        if url == "http://x/jsonl":
+            return MockResponse(text=jsonl)
+        return MockResponse(content=b"evil")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    md = asyncio.run(_new_client()._download_markdown("http://x/jsonl", str(tmp_path)))
+
+    assert md == "正文"
+    # 不写穿到 tmp_path 父目录，也不写绝对路径
+    assert not (tmp_path / "imgs" / "evil.jpg").exists()
+    assert not (tmp_path.parent / "evil.jpg").exists()
+    assert not (tmp_path.parent / "abs" / "evil2.jpg").exists()
 
 
 # ═══════════════════════════════════════════════
