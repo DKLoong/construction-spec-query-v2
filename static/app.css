@@ -167,6 +167,10 @@
     background: rgba(74, 68, 84, 0.5);
     display: flex; align-items: center; justify-content: center;
     z-index: 2000; backdrop-filter: blur(3px);
+    animation: modal-fade-in 0.2s ease;
+}
+@keyframes modal-fade-in {
+    from { opacity: 0; } to { opacity: 1; }
 }
 .clause-modal-box {
     background: #faf7f3; border-radius: 12px;
