@@ -185,3 +185,106 @@ def test_download_handles_empty_jsonl(monkeypatch):
 
     md = asyncio.run(_new_client()._download_markdown("http://x/jsonl"))
     assert md == ""
+
+
+# ═══════════════════════════════════════════════
+# _submit_task：5xx 重试机制
+# ═══════════════════════════════════════════════
+
+def test_submit_task_retries_on_5xx_then_succeeds(monkeypatch, tmp_path):
+    """5xx 瞬时错误：重试后成功返回 jobId"""
+    calls = {"n": 0}
+
+    async def mock_post(self, url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return MockResponse({"errorMsg": "internal"}, status_code=500)
+        return MockResponse({"data": {"jobId": "job-retry"}})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+
+    job_id = asyncio.run(_new_client()._submit_task(str(pdf), retry_delay=0))
+    assert job_id == "job-retry"
+    assert calls["n"] == 2
+
+
+def test_submit_task_raises_after_all_5xx_retries(monkeypatch, tmp_path):
+    """5xx 全部重试耗尽 → RuntimeError"""
+    calls = {"n": 0}
+
+    async def mock_post(self, url, **kwargs):
+        calls["n"] += 1
+        return MockResponse({"errorMsg": "internal"}, status_code=500)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        asyncio.run(_new_client()._submit_task(str(pdf), retry_delay=0))
+    assert calls["n"] == 3  # 默认 retries=3
+
+
+def test_submit_task_no_retry_on_4xx(monkeypatch, tmp_path):
+    """4xx 客户端错误不重试，直接失败"""
+    calls = {"n": 0}
+
+    async def mock_post(self, url, **kwargs):
+        calls["n"] += 1
+        return MockResponse({"errorMsg": "bad request"}, status_code=400)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+
+    with pytest.raises(RuntimeError, match="HTTP 400"):
+        asyncio.run(_new_client()._submit_task(str(pdf), retry_delay=0))
+    assert calls["n"] == 1
+
+
+def test_submit_task_retries_when_200_without_jobid(monkeypatch, tmp_path):
+    """200 但无 jobId → 重试"""
+    calls = {"n": 0}
+
+    async def mock_post(self, url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return MockResponse({"data": {}})
+        return MockResponse({"data": {"jobId": "job-2"}})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+
+    job_id = asyncio.run(_new_client()._submit_task(str(pdf), retry_delay=0))
+    assert job_id == "job-2"
+    assert calls["n"] == 2
+
+
+# ═══════════════════════════════════════════════
+# test_connectivity：连通性测试
+# ═══════════════════════════════════════════════
+
+def test_connectivity_submits_minimal_pdf(monkeypatch):
+    """连通测试：生成最小 PDF 并提交任务，返回 jobId"""
+    captured = {}
+
+    async def fake_submit(self, file_path):
+        captured["file_path"] = file_path
+        return "job-conn"
+
+    monkeypatch.setattr(PaddleVLClient, "_submit_task", fake_submit)
+
+    job_id = asyncio.run(_new_client().test_connectivity())
+
+    assert job_id == "job-conn"
+    assert captured["file_path"].endswith(".pdf")
+    # 临时文件应在 finally 中清理
+    import os
+    assert not os.path.exists(captured["file_path"])

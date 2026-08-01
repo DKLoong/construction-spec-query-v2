@@ -91,24 +91,15 @@ async def test_ocr(request: Request):
 
     try:
         if backend == "paddle-vl":
-            # 测试 PaddleOCR-VL：提交一个最小的 task 提交请求
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(
-                    "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task",
-                    params={"access_token": access_token},
-                    data={"file_data": img_b64, "file_name": "test.png"},
-                )
-                data = resp.json()
-                if "error_code" in data:
-                    return JSONResponse(
-                        {"detail": f"连接失败: {data.get('error_msg', '未知错误')}"},
-                        status_code=400,
-                    )
-                task_id = data.get("result", {}).get("task_id", "")
-                if task_id:
-                    return {"status": "ok", "message": "PaddleOCR-VL API 连接正常"}
+            # 测试 PaddleOCR-VL：PaddleOCR 官网 V2 API（提交最小任务验证连通）
+            from app.ocr.paddle_api import PaddleVLClient
+            try:
+                client = PaddleVLClient(access_token=access_token)
+                await client.test_connectivity()
+                return {"status": "ok", "message": "PaddleOCR-VL API 连接正常"}
+            except RuntimeError as e:
                 return JSONResponse(
-                    {"detail": "PaddleOCR-VL 响应异常：未返回 task_id"}, status_code=400,
+                    {"detail": f"连接失败: {e}"}, status_code=400,
                 )
 
         elif backend == "accurate-basic":

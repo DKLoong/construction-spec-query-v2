@@ -196,34 +196,78 @@ class PaddleVLClient:
     def _headers(self) -> dict:
         return {"Authorization": f"bearer {self.access_token}"}
 
-    async def _submit_task(self, file_path: str) -> str:
-        """multipart 上传 PDF，返回 jobId"""
+    async def _submit_task(self, file_path: str,
+                           retries: int = 3, retry_delay: float = 2.0) -> str:
+        """multipart 上传 PDF，返回 jobId
+
+        官网服务端偶发 HTTP 5xx（瞬时故障），对 5xx 做有限重试；
+        4xx 属客户端错误（token 无效/文件问题），直接失败不重试。
+        """
         import httpx
 
         file_name = Path(file_path).name
         optional = json.dumps(self._optional_payload())
+        last_err: RuntimeError | None = None
 
-        with open(file_path, "rb") as f:
-            files = {"file": (file_name, f, "application/pdf")}
-            data = {"model": self.MODEL, "optionalPayload": optional}
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(
-                    self.SUBMIT_URL,
-                    headers=self._headers(),
-                    data=data,
-                    files=files,
+        for attempt in range(1, retries + 1):
+            with open(file_path, "rb") as f:
+                files = {"file": (file_name, f, "application/pdf")}
+                data = {"model": self.MODEL, "optionalPayload": optional}
+                async with httpx.AsyncClient(timeout=120) as client:
+                    resp = await client.post(
+                        self.SUBMIT_URL,
+                        headers=self._headers(),
+                        data=data,
+                        files=files,
+                    )
+
+            if resp.status_code == 200:
+                body = resp.json()
+                job_id = (body.get("data") or {}).get("jobId", "")
+                if job_id:
+                    return job_id
+                # 200 但未返回 jobId：响应异常，视作可重试
+                last_err = RuntimeError("OCR 任务提交失败: 未返回 jobId")
+            elif resp.status_code < 500:
+                # 4xx 客户端错误：重试无意义，直接失败
+                logger.error("PaddleOCR-VL 任务提交失败 (HTTP %s): %s",
+                             resp.status_code, resp.text[:500])
+                raise RuntimeError(f"OCR 任务提交失败 (HTTP {resp.status_code})")
+            else:
+                # 5xx 服务端瞬时错误：重试
+                last_err = RuntimeError(f"OCR 任务提交失败 (HTTP {resp.status_code})")
+                logger.warning(
+                    "PaddleOCR-VL 任务提交 5xx (HTTP %s)，第 %d/%d 次，稍后重试: %s",
+                    resp.status_code, attempt, retries, resp.text[:300],
                 )
+                if attempt < retries:
+                    await asyncio.sleep(retry_delay * attempt)
 
-        if resp.status_code != 200:
-            logger.error("PaddleOCR-VL 任务提交失败 (HTTP %s): %s",
-                         resp.status_code, resp.text[:500])
-            raise RuntimeError(f"OCR 任务提交失败 (HTTP {resp.status_code})")
+        assert last_err is not None
+        raise last_err
 
-        body = resp.json()
-        job_id = (body.get("data") or {}).get("jobId", "")
-        if not job_id:
-            raise RuntimeError("OCR 任务提交失败: 未返回 jobId")
-        return job_id
+    async def test_connectivity(self) -> str:
+        """验证 API 连通性：提交一个最小 PDF 任务，返回 jobId
+
+        官网 V2 API 无独立连通性端点，以能否提交任务并拿到 jobId 作为
+        连通判定。token 无效时官网返回 401，由 _submit_task 抛 RuntimeError。
+        """
+        import os
+        import tempfile
+
+        import fitz
+
+        fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+        os.close(fd)
+        try:
+            doc = fitz.open()
+            page = doc.new_page()
+            page.insert_text((72, 72), "PaddleOCR-VL connectivity test")
+            doc.save(tmp_path)
+            doc.close()
+            return await self._submit_task(tmp_path)
+        finally:
+            os.unlink(tmp_path)
 
     async def _poll_result(self, job_id: str, max_wait: int = 600,
                            interval: int = 5) -> dict:

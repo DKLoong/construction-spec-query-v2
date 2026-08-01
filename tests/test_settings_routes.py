@@ -74,6 +74,52 @@ def test_test_ocr_no_token(auth_client, monkeypatch, tmp_path):
     assert "请先配置" in resp.json()["detail"]
 
 
+def test_test_ocr_paddle_vl_success(auth_client, monkeypatch, tmp_path):
+    """paddle-vl 连通测试：走官网 V2 API test_connectivity 成功"""
+    db_path = tmp_path / "test_sett_ocr1.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('ocr.access_token', 'tok')"
+        )
+
+    from app.ocr.paddle_api import PaddleVLClient
+
+    async def fake_connectivity(self):
+        return "job-conn"
+
+    monkeypatch.setattr(PaddleVLClient, "test_connectivity", fake_connectivity)
+
+    resp = auth_client.post("/settings/test-ocr", json={"backend": "paddle-vl"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+
+def test_test_ocr_paddle_vl_failure(auth_client, monkeypatch, tmp_path):
+    """paddle-vl 连通测试失败 → 400 + 错误信息"""
+    db_path = tmp_path / "test_sett_ocr2.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('ocr.access_token', 'tok')"
+        )
+
+    from app.ocr.paddle_api import PaddleVLClient
+
+    async def fake_connectivity(self):
+        raise RuntimeError("OCR 任务提交失败 (HTTP 500)")
+
+    monkeypatch.setattr(PaddleVLClient, "test_connectivity", fake_connectivity)
+
+    resp = auth_client.post("/settings/test-ocr", json={"backend": "paddle-vl"})
+    assert resp.status_code == 400
+    assert "连接失败" in resp.json()["detail"]
+
+
 def test_test_ai_no_key(auth_client, monkeypatch, tmp_path):
     """无 api_key 时测试 AI 连接返回错误"""
     db_path = tmp_path / "test_sett5.db"
