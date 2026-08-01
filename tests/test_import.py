@@ -3,6 +3,72 @@ def test_import_page_protected(client):
     assert resp.status_code in (302, 303, 401)
 
 
+def _process_import_and_get_state(monkeypatch, tmp_path, task_id, force_ocr,
+                                  is_scanned_val, use_ocr_client):
+    """执行 _process_import，mock is_scanned 与 create_ocr_client，返回 progress 状态"""
+    db_path = tmp_path / "test_force_ocr.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db
+    init_db()
+
+    import io
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake scanned doc")
+
+    from app.routes import import_routes
+
+    # 模拟 upload 流程已创建的任务条目
+    import_routes.progress_store[task_id] = {
+        "status": "uploading", "progress": 0, "message": "正在上传...",
+    }
+    monkeypatch.setattr(import_routes, "is_scanned", lambda p: is_scanned_val)
+
+    calls = {"ocr": 0, "extract": 0}
+
+    class FakeOCRClient:
+        def ocr_pdf_to_md(self, path, output_dir=None):
+            calls["ocr"] += 1
+            md = tmp_path / f"ocr_{task_id}.md"
+            md.write_text("# OCR 结果\n\n1.0.1 测试条文", encoding="utf-8")
+            return str(md)
+
+    def fake_extract(p):
+        calls["extract"] += 1
+        return "纯文本提取结果"
+
+    monkeypatch.setattr(import_routes, "extract_text", fake_extract)
+    if use_ocr_client:
+        monkeypatch.setattr(
+            "app.ocr.paddle_api.create_ocr_client", lambda: FakeOCRClient()
+        )
+
+    import_routes._process_import(task_id, str(pdf), "标题", "JGJ 107", force_ocr=force_ocr)
+    state = import_routes.progress_store[task_id]["status"]
+    return calls, state
+
+
+def test_force_ocr_triggers_ocr_when_not_scanned(monkeypatch, tmp_path):
+    """force_ocr=True 且 is_scanned=False → 仍走 OCR（解决半扫描 PDF）"""
+    calls, state = _process_import_and_get_state(
+        monkeypatch, tmp_path, "task-focr", force_ocr=True,
+        is_scanned_val=False, use_ocr_client=True,
+    )
+    assert calls["ocr"] == 1
+    assert calls["extract"] == 0
+    assert state == "review_needed"
+
+
+def test_no_force_ocr_uses_extract_when_not_scanned(monkeypatch, tmp_path):
+    """force_ocr=False 且 is_scanned=False → 走 extract_text（默认行为不变）"""
+    calls, state = _process_import_and_get_state(
+        monkeypatch, tmp_path, "task-noforce", force_ocr=False,
+        is_scanned_val=False, use_ocr_client=False,
+    )
+    assert calls["ocr"] == 0
+    assert calls["extract"] == 1
+    assert state == "review_needed"
+
+
 def test_upload_no_file_authenticated(auth_client):
     resp = auth_client.post("/import/upload")
     assert resp.status_code in (400, 422)

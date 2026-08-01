@@ -27,6 +27,7 @@ async def upload_file(
     file: UploadFile = File(...),
     title: str = Form(""),
     code: str = Form(""),
+    force_ocr: bool = Form(False),
 ):
     content = await file.read()
     file_hash = _compute_file_hash(content)
@@ -56,7 +57,7 @@ async def upload_file(
     save_path.write_bytes(content)
 
     background_tasks.add_task(
-        _process_import, task_id, str(save_path), title, code, file_hash
+        _process_import, task_id, str(save_path), title, code, file_hash, force_ocr
     )
     return HTMLResponse(
         f'<div id="import-status" hx-get="/import/progress/{task_id}" hx-trigger="every 2s" hx-swap="outerHTML">处理中...</div>'
@@ -73,8 +74,12 @@ async def get_progress(request: Request, task_id: str):
 
 
 def _process_import(task_id: str, file_path: str, title: str, code: str,
-                    file_hash: str = ""):
-    """后台任务 Phase 1：OCR(如需) → 暂停等待审查 → 审查后继续 Phase 2"""
+                    file_hash: str = "", force_ocr: bool = False):
+    """后台任务 Phase 1：OCR(如需) → 暂停等待审查 → 审查后继续 Phase 2
+
+    force_ocr=True 时强制走 OCR（适用于「半扫描」PDF：有少量文本层但格式
+    会丢失，is_scanned 自动判定不可靠）。
+    """
     conn = None
     try:
         from app.database import get_connection
@@ -90,7 +95,7 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
             _process_import_phase2(task_id, md_text, title, code, file_path, file_hash)
             return
         elif ext == ".pdf":
-            if is_scanned(file_path):
+            if force_ocr or is_scanned(file_path):
                 progress_store[task_id].update(progress=20, message="正在 OCR 识别...")
                 from app.ocr.paddle_api import create_ocr_client
                 try:

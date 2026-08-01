@@ -17,6 +17,10 @@
                     <label>规范编号 <input type="text" name="code" placeholder="如 GB 50204-2015"></label>
                     <label>规范名称 <input type="text" name="title" placeholder="如 混凝土结构工程施工质量验收规范"></label>
                     <label>选择文件 <input type="file" name="file" accept=".md,.pdf"></label>
+                    <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem">
+                        <input type="checkbox" name="force_ocr" value="true" style="width:auto">
+                        <span style="font-size:0.8rem">强制 OCR（扫描件/格式丢失的 PDF 勾选此项）</span>
+                    </label>
                     <div style="margin-top: 1rem;">
                         <button type="submit" :disabled="uploading">开始导入</button>
                         <button type="button" class="secondary" @click="closeDialog()">取消</button>
