@@ -137,10 +137,11 @@
     background: var(--pico-card-background-color);
     border-bottom: 2px solid var(--pico-muted-border-color); white-space: nowrap;
 }
-.clause-table tbody td.clause-preview { max-width: 200px; }
-.clause-table tbody td.clause-preview span {
-    display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.clause-table tbody td.clause-preview { max-width: 320px; }
+.clause-table tbody td.clause-preview .clause-preview-md {
+    display: block; max-height: 4.5rem; overflow: hidden; line-height: 1.5;
 }
+.clause-preview-md img, .clause-body img { max-width: 100%; height: auto; }
 
 /* ═══════════════════════════════════════════════════════════════
    对话框

@@ -21,9 +21,8 @@
             <td><code>{{ c.clause_no }}</code></td>
             <td>{{ c.title or '-' }}</td>
             <td class="clause-preview">
-                <span title="{{ c.content }}">
-                    {{ (c.content or '')[:50] }}{% if (c.content or '')|length > 50 %}...{% endif %}
-                </span>
+                <div class="clause-preview-md" data-spec-id="{{ spec.id }}"
+                     data-md='{{ c.content | tojson }}'></div>
             </td>
             <td>
                 {% if c.dim4_specialty or c.dim5_location or c.dim6_material %}
@@ -66,3 +65,17 @@
     <p style="color:var(--pico-muted-color)">此规范暂无条文</p>
     {% endif %}
 </div>
+<script>
+// 预览列渲染 markdown（HTMX 加载后执行），图片相对引用改写为 spec 图片路由
+(function(){
+    document.querySelectorAll('.clause-preview-md').forEach(function (el) {
+        const specId = el.dataset.specId;
+        let md = '';
+        try { md = JSON.parse(el.dataset.md || '""'); } catch (e) { md = ''; }
+        const rew = md
+            .replace(/(src=["'])imgs\//g, `$1/specs/${specId}/imgs/`)
+            .replace(/!\[([^\]]*)\]\(imgs\//g, `![$1](/specs/${specId}/imgs/`);
+        el.innerHTML = DOMPurify.sanitize(marked.parse(rew, {gfm: true, breaks: true}));
+    });
+})();
+</script>

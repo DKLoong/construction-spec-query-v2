@@ -46,3 +46,21 @@ def test_ocr_review_rewrite_keeps_imgs_segment():
     assert "${base}imgs/" in html, "HTML 图片改写应保留 imgs/ 子路径"
     # markdown 语法 ![..](imgs/..) 同样保留 imgs/
     assert "(${base}imgs/" in html, "markdown 图片改写应保留 imgs/ 子路径"
+
+
+def test_clause_detail_renders_markdown_with_sanitize():
+    """条文详情必须用 tojson 传 content，经 marked+DOMPurify 渲染（含图片改写）"""
+    html = _read("clause_detail.html")
+    assert "tojson" in html, "content 应以 tojson 安全传递"
+    assert "DOMPurify.sanitize" in html, "渲染必须经 DOMPurify 净化（防 XSS）"
+    assert "marked.parse" in html, "需用 marked 渲染 markdown"
+    # 图片相对路径改写为 /specs/{specId}/imgs/
+    assert "specs/${specId}/imgs/" in html, "条文图片相对引用应改写为 spec 图片路由"
+
+
+def test_clauses_table_preview_renders_markdown():
+    """条文列表预览列须渲染 markdown（clause-preview-md 容器 + DOMPurify 净化）"""
+    html = _read("clauses_table.html")
+    assert "clause-preview-md" in html, "预览列缺少渲染容器"
+    assert "tojson" in html, "预览列 content 应以 tojson 传递"
+    assert "DOMPurify.sanitize" in html, "预览列渲染必须净化"

@@ -6,9 +6,19 @@
             <h4>{{ clause.spec_code }} — {{ clause.clause_no }}</h4>
             {% if clause.title %}<p><strong>{{ clause.title }}</strong></p>{% endif %}
         </header>
-        <div class="clause-body" style="white-space:pre-wrap;line-height:1.8">
-            {{ clause.content }}
-        </div>
+        <div class="clause-body" style="line-height:1.8"></div>
+        <script>
+        (function(){
+            const specId = {{ clause.spec_id | tojson }};
+            const md = {{ clause.content | tojson }};
+            // 图片相对引用 imgs/xxx.jpg → /specs/{specId}/imgs/xxx.jpg
+            const rew = md
+                .replace(/(src=["'])imgs\//g, `$1/specs/${specId}/imgs/`)
+                .replace(/!\[([^\]]*)\]\(imgs\//g, `![$1](/specs/${specId}/imgs/`);
+            const body = document.querySelector('.clause-body');
+            if (body) body.innerHTML = DOMPurify.sanitize(marked.parse(rew, {gfm: true, breaks: true}));
+        })();
+        </script>
         <footer style="margin-top:1rem">
             <div class="dim-tags">
                 {% if clause.dim4_specialty %}
