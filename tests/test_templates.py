@@ -32,3 +32,17 @@ def test_settings_ocr_tab_has_test_connection_button():
     assert "testOCR()" in ocr_part, "OCR 标签页缺少 testOCR() 调用"
     assert "ocrTestResult" in ocr_part, "OCR 标签页缺少 ocrTestResult 结果绑定"
     assert "currentOCRToken" in ocr_part
+
+
+def test_ocr_review_rewrite_keeps_imgs_segment():
+    """审查页图片路径改写必须保留 imgs/ 子路径段
+
+    曾误把 `src="imgs/xxx.jpg"` 的 imgs/ 前缀整个替换掉，导致请求
+    `/import/review/{task_id}/img_in_*.jpg`（缺 imgs/ 段）→ 路由 404 → 破图图标。
+    """
+    html = _read("ocr_review.html")
+    assert "_rewriteImgPaths" in html, "审查页缺少图片路径改写函数"
+    # HTML <img src="imgs/..."> 改写时，base 后必须补回 imgs/，不能把 imgs/ 段替换掉
+    assert "${base}imgs/" in html, "HTML 图片改写应保留 imgs/ 子路径"
+    # markdown 语法 ![..](imgs/..) 同样保留 imgs/
+    assert "(${base}imgs/" in html, "markdown 图片改写应保留 imgs/ 子路径"

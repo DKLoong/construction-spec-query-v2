@@ -77,8 +77,9 @@ document.addEventListener('alpine:init', () => {
         _rewriteImgPaths(md) {
             const taskId = window.location.pathname.split('/').pop();
             const base = `/import/review/${taskId}/`;
-            return md.replace(/(src=["'])imgs\//g, `$1${base}`)
-                     .replace(/!\[([^\]]*)\]\(imgs\//g, `![$1](${base}`);
+            // 相对路径保留 imgs/ 子路径段，改写后为 /import/review/{task_id}/imgs/xxx.jpg
+            return md.replace(/(src=["'])imgs\//g, `$1${base}imgs/`)
+                     .replace(/!\[([^\]]*)\]\(imgs\//g, `![$1](${base}imgs/`);
         },
 
         findMatches() {
