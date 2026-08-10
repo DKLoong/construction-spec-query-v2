@@ -118,7 +118,9 @@ def test_clauses_list(auth_client, monkeypatch, tmp_path):
     resp = auth_client.get(f"/specs/{spec_id}/clauses")
     assert resp.status_code == 200
     assert "条文1" in resp.text
-    assert "第1条内容测试" in resp.text
+    # content 经 tojson 编码到 data-md（避免明文 XSS 面），预览列渲染容器存在
+    assert "clause-preview-md" in resp.text
+    assert "data-md=" in resp.text
 
 
 # ═══════════════════════════════════════════
@@ -338,3 +340,79 @@ def test_update_clause_class_only(auth_client, monkeypatch, tmp_path):
     # 确认内容未被修改
     assert updated["clause_no"] == clause["clause_no"]
     assert updated["title"] == clause["title"]
+
+
+# ═══════════════════════════════════════════
+# 条文图片服务
+# ═══════════════════════════════════════════
+
+def _setup_spec_with_imgs(db_path, spec_out):
+    """建库 + 插带 output_dir 的 spec，返回 spec_id"""
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO specifications (code, title, output_dir) VALUES (?, ?, ?)",
+            ("GB-TEST-IMG", "图片规范", str(spec_out)),
+        )
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def test_spec_image_serves_file(auth_client, monkeypatch, tmp_path):
+    """按 spec.output_dir/imgs 返回图片文件"""
+    db_path = tmp_path / "test_spec_img.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+
+    spec_out = tmp_path / "spec_out"
+    imgs = spec_out / "imgs"
+    imgs.mkdir(parents=True)
+    (imgs / "a.jpg").write_bytes(b"img-data")
+
+    spec_id = _setup_spec_with_imgs(db_path, spec_out)
+    resp = auth_client.get(f"/specs/{spec_id}/imgs/a.jpg")
+    assert resp.status_code == 200
+    assert resp.content == b"img-data"
+
+
+def test_spec_image_404_when_missing(auth_client, monkeypatch, tmp_path):
+    """图片文件缺失 → 404"""
+    db_path = tmp_path / "test_spec_img2.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+
+    spec_out = tmp_path / "spec_out2"
+    spec_out.mkdir()
+
+    spec_id = _setup_spec_with_imgs(db_path, spec_out)
+    resp = auth_client.get(f"/specs/{spec_id}/imgs/nope.jpg")
+    assert resp.status_code == 404
+
+
+def test_spec_image_404_when_no_output_dir(auth_client, monkeypatch, tmp_path):
+    """spec 无 output_dir → 404"""
+    db_path = tmp_path / "test_spec_img3.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db
+    init_db()
+
+    spec_id = _setup_spec_with_imgs(db_path, tmp_path)  # 复用：先插带目录的，再手动置空
+    from app.database import get_db
+    with get_db() as conn:
+        conn.execute("UPDATE specifications SET output_dir = NULL WHERE id = ?", (spec_id,))
+
+    resp = auth_client.get(f"/specs/{spec_id}/imgs/a.jpg")
+    assert resp.status_code == 404
+
+
+def test_spec_image_rejects_path_traversal(auth_client, monkeypatch, tmp_path):
+    """filename 含 ..%2F → 404，不越权读取"""
+    db_path = tmp_path / "test_spec_img4.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+
+    spec_out = tmp_path / "spec_out4"
+    spec_out.mkdir()
+    (spec_out / "secret.txt").write_bytes(b"top-secret")
+
+    spec_id = _setup_spec_with_imgs(db_path, spec_out)
+    resp = auth_client.get(f"/specs/{spec_id}/imgs/..%2Fsecret.txt")
+    assert resp.status_code == 404
+    assert b"top-secret" not in resp.content

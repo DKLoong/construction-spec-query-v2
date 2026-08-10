@@ -142,6 +142,25 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
                 pass
 
 
+def _copy_ocr_images(ocr_dir: str | Path, out_dir: str | Path) -> None:
+    """把 OCR 阶段下载的图片从 ocr_dir/imgs/ 复制到 out_dir/imgs/
+
+    OCR 图片下载在 OUTPUT_DIR/{task_id}/imgs/（task_id 目录），而 spec.output_dir
+    是 OUTPUT_DIR/{code}/（code 非空时目录不同）。导入确认时复制图片，使条文
+    content 里的相对引用 imgs/xxx.jpg 在 spec.output_dir 下成立（供条文页展示）。
+    """
+    import shutil
+
+    ocr_dir = Path(ocr_dir)
+    out_dir = Path(out_dir)
+    if ocr_dir == out_dir:
+        return  # 未填 code 时 output_dir 即 OCR 目录，无需复制
+    src = ocr_dir / "imgs"
+    if not src.is_dir():
+        return
+    shutil.copytree(src, out_dir / "imgs", dirs_exist_ok=True)
+
+
 def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                             file_path: str, file_hash: str = ""):
     """后台任务 Phase 2：解析 → 分类 → 索引（始终创建新连接，线程安全）"""
@@ -185,6 +204,9 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         # Step 6: 写入数据库 + 分类 + 向量索引
         output_dir = str(Path(OUTPUT_DIR) / (code or Path(file_path).stem))
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        # 复制 OCR 图片到 spec.output_dir（图片实际下载在 task_id 目录）
+        _copy_ocr_images(Path(OUTPUT_DIR) / task_id, output_dir)
 
         conn.execute(
             """INSERT INTO specifications (code, title, dim1_hierarchy, dim1_nature,

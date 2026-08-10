@@ -136,3 +136,45 @@ def test_upload_duplicate_rejected(auth_client, monkeypatch, tmp_path):
     assert resp.status_code == 200
     # 应该提示重复
     assert "已导入" in resp.text or "重复" in resp.text or "已存在" in resp.text
+
+
+def test_copy_ocr_images_copies_to_output_dir(tmp_path):
+    """OCR 图片复制到 spec.output_dir（code 非空时目录不同）"""
+    from app.routes.import_routes import _copy_ocr_images
+
+    ocr_dir = tmp_path / "ocr_task"
+    imgs = ocr_dir / "imgs"
+    imgs.mkdir(parents=True)
+    (imgs / "a.jpg").write_bytes(b"img-a")
+
+    out_dir = tmp_path / "spec_out"
+    _copy_ocr_images(ocr_dir, out_dir)
+
+    assert (out_dir / "imgs" / "a.jpg").read_bytes() == b"img-a"
+
+
+def test_copy_ocr_images_skips_same_dir(tmp_path):
+    """ocr_dir == out_dir（未填 code）时不复制、不报错"""
+    from app.routes.import_routes import _copy_ocr_images
+
+    d = tmp_path / "same"
+    imgs = d / "imgs"
+    imgs.mkdir(parents=True)
+    (imgs / "a.jpg").write_bytes(b"img-a")
+
+    _copy_ocr_images(d, d)
+
+    assert (d / "imgs" / "a.jpg").read_bytes() == b"img-a"
+
+
+def test_copy_ocr_images_no_imgs_dir(tmp_path):
+    """OCR 目录无 imgs/ 时不报错"""
+    from app.routes.import_routes import _copy_ocr_images
+
+    ocr_dir = tmp_path / "ocr_noimg"
+    ocr_dir.mkdir()
+    out_dir = tmp_path / "out_noimg"
+
+    _copy_ocr_images(ocr_dir, out_dir)
+
+    assert not (out_dir / "imgs").exists()

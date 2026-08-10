@@ -1,5 +1,6 @@
 """规范管理 & 条文 CRUD 路由"""
 import logging
+from pathlib import Path
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from app.database import get_db
@@ -95,6 +96,31 @@ async def spec_clauses(request: Request, spec_id: int):
         "spec": dict(spec),
         "clauses": [dict(c) for c in clauses],
     })
+
+
+@router.get("/specs/{spec_id}/imgs/{filename}")
+async def spec_image(request: Request, spec_id: int, filename: str):
+    """服务条文 content 中引用的图片（位于 spec.output_dir/imgs/）
+
+    OCR 图片经导入确认时复制到 spec.output_dir/imgs/；条文页渲染 content 时把
+    相对引用 imgs/xxx.jpg 改写为 /specs/{spec_id}/imgs/xxx.jpg 后由本路由返回。
+    """
+    from fastapi.responses import FileResponse
+
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT output_dir FROM specifications WHERE id = ?", (spec_id,)
+        ).fetchone()
+
+    if not row or not row["output_dir"]:
+        return JSONResponse({"detail": "规范不存在或无图片目录"}, status_code=404)
+
+    # 仅取文件名，防路径穿越
+    safe_name = Path(filename).name
+    img_path = Path(row["output_dir"]) / "imgs" / safe_name
+    if not img_path.is_file():
+        return JSONResponse({"detail": "图片不存在"}, status_code=404)
+    return FileResponse(str(img_path))
 
 
 @router.get("/specs/{spec_id}/clauses/{clause_id}/edit")
