@@ -69,7 +69,11 @@ async def delete_spec(request: Request, spec_id: int):
     with get_db() as conn:
         conn.execute("DELETE FROM specifications WHERE id = ?", (spec_id,))
 
-    return HTMLResponse("")
+    # OOB swap 清空仍在显示该规范条文/分类编辑的区域（详情区不被替换时同步刷新）
+    return HTMLResponse(
+        '<div id="clause-detail-area" hx-swap-oob="true"></div>'
+        '<div id="spec-class-area" hx-swap-oob="true"></div>'
+    )
 
 
 # ═══════════════════════════════════════════

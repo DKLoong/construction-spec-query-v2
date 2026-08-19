@@ -102,6 +102,32 @@ def test_delete_spec_cascades(auth_client, monkeypatch, tmp_path):
         assert len(queue) == 0
 
 
+def test_delete_spec_returns_oob_clear_for_detail_area(auth_client, monkeypatch, tmp_path):
+    """删除规范后须 OOB 清空条文详情区与分类编辑区
+
+    查看条文后删除整本规范，若仅删除列表行，详情区仍滞留被删规范的条文。
+    响应应含 hx-swap-oob 的占位 div，把 #clause-detail-area / #spec-class-area 清空。
+    """
+    db_path = tmp_path / "test_delete_oob.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr(
+        "app.search.vector_search.VectorStore.__init__", lambda self: None,
+    )
+    monkeypatch.setattr(
+        "app.search.vector_search.VectorStore.delete_clause", lambda self, x: None,
+    )
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        spec_id = _setup_spec_data(conn)
+
+    resp = auth_client.delete(f"/specs/{spec_id}")
+    assert resp.status_code == 200
+    assert 'id="clause-detail-area"' in resp.text, "删除响应应包含 clause-detail-area OOB 元素"
+    assert 'id="spec-class-area"' in resp.text, "删除响应应包含 spec-class-area OOB 元素"
+    assert 'hx-swap-oob="true"' in resp.text, "OOB 元素须带 hx-swap-oob=true"
+
+
 # ═══════════════════════════════════════════
 # 条文列表
 # ═══════════════════════════════════════════
