@@ -454,6 +454,8 @@ async def review_page(request: Request, task_id: str):
         "left_content": "partials/tree_panel.html",
         "center_content": "partials/ocr_review.html",
         "task_id": task_id,
+        # 审查页隐藏左侧分类树，页面两栏全宽显示（编辑 | 预览）
+        "hide_tree": True,
     })
 
 
@@ -524,6 +526,38 @@ async def confirm_review(
         f"""<div id="import-status" hx-get="/import/progress/{task_id}" hx-trigger="every 2s" hx-swap="outerHTML">
         <p>审查完成，正在继续导入...</p></div>"""
     )
+
+
+@router.post("/import/review/{task_id}/cancel")
+async def cancel_review(request: Request, task_id: str):
+    """取消审查：清理磁盘残留并移除任务，返回主界面
+
+    清理 uploads/{task_id}.{ext}（原始上传文件）与 outputs/{task_id}/（OCR 结果
+    目录，含 imgs/ 已下载图片）。任务不存在时仍执行磁盘清理——服务重启后
+    progress_store 被清空但磁盘残留仍在，幂等清理兜底。
+    """
+    # 校验 task_id 为 uuid4().hex[:8] 格式，防止目录拼接越权
+    if not re.fullmatch(r"[0-9a-f]{8}", task_id):
+        return JSONResponse({"detail": "任务ID非法"}, status_code=404)
+
+    # 清理 OCR 结果目录 outputs/{task_id}/
+    out_dir = Path(OUTPUT_DIR) / task_id
+    if out_dir.is_dir():
+        import shutil
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+    # 清理上传文件 uploads/{task_id}.{ext}
+    for p in Path(UPLOAD_DIR).glob(f"{task_id}.*"):
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # 移除内存任务（幂等：不存在也无妨）
+    progress_store.pop(task_id, None)
+
+    # HX-Redirect 让 HTMX 整页跳回主界面
+    return HTMLResponse("", headers={"HX-Redirect": "/"})
 
 
 @router.get("/tree/all")

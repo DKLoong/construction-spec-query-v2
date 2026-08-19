@@ -7,7 +7,8 @@
          style="cursor: pointer;">
         <div class="clause-no">{{ r.spec_code }}{% if r.spec_title %} {{ r.spec_title }}{% endif %} — {{ r.clause_no }}</div>
         {% if r.title %}<div class="clause-title">{{ r.title }}</div>{% endif %}
-        <div class="clause-content">{{ r.content[:200] }}{% if r.content|length > 200 %}...{% endif %}</div>
+        <!-- 摘要以原始 md 存入 data-md（Jinja 自动 HTML 转义，浏览器解析后 dataset 还原），前端统一渲染（含 KaTeX 公式） -->
+        <div class="clause-content" data-md="{{ r.summary }}"></div>
         <div class="dim-tags">
             {% if r.dim4_specialty %}<span class="dim-tag">{{ r.dim4_specialty }}</span>{% endif %}
             {% if r.dim5_location %}<span class="dim-tag">{{ r.dim5_location }}</span>{% endif %}

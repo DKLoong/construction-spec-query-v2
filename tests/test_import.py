@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_import_page_protected(client):
     resp = client.get("/import", follow_redirects=False)
     assert resp.status_code in (302, 303, 401)
@@ -178,3 +181,102 @@ def test_copy_ocr_images_no_imgs_dir(tmp_path):
     _copy_ocr_images(ocr_dir, out_dir)
 
     assert not (out_dir / "imgs").exists()
+
+
+# ═══════════════════════════════════════════
+# 取消导入（cancel review）
+# ═══════════════════════════════════════════
+
+@pytest.fixture(autouse=True)
+def _clean_progress_store():
+    """每个测试结束后清理 progress_store（模块级全局字典，避免串扰）"""
+    yield
+    from app.routes import import_routes
+    import_routes.progress_store.clear()
+
+
+def _setup_cancel_env(monkeypatch, tmp_path, task_id):
+    """把 UPLOAD_DIR / OUTPUT_DIR 指到临时目录，返回 (upload_dir, output_dir)"""
+    from app.routes import import_routes
+
+    upload_dir = tmp_path / "uploads"
+    output_dir = tmp_path / "outputs"
+    upload_dir.mkdir()
+    output_dir.mkdir()
+    monkeypatch.setattr(import_routes, "UPLOAD_DIR", str(upload_dir))
+    monkeypatch.setattr(import_routes, "OUTPUT_DIR", str(output_dir))
+    return upload_dir, output_dir
+
+
+def test_cancel_review_cleans_files_and_progress(monkeypatch, tmp_path, auth_client):
+    """取消导入：删除上传文件 + OCR 结果目录（含 imgs/），移除内存任务，HX-Redirect 回主页"""
+    from app.routes import import_routes
+
+    task_id = "a1b2c3d4"
+    upload_dir, output_dir = _setup_cancel_env(monkeypatch, tmp_path, task_id)
+
+    # 上传的原始 PDF
+    upload_dir.joinpath(f"{task_id}.pdf").write_bytes(b"%PDF-1.4 fake")
+    # OCR 结果目录：{task_id}.md + imgs/ 已下载图片
+    out_task = output_dir / task_id
+    (out_task / "imgs").mkdir(parents=True)
+    (out_task / "imgs" / "a.jpg").write_bytes(b"img-a")
+    (out_task / f"{task_id}.md").write_text("# OCR 结果", encoding="utf-8")
+    # 内存任务（审查待确认状态）
+    import_routes.progress_store[task_id] = {
+        "status": "review_needed",
+        "file_path": str(upload_dir / f"{task_id}.pdf"),
+    }
+
+    resp = auth_client.post(f"/import/review/{task_id}/cancel")
+
+    assert resp.status_code == 200
+    assert resp.headers.get("HX-Redirect") == "/"
+    assert not upload_dir.joinpath(f"{task_id}.pdf").exists()
+    assert not out_task.exists()
+    assert task_id not in import_routes.progress_store
+
+
+def test_cancel_review_invalid_task_id_rejected(monkeypatch, tmp_path, auth_client):
+    """非法 task_id（非 8 位十六进制）返回 404 且不清理"""
+    task_id = "a1b2c3d"  # 仅 7 位
+    upload_dir, _ = _setup_cancel_env(monkeypatch, tmp_path, task_id)
+    upload_dir.joinpath(f"{task_id}.pdf").write_bytes(b"%PDF")
+
+    resp = auth_client.post(f"/import/review/{task_id}/cancel")
+
+    assert resp.status_code == 404
+    assert upload_dir.joinpath(f"{task_id}.pdf").exists()
+
+
+def test_cancel_review_idempotent_with_stale_files(monkeypatch, tmp_path, auth_client):
+    """任务不存在（服务重启后 progress_store 清空）但磁盘有残留 → 仍清理（幂等）"""
+    task_id = "a1b2c3d4"
+    upload_dir, output_dir = _setup_cancel_env(monkeypatch, tmp_path, task_id)
+    upload_dir.joinpath(f"{task_id}.pdf").write_bytes(b"%PDF")
+    out_task = output_dir / task_id
+    out_task.mkdir()
+
+    from app.routes import import_routes
+    import_routes.progress_store.pop(task_id, None)  # 模拟服务重启
+
+    resp = auth_client.post(f"/import/review/{task_id}/cancel")
+
+    assert resp.status_code == 200
+    assert not upload_dir.joinpath(f"{task_id}.pdf").exists()
+    assert not out_task.exists()
+
+
+def test_cancel_review_without_files_is_noop(monkeypatch, tmp_path, auth_client):
+    """无磁盘残留时取消也不报错，正常移除任务"""
+    from app.routes import import_routes
+
+    task_id = "a1b2c3d4"
+    _setup_cancel_env(monkeypatch, tmp_path, task_id)
+    import_routes.progress_store[task_id] = {"status": "review_needed"}
+
+    resp = auth_client.post(f"/import/review/{task_id}/cancel")
+
+    assert resp.status_code == 200
+    assert resp.headers.get("HX-Redirect") == "/"
+    assert task_id not in import_routes.progress_store

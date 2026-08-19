@@ -7,6 +7,22 @@ from app.database import get_db
 router = APIRouter()
 
 
+def _safe_summary(content: str, limit: int = 200) -> str:
+    """安全截断条文摘要：保证 LaTeX 公式闭合（$ 成对），避免前端渲染配对错乱
+
+    摘要可能落在公式中间（如 "$ 5 \\, m"），奇数个 $ 会让前端 KaTeX 把后续
+    文本误当公式；此处回退到最后一个 $ 之前截断。
+    """
+    if len(content) <= limit:
+        return content
+    s = content[:limit]
+    if s.count("$") % 2 == 1:
+        idx = s.rfind("$")
+        if idx > 0:
+            s = s[:idx]
+    return s
+
+
 @router.get("/search")
 async def search(
     request: Request,
@@ -63,6 +79,10 @@ async def search(
     )
 
     results, total = hybrid_search(sq)
+
+    # 为每条结果生成安全摘要（保证 LaTeX 公式闭合），供列表前端渲染
+    for r in results:
+        r["summary"] = _safe_summary(r.get("content", ""), 200)
 
     # 始终返回 result_list.html（含 #search-results 包装）
     # 分页使用 hx-swap="outerHTML" 替换整个 #search-results div，天然避免嵌套

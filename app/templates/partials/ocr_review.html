@@ -23,16 +23,23 @@
         <div x-html="renderedHtml" class="review-preview" id="review-preview"></div>
     </div>
 
-    <!-- 确认提交 -->
+    <!-- 确认 / 取消 -->
     <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--pico-muted-border-color);
                 display:flex;justify-content:space-between;align-items:center">
         <small style="color:var(--pico-muted-color)">审查完毕后点击确认继续导入流程（解析 + 分类 + 索引）</small>
-        <form hx-post="/import/review/{{ task_id }}/confirm"
-              hx-target="#review-result" hx-swap="innerHTML"
-              @submit="prepareSubmit">
-            <input type="hidden" name="content" :value="mdContent">
-            <button type="submit">✅ 确认并继续导入</button>
-        </form>
+        <div style="display:flex;gap:0.75rem;align-items:center">
+            <form hx-post="/import/review/{{ task_id }}/confirm"
+                  hx-target="#review-result" hx-swap="innerHTML"
+                  @submit="prepareSubmit">
+                <input type="hidden" name="content" :value="mdContent">
+                <button type="submit">✅ 确认并继续导入</button>
+            </form>
+            <button type="button" class="secondary"
+                    hx-post="/import/review/{{ task_id }}/cancel"
+                    hx-confirm="确定取消本次导入？已上传的文件和识别结果将被删除。">
+                ✖ 取消导入
+            </button>
+        </div>
     </div>
     <div id="review-result" style="margin-top:0.5rem"></div>
 </div>
@@ -66,20 +73,16 @@ document.addEventListener('alpine:init', () => {
 
         updatePreview() {
             try {
-                this.renderedHtml = marked.parse(this._rewriteImgPaths(this.mdContent || ''));
+                // 统一渲染：marked → DOMPurify → KaTeX（公式/表格），图片改写为 /import/review/{task_id}/imgs/
+                this.renderedHtml = window.mdRender.renderHtml(this.mdContent || '', this._reviewBase());
             } catch (e) {
                 this.renderedHtml = '<p style="color:red">渲染错误</p>';
             }
         },
 
-        // 官网 markdown 的图片为相对路径（imgs/xxx.jpg），改写为带任务ID的绝对路径，
-        // 使预览能够通过 /import/review/{task_id}/imgs/ 路由加载图片
-        _rewriteImgPaths(md) {
-            const taskId = window.location.pathname.split('/').pop();
-            const base = `/import/review/${taskId}/`;
-            // 相对路径保留 imgs/ 子路径段，改写后为 /import/review/{task_id}/imgs/xxx.jpg
-            return md.replace(/(src=["'])imgs\//g, `$1${base}imgs/`)
-                     .replace(/!\[([^\]]*)\]\(imgs\//g, `![$1](${base}imgs/`);
+        // 审查页 markdown 图片基路径（/import/review/{task_id}/）
+        _reviewBase() {
+            return '/import/review/' + window.location.pathname.split('/').pop() + '/';
         },
 
         findMatches() {
@@ -115,12 +118,8 @@ document.addEventListener('alpine:init', () => {
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;');
             html = html.replace(regex, '<mark class="search-highlight">$1</mark>');
-            // 标记当前选中
-            if (this.currentMatchIdx >= 0 && this.currentMatchIdx < this.matches.length) {
-                // 简单策略：重新解析 markdown 后高亮可能错位，此处用原始标记
-            }
             try {
-                this.renderedHtml = marked.parse(html.replace(/<mark /g, '<mark '));
+                this.renderedHtml = window.mdRender.renderHtml(html, this._reviewBase());
             } catch (e) {
                 this.renderedHtml = html;
             }

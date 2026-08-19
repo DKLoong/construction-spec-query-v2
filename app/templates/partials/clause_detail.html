@@ -11,12 +11,9 @@
         (function(){
             const specId = {{ clause.spec_id | tojson }};
             const md = {{ clause.content | tojson }};
-            // 图片相对引用 imgs/xxx.jpg → /specs/{specId}/imgs/xxx.jpg
-            const rew = md
-                .replace(/(src=["'])imgs\//g, `$1/specs/${specId}/imgs/`)
-                .replace(/!\[([^\]]*)\]\(imgs\//g, `![$1](/specs/${specId}/imgs/`);
             const body = document.querySelector('.clause-body');
-            if (body) body.innerHTML = DOMPurify.sanitize(marked.parse(rew, {gfm: true, breaks: true}));
+            // 统一渲染：marked → DOMPurify → KaTeX（公式/表格），图片路径改写为 /specs/{specId}/imgs/
+            if (body) window.mdRender.renderInto(body, md, `/specs/${specId}/`);
         })();
         </script>
         <footer style="margin-top:1rem">

@@ -16,6 +16,11 @@ def _read(name: str) -> str:
     return (PARTIALS / name).read_text(encoding="utf-8")
 
 
+def _read_static(name: str) -> str:
+    """读取 static 目录下的前端文件（渲染逻辑已统一收敛到 md-render.js）"""
+    return (PARTIALS.parent.parent.parent / "static" / name).read_text(encoding="utf-8")
+
+
 def test_force_ocr_checkbox_uses_pico_default_width():
     """强制OCR复选框不得带 width:auto（否则宽度塌缩为4px导致视觉不刷新）"""
     html = _read("tree_panel.html")
@@ -39,23 +44,29 @@ def test_ocr_review_rewrite_keeps_imgs_segment():
 
     曾误把 `src="imgs/xxx.jpg"` 的 imgs/ 前缀整个替换掉，导致请求
     `/import/review/{task_id}/img_in_*.jpg`（缺 imgs/ 段）→ 路由 404 → 破图图标。
+    改写逻辑已收敛到 md-render.js 的 rewriteImg，审查页走统一 mdRender 渲染。
     """
     html = _read("ocr_review.html")
-    assert "_rewriteImgPaths" in html, "审查页缺少图片路径改写函数"
+    md_render = _read_static("components/md-render.js")
+    assert "mdRender.renderHtml" in html, "审查页预览应走统一 mdRender 渲染"
     # HTML <img src="imgs/..."> 改写时，base 后必须补回 imgs/，不能把 imgs/ 段替换掉
-    assert "${base}imgs/" in html, "HTML 图片改写应保留 imgs/ 子路径"
+    assert "'$1' + baseUrl + 'imgs/'" in md_render, "HTML 图片改写应保留 imgs/ 子路径"
     # markdown 语法 ![..](imgs/..) 同样保留 imgs/
-    assert "(${base}imgs/" in html, "markdown 图片改写应保留 imgs/ 子路径"
+    assert "'![$1](' + baseUrl + 'imgs/'" in md_render, "markdown 图片改写应保留 imgs/ 子路径"
 
 
 def test_clause_detail_renders_markdown_with_sanitize():
-    """条文详情必须用 tojson 传 content，经 marked+DOMPurify 渲染（含图片改写）"""
+    """条文详情必须用 tojson 传 content，经统一渲染（marked+DOMPurify+KaTeX，含图片改写）"""
     html = _read("clause_detail.html")
+    md_render = _read_static("components/md-render.js")
     assert "tojson" in html, "content 应以 tojson 安全传递"
-    assert "DOMPurify.sanitize" in html, "渲染必须经 DOMPurify 净化（防 XSS）"
-    assert "marked.parse" in html, "需用 marked 渲染 markdown"
+    assert "mdRender.renderInto" in html, "条文详情应走统一 mdRender 渲染"
+    # 净化与渲染逻辑统一在 md-render.js：marked → DOMPurify → KaTeX
+    assert "DOMPurify.sanitize" in md_render, "渲染必须经 DOMPurify 净化（防 XSS）"
+    assert "marked.parse" in md_render, "需用 marked 渲染 markdown"
+    assert "katexize" in md_render, "需用 KaTeX 渲染公式"
     # 图片相对路径改写为 /specs/{specId}/imgs/
-    assert "specs/${specId}/imgs/" in html, "条文图片相对引用应改写为 spec 图片路由"
+    assert "specs/${specId}/" in html, "条文图片相对引用应改写为 spec 图片路由"
 
 
 def test_clauses_table_preview_renders_markdown():
