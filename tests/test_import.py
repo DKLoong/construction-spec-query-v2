@@ -280,3 +280,69 @@ def test_cancel_review_without_files_is_noop(monkeypatch, tmp_path, auth_client)
     assert resp.status_code == 200
     assert resp.headers.get("HX-Redirect") == "/"
     assert task_id not in import_routes.progress_store
+
+
+def test_cancel_review_rejects_other_owner(monkeypatch, tmp_path, auth_client):
+    """非属主取消他人任务 → 403，文件不清理"""
+    from app.routes import import_routes
+
+    task_id = "a1b2c3d4"
+    upload_dir, output_dir = _setup_cancel_env(monkeypatch, tmp_path, task_id)
+    upload_dir.joinpath(f"{task_id}.pdf").write_bytes(b"%PDF")
+    import_routes.progress_store[task_id] = {
+        "status": "review_needed",
+        "owner": "someone_else",
+        "file_path": str(upload_dir / f"{task_id}.pdf"),
+    }
+
+    resp = auth_client.post(f"/import/review/{task_id}/cancel")
+
+    assert resp.status_code == 403
+    assert upload_dir.joinpath(f"{task_id}.pdf").exists()
+    assert task_id in import_routes.progress_store
+
+
+def test_cancel_review_rejects_done_status(monkeypatch, tmp_path, auth_client):
+    """已完成导入的任务不可取消 → 409，文件保留（防删已入库规范源文件）"""
+    from app.routes import import_routes
+
+    task_id = "a1b2c3d4"
+    upload_dir, output_dir = _setup_cancel_env(monkeypatch, tmp_path, task_id)
+    upload_dir.joinpath(f"{task_id}.pdf").write_bytes(b"%PDF")
+    import_routes.progress_store[task_id] = {
+        "status": "done",
+        "owner": "admin",
+        "file_path": str(upload_dir / f"{task_id}.pdf"),
+    }
+
+    resp = auth_client.post(f"/import/review/{task_id}/cancel")
+
+    assert resp.status_code == 409
+    assert upload_dir.joinpath(f"{task_id}.pdf").exists()
+
+
+def test_cancel_review_skips_db_referenced_output_dir(monkeypatch, tmp_path, auth_client):
+    """outputs/{task_id}/ 被 specifications.output_dir 引用时不可删除（防误删已入库规范）"""
+    from app.routes import import_routes
+    from app.database import get_db, init_db
+
+    db_path = tmp_path / "test_cancel_ref.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+
+    task_id = "a1b2c3d4"
+    upload_dir, output_dir = _setup_cancel_env(monkeypatch, tmp_path, task_id)
+    out_task = output_dir / task_id
+    out_task.mkdir()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO specifications (code, title, output_dir) VALUES (?, ?, ?)",
+            ("a1b2c3d4", "八位hex编号规范", str(out_task)),
+        )
+    import_routes.progress_store[task_id] = {"status": "review_needed", "owner": "admin"}
+
+    resp = auth_client.post(f"/import/review/{task_id}/cancel")
+
+    assert resp.status_code == 200
+    assert out_task.exists(), "被 DB 引用的 output_dir 不应被删除"
+    assert task_id not in import_routes.progress_store

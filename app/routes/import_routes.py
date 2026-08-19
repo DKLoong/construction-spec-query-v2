@@ -50,7 +50,11 @@ async def upload_file(
         )
 
     task_id = uuid.uuid4().hex[:8]
-    progress_store[task_id] = {"status": "uploading", "progress": 0, "message": "正在上传..."}
+    # 记录属主：取消/确认仅限本人（防御越权删除他人任务）
+    progress_store[task_id] = {
+        "status": "uploading", "progress": 0, "message": "正在上传...",
+        "owner": getattr(request.state, "username", ""),
+    }
 
     ext = Path(file.filename).suffix.lower()
     save_path = Path(UPLOAD_DIR) / f"{task_id}{ext}"
@@ -534,30 +538,61 @@ async def cancel_review(request: Request, task_id: str):
 
     清理 uploads/{task_id}.{ext}（原始上传文件）与 outputs/{task_id}/（OCR 结果
     目录，含 imgs/ 已下载图片）。任务不存在时仍执行磁盘清理——服务重启后
-    progress_store 被清空但磁盘残留仍在，幂等清理兜底。
+    progress_store 被清空但磁盘残留仍在，幂等清理兜底；但被 specifications
+    引用的路径一律不删（防误删已入库规范数据）。
     """
     # 校验 task_id 为 uuid4().hex[:8] 格式，防止目录拼接越权
     if not re.fullmatch(r"[0-9a-f]{8}", task_id):
         return JSONResponse({"detail": "任务ID非法"}, status_code=404)
 
-    # 清理 OCR 结果目录 outputs/{task_id}/
-    out_dir = Path(OUTPUT_DIR) / task_id
-    if out_dir.is_dir():
-        import shutil
-        shutil.rmtree(out_dir, ignore_errors=True)
+    task = progress_store.get(task_id)
+    username = getattr(request.state, "username", "")
 
-    # 清理上传文件 uploads/{task_id}.{ext}
-    for p in Path(UPLOAD_DIR).glob(f"{task_id}.*"):
-        try:
-            p.unlink(missing_ok=True)
-        except OSError:
-            pass
+    if task is not None:
+        # 属主校验：仅任务属主可取消（旧任务无 owner 字段视为可取消，兼容历史）
+        if task.get("owner") and task.get("owner") != username:
+            return JSONResponse({"detail": "无权取消他人任务"}, status_code=403)
+        # 已完成导入不可取消（避免删除已入库规范的源文件/输出目录）
+        if task.get("status") == "done":
+            return JSONResponse({"detail": "导入已完成，无法取消"}, status_code=409)
+
+    _cleanup_task_artifacts(task_id)
 
     # 移除内存任务（幂等：不存在也无妨）
     progress_store.pop(task_id, None)
 
     # HX-Redirect 让 HTMX 整页跳回主界面
     return HTMLResponse("", headers={"HX-Redirect": "/"})
+
+
+def _cleanup_task_artifacts(task_id: str) -> None:
+    """清理任务残留（uploads/{task_id}.* 与 outputs/{task_id}/）
+
+    被 specifications 引用的路径不删：output_dir 或 source_path 指向该路径时，
+    说明是已入库规范的数据，跳过删除（防御与持久目录的命名空间冲突）。
+    """
+    import shutil
+
+    with get_db() as conn:
+        ref_outputs = {str(r["output_dir"]).replace("\\", "/") for r in conn.execute(
+            "SELECT output_dir FROM specifications WHERE output_dir IS NOT NULL")}
+        ref_uploads = {Path(r["source_path"]).name for r in conn.execute(
+            "SELECT source_path FROM specifications WHERE source_path IS NOT NULL")}
+
+    # 清理 OCR 结果目录 outputs/{task_id}/
+    out_dir = Path(OUTPUT_DIR) / task_id
+    key = str(out_dir).replace("\\", "/")
+    if out_dir.is_dir() and key not in ref_outputs:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+    # 清理上传文件 uploads/{task_id}.{ext}
+    for p in Path(UPLOAD_DIR).glob(f"{task_id}.*"):
+        if p.name in ref_uploads:
+            continue
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @router.get("/tree/all")
