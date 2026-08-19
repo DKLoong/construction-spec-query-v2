@@ -206,3 +206,88 @@ def test_qa_ask_backend_selection(auth_client, monkeypatch, tmp_path):
     )
     assert resp.status_code == 200
     assert resp.json()["cli_used"] == "codex"
+
+
+# ═══════════════════════════════════════════
+# 分类筛选联动
+# ═══════════════════════════════════════════
+
+def _patch_cli_and_hybrid(monkeypatch, query_log):
+    """mock CLI 可用 + 记录 hybrid_search 收到的 SearchQuery 序列"""
+    monkeypatch.setattr(
+        "app.ai.cli_client.ClaudeCodeCLI.is_available", _mock_is_available_true,
+    )
+    monkeypatch.setattr(
+        "app.ai.cli_client.ClaudeCodeCLI._run_cli", _mock_cli_success,
+    )
+
+    def fake_hybrid(query, *a, **k):
+        query_log.append(query)
+        return [], 0
+
+    monkeypatch.setattr(
+        "app.search.hybrid_search.hybrid_search", fake_hybrid,
+    )
+
+
+def test_qa_ask_passes_dim_filters(auth_client, monkeypatch, tmp_path):
+    """QA 请求携带分类筛选时透传到第一次 hybrid_search"""
+    db_path = tmp_path / "test_qa_dim.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        _setup_qa_data(conn)
+
+    query_log = []
+    _patch_cli_and_hybrid(monkeypatch, query_log)
+
+    resp = auth_client.post("/qa/ask", json={
+        "question": "模板",
+        "dim4_specialty": "结构",
+    })
+    assert resp.status_code == 200
+    assert query_log, "应调用 hybrid_search"
+    first = query_log[0]
+    assert first.keyword == "模板"
+    assert first.dim4_specialty == "结构"
+
+
+def test_qa_ask_falls_back_wide_when_dim_filter_sparse(auth_client, monkeypatch, tmp_path):
+    """分类筛选候选过少（<3）时放宽回全局检索，保证上下文充足"""
+    db_path = tmp_path / "test_qa_dim_sparse.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        _setup_qa_data(conn)
+
+    query_log = []
+    _patch_cli_and_hybrid(monkeypatch, query_log)
+
+    resp = auth_client.post("/qa/ask", json={
+        "question": "模板",
+        "dim5_location": "屋面",
+    })
+    assert resp.status_code == 200
+    # 第一次带维度（0 条 < 3）→ 第二次放宽为无维度
+    assert len(query_log) == 2, "候选不足时应放宽为全局检索"
+    assert query_log[0].dim5_location == "屋面"
+    assert query_log[1].dim5_location is None
+
+
+def test_qa_ask_no_dim_no_wide_fallback(auth_client, monkeypatch, tmp_path):
+    """未携带分类筛选时不触发放宽分支（仅一次检索）"""
+    db_path = tmp_path / "test_qa_no_dim.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        _setup_qa_data(conn)
+
+    query_log = []
+    _patch_cli_and_hybrid(monkeypatch, query_log)
+
+    resp = auth_client.post("/qa/ask", json={"question": "模板"})
+    assert resp.status_code == 200
+    assert len(query_log) == 1

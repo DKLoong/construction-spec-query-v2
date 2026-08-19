@@ -14,10 +14,14 @@ document.addEventListener('alpine:init', () => {
             this.scrollToBottom();
 
             try {
+                // 携带当前分类树选中维度，收窄检索范围提升精确度（未选分类时空对象不影响）
+                const filters = (this.$store && this.$store.searchState)
+                    ? this.$store.searchState.filters
+                    : {};
                 const resp = await fetch('/qa/ask', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question: q }),
+                    body: JSON.stringify({ question: q, ...filters }),
                 });
                 const data = await resp.json();
                 this.messages.push({ role: 'bot', content: data.answer || '(AI 未返回回答)' });

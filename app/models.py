@@ -193,6 +193,14 @@ class SearchResponse(BaseModel):
 class QaRequest(BaseModel):
     question: str
     backend: str | None = None
+    # 分类筛选联动：随问答请求携带当前分类树选中维度，收窄检索范围
+    dim1_hierarchy: str | None = None
+    dim1_nature: str | None = None
+    dim2_stage: str | None = None
+    dim3_usage: str | None = None
+    dim4_specialty: str | None = None
+    dim5_location: str | None = None
+    dim6_material: str | None = None
 
 
 class QAResponse(BaseModel):

@@ -78,6 +78,27 @@ def test_clauses_table_preview_renders_markdown():
     assert "mdRender.renderInto" in html, "预览列应复用统一 mdRender 渲染"
 
 
+def test_search_state_store_registered_in_tree_js():
+    """分类树组件应注册全局 searchState store（搜索框/分类树/问答共享筛选状态）"""
+    js = _read_static("components/tree.js")
+    assert "searchState" in js, "tree.js 应定义 searchState store"
+    assert "$store" in js, "treeView 应通过 $store 读写共享状态"
+
+
+def test_search_box_reads_store_filters():
+    """搜索框应读取 store 中的分类筛选参数，避免丢失筛选状态"""
+    js = _read_static("components/search.js")
+    assert "searchState" in js, "search.js 应引用 searchState store"
+    assert "$store" in js, "searchBox 应通过 $store 读取共享筛选状态"
+
+
+def test_qa_modal_sends_current_filters():
+    """AI 问答提交时应携带当前分类筛选（联动收窄检索范围）"""
+    js = _read_static("components/qa.js")
+    assert "searchState" in js, "qa.js 应引用 searchState store"
+    assert "$store" in js, "qaView 应通过 $store 读取共享筛选状态"
+
+
 def test_md_render_converts_literal_newline_to_br():
     """md-render 必须把 Paddle 输出的字面 \\n（反斜杠+n 两字符）替换为 <br>
 

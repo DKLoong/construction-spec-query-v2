@@ -12,6 +12,7 @@ router = APIRouter()
 _CONTEXT_MAX_RESULTS = 5       # 送入 AI 的最多条文数
 _CONTEXT_MAX_CHARS = 200        # 每条条文最多截取字符数
 _CANDIDATE_POOL_SIZE = 30       # 初筛候选池大小（供重排序）
+_QA_MIN_CANDIDATES = 3          # 分类筛选后候选不足此数时放宽为全局检索
 
 
 def _build_context(results: list[dict], max_chars: int = _CONTEXT_MAX_CHARS) -> str:
@@ -80,13 +81,45 @@ async def qa_ask(request: Request, body: QaRequest):
     if not question:
         return JSONResponse({"detail": "问题不能为空"}, status_code=400)
 
-    # 1. 宽泛检索（候选池 > 最终送入数）
-    sq = SearchQuery(keyword=question, per_page=_CANDIDATE_POOL_SIZE)
+    # 1. 检索（携带可选分类筛选，收窄候选池提升精确度）
+    dim_kwargs = {
+        "dim1_hierarchy": body.dim1_hierarchy,
+        "dim1_nature": body.dim1_nature,
+        "dim2_stage": body.dim2_stage,
+        "dim3_usage": body.dim3_usage,
+        "dim4_specialty": body.dim4_specialty,
+        "dim5_location": body.dim5_location,
+        "dim6_material": body.dim6_material,
+    }
+    has_dim = any(v for v in dim_kwargs.values())
+    sq = SearchQuery(
+        keyword=question,
+        per_page=_CANDIDATE_POOL_SIZE,
+        dim1_hierarchy=body.dim1_hierarchy,
+        dim1_nature=body.dim1_nature,
+        dim2_stage=body.dim2_stage,
+        dim3_usage=body.dim3_usage,
+        dim4_specialty=body.dim4_specialty,
+        dim5_location=body.dim5_location,
+        dim6_material=body.dim6_material,
+    )
     try:
         candidates, _ = hybrid_search(sq)
     except Exception as e:
         logger.error("QA hybrid_search failed: %s", e)
         candidates = []
+
+    # 兜底：分类筛选使候选过少时放宽为全局检索，保证问答上下文充足
+    if has_dim and len(candidates) < _QA_MIN_CANDIDATES:
+        logger.info(
+            "QA 分类筛选候选过少（%d < %d），放宽为全局检索",
+            len(candidates), _QA_MIN_CANDIDATES,
+        )
+        wide_sq = SearchQuery(keyword=question, per_page=_CANDIDATE_POOL_SIZE)
+        try:
+            candidates, _ = hybrid_search(wide_sq)
+        except Exception as e:
+            logger.error("QA hybrid_search (wide) failed: %s", e)
 
     # 2. 向量重排序 → 取最相关的 Top-K
     results = _rerank_by_vector(question, candidates)
