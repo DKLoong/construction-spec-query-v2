@@ -44,7 +44,10 @@
     // 把 markdown 渲染进指定容器（marked → DOMPurify → KaTeX）
     function renderInto(el, md, baseUrl) {
         if (!el) return;
-        let raw = fixOrphanSup(rewriteImg(md || '', baseUrl));
+        // PaddleOCR 输出的表格单元格内用字面 \n（反斜杠+n 两字符）表示换行。
+        // 必须替换为 <br> 而非真实换行——HTML 单元格内的真实换行会被浏览器
+        // 空白折叠成空格，无法达到换行效果。
+        let raw = fixOrphanSup(rewriteImg(md || '', baseUrl)).replace(/\\n/g, '<br>');
         let html;
         try {
             html = window.marked.parse(raw, { gfm: true, breaks: true });

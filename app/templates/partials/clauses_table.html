@@ -66,16 +66,14 @@
     {% endif %}
 </div>
 <script>
-// 预览列渲染 markdown（HTMX 加载后执行），图片相对引用改写为 spec 图片路由
+// 预览列渲染 markdown（HTMX 加载后执行），复用统一 mdRender（marked + DOMPurify + 图片改写 + 字面\n转换）
 (function(){
     document.querySelectorAll('.clause-preview-md').forEach(function (el) {
         const specId = el.dataset.specId;
         let md = '';
         try { md = JSON.parse(el.dataset.md || '""'); } catch (e) { md = ''; }
-        const rew = md
-            .replace(/(src=["'])imgs\//g, `$1/specs/${specId}/imgs/`)
-            .replace(/!\[([^\]]*)\]\(imgs\//g, `![$1](/specs/${specId}/imgs/`);
-        el.innerHTML = DOMPurify.sanitize(marked.parse(rew, {gfm: true, breaks: true}));
+        // 图片相对引用改写为 /specs/{specId}/imgs/，由 mdRender.rewriteImg 统一处理
+        window.mdRender.renderInto(el, md, `/specs/${specId}/`);
     });
 })();
 </script>

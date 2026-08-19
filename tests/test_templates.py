@@ -70,8 +70,22 @@ def test_clause_detail_renders_markdown_with_sanitize():
 
 
 def test_clauses_table_preview_renders_markdown():
-    """条文列表预览列须渲染 markdown（clause-preview-md 容器 + DOMPurify 净化）"""
+    """条文列表预览列须渲染 markdown（clause-preview-md 容器 + 统一 mdRender 渲染）"""
     html = _read("clauses_table.html")
     assert "clause-preview-md" in html, "预览列缺少渲染容器"
     assert "tojson" in html, "预览列 content 应以 tojson 传递"
-    assert "DOMPurify.sanitize" in html, "预览列渲染必须净化"
+    # 渲染统一收敛到 md-render.js（含 DOMPurify 净化 + 图片改写），避免两处逻辑漂移
+    assert "mdRender.renderInto" in html, "预览列应复用统一 mdRender 渲染"
+
+
+def test_md_render_converts_literal_newline_to_br():
+    """md-render 必须把 Paddle 输出的字面 \\n（反斜杠+n 两字符）替换为 <br>
+
+    PaddleOCR 在 HTML 表格单元格内用字面 \\n 表示换行；若替换为真实换行，
+    浏览器对 HTML 单元格内的空白会折叠成空格，仍不换行，故必须替换为 <br>。
+    """
+    md_render = _read_static("components/md-render.js")
+    # JS 正则字面量 /\\n/g（两个反斜杠 + n）用于匹配「字面反斜杠+n」两字符；
+    # Python 源码中需写 "\\\\n" 才能表示两个反斜杠字符。
+    assert "/\\\\n/g" in md_render, "md-render 应含字面 \\n 匹配正则"
+    assert "'<br>'" in md_render, "字面 \\n 应替换为 <br> 而非真实换行"
