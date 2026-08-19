@@ -55,6 +55,26 @@ def test_ocr_review_rewrite_keeps_imgs_segment():
     assert "'![$1](' + baseUrl + 'imgs/'" in md_render, "markdown 图片改写应保留 imgs/ 子路径"
 
 
+def test_clause_edit_page_two_column_layout():
+    """编辑页须为两栏布局（左编辑右实时预览），含右下角确认/取消按钮"""
+    html = _read("clause_edit_page.html")
+    assert "review-panels" in html, "编辑页应复用双栏布局"
+    assert "review-editor" in html, "左侧应为编辑区"
+    assert "review-preview" in html, "右侧应为预览区"
+    assert "mdRender.renderHtml" in html, "预览应走统一 mdRender 渲染"
+    assert "确认" in html, "应有确认按钮"
+    assert "取消" in html, "应有取消按钮"
+
+
+def test_clauses_table_edit_button_navigates_to_edit_page():
+    """条文列表「编辑」按钮应跳转独立编辑页（editClause 记录滚动位置）"""
+    html = _read("clauses_table.html")
+    specs = _read("specs_list.html")
+    assert "editClause" in html, "编辑按钮应调用 editClause 跳转"
+    assert "edit-page" in specs, "editClause 应跳转独立编辑页"
+    assert "clauseEditReturn" in specs, "跳转前应记录返回滚动位置（sessionStorage）"
+
+
 def test_clause_detail_renders_markdown_with_sanitize():
     """条文详情必须用 tojson 传 content，经统一渲染（marked+DOMPurify+KaTeX，含图片改写）"""
     html = _read("clause_detail.html")

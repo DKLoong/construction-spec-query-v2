@@ -36,9 +36,7 @@
             <td>
                 <div style="display:flex;flex-direction:column;gap:0.2rem">
                     <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;width:100%"
-                            hx-get="/specs/{{ spec.id }}/clauses/{{ c.id }}/edit"
-                            hx-target="#clause-row-{{ c.id }}"
-                            hx-swap="outerHTML">
+                            onclick="editClause({{ spec.id }}, {{ c.id }})">
                         编辑
                     </button>
                     <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;width:100%"

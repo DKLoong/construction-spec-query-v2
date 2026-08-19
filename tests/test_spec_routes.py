@@ -239,6 +239,24 @@ def test_delete_clause(auth_client, monkeypatch, tmp_path):
         assert spec["clause_count"] == 2  # 3 → 2
 
 
+def test_edit_clause_page(auth_client, monkeypatch, tmp_path):
+    """条文编辑页返回两栏布局（左编辑右预览）"""
+    db_path = tmp_path / "test_edit_page.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        spec_id = _setup_spec_data(conn)
+        clause = conn.execute(
+            "SELECT id FROM clauses WHERE spec_id = ? LIMIT 1", (spec_id,)
+        ).fetchone()
+
+    resp = auth_client.get(f"/specs/{spec_id}/clauses/{clause['id']}/edit-page")
+    assert resp.status_code == 200
+    assert "review-panels" in resp.text, "编辑页应为双栏布局"
+    assert "clause_edit_page" in resp.text or "编辑条文" in resp.text
+
+
 # ═══════════════════════════════════════════
 # 分类编辑
 # ═══════════════════════════════════════════

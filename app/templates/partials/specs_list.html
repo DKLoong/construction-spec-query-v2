@@ -8,3 +8,46 @@
     <div id="spec-class-area"></div>
     <div id="clause-detail-area"></div>
 </div>
+<script>
+// 跳转两栏编辑页前记录滚动位置，返回时恢复（解决取消/保存后跳回顶部）
+window.editClause = function (specId, clauseId) {
+    const panel = document.querySelector('.center-panel-v2');
+    const scroll = panel ? panel.scrollTop : 0;
+    sessionStorage.setItem('clauseEditReturn',
+        JSON.stringify({ specId: String(specId), scroll: scroll }));
+    window.location.href = '/specs/' + specId + '/clauses/' + clauseId + '/edit-page';
+};
+
+// 从编辑页 history.back() 返回时恢复滚动位置；保存过则刷新条文列表
+window.addEventListener('pageshow', function () {
+    const raw = sessionStorage.getItem('clauseEditReturn');
+    if (!raw) return;
+    let data;
+    try { data = JSON.parse(raw); } catch (e) {
+        sessionStorage.removeItem('clauseEditReturn');
+        return;
+    }
+    const panel = document.querySelector('.center-panel-v2');
+    const restoreScroll = function () {
+        if (panel && data.scroll !== undefined) panel.scrollTop = data.scroll;
+    };
+    if (data.edited && data.specId && window.htmx) {
+        // 保存成功：刷新条文列表使编辑结果可见，刷新完成后再恢复滚动
+        sessionStorage.removeItem('clauseEditReturn');
+        document.addEventListener('htmx:afterSettle', function onSettle(e) {
+            if (e.detail && e.detail.target && e.detail.target.id === 'clause-detail-area') {
+                document.removeEventListener('htmx:afterSettle', onSettle);
+                restoreScroll();
+            }
+        });
+        htmx.ajax('GET', '/specs/' + data.specId + '/clauses', {
+            target: '#clause-detail-area',
+            swap: 'innerHTML'
+        });
+    } else {
+        // 取消返回：恢复原滚动位置，不刷新
+        sessionStorage.removeItem('clauseEditReturn');
+        restoreScroll();
+    }
+});
+</script>

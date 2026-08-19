@@ -145,6 +145,33 @@ async def edit_clause_form(request: Request, spec_id: int, clause_id: int):
     })
 
 
+@router.get("/specs/{spec_id}/clauses/{clause_id}/edit-page")
+async def clause_edit_page(request: Request, spec_id: int, clause_id: int):
+    """两栏条文编辑页（左编辑右实时预览），仿 OCR 审查页布局
+
+    独立整页跳转（hide_tree 全宽），确认/取消后 history.back() 返回原列表页，
+    滚动位置由 specs_list 页面的 pageshow 逻辑恢复。
+    """
+    with get_db() as conn:
+        clause = conn.execute(
+            """SELECT c.*, s.code as spec_code, s.title as spec_title
+               FROM clauses c JOIN specifications s ON c.spec_id = s.id
+               WHERE c.id = ? AND c.spec_id = ?""",
+            (clause_id, spec_id),
+        ).fetchone()
+        if not clause:
+            return HTMLResponse("<p>条文不存在</p>", status_code=404)
+
+    from app.main import templates
+    return templates.TemplateResponse(request, "base.html", {
+        "left_content": "partials/tree_panel.html",
+        "center_content": "partials/clause_edit_page.html",
+        "clause": dict(clause),
+        "spec_id": spec_id,
+        "hide_tree": True,  # 全宽两栏显示
+    })
+
+
 @router.put("/specs/{spec_id}/clauses/{clause_id}")
 async def update_clause(
     request: Request,

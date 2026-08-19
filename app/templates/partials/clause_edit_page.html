@@ -1,0 +1,125 @@
+<!-- 两栏条文编辑页（左编辑 | 右实时预览），仿 OCR 审查页布局 -->
+<div x-data="clauseEditor()"
+     data-spec-id="{{ spec_id }}"
+     data-clause-id="{{ clause.id }}"
+     data-clause-no='{{ clause.clause_no | tojson }}'
+     data-title='{{ clause.title | tojson }}'
+     data-content='{{ clause.content | tojson }}'
+     data-dim4='{{ clause.dim4_specialty | tojson }}'
+     data-dim5='{{ clause.dim5_location | tojson }}'
+     data-dim6='{{ clause.dim6_material | tojson }}'
+     data-spec-code='{{ clause.spec_code | tojson }}'
+     data-spec-title='{{ clause.spec_title | tojson }}'
+     class="ocr-review">
+    <h2>✏️ 编辑条文
+        <small x-text="specLabel" style="color:var(--pico-muted-color);font-size:0.8rem"></small>
+    </h2>
+
+    <!-- 条文号 / 标题 -->
+    <div class="review-toolbar">
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+            <input type="text" x-model="clauseNo" placeholder="条文号" style="width:160px">
+            <input type="text" x-model="title" placeholder="标题" style="flex:1;min-width:240px">
+        </div>
+    </div>
+
+    <!-- 左右双栏：编辑 | 预览 -->
+    <div class="review-panels">
+        <textarea x-model="content" @input="updatePreview()"
+                  class="review-editor" spellcheck="false"></textarea>
+        <div x-html="renderedHtml" class="review-preview" id="review-preview"></div>
+    </div>
+
+    <!-- 确认 / 取消（右下角） -->
+    <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--pico-muted-border-color);
+                display:flex;justify-content:space-between;align-items:center">
+        <small style="color:var(--pico-muted-color)">编辑条文号、标题与内容，右侧实时预览效果</small>
+        <div style="display:flex;gap:0.75rem;align-items:center">
+            <button type="button" @click="save()" :disabled="saving">✅ 确认保存</button>
+            <button type="button" class="secondary" @click="cancel()">✖ 取消</button>
+        </div>
+    </div>
+    <div id="edit-result" style="margin-top:0.5rem"></div>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('clauseEditor', () => ({
+        clauseNo: '',
+        title: '',
+        content: '',
+        dim4: '',
+        dim5: '',
+        dim6: '',
+        specLabel: '',
+        renderedHtml: '',
+        saving: false,
+        specId: null,
+        clauseId: null,
+
+        init() {
+            const el = this.$el;
+            this.specId = el.dataset.specId;
+            this.clauseId = el.dataset.clauseId;
+            this.clauseNo = el.dataset.clauseNo || '';
+            this.title = el.dataset.title || '';
+            this.content = el.dataset.content || '';
+            // 保存时原样回传分类字段，避免 PUT 默认空值清空已有分类
+            this.dim4 = el.dataset.dim4 || '';
+            this.dim5 = el.dataset.dim5 || '';
+            this.dim6 = el.dataset.dim6 || '';
+            const code = el.dataset.specCode || '';
+            const stitle = el.dataset.specTitle || '';
+            this.specLabel = [code, stitle].filter(Boolean).join(' ');
+            this.updatePreview();
+        },
+
+        // 实时预览：条文号 + 标题 + 内容（统一 mdRender 渲染，图片改写为 /specs/{specId}/）
+        updatePreview() {
+            const md = [
+                this.clauseNo ? `**${this.clauseNo}**` : '',
+                this.title ? `### ${this.title}` : '',
+                this.content || '',
+            ].filter(Boolean).join('\n\n');
+            try {
+                this.renderedHtml = window.mdRender.renderHtml(md, `/specs/${this.specId}/`);
+            } catch (e) {
+                this.renderedHtml = '<p style="color:red">渲染错误</p>';
+            }
+        },
+
+        async save() {
+            if (this.saving) return;
+            this.saving = true;
+            try {
+                const fd = new FormData();
+                fd.append('clause_no', this.clauseNo);
+                fd.append('title', this.title);
+                fd.append('content', this.content);
+                fd.append('dim4_specialty', this.dim4);
+                fd.append('dim5_location', this.dim5);
+                fd.append('dim6_material', this.dim6);
+                const resp = await fetch(`/specs/${this.specId}/clauses/${this.clauseId}`, {
+                    method: 'PUT',
+                    body: fd,
+                });
+                if (!resp.ok) throw new Error('服务返回 ' + resp.status);
+                // 标记返回后刷新条文列表，再 history.back() 回操作前页面
+                sessionStorage.setItem('clauseEditReturn', JSON.stringify({
+                    edited: true,
+                    specId: this.specId,
+                }));
+                window.history.back();
+            } catch (e) {
+                const box = document.getElementById('edit-result');
+                if (box) box.innerHTML = `<p style="color:red">保存失败: ${e.message}</p>`;
+                this.saving = false;
+            }
+        },
+
+        cancel() {
+            window.history.back();
+        },
+    }));
+});
+</script>
