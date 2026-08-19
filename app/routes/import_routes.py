@@ -20,6 +20,58 @@ def _compute_file_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 
+# 规范编号前缀白名单（与 _detect_hierarchy / _detect_nature 前缀知识保持一致）。
+# 仅含纯字母前缀；DB 地方标准带地区号的格式（如 DB13/T）不在此列。
+_PREFIX_WHITELIST = {
+    "JTGT", "JTG", "JTT", "JT", "JGT", "JG", "JGJ", "CJT", "CJ",
+    "JBT", "JB", "NYT", "NY", "GBT", "GB", "TB", "MH", "YZ",
+    "DB", "DBT", "T", "Q",
+    "CJJ", "GJB", "GBZ", "GBJ", "JJG", "JJF", "XB", "QC", "JGJT",
+}
+
+
+def _parse_filename_to_code_title(filename: str) -> tuple[str, str, bool]:
+    """从文件名识别规范编号与名称，返回 (code, title, matched)。
+
+    通用命名格式：{字母前缀}[/T] {标准号}[-年份] {名称}
+    例如 'GB/T 50010-2010 混凝土结构设计规范.pdf'
+        → code='GB/T 50010-2010', title='混凝土结构设计规范'
+    不匹配通用格式时 matched=False，交由用户手动录入。
+    """
+    raw = filename.strip()
+    # 剥离扩展名：用 rsplit 而非 Path——文件名含 '/T'（如 GB/T 50010-2010）时，
+    # '/' 会被 Path 当作路径分隔符，把 GB 误当目录吞掉。
+    name = raw.rsplit(".", 1)[0].strip() if "." in raw else raw
+    m = re.match(
+        r"^([A-Za-z]{1,5})(/T)?[\s\-—–_]*(\d{2,5}(?:\.\d+)?)[\s\-—–_]*(\d{4})?[\s_\-—–]*(.*)$",
+        name,
+    )
+    if not m:
+        return "", "", False
+    prefix, slash_t, number, year, title = m.groups()
+    prefix = prefix.upper()
+    if prefix not in _PREFIX_WHITELIST:
+        return "", "", False
+
+    title = title.strip("- _—–.（）()　").strip()
+    # 名称以残留分隔符开头（如 DB13/T 被误解析成 DB+13 后名称以 /T 开头）→ 判定不匹配
+    if title and title[:1] in "/-_—–":
+        return "", "", False
+    # 既无名称也无年份，信息过少，不自动填充
+    if not title and not year:
+        return "", "", False
+
+    code = f"{prefix}{slash_t or ''} {number}" + (f"-{year}" if year else "")
+    return code, title, True
+
+
+@router.post("/import/parse-filename")
+async def parse_filename(filename: str = Form("")):
+    """根据文件名自动识别规范编号与名称（供导入表单自动回填）"""
+    code, title, matched = _parse_filename_to_code_title(filename)
+    return {"code": code, "title": title, "matched": matched}
+
+
 @router.post("/import/upload")
 async def upload_file(
     request: Request,
