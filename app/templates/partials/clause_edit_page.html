@@ -1,16 +1,5 @@
 <!-- 两栏条文编辑页（左编辑 | 右实时预览），仿 OCR 审查页布局 -->
-<div x-data="clauseEditor()"
-     data-spec-id="{{ spec_id }}"
-     data-clause-id="{{ clause.id }}"
-     data-clause-no='{{ clause.clause_no | tojson }}'
-     data-title='{{ clause.title | tojson }}'
-     data-content='{{ clause.content | tojson }}'
-     data-dim4='{{ clause.dim4_specialty | tojson }}'
-     data-dim5='{{ clause.dim5_location | tojson }}'
-     data-dim6='{{ clause.dim6_material | tojson }}'
-     data-spec-code='{{ clause.spec_code | tojson }}'
-     data-spec-title='{{ clause.spec_title | tojson }}'
-     class="ocr-review">
+<div x-data="clauseEditor()" class="ocr-review">
     <h2>✏️ 编辑条文
         <small x-text="specLabel" style="color:var(--pico-muted-color);font-size:0.8rem"></small>
     </h2>
@@ -23,9 +12,9 @@
         </div>
     </div>
 
-    <!-- 左右双栏：编辑 | 预览 -->
+    <!-- 左右双栏：编辑 | 预览（同步滚动） -->
     <div class="review-panels">
-        <textarea x-model="content" @input="updatePreview()"
+        <textarea x-model="content" @input="updatePreview()" @scroll="syncScroll($event)"
                   class="review-editor" spellcheck="false"></textarea>
         <div x-html="renderedHtml" class="review-preview" id="review-preview"></div>
     </div>
@@ -43,6 +32,21 @@
 </div>
 
 <script>
+// 条文数据以 JS 字面量嵌入：tojson 输出合法 JSON，由 JS 引擎解码（\uXXXX、\n 还原为真实字符）。
+// 不要改用 data-* 属性 + dataset 直读——tojson 的转义序列经 dataset 返回字面字符串导致乱码。
+window.__clauseEditData = {
+    specId: {{ spec_id | tojson }},
+    clauseId: {{ clause.id | tojson }},
+    clauseNo: {{ clause.clause_no | tojson }},
+    title: {{ clause.title | tojson }},
+    content: {{ clause.content | tojson }},
+    dim4: {{ clause.dim4_specialty | tojson }},
+    dim5: {{ clause.dim5_location | tojson }},
+    dim6: {{ clause.dim6_material | tojson }},
+    specCode: {{ clause.spec_code | tojson }},
+    specTitle: {{ clause.spec_title | tojson }},
+};
+
 document.addEventListener('alpine:init', () => {
     Alpine.data('clauseEditor', () => ({
         clauseNo: '',
@@ -58,19 +62,17 @@ document.addEventListener('alpine:init', () => {
         clauseId: null,
 
         init() {
-            const el = this.$el;
-            this.specId = el.dataset.specId;
-            this.clauseId = el.dataset.clauseId;
-            this.clauseNo = el.dataset.clauseNo || '';
-            this.title = el.dataset.title || '';
-            this.content = el.dataset.content || '';
+            const d = window.__clauseEditData || {};
+            this.specId = d.specId;
+            this.clauseId = d.clauseId;
+            this.clauseNo = d.clauseNo || '';
+            this.title = d.title || '';
+            this.content = d.content || '';
             // 保存时原样回传分类字段，避免 PUT 默认空值清空已有分类
-            this.dim4 = el.dataset.dim4 || '';
-            this.dim5 = el.dataset.dim5 || '';
-            this.dim6 = el.dataset.dim6 || '';
-            const code = el.dataset.specCode || '';
-            const stitle = el.dataset.specTitle || '';
-            this.specLabel = [code, stitle].filter(Boolean).join(' ');
+            this.dim4 = d.dim4 || '';
+            this.dim5 = d.dim5 || '';
+            this.dim6 = d.dim6 || '';
+            this.specLabel = [d.specCode, d.specTitle].filter(Boolean).join(' ');
             this.updatePreview();
         },
 
@@ -86,6 +88,16 @@ document.addEventListener('alpine:init', () => {
             } catch (e) {
                 this.renderedHtml = '<p style="color:red">渲染错误</p>';
             }
+        },
+
+        // 编辑框与预览框同步滚动（按比例映射）
+        syncScroll(event) {
+            const preview = document.getElementById('review-preview');
+            if (!preview) return;
+            const max = event.target.scrollHeight - event.target.clientHeight;
+            if (max <= 0) return;
+            const ratio = event.target.scrollTop / max;
+            preview.scrollTop = ratio * (preview.scrollHeight - preview.clientHeight);
         },
 
         async save() {
@@ -104,10 +116,14 @@ document.addEventListener('alpine:init', () => {
                     body: fd,
                 });
                 if (!resp.ok) throw new Error('服务返回 ' + resp.status);
-                // 标记返回后刷新条文列表，再 history.back() 回操作前页面
+                // 标记返回后刷新条文列表，再 history.back() 回操作前页面；
+                // 保留编辑前记录的滚动位置（scroll），否则保存返回后跳回顶部
+                let prev = {};
+                try { prev = JSON.parse(sessionStorage.getItem('clauseEditReturn') || '{}'); } catch (e) { prev = {}; }
                 sessionStorage.setItem('clauseEditReturn', JSON.stringify({
                     edited: true,
                     specId: this.specId,
+                    scroll: prev.scroll || 0,
                 }));
                 window.history.back();
             } catch (e) {

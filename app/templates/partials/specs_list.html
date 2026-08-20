@@ -31,8 +31,9 @@ window.addEventListener('pageshow', function () {
     const restoreScroll = function () {
         if (panel && data.scroll !== undefined) panel.scrollTop = data.scroll;
     };
-    if (data.edited && data.specId && window.htmx) {
-        // 保存成功：刷新条文列表使编辑结果可见，刷新完成后再恢复滚动
+    if (data.specId && window.htmx) {
+        // 取消或保存返回后都重新加载条文列表，确保回到「查看条文」上下文
+        //（history.back 可能不命中 bfcache，初始 #clause-detail-area 为空）
         sessionStorage.removeItem('clauseEditReturn');
         document.addEventListener('htmx:afterSettle', function onSettle(e) {
             if (e.detail && e.detail.target && e.detail.target.id === 'clause-detail-area') {
@@ -45,7 +46,7 @@ window.addEventListener('pageshow', function () {
             swap: 'innerHTML'
         });
     } else {
-        // 取消返回：恢复原滚动位置，不刷新
+        // 无 specId（异常数据）：仅恢复滚动
         sessionStorage.removeItem('clauseEditReturn');
         restoreScroll();
     }

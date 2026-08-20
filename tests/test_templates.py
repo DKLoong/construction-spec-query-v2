@@ -73,6 +73,27 @@ def test_clause_edit_page_two_column_layout():
     assert "取消" in html, "应有取消按钮"
 
 
+def test_clause_edit_page_embeds_data_as_js_literal():
+    """编辑页数据应以 JS 字面量嵌入（tojson 在 script 内由 JS 引擎解码），避免 dataset 乱码"""
+    html = _read("clause_edit_page.html")
+    assert "__clauseEditData" in html, "应通过 JS 字面量嵌入条文数据"
+    assert "data-content=" not in html, "不应再通过 data-content 属性嵌入（tojson 的 \\uXXXX 经 dataset 直读不乱码）"
+
+
+def test_clause_edit_page_has_sync_scroll():
+    """编辑页编辑框与预览框应同步滚动"""
+    html = _read("clause_edit_page.html")
+    assert "syncScroll" in html, "应有同步滚动方法"
+    assert "@scroll" in html, "编辑框应绑定 @scroll 同步滚动"
+
+
+def test_specs_list_return_reloads_clauses():
+    """编辑页返回后（取消或保存）都应重新加载条文列表以恢复查看上下文"""
+    html = _read("specs_list.html")
+    assert "htmx.ajax('GET', '/specs/' + data.specId + '/clauses'" in html, "返回后应重载条文列表"
+    assert "clause-detail-area" in html
+
+
 def test_clauses_table_edit_button_navigates_to_edit_page():
     """条文列表「编辑」按钮应跳转独立编辑页（editClause 记录滚动位置）"""
     html = _read("clauses_table.html")
