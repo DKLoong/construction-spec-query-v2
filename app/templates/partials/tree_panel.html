@@ -14,8 +14,10 @@
             <div class="dialog-box">
                 <h3>导入规范文件</h3>
                 <form @submit.prevent="handleUpload">
-                    <label>规范编号 <input type="text" name="code" placeholder="如 GB 50204-2015"></label>
-                    <label>规范名称 <input type="text" name="title" placeholder="如 混凝土结构工程施工质量验收规范"></label>
+                    <label>规范编号 <input type="text" name="code" placeholder="如 GB 50204-2015"
+                                           @input="markManual('code')"></label>
+                    <label>规范名称 <input type="text" name="title" placeholder="如 混凝土结构工程施工质量验收规范"
+                                           @input="markManual('title')"></label>
                     <label>选择文件 <input type="file" name="file" accept=".md,.pdf"
                                            @change="autoFillFromFilename($event)"
                                            title="选择文件后将自动识别规范编号与名称"></label>

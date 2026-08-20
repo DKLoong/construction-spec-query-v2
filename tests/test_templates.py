@@ -168,6 +168,24 @@ def test_return_reload_defers_htmx():
     assert "htmx.ajax" in html, "仍应通过 htmx.ajax 重载"
 
 
+def test_import_autofill_tracks_auto_filled_state():
+    """自动填充应跟踪来源：选错文件后再次选择可覆盖自动填充值，但保留用户手动输入"""
+    js = _read_static("components/import.js")
+    assert "autoFilled" in js, "应跟踪自动填充状态"
+    # 不再整体跳过（旧逻辑：任一输入框有值就整体跳过，导致选错文件后无法重新识别）
+    assert "codeInput.value.trim() || titleInput.value.trim()" not in js, "不应因任一输入框有值而整体跳过"
+    assert "this.autoFilled.code" in js, "应按字段判断是否更新（为空或来自自动填充）"
+    assert "this.autoFilled.title" in js
+
+
+def test_import_inputs_clear_autofill_on_manual_edit():
+    """用户手动编辑输入框后应清除自动填充标记，后续选择文件不覆盖手动输入值"""
+    html = _read("tree_panel.html")
+    assert "markManual" in html, "手动编辑应调用 markManual 清除自动填充标记"
+    assert 'name="code"' in html
+    assert 'name="title"' in html
+
+
 def test_search_dispatch_no_after_settle_listener():
     """dispatchSearch/search 不应累积 htmx:afterSettle 监听器（结果页已有 hx-on 处理滚动）"""
     tree_js = _read_static("components/tree.js")
