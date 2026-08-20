@@ -36,16 +36,21 @@ async def search(
     dim6_material: str = Query("", max_length=100),
     page: int = Query(1),
     page_size: int = Query(20),
+    all: bool = Query(False),
 ):
-    """混合搜索：关键词 + 六维筛选 + 分页"""
+    """混合搜索：关键词 + 六维筛选 + 分页
+
+    all=1 表示用户主动取消所有筛选后的显式全量查询：无关键词无筛选时
+    仍返回全部条文（而非空搜索提示），供前端「取消所有筛选」后浏览全部。
+    """
     from app.search.hybrid_search import hybrid_search
 
-    # 无关键词 + 无任何维度筛选 → 返回提示
+    # 无关键词 + 无任何维度筛选 → 返回提示（除非 all=1 显式要求全量）
     all_empty = not any([
         keyword, dim1_hierarchy, dim1_nature, dim2_stage,
         dim3_usage, dim4_specialty, dim5_location, dim6_material,
     ])
-    if all_empty:
+    if all_empty and not all:
         from app.main import templates
         return templates.TemplateResponse(request, "partials/result_list.html", {
             "results": [],

@@ -147,6 +147,22 @@ def test_qa_modal_sends_current_filters():
     assert "$store" in js, "qaView 应通过 $store 读取共享筛选状态"
 
 
+def test_search_dispatch_no_after_settle_listener():
+    """dispatchSearch/search 不应累积 htmx:afterSettle 监听器（结果页已有 hx-on 处理滚动）"""
+    tree_js = _read_static("components/tree.js")
+    search_js = _read_static("components/search.js")
+    assert "addEventListener('htmx:afterSettle'" not in tree_js, "tree.js 不应累积滚动监听器"
+    assert "addEventListener('htmx:afterSettle'" not in search_js, "search.js 不应累积滚动监听器"
+
+
+def test_search_dispatch_sends_all_flag():
+    """主动搜索/筛选但无关键词无筛选时，应发 all=1 显示全部条文而非空提示"""
+    tree_js = _read_static("components/tree.js")
+    search_js = _read_static("components/search.js")
+    assert "'all', '1'" in tree_js, "分类树取消所有筛选应带 all=1"
+    assert "'all', '1'" in search_js, "搜索框应带 all=1"
+
+
 def test_md_render_converts_literal_newline_to_br():
     """md-render 必须把 Paddle 输出的字面 \\n（反斜杠+n 两字符）替换为 <br>
 

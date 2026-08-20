@@ -20,13 +20,12 @@ document.addEventListener('alpine:init', () => {
             for (const [k, v] of Object.entries(this.$store.searchState.filters)) {
                 params.append(k, v);
             }
-            // 使用 htmx.ajax() 而非 fetch()，确保 HTMX 正确初始化新元素上的 hx-* 属性
-            const panel = document.querySelector('.center-panel-v2');
-            // 内容加载完成后滚动到顶部
-            panel.addEventListener('htmx:afterSettle', function scrollTop() {
-                panel.scrollTop = 0;
-                panel.removeEventListener('htmx:afterSettle', scrollTop);
-            });
+            // 无关键词无筛选（如清空搜索框后回车）→ 显式请求全部条文
+            if (!kw && Object.keys(this.$store.searchState.filters).length === 0) {
+                params.append('all', '1');
+            }
+            // 滚动到顶部由结果页 #search-results 的 hx-on::after-settle 处理，
+            // 不在每次请求前累积 htmx:afterSettle 监听器
             htmx.ajax('GET', `/search?${params.toString()}`, {
                 target: '.center-panel-v2',
                 swap: 'innerHTML'

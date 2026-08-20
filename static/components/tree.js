@@ -45,26 +45,29 @@ document.addEventListener('alpine:init', () => {
         },
 
         async dispatchSearch() {
-            const params = new URLSearchParams();
-            // 从共享 store 读取筛选维度 + 搜索关键词（与搜索框保持一致）
-            for (const [k, v] of Object.entries(this.$store.searchState.filters)) {
-                params.append(k, v);
+            try {
+                const params = new URLSearchParams();
+                // 从共享 store 读取筛选维度 + 搜索关键词（与搜索框保持一致）
+                for (const [k, v] of Object.entries(this.$store.searchState.filters)) {
+                    params.append(k, v);
+                }
+                const kw = (this.$store.searchState.keyword || '').trim();
+                if (kw) {
+                    params.append('keyword', kw);
+                }
+                // 用户主动操作但无关键词无筛选（如取消所有筛选）→ 显式请求全部条文
+                if (!kw && Object.keys(this.$store.searchState.filters).length === 0) {
+                    params.append('all', '1');
+                }
+                // 滚动到顶部由结果页 #search-results 的 hx-on::after-settle 处理，
+                // 不在每次请求前累积 htmx:afterSettle 监听器（避免快速操作时竞态/跳顶）
+                htmx.ajax('GET', `/search?${params.toString()}`, {
+                    target: '.center-panel-v2',
+                    swap: 'innerHTML'
+                });
+            } catch (e) {
+                console.error('[dispatchSearch] 异常:', e);
             }
-            const kw = (this.$store.searchState.keyword || '').trim();
-            if (kw) {
-                params.append('keyword', kw);
-            }
-            // 使用 htmx.ajax() 而非 fetch()，确保 HTMX 正确初始化新元素上的 hx-* 属性
-            const panel = document.querySelector('.center-panel-v2');
-            // 内容加载完成后滚动到顶部
-            panel.addEventListener('htmx:afterSettle', function scrollTop() {
-                panel.scrollTop = 0;
-                panel.removeEventListener('htmx:afterSettle', scrollTop);
-            });
-            htmx.ajax('GET', `/search?${params.toString()}`, {
-                target: '.center-panel-v2',
-                swap: 'innerHTML'
-            });
         },
     }));
 });

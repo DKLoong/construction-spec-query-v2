@@ -95,6 +95,24 @@ def test_search_no_results(auth_client, monkeypatch, tmp_path):
     assert "暂无" in resp.text or "0 条" in resp.text
 
 
+def test_search_all_returns_all_results(auth_client, monkeypatch, tmp_path):
+    """all=1 时无参数返回全部条文（用户主动取消所有筛选后的显式全量）"""
+    db_path = tmp_path / "test_search_all2.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        setup_search_data(conn)
+
+    resp = auth_client.get("/search?all=1")
+    assert resp.status_code == 200
+    assert "共找到 3 条" in resp.text, "应返回全部 3 条"
+    assert "模板设计" in resp.text
+    assert "钢筋原材料" in resp.text
+    assert "屋面防水" in resp.text
+    assert "请输入关键词" not in resp.text, "不应显示空搜索提示"
+
+
 def test_search_requires_auth(client):
     """未登录不能访问搜索接口"""
     resp = client.get("/search?keyword=test", follow_redirects=False)
