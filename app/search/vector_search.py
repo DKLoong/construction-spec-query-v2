@@ -1,7 +1,11 @@
+import logging
 import lancedb
 import pyarrow as pa
 from app.config import LANCE_DB_PATH
+from app.database import get_db
 from app.ai.embedding import embed_texts
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStore:
@@ -70,6 +74,37 @@ class VectorStore:
              "text": r["text"], "_distance": r.get("_distance", 0)}
             for r in results
         ]
+
+    def sync_with_db(self) -> int:
+        """对比向量表与数据库现存条文，删除孤儿向量（返回清理条数）
+
+        用于自愈历史遗留或删除未同步的向量记录，避免旧数据污染语义检索候选池。
+        仅比对 clause_id，不涉及 embedding，开销轻量，可在启动时/删除后调用。
+        """
+        if not self._table_exists():
+            return 0
+        tbl = self._get_table()
+        try:
+            rows = tbl.to_arrow()
+        except Exception as e:
+            logger.warning("读取向量表 clause_id 失败: %s", e)
+            return 0
+        if rows.num_rows == 0:
+            return 0
+
+        vector_ids = {int(v) for v in rows.column("clause_id").to_pylist()}
+        with get_db() as conn:
+            db_ids = {r[0] for r in conn.execute("SELECT id FROM clauses").fetchall()}
+
+        orphans = sorted(vector_ids - db_ids)
+        removed = 0
+        for cid in orphans:
+            try:
+                tbl.delete(f"clause_id = {cid}")
+                removed += 1
+            except Exception as e:
+                logger.warning("清理孤儿向量 clause_id=%s 失败: %s", cid, e)
+        return removed
 
     def delete_clause(self, clause_id: int):
         if self._table_exists():
