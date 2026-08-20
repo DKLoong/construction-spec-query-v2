@@ -117,6 +117,18 @@ def test_clause_detail_renders_markdown_with_sanitize():
     assert "specs/${specId}/" in html, "条文图片相对引用应改写为 spec 图片路由"
 
 
+def test_katex_strict_ignores_unicode_text_in_math_mode():
+    """数学模式中文（如 $重=50kg$）不得刷控制台警告
+
+    KaTeX strict 默认 warn，会对数学模式中的中文触发 unicodeTextInMathMode
+    警告（渲染本身正常，经 cjk_fallback 显示）。katexize 须显式只忽略该类，
+    其余 strict 检查（如 href 注入等）保持默认 warn，避免掩盖潜在问题。
+    """
+    md_render = _read_static("components/md-render.js")
+    assert "unicodeTextInMathMode" in md_render, "需显式处理 unicodeTextInMathMode 警告"
+    assert "'ignore'" in md_render, "中文警告应置为 ignore 以消除控制台噪音"
+
+
 def test_clauses_table_preview_renders_markdown():
     """条文列表预览列须渲染 markdown（clause-preview-md 容器 + 统一 mdRender 渲染）"""
     html = _read("clauses_table.html")

@@ -34,6 +34,12 @@
                     ],
                     // 无法解析的公式保持原样文本，不影响正文展示
                     throwOnError: false,
+                    // 数学模式中的中文（如 "$重=50kg$"）经 cjk_fallback 渲染正常，
+                    // 仅因 strict 默认 warn 而刷控制台 unicodeTextInMathMode 警告。
+                    // 只忽略这一类，其余 strict 检查（如 href 注入等）保持 warn。
+                    strict: function (errorCode) {
+                        return errorCode === 'unicodeTextInMathMode' ? 'ignore' : 'warn';
+                    },
                 });
             } catch (e) {
                 /* 公式渲染异常不阻断 markdown 正文 */
