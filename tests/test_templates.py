@@ -147,6 +147,27 @@ def test_qa_modal_sends_current_filters():
     assert "$store" in js, "qaView 应通过 $store 读取共享筛选状态"
 
 
+def test_edit_clause_saves_table_scroll():
+    """编辑跳转前应同时记录条文表格滚动容器（.clause-table-wrapper）位置，返回时一并恢复"""
+    html = _read("specs_list.html")
+    assert "clause-table-wrapper" in html, "应保存条文表格滚动容器位置"
+    assert "tableScroll" in html, "应记录 tableScroll"
+    assert "data.tableScroll" in html, "返回时应恢复 tableScroll"
+
+
+def test_clause_edit_preview_updates_on_title_clause_no():
+    """修改条文号/标题应触发预览刷新（与 content 一致，三个输入都绑 @input）"""
+    html = _read("clause_edit_page.html")
+    assert html.count('@input="updatePreview()"') >= 3, "条文号/标题/内容输入都应在输入时刷新预览"
+
+
+def test_return_reload_defers_htmx():
+    """保存返回后重载条文列表应延迟执行——bfcache 恢复早期立即 htmx.ajax 会静默失效"""
+    html = _read("specs_list.html")
+    assert "setTimeout" in html, "重载应延迟执行"
+    assert "htmx.ajax" in html, "仍应通过 htmx.ajax 重载"
+
+
 def test_search_dispatch_no_after_settle_listener():
     """dispatchSearch/search 不应累积 htmx:afterSettle 监听器（结果页已有 hx-on 处理滚动）"""
     tree_js = _read_static("components/tree.js")

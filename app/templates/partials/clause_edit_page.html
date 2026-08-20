@@ -7,8 +7,10 @@
     <!-- 条文号 / 标题 -->
     <div class="review-toolbar">
         <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-            <input type="text" x-model="clauseNo" placeholder="条文号" style="width:160px">
-            <input type="text" x-model="title" placeholder="标题" style="flex:1;min-width:240px">
+            <input type="text" x-model="clauseNo" @input="updatePreview()"
+                   placeholder="条文号" style="width:160px">
+            <input type="text" x-model="title" @input="updatePreview()"
+                   placeholder="标题" style="flex:1;min-width:240px">
         </div>
     </div>
 
@@ -124,6 +126,7 @@ document.addEventListener('alpine:init', () => {
                     edited: true,
                     specId: this.specId,
                     scroll: prev.scroll || 0,
+                    tableScroll: prev.tableScroll || 0,
                 }));
                 window.history.back();
             } catch (e) {

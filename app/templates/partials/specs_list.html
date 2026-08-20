@@ -10,11 +10,16 @@
 </div>
 <script>
 // 跳转两栏编辑页前记录滚动位置，返回时恢复（解决取消/保存后跳回顶部）
+// 条文表格是内层滚动容器 .clause-table-wrapper，需与外层 .center-panel-v2 一并记录
 window.editClause = function (specId, clauseId) {
     const panel = document.querySelector('.center-panel-v2');
-    const scroll = panel ? panel.scrollTop : 0;
+    const wrapper = document.querySelector('.clause-table-wrapper');
     sessionStorage.setItem('clauseEditReturn',
-        JSON.stringify({ specId: String(specId), scroll: scroll }));
+        JSON.stringify({
+            specId: String(specId),
+            scroll: panel ? panel.scrollTop : 0,
+            tableScroll: wrapper ? wrapper.scrollTop : 0,
+        }));
     window.location.href = '/specs/' + specId + '/clauses/' + clauseId + '/edit-page';
 };
 
@@ -30,6 +35,11 @@ window.addEventListener('pageshow', function () {
     const panel = document.querySelector('.center-panel-v2');
     const restoreScroll = function () {
         if (panel && data.scroll !== undefined) panel.scrollTop = data.scroll;
+        // 内层条文表格滚动容器也一并恢复（用户滚动的主要是它）
+        if (data.tableScroll !== undefined) {
+            const w = document.querySelector('.clause-table-wrapper');
+            if (w) w.scrollTop = data.tableScroll;
+        }
     };
     if (data.specId && window.htmx) {
         // 取消或保存返回后都重新加载条文列表，确保回到「查看条文」上下文
@@ -41,10 +51,14 @@ window.addEventListener('pageshow', function () {
                 restoreScroll();
             }
         });
-        htmx.ajax('GET', '/specs/' + data.specId + '/clauses', {
-            target: '#clause-detail-area',
-            swap: 'innerHTML'
-        });
+        // 延迟执行：保存返回是 bfcache 恢复（navigation type=back_forward），
+        // 恢复早期立即 htmx.ajax 会静默失效，需等 DOM 稳定后再发
+        setTimeout(function () {
+            htmx.ajax('GET', '/specs/' + data.specId + '/clauses', {
+                target: '#clause-detail-area',
+                swap: 'innerHTML'
+            });
+        }, 100);
     } else {
         // 无 specId（异常数据）：仅恢复滚动
         sessionStorage.removeItem('clauseEditReturn');
