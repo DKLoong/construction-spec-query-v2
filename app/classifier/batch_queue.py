@@ -14,8 +14,11 @@ def add_to_queue(clause_id: int, dimension: str, keyword_score: float):
 def get_pending_batch(dimension: str, force: bool = False) -> list[dict]:
     with get_db() as conn:
         rows = conn.execute(
-            """SELECT q.*, c.content FROM classification_queue q
+            """SELECT q.*, c.content, c.clause_no, c.title as clause_title,
+                      s.code as spec_code, s.title as spec_title
+               FROM classification_queue q
                JOIN clauses c ON q.clause_id = c.id
+               JOIN specifications s ON c.spec_id = s.id
                WHERE q.dimension = ? AND q.status = 'pending'
                ORDER BY q.created_at LIMIT ?""",
             (dimension, BATCH_SIZE),
@@ -63,6 +66,49 @@ def apply_ai_results(batch_id: str, results: list[dict]):
                         f"UPDATE clauses SET {col} = ?, ai_classified = 1 WHERE id = ?",
                         (r["label"], r["clause_id"]),
                     )
+
+
+_DIM_COLUMN = {
+    "dim4": "dim4_specialty",
+    "dim5": "dim5_location",
+    "dim6": "dim6_material",
+}
+
+
+def collect_label_candidates(dimension: str, limit: int = 40) -> list[str]:
+    """收集某维度已有标签候选，供 AI 分类 prompt 约束标签口径
+
+    来源合并：
+    - classification_rules 中该维度激活规则的 pattern（按 priority/hit_count 降序）
+    - clauses 表中该维度已填写的值（拆逗号分隔的多标签）
+    结果去重保序，优先规则关键词（更稳定）。
+    """
+    col = _DIM_COLUMN.get(dimension)
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    with get_db() as conn:
+        rules = conn.execute(
+            """SELECT pattern FROM classification_rules
+               WHERE dimension = ? AND is_active = 1
+               ORDER BY priority DESC, hit_count DESC""",
+            (dimension,),
+        ).fetchall()
+        vals = []
+        if col:
+            vals = conn.execute(
+                f"SELECT DISTINCT {col} FROM clauses "
+                f"WHERE {col} IS NOT NULL AND {col} != ''"
+            ).fetchall()
+
+    for rows in (rules, vals):
+        for r in rows:
+            for part in str(r[0]).split(","):
+                v = part.strip()
+                if v and v not in seen:
+                    seen.add(v)
+                    candidates.append(v)
+    return candidates[:limit]
 
 
 def _dim_to_column(dim: str) -> str:

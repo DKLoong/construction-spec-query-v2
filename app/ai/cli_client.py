@@ -3,7 +3,59 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from app.ai.text_clean import strip_html
+
 logger = logging.getLogger(__name__)
+
+# 分类维度 → 中文标签（供 prompt 描述）
+_DIM_LABELS = {"dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"}
+
+
+def build_classify_prompt(clauses: list[dict], dimension: str,
+                          candidate_labels: list[str] | None = None) -> str:
+    """构建批量分类 prompt（CLI 与 API 后端共用）
+
+    相较旧实现，改进三点：
+    - 清理条文内容中的 HTML 残留（OCR/markdown 转换残留标记不进入 prompt）
+    - 附带规范编号/名称/条文号上下文，帮助 AI 结合规范语境判断
+    - 给出该维度已有标签候选集，约束 AI 标签口径，减少造词
+
+    Args:
+        clauses: 待分类批次（get_pending_batch 返回，含 clause_id/content，
+                 可选 spec_code/spec_title/clause_no）
+        dimension: dim4 / dim5 / dim6
+        candidate_labels: 该维度已有标签（规则 pattern + 库内已有值去重）
+    """
+    dim_label = _DIM_LABELS.get(dimension, dimension)
+
+    lines = []
+    for i, c in enumerate(clauses):
+        content = (strip_html(c.get("content") or "") or "")[:200]
+        ctx = []
+        if c.get("spec_code"):
+            ctx.append(str(c["spec_code"]))
+        if c.get("spec_title"):
+            ctx.append(str(c["spec_title"]))
+        if c.get("clause_no"):
+            ctx.append(f"条文号 {c['clause_no']}")
+        prefix = f"{i+1}. [ID:{c['clause_id']}]"
+        if ctx:
+            prefix += f"（{' '.join(ctx)}）"
+        lines.append(f"{prefix} {content}")
+
+    parts = [f"你是施工规范分类助手。请为以下条文标注「{dim_label}」维度。"]
+    if candidate_labels:
+        parts.append(
+            "候选标签（请优先从其中选择；若确实不匹配可新建更贴切标签）:\n"
+            + "、".join(candidate_labels)
+        )
+    parts.append("条文列表:")
+    parts.append("\n".join(lines))
+    parts.append(
+        "请仅以 JSON 数组返回分类结果，不要输出其它说明文字: "
+        '[{"clause_id": <id>, "label": "<标签>", "confidence": <0.0-1.0>}]'
+    )
+    return "\n\n".join(parts)
 
 
 @dataclass
@@ -28,24 +80,11 @@ class CLIBackend(ABC):
     async def ask(self, prompt: str, context: str = "",
                   work_dir: str | None = None) -> CLIResponse: ...
 
-    def classify_batch_sync(self, clauses: list[dict],
-                             dimension: str) -> list[ClassifyResult]:
+    def classify_batch_sync(self, clauses: list[dict], dimension: str,
+                             candidate_labels: list[str] | None = None
+                             ) -> list[ClassifyResult]:
         """同步版批量分类（供后台任务使用）"""
-        dim_labels = {
-            "dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"
-        }
-        dim_label = dim_labels.get(dimension, dimension)
-
-        items = "\n".join(
-            f"{i+1}. [ID:{c['clause_id']}] {c['content'][:200]}"
-            for i, c in enumerate(clauses)
-        )
-        prompt = (
-            f"你是施工规范分类助手。为以下条文标注{dim_label}维度。\n"
-            f"{items}\n\n"
-            f"请以 JSON 格式返回分类结果: "
-            f'[{{"clause_id": <id>, "label": "<分类标签>", "confidence": <0.0-1.0>}}]'
-        )
+        prompt = build_classify_prompt(clauses, dimension, candidate_labels)
 
         import json
         resp = self._run_cli(prompt, timeout=120)

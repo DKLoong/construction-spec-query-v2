@@ -1,6 +1,8 @@
 import logging
 from app.ai.cli_client import get_backend
-from app.classifier.batch_queue import get_pending_batch, apply_ai_results
+from app.classifier.batch_queue import (
+    get_pending_batch, apply_ai_results, collect_label_candidates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +23,8 @@ def process_pending_batches(backend_name: str | None = None, force: bool = False
             continue
 
         try:
-            results = backend.classify_batch_sync(batch, dim)
+            candidate_labels = collect_label_candidates(dim)
+            results = backend.classify_batch_sync(batch, dim, candidate_labels)
             if results:
                 formatted = [
                     {"clause_id": r.clause_id, "label": r.label, "confidence": r.confidence}

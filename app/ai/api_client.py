@@ -95,23 +95,13 @@ class APIBackend(CLIBackend):
                 duration_ms=duration,
             )
 
-    def classify_batch_sync(self, clauses, dimension) -> list:
+    def classify_batch_sync(self, clauses, dimension,
+                            candidate_labels: list[str] | None = None) -> list:
         """同步分类 — 使用同步 HTTP 客户端避免 asyncio.run() 冲突"""
-        from app.ai.cli_client import ClassifyResult
+        from app.ai.cli_client import ClassifyResult, build_classify_prompt
         import json
 
-        items = "\n".join(
-            f"{i+1}. [ID:{c['clause_id']}] {c['content'][:200]}"
-            for i, c in enumerate(clauses)
-        )
-        dim_labels = {"dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"}
-        dim_label = dim_labels.get(dimension, dimension)
-
-        full_prompt = (
-            f"你是施工规范分类助手。为以下条文标注{dim_label}维度。\n{items}\n\n"
-            f"---\n\n请以 JSON 格式返回分类结果: "
-            f'[{{"clause_id": <id>, "label": "<分类标签>", "confidence": <0.0-1.0>}}]'
-        )
+        full_prompt = build_classify_prompt(clauses, dimension, candidate_labels)
         messages = [
             {"role": "system", "content": "你是施工规范分类助手。请以 JSON 格式返回结果。"},
             {"role": "user", "content": full_prompt},

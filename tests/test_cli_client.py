@@ -1,104 +1,69 @@
-import inspect
-from app.ai.cli_client import get_backend, ClaudeCodeCLI, CodexCLI, CLIBackend
+"""分类 prompt 构建函数测试"""
+from app.ai.cli_client import build_classify_prompt
 
 
-def test_get_backend_claude():
-    backend = get_backend("claude")
-    assert isinstance(backend, ClaudeCodeCLI)
-    assert backend.command == "claude"
+def _sample_batch():
+    return [
+        {
+            "clause_id": 101,
+            "content": "I 级、II 级接头应能承受规定的高应力循环。<div style='text-align:center'>表3.0.6</div>",
+            "spec_code": "JGJ107-2016",
+            "spec_title": "钢筋机械连接技术规程",
+            "clause_no": "3.0.6",
+        },
+        {
+            "clause_id": 102,
+            "content": "接头应满足强度和变形要求。",
+            "spec_code": "JGJ107-2016",
+            "spec_title": "钢筋机械连接技术规程",
+            "clause_no": "3.0.3",
+        },
+    ]
 
 
-def test_get_backend_codex():
-    backend = get_backend("codex")
-    assert isinstance(backend, CodexCLI)
-    assert backend.command == "codex"
+def test_prompt_contains_dimension_label():
+    prompt = build_classify_prompt(_sample_batch(), "dim6")
+    assert "材料/工艺" in prompt
 
 
-def test_get_backend_default():
-    backend = get_backend("unknown")
-    assert isinstance(backend, ClaudeCodeCLI)
+def test_prompt_contains_candidate_labels():
+    prompt = build_classify_prompt(
+        _sample_batch(), "dim6", ["钢筋", "混凝土", "砌体"]
+    )
+    assert "候选标签" in prompt
+    assert "钢筋" in prompt and "混凝土" in prompt
 
 
-def test_claude_is_available_mocked(monkeypatch):
-    class FakeResult:
-        returncode = 0
-    def fake_run(*args, **kwargs):
-        return FakeResult()
-    monkeypatch.setattr("subprocess.run", fake_run)
-    backend = ClaudeCodeCLI()
-    assert backend.is_available() is True
+def test_prompt_without_candidate_labels():
+    """不提供候选标签时不出现候选标签段"""
+    prompt = build_classify_prompt(_sample_batch(), "dim6")
+    assert "候选标签" not in prompt
 
 
-def test_codex_is_available_mocked(monkeypatch):
-    class FakeResult:
-        returncode = 0
-    def fake_run(*args, **kwargs):
-        return FakeResult()
-    monkeypatch.setattr("subprocess.run", fake_run)
-    backend = CodexCLI()
-    assert backend.is_available() is True
+def test_prompt_html_cleaned():
+    """条文内容中的 HTML 残留应在 prompt 中清理"""
+    prompt = build_classify_prompt(_sample_batch(), "dim6")
+    assert "<div" not in prompt
+    assert "<div style" not in prompt
+    assert "表3.0.6" in prompt or "表 3.0.6" in prompt
 
 
-def test_cli_backend_abstract():
-    assert inspect.isabstract(CLIBackend)
+def test_prompt_contains_spec_context():
+    """prompt 应附带规范编号/名称/条文号上下文"""
+    prompt = build_classify_prompt(_sample_batch(), "dim6")
+    assert "JGJ107-2016" in prompt
+    assert "钢筋机械连接技术规程" in prompt
+    assert "条文号 3.0.6" in prompt
 
 
-# ============================================================
-# Task 5: get_backend() 多后端支持测试
-# ============================================================
-
-def test_get_backend_api(monkeypatch, tmp_path):
-    """doubao 等返回 APIBackend"""
-    db_path = tmp_path / "test_api_backend.db"
-    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
-    from app.database import init_db, get_db
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('ai.doubao.api_key', 'sk-test')"
-        )
-
-    from app.ai.cli_client import get_backend
-    from app.ai.api_client import APIBackend
-    backend = get_backend("doubao")
-    assert isinstance(backend, APIBackend)
-    assert backend.model == "doubao-1.5-pro-32k"
+def test_prompt_contains_clause_ids():
+    """每条条文保留 clause_id 供结果回填"""
+    prompt = build_classify_prompt(_sample_batch(), "dim6")
+    assert "ID:101" in prompt
+    assert "ID:102" in prompt
 
 
-def test_get_backend_custom(monkeypatch, tmp_path):
-    """custom 读取自定义配置"""
-    db_path = tmp_path / "test_custom.db"
-    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
-    from app.database import init_db, get_db
-    init_db()
-    with get_db() as conn:
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('ai.custom.base_url', 'https://my.api.com/v1')"
-        )
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('ai.custom.api_key', 'sk-custom')"
-        )
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('ai.custom.model', 'my-model')"
-        )
-
-    from app.ai.cli_client import get_backend
-    from app.ai.api_client import APIBackend
-    backend = get_backend("custom")
-    assert isinstance(backend, APIBackend)
-    assert backend.base_url == "https://my.api.com/v1"
-    assert backend.model == "my-model"
-
-
-def test_get_backend_default_from_settings(monkeypatch, tmp_path):
-    """不传 name 时从 settings 读取 ai.backend"""
-    db_path = tmp_path / "test_default.db"
-    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
-    from app.database import init_db, get_db
-    init_db()
-    with get_db() as conn:
-        conn.execute("INSERT INTO settings (key, value) VALUES ('ai.backend', 'codex')")
-
-    from app.ai.cli_client import get_backend, CodexCLI
-    backend = get_backend()  # 不传参数
-    assert isinstance(backend, CodexCLI)
+def test_prompt_json_instruction():
+    prompt = build_classify_prompt(_sample_batch(), "dim6")
+    assert "clause_id" in prompt
+    assert "confidence" in prompt

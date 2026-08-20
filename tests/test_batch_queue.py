@@ -1,4 +1,6 @@
-from app.classifier.batch_queue import add_to_queue, get_pending_batch, apply_ai_results
+from app.classifier.batch_queue import (
+    add_to_queue, get_pending_batch, apply_ai_results, collect_label_candidates,
+)
 from app.classifier.feedback import extract_keywords, process_feedback
 from app.database import init_db, get_db
 
@@ -41,6 +43,60 @@ def test_get_pending_batch(monkeypatch, tmp_path):
         add_to_queue(cid, "dim6", 0.35)
     batch = get_pending_batch("dim6")
     assert len(batch) >= 1
+
+
+def test_get_pending_batch_includes_spec_context(monkeypatch, tmp_path):
+    """批次条目应附带规范编号/名称，供分类 prompt 使用"""
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        setup_sample_data(conn)
+        clause_ids = [r["id"] for r in conn.execute("SELECT id FROM clauses LIMIT 20")]
+    for cid in clause_ids:
+        add_to_queue(cid, "dim6", 0.35)
+    batch = get_pending_batch("dim6")
+    assert len(batch) >= 1
+    first = batch[0]
+    assert first.get("spec_code") == "GB 50204"
+    assert first.get("spec_title") == "测试规范"
+
+
+def test_collect_label_candidates_merges_rules_and_values(monkeypatch, tmp_path):
+    """标签候选 = 规则 pattern ∪ 库内已有维度值，去重保序"""
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        setup_sample_data(conn)
+        # 插入两条 dim6 规则
+        conn.executemany(
+            """INSERT INTO classification_rules
+               (dimension, sub_field, pattern, match_type, priority, threshold, is_active)
+               VALUES (?, ?, ?, 'keyword', ?, ?, 1)""",
+            [
+                ("dim6", "material", "钢筋", 2, 0.6),
+                ("dim6", "material", "混凝土", 1, 0.6),
+            ],
+        )
+        # 已有条文维度值（含逗号分隔多标签）
+        conn.execute(
+            "UPDATE clauses SET dim6_material = '钢筋,砌体' WHERE id = "
+            "(SELECT id FROM clauses LIMIT 1)"
+        )
+    labels = collect_label_candidates("dim6")
+    assert labels[0] == "钢筋"  # 规则 priority 高者在前
+    assert "混凝土" in labels
+    assert "砌体" in labels  # 库内值补充
+    assert len(labels) == len(set(labels))  # 去重
+
+
+def test_collect_label_candidates_unknown_dim(monkeypatch, tmp_path):
+    """未知维度返回空列表"""
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    assert collect_label_candidates("dim_unknown") == []
 
 
 def test_apply_ai_results(monkeypatch, tmp_path):
