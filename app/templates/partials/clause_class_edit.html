@@ -75,9 +75,9 @@
             </button>
             <button type="button" class="outline"
                     style="flex:1;font-size:0.75rem;padding:0.3rem 0.6rem;white-space:nowrap"
-                    hx-get="/specs/{{ spec_id }}/clauses"
-                    hx-target="#clause-detail-area"
-                    hx-swap="innerHTML">
+                    hx-get="/specs/{{ spec_id }}/clauses/{{ clause.id }}/row-class"
+                    hx-target="#clause-row-{{ clause.id }}"
+                    hx-swap="outerHTML">
                 取消
             </button>
         </div>

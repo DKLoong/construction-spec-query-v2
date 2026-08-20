@@ -308,6 +308,29 @@ async def update_spec_class(
     })
 
 
+@router.get("/specs/{spec_id}/clauses/{clause_id}/row-class")
+async def clause_class_row(request: Request, spec_id: int, clause_id: int):
+    """条文分类普通行（saved 形态），供分类编辑取消时恢复当前行
+
+    分类编辑的「取消」此前整列表 innerHTML 重渲染，销毁滚动容器导致跳回顶部；
+    改为只恢复当前行，保持滚动位置。
+    """
+    with get_db() as conn:
+        clause = conn.execute(
+            "SELECT * FROM clauses WHERE id = ? AND spec_id = ?",
+            (clause_id, spec_id),
+        ).fetchone()
+        if not clause:
+            return HTMLResponse("<tr><td colspan='5'>条文不存在</td></tr>", status_code=404)
+
+    from app.main import templates
+    return templates.TemplateResponse(request, "partials/clause_class_edit.html", {
+        "clause": dict(clause),
+        "spec_id": spec_id,
+        "saved": True,
+    })
+
+
 @router.get("/specs/{spec_id}/clauses/{clause_id}/edit-class")
 async def edit_clause_class_form(request: Request, spec_id: int, clause_id: int):
     """条文分类编辑表单"""

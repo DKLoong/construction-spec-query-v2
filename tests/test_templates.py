@@ -55,6 +55,13 @@ def test_ocr_review_rewrite_keeps_imgs_segment():
     assert "'![$1](' + baseUrl + 'imgs/'" in md_render, "markdown 图片改写应保留 imgs/ 子路径"
 
 
+def test_clause_class_edit_cancel_restores_single_row():
+    """分类编辑取消按钮应只恢复当前行（row-class），而非整列表重渲染"""
+    html = _read("clause_class_edit.html")
+    assert "row-class" in html, "取消应指向单行恢复路由"
+    assert "clause-detail-area" not in html, "取消不应重渲染整列表"
+
+
 def test_clause_edit_page_two_column_layout():
     """编辑页须为两栏布局（左编辑右实时预览），含右下角确认/取消按钮"""
     html = _read("clause_edit_page.html")

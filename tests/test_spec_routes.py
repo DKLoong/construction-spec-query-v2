@@ -257,6 +257,26 @@ def test_edit_clause_page(auth_client, monkeypatch, tmp_path):
     assert "clause_edit_page" in resp.text or "编辑条文" in resp.text
 
 
+def test_clause_class_row(auth_client, monkeypatch, tmp_path):
+    """条文分类普通行路由：供分类编辑取消时恢复单行，避免整列表重渲染跳顶"""
+    db_path = tmp_path / "test_class_row.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        spec_id = _setup_spec_data(conn)
+        clause = conn.execute(
+            "SELECT id FROM clauses WHERE spec_id = ? LIMIT 1", (spec_id,)
+        ).fetchone()
+
+    resp = auth_client.get(f"/specs/{spec_id}/clauses/{clause['id']}/row-class")
+    assert resp.status_code == 200
+    assert f'id="clause-row-{clause["id"]}"' in resp.text, "应返回当前条文的普通行"
+    # 普通行含操作按钮（编辑/分类/删除），而非编辑表单的输入框
+    assert "分类" in resp.text, "普通行应含分类操作按钮"
+    assert 'name="dim4_specialty"' not in resp.text, "不应返回分类编辑表单"
+
+
 # ═══════════════════════════════════════════
 # 分类编辑
 # ═══════════════════════════════════════════
