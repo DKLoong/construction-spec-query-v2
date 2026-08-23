@@ -45,14 +45,31 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
         """
         total = conn.execute(count_sql, params).fetchone()[0]
 
+        # 字段优先级打分排序：关键词命中字段越精确排名越靠前；
+        # 无关键词（纯维度筛选）时维持导入顺序 ORDER BY c.id
+        order_by = "c.id"
+        order_params: list = []
+        if query.keyword:
+            kw = f"%{query.keyword}%"
+            order_by = (
+                "CASE WHEN c.clause_no = ? THEN 3 "
+                "WHEN c.clause_no LIKE ? THEN 2.5 "
+                "WHEN c.title LIKE ? THEN 2 "
+                "WHEN c.content LIKE ? THEN 1 "
+                "ELSE 0 END DESC, c.clause_no ASC"
+            )
+            order_params = [query.keyword, kw, kw, kw]
+
         offset = (query.page - 1) * query.per_page
         data_sql = f"""
             SELECT c.*, s.code as spec_code, s.title as spec_title
             FROM clauses c
             JOIN specifications s ON c.spec_id = s.id
             {where}
-            ORDER BY c.id
+            ORDER BY {order_by}
             LIMIT ? OFFSET ?
         """
-        rows = conn.execute(data_sql, params + [query.per_page, offset]).fetchall()
+        rows = conn.execute(
+            data_sql, params + order_params + [query.per_page, offset]
+        ).fetchall()
         return [dict(r) for r in rows], total

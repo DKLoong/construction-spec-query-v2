@@ -47,6 +47,39 @@ def test_search_pagination(monkeypatch, tmp_path):
     assert total == 3
 
 
+def test_search_clause_no_exact_priority(monkeypatch, tmp_path):
+    """字段优先级排序：clause_no 精确命中 > title 命中 > content 命中"""
+    db_path = tmp_path / "test_priority.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # 仅 content 命中（最低优先级）
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
+            (spec_id, "1.0.1", "其他标题", "本条内容包含关键词 钢筋 需要命中"),
+        )
+        # 仅 title 命中（中优先级）
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
+            (spec_id, "2.0.1", "钢筋 验收", "普通内容"),
+        )
+        # clause_no 精确命中（最高优先级）
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
+            (spec_id, "钢筋", "其他标题", "普通内容"),
+        )
+
+    results, total = search_clauses(SearchQuery(keyword="钢筋"))
+
+    assert total == 3
+    clause_nos = [r["clause_no"] for r in results]
+    # 编号精确命中排最前，title 命中排在 content 命中之前
+    assert clause_nos[0] == "钢筋"
+    assert clause_nos.index("2.0.1") < clause_nos.index("1.0.1")
+
+
 def test_vector_store_import():
     from app.search.vector_search import VectorStore
     assert hasattr(VectorStore, "search")

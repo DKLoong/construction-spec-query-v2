@@ -33,24 +33,22 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
         except (ImportError, OSError, RuntimeError, ValueError) as e:
             logger.warning("向量搜索不可用，降级为仅 LIKE 搜索: %s", e)
 
-    # ── 3. 合并去重 ──
+    # ── 3. 向量候选过滤（L2 < 阈值，含与 SQL 重叠的，全部参与 RRF） ──
     # L2 距离阈值（嵌入向量已归一化，BGE 模型 normalize_embeddings=True）：
     #   L2 < 1.0  → 余弦相似度 > 0.5，视为语义相关
     #   L2 >= 1.0 → 余弦相似度 ≤ 0.5，视为噪音（正交或相反方向）
     _VECTOR_THRESHOLD = 1.0
-    sql_ids = {r["id"] for r in sql_results}
-    new_ids = []
+    dist_map = {}
     for v in vector_raw:
         dist = v.get("_distance", 0)
-        not_in_like = v["clause_id"] not in sql_ids
-        dist_ok = dist < _VECTOR_THRESHOLD
-        if not_in_like and dist_ok:
-            new_ids.append(v["clause_id"])
+        if dist < _VECTOR_THRESHOLD:
+            dist_map[v["clause_id"]] = dist
 
     vector_results = []
-    if new_ids:
+    if dist_map:
+        clause_ids = list(dist_map.keys())
         with get_db() as conn:
-            # 构建维度筛选条件（向量结果也需应用维度筛选，与 FTS5 层一致）
+            # 构建维度筛选条件（向量结果也需应用维度筛选，与 SQL 层一致）
             dim_conditions = []
             dim_params = []
 
@@ -77,26 +75,31 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
 
             dim_where = (" AND " + " AND ".join(dim_conditions)) if dim_conditions else ""
 
-            placeholders = ",".join("?" * len(new_ids))
+            placeholders = ",".join("?" * len(clause_ids))
             rows = conn.execute(
                 f"""SELECT c.*, s.code as spec_code, s.title as spec_title
                     FROM clauses c
                     JOIN specifications s ON c.spec_id = s.id
                     WHERE c.id IN ({placeholders}){dim_where}""",
-                new_ids + dim_params,
+                clause_ids + dim_params,
             ).fetchall()
             seen = set()
             for r in rows:
                 d = dict(r)
                 if d["id"] not in seen:
                     seen.add(d["id"])
-                    d["_source"] = "semantic"
+                    d["_distance"] = dist_map[d["id"]]
                     vector_results.append(d)
 
-    merged = sql_results + vector_results
+    # 向量结果按距离升序，保证 RRF rank 语义（rank 越小距离越近）
+    vector_results.sort(key=lambda d: d.get("_distance", float("inf")))
+
+    # ── 4. RRF 融合去重 ──
+    from app.search.rrf import rrf_fusion
+    merged = rrf_fusion(sql_results, vector_results)
     total = len(merged)
 
-    # ── 4. 分页 ──
+    # ── 5. 分页 ──
     per_page = min(query.per_page or 20, 100)
     page = max(query.page or 1, 1)
     start = (page - 1) * per_page
