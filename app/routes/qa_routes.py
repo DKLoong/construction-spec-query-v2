@@ -70,9 +70,37 @@ def _rerank_by_vector(question: str, candidates: list[dict],
         return candidates[:top_k]
 
 
+def _rerank(question: str, candidates: list[dict],
+            top_k: int = _CONTEXT_MAX_RESULTS) -> list[dict]:
+    """精排降级链：CrossEncoder 交叉编码 → bi-encoder 向量 → 原始顺序"""
+    # 候选数不超过 Top-K 时直接返回，无需精排
+    if len(candidates) <= top_k:
+        return candidates
+
+    # 截取前 300 字符作为精排输入，控制计算量
+    texts = [(c.get("content") or "")[:300] for c in candidates]
+
+    try:
+        from app.ai.reranker import rerank
+        scores = rerank(question, texts)
+    except Exception as e:
+        logger.warning("CrossEncoder 精排异常，降级为向量重排序: %s", e)
+        scores = None
+
+    if scores is not None:
+        # CrossEncoder 可用：按分数降序取 Top-K
+        ranked = sorted(
+            zip(candidates, scores), key=lambda x: x[1], reverse=True
+        )
+        return [c for c, _ in ranked[:top_k]]
+
+    # CrossEncoder 不可用：回退 bi-encoder 向量重排序
+    return _rerank_by_vector(question, candidates, top_k)
+
+
 @router.post("/qa/ask")
 async def qa_ask(request: Request, body: QaRequest):
-    """AI 问答：检索 → 向量重排序 → 精简上下文 → CLI 推理 → 返回答案"""
+    """AI 问答：检索 → 精排（CrossEncoder → bi-encoder）→ 精简上下文 → CLI 推理 → 返回答案"""
     from app.search.hybrid_search import hybrid_search
     from app.ai.cli_client import get_backend
     from app.config import WORKSPACE_DIR
@@ -121,8 +149,8 @@ async def qa_ask(request: Request, body: QaRequest):
         except Exception as e:
             logger.error("QA hybrid_search (wide) failed: %s", e)
 
-    # 2. 向量重排序 → 取最相关的 Top-K
-    results = _rerank_by_vector(question, candidates)
+    # 2. 精排 → 取最相关的 Top-K（CrossEncoder 首选，bi-encoder 降级）
+    results = _rerank(question, candidates)
 
     # 3. 构建精简上下文
     context_str = _build_context(results)

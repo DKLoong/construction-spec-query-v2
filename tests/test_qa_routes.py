@@ -291,3 +291,113 @@ def test_qa_ask_no_dim_no_wide_fallback(auth_client, monkeypatch, tmp_path):
     resp = auth_client.post("/qa/ask", json={"question": "模板"})
     assert resp.status_code == 200
     assert len(query_log) == 1
+
+
+# ═══════════════════════════════════════════
+# CrossEncoder 精排降级链（_rerank 单元测试）
+# ═══════════════════════════════════════════
+
+def _make_candidates(n):
+    """构造 n 条候选条文（content 足够长以触发截断路径）"""
+    return [
+        {
+            "spec_code": "GB 50204",
+            "clause_no": str(i),
+            "content": f"条文内容{i}，用于精排打分排序测试。",
+        }
+        for i in range(n)
+    ]
+
+
+def test_rerank_crossencoder_scores_desc_order(monkeypatch):
+    """CrossEncoder 可用时按分数降序取 Top-K"""
+    from app.routes import qa_routes
+
+    candidates = _make_candidates(8)
+    # 分数故意乱序，验证按分数排序取前 5
+    scores = [0.1, 0.9, 0.3, 0.8, 0.2, 0.7, 0.4, 0.5]
+
+    def fake_rerank(question, texts):
+        assert question == "模板设计要求"
+        assert len(texts) == 8
+        return scores
+
+    monkeypatch.setattr("app.ai.reranker.rerank", fake_rerank)
+
+    results = qa_routes._rerank("模板设计要求", candidates, top_k=5)
+
+    assert len(results) == 5
+    # 分数最高的 5 个候选按降序排列（索引 1,3,5,7,6）
+    assert [r["clause_no"] for r in results] == ["1", "3", "5", "7", "6"]
+
+
+def test_rerank_falls_back_to_vector_when_crossencoder_unavailable(monkeypatch):
+    """CrossEncoder 不可用（rerank 返回 None）时回退 bi-encoder 向量重排序"""
+    from app.routes import qa_routes
+
+    candidates = _make_candidates(8)
+    monkeypatch.setattr("app.ai.reranker.rerank", lambda q, t: None)
+
+    vector_calls = {"n": 0, "top_k": None}
+
+    def fake_vector(question, candidates_, top_k=qa_routes._CONTEXT_MAX_RESULTS):
+        vector_calls["n"] += 1
+        vector_calls["top_k"] = top_k
+        return candidates_[:top_k]
+
+    monkeypatch.setattr(qa_routes, "_rerank_by_vector", fake_vector)
+
+    results = qa_routes._rerank("模板设计要求", candidates, top_k=5)
+
+    assert vector_calls["n"] == 1
+    assert vector_calls["top_k"] == 5
+    assert len(results) == 5
+
+
+def test_rerank_short_circuits_within_topk(monkeypatch):
+    """候选数 ≤ top_k 时直接返回，不触发任何精排"""
+    from app.routes import qa_routes
+
+    candidates = _make_candidates(3)
+    called = {"rerank": False, "vector": False}
+
+    def fake_rerank(q, t):
+        called["rerank"] = True
+        return [1.0] * len(t)
+
+    def fake_vector(question, candidates_, top_k=qa_routes._CONTEXT_MAX_RESULTS):
+        called["vector"] = True
+        return candidates_
+
+    monkeypatch.setattr("app.ai.reranker.rerank", fake_rerank)
+    monkeypatch.setattr(qa_routes, "_rerank_by_vector", fake_vector)
+
+    results = qa_routes._rerank("模板设计要求", candidates, top_k=5)
+
+    assert results is candidates  # 直接返回原列表（同一对象）
+    assert not called["rerank"]
+    assert not called["vector"]
+
+
+def test_rerank_crossencoder_exception_falls_back_to_vector(monkeypatch):
+    """CrossEncoder 精排抛异常时回退 bi-encoder 向量重排序"""
+    from app.routes import qa_routes
+
+    candidates = _make_candidates(8)
+    monkeypatch.setattr(
+        "app.ai.reranker.rerank",
+        lambda q, t: (_ for _ in ()).throw(RuntimeError("精排异常")),
+    )
+
+    vector_calls = {"n": 0}
+
+    def fake_vector(question, candidates_, top_k=qa_routes._CONTEXT_MAX_RESULTS):
+        vector_calls["n"] += 1
+        return candidates_[:top_k]
+
+    monkeypatch.setattr(qa_routes, "_rerank_by_vector", fake_vector)
+
+    results = qa_routes._rerank("模板设计要求", candidates, top_k=5)
+
+    assert vector_calls["n"] == 1
+    assert len(results) == 5
