@@ -86,6 +86,17 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY NOT NULL,
     value TEXT DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS synonym_map (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    source      TEXT NOT NULL,     -- 原词（待替换）
+    target      TEXT NOT NULL,     -- 目标词（规范用词）
+    is_active   INTEGER DEFAULT 1,
+    created_at  TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- source 唯一索引：保证预置同义词 INSERT OR IGNORE 的幂等性
+CREATE UNIQUE INDEX IF NOT EXISTS idx_synonym_map_source ON synonym_map(source);
 """
 
 TRIGGERS_SQL = """
@@ -152,3 +163,12 @@ def init_db():
             conn.execute("ALTER TABLE clauses ADD COLUMN clause_is_non INTEGER DEFAULT 0")
         except Exception:
             pass  # 列已存在
+        # 预置常用同义词（幂等：依赖 source 唯一索引 + INSERT OR IGNORE）
+        conn.execute(
+            "INSERT OR IGNORE INTO synonym_map (source, target, is_active) VALUES (?, ?, 1)",
+            ("砼", "混凝土"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO synonym_map (source, target, is_active) VALUES (?, ?, 1)",
+            ("箍筋", "钢筋"),
+        )

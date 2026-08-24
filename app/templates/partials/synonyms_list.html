@@ -1,0 +1,48 @@
+<!-- 同义词列表片段（htmx 局部刷新） -->
+{% if synonyms %}
+<table class="striped" style="font-size:0.85rem">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>原词</th>
+            <th>目标词</th>
+            <th>状态</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for s in synonyms %}
+    <tr>
+        <td><small>{{ s.id }}</small></td>
+        <td><code>{{ s.source }}</code></td>
+        <td><code>{{ s.target }}</code></td>
+        <td>
+            {% if s.is_active %}
+            <span style="color:green">● 启用</span>
+            {% else %}
+            <span style="color:gray">○ 禁用</span>
+            {% endif %}
+        </td>
+        <td>
+            <div style="display:flex;gap:0.25rem">
+                <button hx-post="/synonyms/{{ s.id }}/toggle"
+                        hx-target="closest tr" hx-swap="outerHTML"
+                        class="{% if s.is_active %}secondary{% endif %} outline"
+                        style="font-size:0.75rem;padding:0.15rem 0.4rem">
+                    {{ '禁用' if s.is_active else '启用' }}
+                </button>
+                <button hx-delete="/synonyms/{{ s.id }}" hx-target="#synonyms-table" hx-swap="innerHTML"
+                        hx-confirm="确定删除同义词「{{ s.source }}→{{ s.target }}」？"
+                        class="secondary outline"
+                        style="font-size:0.75rem;padding:0.15rem 0.4rem;color:red">
+                    删除
+                </button>
+            </div>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p style="color:var(--pico-muted-color)">暂无同义词。可添加「砼 → 混凝土」「箍筋 → 钢筋」这类常用简写映射。</p>
+{% endif %}

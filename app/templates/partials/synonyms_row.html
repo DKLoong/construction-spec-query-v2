@@ -1,0 +1,30 @@
+<!-- 单条同义词行片段（启禁后 htmx 替换用） -->
+{% set s = synonym %}
+<tr>
+    <td><small>{{ s.id }}</small></td>
+    <td><code>{{ s.source }}</code></td>
+    <td><code>{{ s.target }}</code></td>
+    <td>
+        {% if s.is_active %}
+        <span style="color:green">● 启用</span>
+        {% else %}
+        <span style="color:gray">○ 禁用</span>
+        {% endif %}
+    </td>
+    <td>
+        <div style="display:flex;gap:0.25rem">
+            <button hx-post="/synonyms/{{ s.id }}/toggle"
+                    hx-target="closest tr" hx-swap="outerHTML"
+                    class="{% if s.is_active %}secondary{% endif %} outline"
+                    style="font-size:0.75rem;padding:0.15rem 0.4rem">
+                {{ '禁用' if s.is_active else '启用' }}
+            </button>
+            <button hx-delete="/synonyms/{{ s.id }}" hx-target="#synonyms-table" hx-swap="innerHTML"
+                    hx-confirm="确定删除同义词「{{ s.source }}→{{ s.target }}」？"
+                    class="secondary outline"
+                    style="font-size:0.75rem;padding:0.15rem 0.4rem;color:red">
+                删除
+            </button>
+        </div>
+    </td>
+</tr>

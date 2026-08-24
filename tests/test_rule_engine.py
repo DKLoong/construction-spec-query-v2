@@ -96,3 +96,98 @@ def test_classify_clause_parent_path_boost():
         SAMPLE_RULES,
     )
     assert scores["dim6"] > 0 or scores["dim4"] > 0
+
+
+# ===== 父标题噪声黑名单测试 =====
+
+def test_parent_noise_title_filtered():
+    """父路径含「总则」等噪声标题时不进入匹配文本，不触发规则"""
+    rules = [
+        {"id": 30, "dimension": "dim4", "sub_field": "specialty", "pattern": "总则",
+         "match_type": "keyword", "priority": 1, "threshold": 0.3},
+    ]
+    # 若「总则」未被过滤，augmented_text = "施工 总则"，count=1 会跨过阈值命中
+    scores, labels, rule_ids = classify_clause("施工", ["总则"], rules)
+    assert scores["dim4"] == 0.0
+    assert rule_ids.get("dim4") is None
+
+
+def test_parent_professional_title_not_filtered():
+    """真实专业词父标题不受黑名单影响，仍可触发规则"""
+    rules = [
+        {"id": 32, "dimension": "dim5", "sub_field": "location", "pattern": "主体结构",
+         "match_type": "keyword", "priority": 1, "threshold": 0.3},
+        {"id": 33, "dimension": "dim4", "sub_field": "specialty", "pattern": "混凝土",
+         "match_type": "keyword", "priority": 1, "threshold": 0.3},
+    ]
+    scores, labels, rule_ids = classify_clause("", ["主体结构"], rules)
+    assert scores["dim5"] > 0
+    assert labels.get("dim5") == "主体结构"
+    scores2, _, _ = classify_clause("", ["混凝土分项工程"], rules)
+    assert scores2["dim4"] > 0
+
+
+def test_parent_noise_blacklist_excludes_real_terms():
+    """黑名单禁止含真实专业词"""
+    from app.classifier.rule_engine import _PARENT_NOISE_TITLES
+    for term in ["钢筋", "混凝土", "主体结构", "梁", "屋面", "基础", "砌体"]:
+        assert term not in _PARENT_NOISE_TITLES
+
+
+# ===== 同义词归一化测试 =====
+
+def test_normalize_text_replaces_synonyms():
+    """同义词应把 source 替换为 target"""
+    from app.classifier.rule_engine import normalize_text
+    syns = [{"source": "砼", "target": "混凝土"}]
+    assert normalize_text("砼强度应满足要求", syns) == "混凝土强度应满足要求"
+
+
+def test_normalize_text_no_synonyms_unchanged():
+    """无同义词或空列表时文本原样返回"""
+    from app.classifier.rule_engine import normalize_text
+    assert normalize_text("砼构件", None) == "砼构件"
+    assert normalize_text("砼构件", []) == "砼构件"
+
+
+def test_normalize_text_short_to_long_does_not_break_long():
+    """短词替换长词时，已有长词不应被拆坏（整词替换）"""
+    from app.classifier.rule_engine import normalize_text
+    syns = [{"source": "砼", "target": "混凝土"}]
+    assert normalize_text("钢筋混凝土构件（含砼）", syns) == "钢筋混凝土构件（含混凝土）"
+
+
+def test_classify_clause_synonym_normalization_matches():
+    """构造「砼」条文 + 「混凝土」规则 → 归一化后命中"""
+    rules = [
+        {"id": 40, "dimension": "dim6", "sub_field": "material", "pattern": "混凝土",
+         "match_type": "keyword", "priority": 1, "threshold": 0.4},
+    ]
+    syns = [{"source": "砼", "target": "混凝土"}]
+    scores, labels, rule_ids = classify_clause("砼强度等级不应低于C30", [], rules, synonyms=syns)
+    assert scores["dim6"] > 0
+    assert labels.get("dim6") == "混凝土"
+    assert rule_ids.get("dim6") == 40
+
+
+def test_classify_clause_synonym_no_match_without_normalization():
+    """不注入同义词时，「砼」条文不应命中「混凝土」规则"""
+    rules = [
+        {"id": 41, "dimension": "dim6", "sub_field": "material", "pattern": "混凝土",
+         "match_type": "keyword", "priority": 1, "threshold": 0.4},
+    ]
+    scores, labels, rule_ids = classify_clause("砼强度等级不应低于C30", [], rules)
+    assert scores["dim6"] == 0.0
+    assert rule_ids.get("dim6") is None
+
+
+def test_classify_clause_synonym_applies_to_parent_path():
+    """同义词归一化应对过滤后的父路径同样生效"""
+    rules = [
+        {"id": 42, "dimension": "dim4", "sub_field": "specialty", "pattern": "混凝土",
+         "match_type": "keyword", "priority": 1, "threshold": 0.4},
+    ]
+    syns = [{"source": "砼", "target": "混凝土"}]
+    # 父路径「砼分项工程」归一化后应命中「混凝土」规则
+    scores, labels, rule_ids = classify_clause("施工", ["砼分项工程"], rules, synonyms=syns)
+    assert scores["dim4"] > 0

@@ -10,15 +10,42 @@ logger = logging.getLogger(__name__)
 # 分类维度 → 中文标签（供 prompt 描述）
 _DIM_LABELS = {"dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"}
 
+# Few-shot 标注样例（工程规范分类，贴合真实场景；每条带维度上下文）
+_FEW_SHOT_EXAMPLES = [
+    {
+        "dimension": "dim4",
+        "dim_label": "所属专业",
+        "clause": "框架柱纵向受力钢筋应采用热轧带肋钢筋。",
+        "label": "结构",
+        "confidence": 0.95,
+    },
+    {
+        "dimension": "dim5",
+        "dim_label": "工程部位",
+        "clause": "屋面卷材防水层应铺贴在干燥的基层上。",
+        "label": "屋面",
+        "confidence": 0.92,
+    },
+    {
+        "dimension": "dim6",
+        "dim_label": "材料/工艺",
+        "clause": "混凝土浇筑完成后应及时进行保湿养护。",
+        "label": "混凝土",
+        "confidence": 0.97,
+    },
+]
+
 
 def build_classify_prompt(clauses: list[dict], dimension: str,
                           candidate_labels: list[str] | None = None) -> str:
     """构建批量分类 prompt（CLI 与 API 后端共用）
 
-    相较旧实现，改进三点：
+    相较旧实现，改进四点：
     - 清理条文内容中的 HTML 残留（OCR/markdown 转换残留标记不进入 prompt）
     - 附带规范编号/名称/条文号上下文，帮助 AI 结合规范语境判断
     - 给出该维度已有标签候选集，约束 AI 标签口径，减少造词
+    - 加入 Few-shot 标注样例（放在输出格式说明之后、正式任务之前），
+      约束输出 JSON 结构，减少 AI 输出额外文字导致的解析失败
 
     Args:
         clauses: 待分类批次（get_pending_batch 返回，含 clause_id/content，
@@ -49,12 +76,24 @@ def build_classify_prompt(clauses: list[dict], dimension: str,
             "候选标签（请优先从其中选择；若确实不匹配可新建更贴切标签）:\n"
             + "、".join(candidate_labels)
         )
-    parts.append("条文列表:")
-    parts.append("\n".join(lines))
+    # 输出格式说明（Few-shot 样例之前）
     parts.append(
-        "请仅以 JSON 数组返回分类结果，不要输出其它说明文字: "
+        "输出格式：请仅以 JSON 数组返回分类结果，不要输出其它说明文字:\n"
         '[{"clause_id": <id>, "label": "<标签>", "confidence": <0.0-1.0>}]'
     )
+    # Few-shot 标注样例（放在输出格式说明之后、正式任务之前）
+    parts.append("标注样例（每条样例带维度上下文，请严格模仿其输出格式与标签口径）:")
+    example_lines = []
+    for ex in _FEW_SHOT_EXAMPLES:
+        example_lines.append(
+            f'【维度 {ex["dimension"]}（{ex["dim_label"]}）】\n'
+            f'输入: {ex["clause"]}\n'
+            f'输出: [{{"clause_id": 9001, "label": "{ex["label"]}", "confidence": {ex["confidence"]}}}]'
+        )
+    parts.append("\n\n".join(example_lines))
+    parts.append("条文列表:")
+    parts.append("\n".join(lines))
+    parts.append("请仅以 JSON 数组返回分类结果，不要输出其它说明文字。")
     return "\n\n".join(parts)
 
 

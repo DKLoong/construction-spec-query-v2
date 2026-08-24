@@ -87,6 +87,9 @@ app.include_router(qa_router)
 from app.routes.settings_routes import router as settings_router
 app.include_router(settings_router)
 
+from app.routes.synonym_routes import router as synonym_router
+app.include_router(synonym_router)
+
 
 @app.get("/")
 async def home(request: Request):

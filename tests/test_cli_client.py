@@ -67,3 +67,37 @@ def test_prompt_json_instruction():
     prompt = build_classify_prompt(_sample_batch(), "dim6")
     assert "clause_id" in prompt
     assert "confidence" in prompt
+
+
+# ===== Few-shot 样例测试 =====
+
+def test_prompt_contains_few_shot_examples():
+    """prompt 应包含 Few-shot 标注样例（JSON 结构）"""
+    prompt = build_classify_prompt(_sample_batch(), "dim6")
+    assert "标注样例" in prompt
+    assert '"clause_id": 9001' in prompt
+    assert '"label": "混凝土"' in prompt
+    assert '"confidence": 0.97' in prompt
+
+
+def test_prompt_few_shot_contains_candidate_labels():
+    """prompt 同时含样例 JSON 结构与候选标签约束"""
+    prompt = build_classify_prompt(_sample_batch(), "dim6", ["钢筋", "混凝土", "砌体"])
+    assert "标注样例" in prompt
+    assert '"clause_id": 9001' in prompt
+    assert "候选标签" in prompt
+    assert "钢筋" in prompt and "混凝土" in prompt
+
+
+def test_prompt_few_shot_has_dimension_context():
+    """样例需带维度上下文（标注 dimension）"""
+    prompt = build_classify_prompt(_sample_batch(), "dim6")
+    assert "dim6" in prompt
+    assert "dim4" in prompt and "dim5" in prompt
+
+
+def test_prompt_few_shot_after_format_and_before_task():
+    """Few-shot 样例位于「输出格式说明」之后、「条文列表」之前"""
+    prompt = build_classify_prompt(_sample_batch(), "dim6")
+    assert prompt.index("标注样例") > prompt.index("clause_id")
+    assert prompt.index("标注样例") < prompt.index("条文列表")

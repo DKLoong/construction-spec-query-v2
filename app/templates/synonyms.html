@@ -1,0 +1,36 @@
+<!-- 中栏：同义词管理 -->
+<div style="padding:1rem">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">
+        <h2 style="margin:0">🔤 同义词管理</h2>
+        <small style="color:var(--pico-muted-color)">规则匹配前自动归一化（如 砼→混凝土）</small>
+    </div>
+
+    <!-- 新建同义词 -->
+    <div style="margin-bottom:1rem;margin-top:0.5rem">
+        <form hx-post="/synonyms/create" hx-target="#create-result" hx-swap="innerHTML"
+              hx-on::after-request="if(event.detail.successful) this.reset()">
+            <div style="display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap">
+                <label style="margin-bottom:0">原词
+                    <input type="text" name="source" placeholder="如 砼" required>
+                </label>
+                <label style="margin-bottom:0">目标词
+                    <input type="text" name="target" placeholder="如 混凝土" required>
+                </label>
+                <button type="submit" class="secondary">➕ 添加</button>
+            </div>
+        </form>
+        <div id="create-result"></div>
+    </div>
+
+    <!-- active 过滤 -->
+    <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+        <button class="outline" hx-get="/synonyms/list" hx-target="#synonyms-table" hx-swap="innerHTML">全部</button>
+        <button class="outline" hx-get="/synonyms/list?active=1" hx-target="#synonyms-table" hx-swap="innerHTML">启用</button>
+        <button class="outline" hx-get="/synonyms/list?active=0" hx-target="#synonyms-table" hx-swap="innerHTML">禁用</button>
+    </div>
+
+    <!-- 同义词表格 -->
+    <div id="synonyms-table" hx-get="/synonyms/list" hx-trigger="load">
+        <p aria-busy="true">加载中...</p>
+    </div>
+</div>

@@ -74,3 +74,32 @@ def test_clauses_table_has_clause_is_non_column(monkeypatch, tmp_path):
         )
         row = conn.execute("SELECT clause_is_non FROM clauses WHERE clause_no='1.0.1'").fetchone()
         assert row["clause_is_non"] == 0
+
+
+def test_synonym_map_table_exists(monkeypatch, tmp_path):
+    """init_db 应创建 synonym_map 表"""
+    db_path = tmp_path / "test_syn_table.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+        names = [t["name"] for t in tables]
+        assert "synonym_map" in names
+
+
+def test_synonym_map_seed_idempotent(monkeypatch, tmp_path):
+    """init_db 预置常用同义词且幂等（重复初始化不产生重复行）"""
+    db_path = tmp_path / "test_syn_seed.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    init_db()  # 再次初始化，验证幂等
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT source, target, is_active FROM synonym_map ORDER BY id"
+        ).fetchall()
+        assert len(rows) == 2
+        sources = {r["source"] for r in rows}
+        assert sources == {"砼", "箍筋"}
+        assert all(r["is_active"] == 1 for r in rows)
