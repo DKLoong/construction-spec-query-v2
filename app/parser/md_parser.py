@@ -3,13 +3,14 @@ import re
 
 # 编号行前缀正则（按匹配优先级排列），每个元素为 (pattern, level_base)
 # level_base 用于编号深度推断层级（点数量 + level_base）
+# 点号兼容半角 `.` 与全角 `．`（U+FF0E，OCR 高频把条文号点误识别为全角）
 _NUM_PATTERNS = [
     # 中文附录: 附录A, 附录B.1
-    (r'^(附录[A-Z]+(?:\.[\d]+)*)\s+(.+)', 1),
+    (r'^(附录[A-Z]+(?:[\.．][\d]+)*)\s+(.+)', 1),
     # 字母+数字编号: D.4, D.4.1, A.1, TB.10423 (字母后跟数字，可选点分隔)
-    (r'^([A-Z]+(?:\.?\d+)+)\s+(.+)', 1),
+    (r'^([A-Z]+(?:[\.．]?\d+)+)\s+(.+)', 1),
     # 纯数字编号: 1, 3.1, 1.0.1, 5.0.3
-    (r'^(\d+(?:\.\d+)*)\s+(.+)', 1),
+    (r'^(\d+(?:[\.．]\d+)*)\s+(.+)', 1),
 ]
 
 # 标题式编号行特征：编号后的文本较短且无句末标点，视为标题而非正文
@@ -58,6 +59,38 @@ def is_filter_non_clause_title(title) -> bool:
     return (title or "").strip() in _NON_CLAUSE_FILTER_TITLES
 
 
+# ═══════════════════════════════════════════
+# 封面/出版信息页脏数据判定（导入时直接丢弃）
+# ═══════════════════════════════════════════
+
+# 封面特征词：命中 ≥2 个才判定为封面，避免误伤正常条文
+_COVER_KEYWORDS = [
+    "中华人民共和国国家标准",
+    "ICS",                 # 标准分类号（如 ICS 77.140.60）
+    "中国标准出版社",
+    "出版发行",
+    "代替 GB",
+    "代替 GB/T",
+    "代替 JGJ",
+    "第一版",
+    "印刷",                 # 覆盖「第X次印刷」
+    "定价",
+    "书号",
+    "版权专有",
+]
+
+
+def is_cover_clause(content) -> bool:
+    """判定条文内容是否为规范封面/出版信息页脏数据
+
+    规则：命中封面特征词 ≥2 个才判定为封面（组合判定，避免误伤）。
+    正常条文单出现「实施」「发布」等词不在特征词列表内，不会被判定。
+    """
+    c = content or ""
+    hits = sum(1 for kw in _COVER_KEYWORDS if kw in c)
+    return hits >= 2
+
+
 def _match_clause_line(line: str):
     """检测非 # 前缀的编号行。返回 (level, clause_no, tail) 或 None
 
@@ -68,8 +101,8 @@ def _match_clause_line(line: str):
     s = line.strip()
     if not s:
         return None
-    # 排除目录行：含 "........." 或 "第 x 页"
-    if re.search(r'\.{5,}', s) or re.match(r'^第\s*\d+\s*页', s):
+    # 排除目录行：含 "........."（含全角点）或 "第 x 页"
+    if re.search(r'[\.．]{5,}', s) or re.match(r'^第\s*\d+\s*页', s):
         return None
     # 排除纯日期行: 2020-04-23 发布 / 2003 年3 月21 日
     if re.match(r'^\d{4}-\d{2}-\d{2}', s) or re.match(r'^\d{2,4}\s*年', s):
@@ -80,7 +113,8 @@ def _match_clause_line(line: str):
     for pattern, level_base in _NUM_PATTERNS:
         m = re.match(pattern, s)
         if m:
-            clause_no = m.group(1)
+            # 统一归一化全角点号（U+FF0E）为半角，保证后续层级推断/查询一致
+            clause_no = m.group(1).replace('．', '.')
             tail = m.group(2).rstrip(' .…')
             if not tail:
                 return None
@@ -161,17 +195,19 @@ def parse_markdown(md_text: str) -> list[dict]:
             m_num = _match_clause_line(line)
 
         if m_hash or m_num:
-            # 如果之前有积累内容且有当前条文号，保存之
+            # 如果之前有积累内容且有当前条文号，保存之（完全空条文不生成）
             if current_content_lines and stack:
                 entry = stack[-1]
-                clauses.append({
-                    "clause_no": entry["clause_no"],
-                    "title": entry["title"],
-                    "content": "\n".join(current_content_lines).strip(),
-                    "level": entry["level"],
-                    "parent_path": list(entry["parent_path"]),
-                    "is_non_clause": entry.get("is_non_clause", False),
-                })
+                content = "\n".join(current_content_lines).strip()
+                if _should_emit_clause(entry["title"], content):
+                    clauses.append({
+                        "clause_no": entry["clause_no"],
+                        "title": entry["title"],
+                        "content": content,
+                        "level": entry["level"],
+                        "parent_path": list(entry["parent_path"]),
+                        "is_non_clause": entry.get("is_non_clause", False),
+                    })
                 current_content_lines = []
 
             if m_hash:
@@ -239,17 +275,19 @@ def parse_markdown(md_text: str) -> list[dict]:
             if line.strip() and not discard_section:
                 current_content_lines.append(line)
 
-    # 处理最后一条
+    # 处理最后一条（完全空条文不生成）
     if current_content_lines and stack:
         entry = stack[-1]
-        clauses.append({
-            "clause_no": entry["clause_no"],
-            "title": entry["title"],
-            "content": "\n".join(current_content_lines).strip(),
-            "level": entry["level"],
-            "parent_path": list(entry["parent_path"]),
-            "is_non_clause": entry.get("is_non_clause", False),
-        })
+        content = "\n".join(current_content_lines).strip()
+        if _should_emit_clause(entry["title"], content):
+            clauses.append({
+                "clause_no": entry["clause_no"],
+                "title": entry["title"],
+                "content": content,
+                "level": entry["level"],
+                "parent_path": list(entry["parent_path"]),
+                "is_non_clause": entry.get("is_non_clause", False),
+            })
 
     return clauses
 
@@ -262,18 +300,21 @@ def _extract_title(raw_title: str) -> str:
         m = re.match(pattern, raw_title)
         if m:
             return m.group(2).rstrip(' .…')
-    m = re.match(r"^[\d.]+\s+(.+)$", raw_title)
+    m = re.match(r"^[\d．.]+\s+(.+)$", raw_title)
     if m:
         return m.group(1)
     return raw_title
 
 
 def _extract_clause_no(title: str) -> str:
-    """从标题中提取条文号，如 '5.1.1 一般规定' -> '5.1.1'；'D.4 疏浚' -> 'D.4'"""
+    """从标题中提取条文号，如 '5.1.1 一般规定' -> '5.1.1'；'D.4 疏浚' -> 'D.4'
+
+    兼容全角点号（U+FF0E），提取后统一归一化为半角点号。
+    """
     for pattern, _ in _NUM_PATTERNS:
         m = re.match(pattern, title)
         if m:
-            return m.group(1)
+            return m.group(1).replace('．', '.')
     m = re.match(r"^第[一二三四五六七八九十百千万\d]+[节章条]", title)
     if m:
         return title
@@ -283,3 +324,12 @@ def _extract_clause_no(title: str) -> str:
 def _clean_title(title: str) -> str:
     """清理标题中的多余空格。如 '总    则' -> '总则'"""
     return re.sub(r'\s{2,}', '', title).strip()
+
+
+def _should_emit_clause(title, content) -> bool:
+    """判定是否生成条文：仅当标题与正文均为空时跳过（完全空条文）
+
+    有标题但正文为空（如「总则」只有标题）→ 保留（正常行为）；
+    无标题但有正文 → 保留。
+    """
+    return bool((title or "").strip() or (content or "").strip())

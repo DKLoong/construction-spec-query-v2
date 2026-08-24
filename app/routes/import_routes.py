@@ -6,7 +6,8 @@ from fastapi import APIRouter, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
 from app.config import UPLOAD_DIR, OUTPUT_DIR, ADAPTIVE_THRESHOLDS
 from app.database import get_db
-from app.parser.md_parser import parse_markdown
+from app.parser.md_parser import parse_markdown, is_cover_clause
+from app.parser.ocr_clean import clean_ocr_text
 from app.ocr.pdf_extract import extract_text, is_scanned
 from app.classifier.rule_engine import classify_clause, should_use_ai
 from app.search.vector_search import VectorStore
@@ -147,6 +148,8 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
         # Step 1: 获取 MD 文本
         if ext == ".md":
             md_text = path.read_text(encoding="utf-8")
+            # 保守清洗（删除页码行/纯数字行/OCR失败标记/重复页眉），再进入 Phase 2
+            md_text = clean_ocr_text(md_text)
             # MD 文件直接继续 Phase 2（同一线程内安全）
             _process_import_phase2(task_id, md_text, title, code, file_path, file_hash)
             return
@@ -169,6 +172,9 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
         else:
             progress_store[task_id].update(status="error", message=f"不支持的文件格式: {ext}")
             return
+
+        # 保守清洗（OCR/extract 通用）：删除页码行、纯数字行、OCR 失败标记、重复页眉
+        md_text = clean_ocr_text(md_text)
 
         # PDF 文件：保存 OCR/extract 结果，暂停等待人工审查
         progress_store[task_id]["md_text"] = md_text
@@ -217,6 +223,14 @@ def _copy_ocr_images(ocr_dir: str | Path, out_dir: str | Path) -> None:
     shutil.copytree(src, out_dir / "imgs", dirs_exist_ok=True)
 
 
+def _filter_cover_clauses(clauses: list[dict]) -> list[dict]:
+    """过滤封面/出版信息页脏数据条文（命中封面特征词 ≥2 个直接丢弃）
+
+    返回过滤后的条文列表，不 INSERT 封面脏数据（如标准首页、出版信息页）。
+    """
+    return [c for c in clauses if not is_cover_clause(c.get("content", ""))]
+
+
 def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                             file_path: str, file_hash: str = ""):
     """后台任务 Phase 2：解析 → 分类 → 索引（始终创建新连接，线程安全）"""
@@ -227,8 +241,8 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
         progress_store[task_id].update(progress=60, message="正在解析条文...")
 
-        # Step 2: 解析条文
-        clauses_data = parse_markdown(md_text)
+        # Step 2: 解析条文 + 过滤封面/出版信息页脏数据
+        clauses_data = _filter_cover_clauses(parse_markdown(md_text))
 
         # Step 3: 规范级分类
         dim1_hierarchy = _detect_hierarchy(code)

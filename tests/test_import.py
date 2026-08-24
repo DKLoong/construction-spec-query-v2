@@ -72,6 +72,59 @@ def test_no_force_ocr_uses_extract_when_not_scanned(monkeypatch, tmp_path):
     assert state == "review_needed"
 
 
+def test_process_import_cleans_ocr_text_before_review(monkeypatch, tmp_path):
+    """_process_import 在进入审查前先保守清洗 OCR 文本（页码行/纯数字行被删除）"""
+    db_path = tmp_path / "test_clean.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db
+    init_db()
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake scanned doc")
+
+    from app.routes import import_routes
+    task_id = "task-clean"
+    import_routes.progress_store[task_id] = {
+        "status": "uploading", "progress": 0,
+    }
+    monkeypatch.setattr(import_routes, "is_scanned", lambda p: True)
+
+    class FakeOCRClient:
+        def ocr_pdf_to_md(self, path, output_dir=None):
+            md = tmp_path / "ocr_clean.md"
+            md.write_text("## 第1页\n\n第 1 页\n12\n正文内容", encoding="utf-8")
+            return str(md)
+
+    monkeypatch.setattr(
+        "app.ocr.paddle_api.create_ocr_client", lambda: FakeOCRClient()
+    )
+
+    import_routes._process_import(task_id, str(pdf), "标题", "GB 1234", force_ocr=False)
+    stored = import_routes.progress_store[task_id]["md_text"]
+    assert "第 1 页" not in stored
+    assert "12" not in stored
+    assert "正文内容" in stored
+    # `## 第1页` 结构分隔标记保留（供审查/封面过滤使用）
+    assert "## 第1页" in stored
+    assert import_routes.progress_store[task_id]["status"] == "review_needed"
+
+
+def test_filter_cover_clauses_drops_cover_content():
+    """_filter_cover_clauses 丢弃封面/出版信息页脏数据条文，保留正常条文"""
+    from app.routes.import_routes import _filter_cover_clauses
+    clauses = [
+        {
+            "clause_no": "第1页",
+            "title": "第1页",
+            "content": "ICS 77.140.60\n中华人民共和国国家标准\n代替 GB/T 1499.1—2008",
+        },
+        {"clause_no": "1.0.1", "title": "", "content": "本标准自发布之日起实施。"},
+    ]
+    result = _filter_cover_clauses(clauses)
+    assert len(result) == 1
+    assert result[0]["clause_no"] == "1.0.1"
+
+
 def test_upload_no_file_authenticated(auth_client):
     resp = auth_client.post("/import/upload")
     assert resp.status_code in (400, 422)

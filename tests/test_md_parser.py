@@ -1,4 +1,6 @@
-from app.parser.md_parser import parse_markdown, is_non_clause_title
+from app.parser.md_parser import (
+    parse_markdown, is_non_clause_title, is_cover_clause, _should_emit_clause,
+)
 
 SAMPLE_MD = """# GB 50204-2015 混凝土结构工程施工质量验收规范
 
@@ -305,3 +307,146 @@ def test_parse_normal_clause_has_is_non_clause_false():
     assert len(results) >= 1
     for r in results:
         assert r["is_non_clause"] is False
+
+
+# ═══════════════════════════════════════════
+# 全角点号兼容（U+FF0E，OCR 高频错误）
+# ═══════════════════════════════════════════
+
+def test_fullwidth_dot_title_clause_parsed():
+    """全角点号标题型编号行应被解析并归一化为半角"""
+    md = """5．2．1 原材料
+
+钢筋进场时，应按国家现行标准检验。
+"""
+    results = parse_markdown(md)
+    assert len(results) >= 1
+    r = results[0]
+    assert r["clause_no"] == "5.2.1"
+    assert r["title"] == "原材料"
+    assert "钢筋进场时" in r["content"]
+
+
+def test_fullwidth_dot_body_clause_parsed():
+    """全角点号正文型编号行（长句）应被解析，标题为空"""
+    md = """5．2．1  为在混凝土结构中使用钢筋机械连接，做到技术先进、安全适用、经济合理、确保质量，并制定本规程。
+"""
+    results = parse_markdown(md)
+    assert len(results) >= 1
+    r = results[0]
+    assert r["clause_no"] == "5.2.1"
+    assert r["title"] == ""
+    assert "钢筋机械连接" in r["content"]
+
+
+def test_fullwidth_dot_level_inference():
+    """全角点号应计入层级推断（2 个点 → 纯数字模式 level 3）"""
+    md = """1．0．1  正文内容。
+
+1．0．2  更多内容。
+"""
+    results = parse_markdown(md)
+    assert len(results) == 2
+    for r in results:
+        assert r["clause_no"] == r["clause_no"].replace("．", ".")
+        assert r["level"] == 3
+
+
+def test_fullwidth_dot_hash_title():
+    """# 前缀标题行中的全角点号也应被提取并归一化"""
+    md = """## 5．2．1 原材料
+
+钢筋进场时检验。
+"""
+    results = parse_markdown(md)
+    assert len(results) >= 1
+    r = results[0]
+    assert r["clause_no"] == "5.2.1"
+    assert r["title"] == "原材料"
+
+
+def test_fullwidth_dot_appendix():
+    """全角点号附录编号应被识别（附录A．1）"""
+    md = """附录A　接头型式检验的加载制度
+
+A．1.1　加载装置应满足要求。
+"""
+    results = parse_markdown(md)
+    nums = [r["clause_no"] for r in results]
+    assert any(n.startswith("A.1") for n in nums)
+
+
+# ═══════════════════════════════════════════
+# 空内容条文过滤
+# ═══════════════════════════════════════════
+
+def test_should_emit_clause_filters_fully_empty():
+    """完全空条文（无标题无正文）→ 不生成"""
+    assert _should_emit_clause("", "") is False
+    assert _should_emit_clause("", "   ") is False
+    assert _should_emit_clause(None, None) is False
+
+
+def test_should_emit_clause_keeps_title_only():
+    """有标题但 content 空的章节 → 保留（正常行为，勿删）"""
+    assert _should_emit_clause("总则", "") is True
+    assert _should_emit_clause("总则", "   ") is True
+
+
+def test_should_emit_clause_keeps_content_only():
+    """无标题有正文 → 保留"""
+    assert _should_emit_clause("", "正文内容") is True
+
+
+def test_parse_never_emits_fully_empty_clause():
+    """parse_markdown 不生成「无标题且无正文」的完全空条文，正常条文不受影响"""
+    md = """## 1 总则
+
+## 2 术语
+
+2.1.1  正文内容。
+"""
+    results = parse_markdown(md)
+    for r in results:
+        assert not (not r["title"] and not r["content"])
+    assert any(r["clause_no"] == "2.1.1" for r in results)
+
+
+# ═══════════════════════════════════════════
+# 封面脏数据判定（is_cover_clause）
+# ═══════════════════════════════════════════
+
+def test_is_cover_clause_standard_cover():
+    """标准首页（ICS/中华人民共和国国家标准/代替 GB/T）判定为封面"""
+    content = """ICS 77.140.60
+
+中华人民共和国国家标准
+
+GB/T 1499.1—2017
+
+代替 GB/T 1499.1—2008"""
+    assert is_cover_clause(content) is True
+
+
+def test_is_cover_clause_publication_page():
+    """出版信息页（中国标准出版社/出版发行/定价）判定为封面"""
+    content = """中国标准出版社出版发行
+
+地址：北京市朝阳区和平里西街甲2号
+
+定价：45.00 元"""
+    assert is_cover_clause(content) is True
+
+
+def test_is_cover_clause_normal_clause_not_cover():
+    """正常条文（含「实施」「发布」但不含特征词组合）不判定为封面"""
+    content = """本标准由住房和城乡建设部负责管理，由本规程编制组负责具体技术内容的解释。
+
+本规程自发布之日起实施。"""
+    assert is_cover_clause(content) is False
+
+
+def test_is_cover_clause_single_keyword_not_cover():
+    """单个特征词命中（如只出现「印刷」）不判定为封面（需命中 ≥2 个）"""
+    content = "本规范采用胶版印刷工艺装订。"
+    assert is_cover_clause(content) is False
