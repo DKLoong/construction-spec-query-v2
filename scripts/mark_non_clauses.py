@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.database import get_db
+from app.database import get_db, init_db
 from app.parser.md_parser import is_non_clause_title
 
 
@@ -40,6 +40,7 @@ def mark_non_clauses(conn):
 
 
 def main():
+    init_db()  # 幂等迁移：确保 clause_is_non 列存在（旧库需此步骤）
     with get_db() as conn:
         n, ids = mark_non_clauses(conn)
     print(f"已打标 {n} 条非条文")
