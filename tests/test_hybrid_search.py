@@ -193,3 +193,81 @@ def test_hybrid_rrf_merges_overlap(monkeypatch, tmp_path):
     assert results[0]["_source"] == "hybrid"
     by_id = {r["id"]: r for r in results}
     assert by_id[id2]["_source"] == "semantic"
+
+
+def test_hybrid_search_filters_non_clause_in_vector_path(monkeypatch, tmp_path):
+    """向量路径也过滤 clause_is_non=1 的非条文（默认隐藏）"""
+    db_path = tmp_path / "test_hybrid_vnon.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH",
+                        str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "总则", "钢筋 相关内容", 0),
+        )
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "前言", "前言", "钢筋 编制说明", 1),
+        )
+        id1 = conn.execute("SELECT id FROM clauses WHERE clause_no='1.0.1'").fetchone()[0]
+        id2 = conn.execute("SELECT id FROM clauses WHERE clause_no='前言'").fetchone()[0]
+
+    # 伪造向量返回：id1 与 id2 都命中，验证向量候选路径的过滤
+    class _FakeVectorStore:
+        def search(self, query_text, top_k=10):
+            return [
+                {"clause_id": id1, "spec_id": spec_id, "text": "x", "_distance": 0.3},
+                {"clause_id": id2, "spec_id": spec_id, "text": "x", "_distance": 0.5},
+            ]
+
+    monkeypatch.setattr("app.search.vector_search.VectorStore", _FakeVectorStore)
+
+    from app.search.hybrid_search import hybrid_search
+    results, total = hybrid_search(SearchQuery(keyword="钢筋"))
+
+    # 默认隐藏非条文：id2 不应出现在向量候选回查结果中
+    assert total == 1
+    assert all(r["id"] != id2 for r in results)
+    assert any(r["id"] == id1 for r in results)
+
+
+def test_hybrid_search_include_non_clause_vector(monkeypatch, tmp_path):
+    """include_non_clause=True 时向量路径放行非条文"""
+    db_path = tmp_path / "test_hybrid_vinc.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH",
+                        str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "总则", "钢筋 相关内容", 0),
+        )
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "前言", "前言", "钢筋 编制说明", 1),
+        )
+        id1 = conn.execute("SELECT id FROM clauses WHERE clause_no='1.0.1'").fetchone()[0]
+        id2 = conn.execute("SELECT id FROM clauses WHERE clause_no='前言'").fetchone()[0]
+
+    class _FakeVectorStore:
+        def search(self, query_text, top_k=10):
+            return [
+                {"clause_id": id1, "spec_id": spec_id, "text": "x", "_distance": 0.3},
+                {"clause_id": id2, "spec_id": spec_id, "text": "x", "_distance": 0.5},
+            ]
+
+    monkeypatch.setattr("app.search.vector_search.VectorStore", _FakeVectorStore)
+
+    from app.search.hybrid_search import hybrid_search
+    results, total = hybrid_search(SearchQuery(keyword="钢筋", include_non_clause=True))
+
+    assert total == 2
+    ids = {r["id"] for r in results}
+    assert ids == {id1, id2}

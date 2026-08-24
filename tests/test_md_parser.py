@@ -1,4 +1,4 @@
-from app.parser.md_parser import parse_markdown
+from app.parser.md_parser import parse_markdown, is_non_clause_title
 
 SAMPLE_MD = """# GB 50204-2015 混凝土结构工程施工质量验收规范
 
@@ -188,3 +188,120 @@ def test_multi_space_title_cleanup():
     # 直接验证标题提取
     from app.parser.md_parser import _clean_title
     assert _clean_title("总    则") == "总则"
+
+
+# ═══════════════════════════════════════════
+# 非条文黑名单判定（前言/目次/条文说明/用词说明）
+# ═══════════════════════════════════════════
+
+def test_is_non_clause_title_exact_hits():
+    """精确命中黑名单的标题都应判定为非条文"""
+    for title in ["前言", "目次", "Contents", "条文说明", "本规程用词说明", "本规范用词用语说明"]:
+        assert is_non_clause_title(title), f"{title} 应命中黑名单"
+
+
+def test_is_non_clause_title_substring_prefix_hits():
+    """子串/前缀兜底：前言前缀、条文说明子串、用词说明前缀"""
+    assert is_non_clause_title("前言部分")
+    assert is_non_clause_title("3.0.2 条文说明…")
+    assert is_non_clause_title("本规程用词说明")
+    assert is_non_clause_title("本规范用词用语说明的补充")
+
+
+def test_is_non_clause_title_normal_not_marked():
+    """正常条文标题不应误标"""
+    assert not is_non_clause_title("总则")
+    assert not is_non_clause_title("模板设计")
+    assert not is_non_clause_title("原材料")
+    assert not is_non_clause_title("混凝土分项工程")
+    assert not is_non_clause_title("")
+    assert not is_non_clause_title(None)
+
+
+def test_parse_toc_filtered_not_generated():
+    """目次/Contents 直接过滤，不生成 clause"""
+    md = """## 目次
+1 总则 ..................................................... 1
+2 术语、符号 ..................................................... 6
+
+## 1 总则
+
+1.0.1  正文内容。
+"""
+    results = parse_markdown(md)
+    # 不应出现目次标题对应的 clause
+    assert not any(r.get("title") == "目次" for r in results)
+    # 正常条文仍应生成
+    assert any(r["clause_no"] == "1.0.1" for r in results)
+
+
+def test_parse_contents_filtered_not_generated():
+    """英文 Contents 直接过滤，不生成 clause；后续中文条文正常解析"""
+    md = """## Contents
+1 General Provisions .......... 1
+
+## 1 总则
+
+1.0.1  正文内容。
+"""
+    results = parse_markdown(md)
+    assert not any(r.get("title") == "Contents" for r in results)
+    assert any(r["clause_no"] == "1.0.1" for r in results)
+
+
+def test_parse_qianyan_retained_and_marked():
+    """前言保留进库，打标 is_non_clause=True"""
+    md = """## 前言
+
+本规范为适应混凝土结构工程发展的需要而编制。
+
+## 1 总则
+
+1.0.1  正文内容。
+"""
+    results = parse_markdown(md)
+    qianyan = [r for r in results if r.get("title") == "前言"]
+    assert len(qianyan) == 1
+    assert qianyan[0]["is_non_clause"] is True
+    # 正常条文不打标
+    for r in results:
+        if r["clause_no"] == "1.0.1":
+            assert r["is_non_clause"] is False
+
+
+def test_parse_tiaowenshuoming_body_rows_inherit():
+    """条文说明段内的正文型编号行继承 is_non_clause=True"""
+    md = """## 条文说明
+
+3.0.1  本条根据工程实践经验制定。
+
+3.0.2  本条说明材料进场检验要求。
+"""
+    results = parse_markdown(md)
+    assert len(results) >= 2
+    for r in results:
+        assert r["is_non_clause"] is True, f"条文说明段内 {r['clause_no']} 应打标"
+
+
+def test_parse_tiaowenshuoming_numbered_title_retained():
+    """「3.0.2 条文说明」这类标题本身也打标保留"""
+    md = """3.0.2  条文说明
+
+本条说明的内容。
+"""
+    results = parse_markdown(md)
+    assert len(results) >= 1
+    assert results[0]["is_non_clause"] is True
+    assert "条文说明" in results[0]["title"]
+
+
+def test_parse_normal_clause_has_is_non_clause_false():
+    """普通条文默认 is_non_clause=False（新字段默认值）"""
+    md = """## 1 总则
+
+1.0.1  正文内容。
+"""
+    results = parse_markdown(md)
+    assert len(results) >= 1
+    for r in results:
+        assert r["is_non_clause"] is False

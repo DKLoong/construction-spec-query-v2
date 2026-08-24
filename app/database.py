@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS clauses (
     dim6_material   TEXT,
     ai_classified   INTEGER DEFAULT 0,
     needs_review    INTEGER DEFAULT 0,
+    clause_is_non   INTEGER DEFAULT 0,
     created_at      TEXT DEFAULT (datetime('now','localtime'))
 );
 
@@ -144,5 +145,10 @@ def init_db():
         # 迁移：为已有数据库添加 file_hash 列
         try:
             conn.execute("ALTER TABLE specifications ADD COLUMN file_hash TEXT")
+        except Exception:
+            pass  # 列已存在
+        # 迁移：为已有数据库添加 clause_is_non 列（INTEGER DEFAULT 0，允许 NULL）
+        try:
+            conn.execute("ALTER TABLE clauses ADD COLUMN clause_is_non INTEGER DEFAULT 0")
         except Exception:
             pass  # 列已存在

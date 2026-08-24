@@ -1,4 +1,26 @@
-from app.models import SpecCreate, ClauseCreate, ClassificationRuleCreate
+from app.models import SpecCreate, ClauseCreate, ClassificationRuleCreate, SearchQuery, ClauseResponse
+
+
+def test_search_query_include_non_clause_default():
+    """SearchQuery 默认 include_non_clause=False（默认隐藏非条文）"""
+    sq = SearchQuery(keyword="钢筋")
+    assert sq.include_non_clause is False
+    sq2 = SearchQuery(keyword="条文说明", include_non_clause=True)
+    assert sq2.include_non_clause is True
+
+
+def test_clause_create_has_clause_is_non_default():
+    """ClauseCreate 默认 clause_is_non=0，可显式置 1"""
+    clause = ClauseCreate(spec_id=1, clause_no="5.2.1", content="内容")
+    assert clause.clause_is_non == 0
+    clause2 = ClauseCreate(spec_id=1, clause_no="前言", content="编制说明", clause_is_non=1)
+    assert clause2.clause_is_non == 1
+
+
+def test_clause_response_has_clause_is_non_default():
+    """ClauseResponse 默认 clause_is_non=0"""
+    resp = ClauseResponse(id=1, spec_id=1, clause_no="5.2.1", content="内容")
+    assert resp.clause_is_non == 0
 
 
 def test_spec_create_validation():

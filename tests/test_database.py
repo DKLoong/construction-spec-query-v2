@@ -55,3 +55,22 @@ def test_init_db_is_idempotent(monkeypatch, tmp_path):
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
     init_db()
     init_db()  # 不应报错
+
+
+def test_clauses_table_has_clause_is_non_column(monkeypatch, tmp_path):
+    """clauses 表应有 clause_is_non 列，且默认 0（存量 INSERT 未列新列也可兜底）"""
+    db_path = tmp_path / "test_noncol.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(clauses)")]
+        assert "clause_is_non" in cols
+        # 存量 INSERT（未显式给出 clause_is_non）默认落库为 0
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-T', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
+            (spec_id, "1.0.1", "总则", "内容"),
+        )
+        row = conn.execute("SELECT clause_is_non FROM clauses WHERE clause_no='1.0.1'").fetchone()
+        assert row["clause_is_non"] == 0

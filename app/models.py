@@ -64,6 +64,7 @@ class ClauseCreate(BaseModel):
     dim4_specialty: Optional[str] = None
     dim5_location: Optional[str] = None
     dim6_material: Optional[str] = None
+    clause_is_non: Optional[int] = 0
 
 
 class ClauseResponse(BaseModel):
@@ -78,6 +79,7 @@ class ClauseResponse(BaseModel):
     dim6_material: Optional[str] = None
     ai_classified: int = 0
     needs_review: int = 0
+    clause_is_non: Optional[int] = 0
     created_at: Optional[str] = None
 
 
@@ -181,6 +183,8 @@ class SearchQuery(BaseModel):
     dim6_material: Optional[str] = None
     page: int = 1
     per_page: int = 20
+    # 是否包含非条文（前言/条文说明等打标项）。默认 False → 检索层隐藏
+    include_non_clause: bool = False
 
 
 class SearchResponse(BaseModel):

@@ -15,6 +15,48 @@ _NUM_PATTERNS = [
 # 标题式编号行特征：编号后的文本较短且无句末标点，视为标题而非正文
 _TITLE_END_PUNCT = ('。', '；', '：', '.', '！', '？')
 
+# ═══════════════════════════════════════════
+# 非条文黑名单（前言/目次/条文说明/用词说明等整块非条文）
+# ═══════════════════════════════════════════
+
+# 精确命中集合（title 或 clause_no 精确匹配即判定为非条文）
+_NON_CLAUSE_EXACT_TITLES = {
+    "前言", "目次", "Contents", "条文说明",
+    "本规程用词说明", "本规范用词用语说明",
+}
+
+# 「直接过滤」类：导入时完全不生成条文（不进入数据库）
+# 目次/Contents 属于此类；前言/条文说明/用词说明则「打标保留」
+_NON_CLAUSE_FILTER_TITLES = {"目次", "Contents"}
+
+
+def is_non_clause_title(title) -> bool:
+    """判断标题（或条文号）是否为非条文块
+
+    规则（精确命中 + 子串/前缀兜底，兼容命名不统一）：
+    - 精确命中：{前言, 目次, Contents, 条文说明, 本规程用词说明, 本规范用词用语说明}
+    - title 以「前言」开头（含「前言」即可覆盖）
+    - title 含「条文说明」（兼容「3.0.2 条文说明…」这类标题）
+    - title 以「本规程用词说明」或「本规范用词用语说明」开头
+    """
+    t = (title or "").strip()
+    if not t:
+        return False
+    if t in _NON_CLAUSE_EXACT_TITLES:
+        return True
+    if t.startswith("前言"):
+        return True
+    if "条文说明" in t:
+        return True
+    if t.startswith("本规程用词说明") or t.startswith("本规范用词用语说明"):
+        return True
+    return False
+
+
+def is_filter_non_clause_title(title) -> bool:
+    """判断标题是否属「直接过滤」类非条文（目次/Contents，导入时不生成条文）"""
+    return (title or "").strip() in _NON_CLAUSE_FILTER_TITLES
+
 
 def _match_clause_line(line: str):
     """检测非 # 前缀的编号行。返回 (level, clause_no, tail) 或 None
@@ -89,8 +131,14 @@ def parse_markdown(md_text: str) -> list[dict]:
         "title": "原材料",
         "content": "钢筋进场时...",
         "level": 4,
-        "parent_path": ["混凝土分项工程", "钢筋"]
+        "parent_path": ["混凝土分项工程", "钢筋"],
+        "is_non_clause": False   # True 表示非条文块（前言/条文说明/用词说明等，保留但默认隐藏）
     }, ...]
+
+    黑名单行为：
+    - 目次/Contents → 直接过滤，不生成 clause
+    - 前言/条文说明/本规程用词说明 → 保留进库，is_non_clause=True
+    - 「条文说明」段的正文型编号行（如 3.0.1 条文内容）继承打标
     """
     if not md_text.strip():
         return []
@@ -100,6 +148,11 @@ def parse_markdown(md_text: str) -> list[dict]:
     stack = []
     current_content_lines = []
     title_stack = []
+    # 非条文继承标志：最近的非空标题命中「条文说明」等保留类非条文时，
+    # 后续正文型编号行生成的 clause 也标记 is_non_clause=True
+    inherit_non_clause = False
+    # 过滤段标志：目次/Contents 段内的一切内容一律丢弃，直到下一个真实标题
+    discard_section = False
 
     for line in lines:
         m_hash = re.match(r"^(#{1,6})\s+(.+)$", line)
@@ -117,6 +170,7 @@ def parse_markdown(md_text: str) -> list[dict]:
                     "content": "\n".join(current_content_lines).strip(),
                     "level": entry["level"],
                     "parent_path": list(entry["parent_path"]),
+                    "is_non_clause": entry.get("is_non_clause", False),
                 })
                 current_content_lines = []
 
@@ -125,13 +179,22 @@ def parse_markdown(md_text: str) -> list[dict]:
                 raw_title = m_hash.group(2).strip()
                 clause_no = _extract_clause_no(raw_title)
                 title = _clean_title(_extract_title(raw_title))
+                # 黑名单：目次/Contents 直接过滤（不生成条文，丢弃段内内容）
+                if is_filter_non_clause_title(title):
+                    current_content_lines = []
+                    inherit_non_clause = False
+                    discard_section = True
+                    continue
+                discard_section = False
+                is_non = is_non_clause_title(title)
+                inherit_non_clause = is_non
                 while title_stack and title_stack[-1][0] >= level:
                     title_stack.pop()
                 title_stack.append((level, title))
                 parent_path = [t[1] for t in title_stack[:-1]]
                 stack.append({
                     "level": level, "clause_no": clause_no, "title": title,
-                    "parent_path": parent_path,
+                    "parent_path": parent_path, "is_non_clause": is_non,
                 })
             else:
                 # m_num 在此分支必定非 None（满足 if m_hash or m_num）
@@ -140,27 +203,40 @@ def parse_markdown(md_text: str) -> list[dict]:
                 if _looks_like_title(tail):
                     # 标题型编号行：与 # 标题行为一致
                     title = _clean_title(tail)
+                    # 黑名单：目次/Contents 直接过滤
+                    if is_filter_non_clause_title(title):
+                        current_content_lines = []
+                        inherit_non_clause = False
+                        discard_section = True
+                        continue
+                    discard_section = False
+                    is_non = is_non_clause_title(title)
+                    inherit_non_clause = is_non
                     while title_stack and title_stack[-1][0] >= level:
                         title_stack.pop()
                     title_stack.append((level, title))
                     parent_path = [t[1] for t in title_stack[:-1]]
                     stack.append({
                         "level": level, "clause_no": clause_no, "title": title,
-                        "parent_path": parent_path,
+                        "parent_path": parent_path, "is_non_clause": is_non,
                     })
                 else:
                     # 正文型编号行：编号即条文号，编号后文本即正文首行
                     # 不进入 title_stack（不作为后续条文的父级）
+                    if discard_section:
+                        # 目次/Contents 段内编号行：直接丢弃
+                        continue
                     while title_stack and title_stack[-1][0] >= level:
                         title_stack.pop()
                     parent_path = [t[1] for t in title_stack]
                     stack.append({
                         "level": level, "clause_no": clause_no, "title": "",
                         "parent_path": parent_path,
+                        "is_non_clause": inherit_non_clause,
                     })
                     current_content_lines.append(tail)
         else:
-            if line.strip():
+            if line.strip() and not discard_section:
                 current_content_lines.append(line)
 
     # 处理最后一条
@@ -172,6 +248,7 @@ def parse_markdown(md_text: str) -> list[dict]:
             "content": "\n".join(current_content_lines).strip(),
             "level": entry["level"],
             "parent_path": list(entry["parent_path"]),
+            "is_non_clause": entry.get("is_non_clause", False),
         })
 
     return clauses

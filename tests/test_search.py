@@ -84,3 +84,49 @@ def test_vector_store_import():
     from app.search.vector_search import VectorStore
     assert hasattr(VectorStore, "search")
     assert hasattr(VectorStore, "index_clause")
+
+
+def test_search_filters_non_clause_by_default(monkeypatch, tmp_path):
+    """sql_search 默认过滤 clause_is_non=1 的非条文"""
+    db_path = tmp_path / "test_search_nonclause.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "总则", "正常条文内容", 0),
+        )
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "前言", "前言", "本规范编制说明", 1),
+        )
+
+    results, total = search_clauses(SearchQuery())
+    assert total == 1
+    assert all(r["clause_is_non"] == 0 for r in results)
+    assert results[0]["clause_no"] == "1.0.1"
+
+
+def test_search_include_non_clause(monkeypatch, tmp_path):
+    """include_non_clause=True 时返回非条文"""
+    db_path = tmp_path / "test_search_inc.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "总则", "正常条文内容", 0),
+        )
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "前言", "前言", "本规范编制说明", 1),
+        )
+
+    results, total = search_clauses(SearchQuery(include_non_clause=True))
+    assert total == 2
+    clause_nos = {r["clause_no"] for r in results}
+    assert clause_nos == {"1.0.1", "前言"}

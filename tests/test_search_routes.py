@@ -119,6 +119,50 @@ def test_search_requires_auth(client):
     assert resp.status_code == 302
 
 
+# ── include_non_clause 参数穿透 ──
+
+def test_search_include_non_clause_passthrough(auth_client, monkeypatch, tmp_path):
+    """include_non_clause=1 参数透传到 hybrid_search 的 SearchQuery"""
+    db_path = tmp_path / "test_search_incpas.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        setup_search_data(conn)
+
+    query_log = []
+    def fake_hybrid(query, *a, **k):
+        query_log.append(query)
+        return [], 0
+    monkeypatch.setattr("app.search.hybrid_search.hybrid_search", fake_hybrid)
+
+    resp = auth_client.get("/search?keyword=钢筋&include_non_clause=1")
+    assert resp.status_code == 200
+    assert query_log, "应调用 hybrid_search"
+    assert query_log[0].include_non_clause is True
+
+
+def test_search_include_non_clause_default_false(auth_client, monkeypatch, tmp_path):
+    """未传 include_non_clause 时默认 False（默认隐藏非条文）"""
+    db_path = tmp_path / "test_search_incdef.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        setup_search_data(conn)
+
+    query_log = []
+    def fake_hybrid(query, *a, **k):
+        query_log.append(query)
+        return [], 0
+    monkeypatch.setattr("app.search.hybrid_search.hybrid_search", fake_hybrid)
+
+    resp = auth_client.get("/search?keyword=钢筋")
+    assert resp.status_code == 200
+    assert query_log
+    assert query_log[0].include_non_clause is False
+
+
 # ── /clause/{id} 端点测试 ──
 
 def test_clause_detail_returns_html(auth_client, monkeypatch, tmp_path):

@@ -292,10 +292,11 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
             conn.execute(
                 """INSERT INTO clauses (spec_id, clause_no, title, content, parent_clause,
-                   dim4_specialty, dim5_location, dim6_material)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   dim4_specialty, dim5_location, dim6_material, clause_is_non)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (spec_id, cd["clause_no"], cd["title"], cd["content"], None,
-                 dim4_val, dim5_val, dim6_val),
+                 dim4_val, dim5_val, dim6_val,
+                 1 if cd.get("is_non_clause") else 0),
             )
             clause_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 

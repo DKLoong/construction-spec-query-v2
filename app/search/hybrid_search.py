@@ -52,6 +52,10 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
             dim_conditions = []
             dim_params = []
 
+            # 默认隐藏非条文：向量候选回查也过滤 clause_is_non=1
+            if not query.include_non_clause:
+                dim_conditions.append("c.clause_is_non = 0")
+
             clause_filters = {
                 "dim4_specialty": query.dim4_specialty,
                 "dim5_location": query.dim5_location,

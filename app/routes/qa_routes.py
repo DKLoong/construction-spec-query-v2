@@ -109,6 +109,9 @@ async def qa_ask(request: Request, body: QaRequest):
     if not question:
         return JSONResponse({"detail": "问题不能为空"}, status_code=400)
 
+    # 关键词自动放行：用户明确问「前言/条文说明」时，检索包含非条文打标项
+    keyword_mentions_non_clause = ("前言" in question) or ("条文说明" in question)
+
     # 1. 检索（携带可选分类筛选，收窄候选池提升精确度）
     dim_kwargs = {
         "dim1_hierarchy": body.dim1_hierarchy,
@@ -130,6 +133,7 @@ async def qa_ask(request: Request, body: QaRequest):
         dim4_specialty=body.dim4_specialty,
         dim5_location=body.dim5_location,
         dim6_material=body.dim6_material,
+        include_non_clause=keyword_mentions_non_clause,
     )
     try:
         candidates, _ = hybrid_search(sq)
@@ -143,7 +147,10 @@ async def qa_ask(request: Request, body: QaRequest):
             "QA 分类筛选候选过少（%d < %d），放宽为全局检索",
             len(candidates), _QA_MIN_CANDIDATES,
         )
-        wide_sq = SearchQuery(keyword=question, per_page=_CANDIDATE_POOL_SIZE)
+        wide_sq = SearchQuery(
+            keyword=question, per_page=_CANDIDATE_POOL_SIZE,
+            include_non_clause=keyword_mentions_non_clause,
+        )
         try:
             candidates, _ = hybrid_search(wide_sq)
         except Exception as e:

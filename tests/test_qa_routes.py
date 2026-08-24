@@ -294,6 +294,64 @@ def test_qa_ask_no_dim_no_wide_fallback(auth_client, monkeypatch, tmp_path):
 
 
 # ═══════════════════════════════════════════
+# 非条文默认隐藏 + 关键词自动放行
+# ═══════════════════════════════════════════
+
+def test_qa_ask_default_hides_non_clause(auth_client, monkeypatch, tmp_path):
+    """QA 默认隐藏非条文：不含 前言/条文说明 关键词时 include_non_clause=False"""
+    db_path = tmp_path / "test_qa_non_def.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        _setup_qa_data(conn)
+
+    query_log = []
+    _patch_cli_and_hybrid(monkeypatch, query_log)
+
+    resp = auth_client.post("/qa/ask", json={"question": "模板设计要求"})
+    assert resp.status_code == 200
+    assert query_log, "应调用 hybrid_search"
+    assert query_log[0].include_non_clause is False
+
+
+def test_qa_ask_keyword_tiaowenshuoming_passes_through(auth_client, monkeypatch, tmp_path):
+    """问题含「条文说明」时自动放行 include_non_clause=True"""
+    db_path = tmp_path / "test_qa_non_kw.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        _setup_qa_data(conn)
+
+    query_log = []
+    _patch_cli_and_hybrid(monkeypatch, query_log)
+
+    resp = auth_client.post("/qa/ask", json={"question": "条文说明中的钢筋要求"})
+    assert resp.status_code == 200
+    assert query_log
+    assert query_log[0].include_non_clause is True
+
+
+def test_qa_ask_keyword_qianyan_passes_through(auth_client, monkeypatch, tmp_path):
+    """问题含「前言」时自动放行 include_non_clause=True"""
+    db_path = tmp_path / "test_qa_non_qy.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        _setup_qa_data(conn)
+
+    query_log = []
+    _patch_cli_and_hybrid(monkeypatch, query_log)
+
+    resp = auth_client.post("/qa/ask", json={"question": "规范的编写前言"})
+    assert resp.status_code == 200
+    assert query_log
+    assert query_log[0].include_non_clause is True
+
+
+# ═══════════════════════════════════════════
 # CrossEncoder 精排降级链（_rerank 单元测试）
 # ═══════════════════════════════════════════
 

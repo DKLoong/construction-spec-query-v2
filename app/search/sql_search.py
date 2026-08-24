@@ -8,6 +8,10 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
         conditions = []
         params = []
 
+        # 默认隐藏非条文（前言/条文说明等打标项）；include_non_clause=True 时放行
+        if not query.include_non_clause:
+            conditions.append("c.clause_is_non = 0")
+
         if query.keyword:
             conditions.append(
                 "(c.content LIKE ? OR c.title LIKE ? OR c.clause_no LIKE ?)"
