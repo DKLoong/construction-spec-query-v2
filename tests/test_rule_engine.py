@@ -176,7 +176,8 @@ def test_classify_clause_synonym_no_match_without_normalization():
         {"id": 41, "dimension": "dim6", "sub_field": "material", "pattern": "混凝土",
          "match_type": "keyword", "priority": 1, "threshold": 0.4},
     ]
-    scores, labels, rule_ids = classify_clause("砼强度等级不应低于C30", [], rules)
+    # synonyms=[] 显式表示「无同义词」，避免从真实库自动加载「砼→混凝土」
+    scores, labels, rule_ids = classify_clause("砼强度等级不应低于C30", [], rules, synonyms=[])
     assert scores["dim6"] == 0.0
     assert rule_ids.get("dim6") is None
 

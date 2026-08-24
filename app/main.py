@@ -33,9 +33,28 @@ def _startup_vector_sync():
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _startup_warmup_embedding():
+    """后台线程预热 BGE embedding 模型，消除首次搜索卡顿（不阻塞启动）"""
+    import threading
+
+    def _run():
+        try:
+            from app.ai.embedding import get_model
+            m = get_model()
+            logger.info("BGE embedding 模型预热完成" if m else "BGE embedding 模型不可用（跳过预热）")
+        except Exception as e:
+            logger.warning("BGE embedding 预热失败: %s", e)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def startup():
     init_db()
     _startup_vector_sync()
+    _startup_warmup_embedding()
+
+
+app.on_event("startup")(startup)
 
 # 静态文件
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")

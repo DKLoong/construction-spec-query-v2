@@ -70,10 +70,13 @@ async def create_synonym(request: Request, source: str = Form(""),
     clear_synonym_cache()
 
     if cur.rowcount == 0:
-        return HTMLResponse('<p style="color:orange">⚠️ 同义词已存在，未重复添加</p>')
+        return HTMLResponse(
+            '<p style="color:orange">⚠️ 同义词已存在，未重复添加</p>',
+            headers={"HX-Trigger": "synonymsUpdated"},
+        )
     return HTMLResponse(
-        f"""<div hx-get="/synonyms/list" hx-trigger="load" hx-swap="outerHTML"></div>
-        <p style="color:green;margin-top:0.5rem">✅ 同义词已添加：{source} → {target}</p>"""
+        f'<p style="color:green;margin-top:0.5rem">✅ 同义词已添加：{source} → {target}</p>',
+        headers={"HX-Trigger": "synonymsUpdated"},
     )
 
 

@@ -68,6 +68,8 @@ def test_create_synonym(auth_client, monkeypatch, tmp_path):
         conn.execute("DELETE FROM synonym_map")  # 清空预置种子
     resp = auth_client.post("/synonyms/create", data={"source": "砼", "target": "混凝土"})
     assert resp.status_code == 200
+    # 触发前端 #synonyms-table 刷新事件（去掉残留 load div 后的单一数据源机制）
+    assert resp.headers.get("HX-Trigger") == "synonymsUpdated"
 
     with get_db() as conn:
         row = conn.execute(
