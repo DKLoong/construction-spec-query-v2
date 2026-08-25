@@ -137,6 +137,7 @@ def test_qa_ask_with_sources(auth_client, monkeypatch, tmp_path):
     for src in data["sources"]:
         assert "code" in src
         assert "clause_no" in src
+        assert "clause_id" in src  # 供前端正文出处跳详情弹窗
         assert isinstance(src["code"], str)
         assert isinstance(src["clause_no"], str)
 

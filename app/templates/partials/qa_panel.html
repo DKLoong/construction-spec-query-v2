@@ -12,7 +12,7 @@
         <template x-for="(msg, i) in messages" :key="i">
             <div class="qa-msg" :class="msg.role === 'user' ? 'qa-user' : 'qa-bot'">
                 <template x-if="msg.role === 'bot'">
-                    <div x-html="renderMarkdown(msg.content)"></div>
+                    <div x-html="renderMarkdown(msg.content, msg.sources)"></div>
                 </template>
                 <template x-if="msg.role === 'user'">
                     <div x-text="msg.content"></div>

@@ -18,7 +18,7 @@ def strip_html_content(content: str) -> str:
     return strip_html(content or "")
 
 
-def estimate_tokens(text: str, chars_per_token: int = _DEFAULT_CHARS_PER_TOKEN) -> int:
+def estimate_tokens(text: str | None, chars_per_token: int = _DEFAULT_CHARS_PER_TOKEN) -> int:
     """估算文本 Token 数（字符数近似）。
 
     - 规范条文以中文为主，中文平均约 1 字 ≈ 0.5~1 token，取 len/2 偏保守。
@@ -79,13 +79,19 @@ def make_summary(content: str, summary_limit: int = _DEFAULT_SUMMARY_LIMIT,
 
 def build_meta(spec_code: str = "", spec_title: str = "",
                spec_status: str = "", clause_no: str = "",
-               dim3_usage: str = "") -> str:
-    """结构化元信息一行（高/次相关条目都强制带上）。"""
+               dim3_usage: str = "", spec_nature: str = "") -> str:
+    """结构化元信息一行（高/次相关条目都强制带上）。
+
+    spec_nature 为规范级强制/推荐性质（_detect_nature 按编号 /T 判定）：
+    - 「推荐性」→ 整本推荐，条文均属推荐性
+    - 「强制性」→ 条文是否强条需查原文（黑体为强条），不凭用词臆断
+    """
     scope = (dim3_usage or "").strip() or "适用范围未标注"
+    nature = (spec_nature or "").strip() or "性质未标注"
     return (
         f"【《{spec_code or '未知规范'}》{spec_title or ''}"
         f"｜{spec_status or '状态未标注'}｜条文 {clause_no or '?'}"
-        f"｜适用范围：{scope}】"
+        f"｜性质：{nature}｜适用范围：{scope}】"
     )
 
 
@@ -183,7 +189,7 @@ def tier_items(
         meta = build_meta(
             c.get("spec_code") or "", c.get("spec_title") or "",
             c.get("spec_status") or "", c.get("clause_no") or "",
-            c.get("dim3_usage") or "",
+            c.get("dim3_usage") or "", c.get("spec_nature") or "",
         )
         summary = make_summary(clean, summary_limit, title)
         item = RerankedItem(

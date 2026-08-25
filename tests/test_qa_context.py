@@ -68,6 +68,11 @@ def test_build_meta_full():
     assert "JGJ107-2016" in m and "3.0.2" in m and "现行" in m and "房屋建筑" in m
 
 
+def test_build_meta_nature():
+    m = build_meta("JGJ107-2016", "", "现行", "3.0.2", "", "强制性")
+    assert "性质：强制性" in m
+
+
 def test_build_meta_fallback():
     m = build_meta("", "", "", "", "")
     assert "未知规范" in m and "适用范围未标注" in m

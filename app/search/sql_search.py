@@ -67,7 +67,7 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
         offset = (query.page - 1) * query.per_page
         data_sql = f"""
             SELECT c.*, s.code as spec_code, s.title as spec_title,
-                   s.status as spec_status
+                   s.status as spec_status, s.dim1_nature as spec_nature
             FROM clauses c
             JOIN specifications s ON c.spec_id = s.id
             {where}

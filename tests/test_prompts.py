@@ -8,6 +8,7 @@ def test_build_system_prompt_rag():
     assert "禁止编造" in p
     assert "次相关" in p
     assert "公式必须用 $...$" in p  # 公式定界符约束，避免 AI 用普通括号
+    assert "黑体" in p and "查看原文" in p  # 强条判定提示（黑体才是法定强条）
 
 
 def test_build_system_prompt_verbatim():
