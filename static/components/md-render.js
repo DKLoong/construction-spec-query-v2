@@ -31,6 +31,8 @@
                     delimiters: [
                         { left: '$$', right: '$$', display: true },
                         { left: '$', right: '$', display: false },
+                        // 兼容标准 LaTeX 行内公式 \(...\)（AI 归纳可能用此格式）
+                        { left: '\\(', right: '\\)', display: false },
                     ],
                     // 无法解析的公式保持原样文本，不影响正文展示
                     throwOnError: false,
@@ -54,6 +56,9 @@
         // 必须替换为 <br> 而非真实换行——HTML 单元格内的真实换行会被浏览器
         // 空白折叠成空格，无法达到换行效果。
         let raw = fixOrphanSup(rewriteImg(md || '', baseUrl)).replace(/\\n/g, '<br>');
+        // 兼容标准 LaTeX 行内公式 \(...\)：marked 会把 \( 当转义吃掉反斜杠，
+        // 故在 marked 之前统一转换为 $...$（KaTeX 只认 $ 定界符）
+        raw = raw.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
         let html;
         try {
             html = window.marked.parse(raw, { gfm: true, breaks: true });
