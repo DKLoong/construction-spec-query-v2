@@ -200,7 +200,8 @@
     width: 100vw; height: 100vh;
     background: rgba(74, 68, 84, 0.5);
     display: flex; align-items: center; justify-content: center;
-    z-index: 2000; backdrop-filter: blur(3px);
+    /* 必须高于 QA 弹窗（.qa-modal-overlay z-index:9999），否则被 QA 界面盖住 */
+    z-index: 10000; backdrop-filter: blur(3px);
     animation: modal-fade-in 0.2s ease;
 }
 @keyframes modal-fade-in {
