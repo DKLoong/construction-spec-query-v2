@@ -51,10 +51,16 @@ document.addEventListener('alpine:init', () => {
         },
 
         renderMarkdown(text) {
-            if (typeof marked !== 'undefined') {
-                return marked.parse(text || '');
+            const md = text || '';
+            // 复用 md-render.js 完整管线（marked → DOMPurify → KaTeX +
+            // 孤立上标修复 + 字面\n→<br>），否则 LaTeX 公式与 HTML div 以源码显示
+            if (window.mdRender && typeof window.mdRender.renderHtml === 'function') {
+                return window.mdRender.renderHtml(md, '');
             }
-            return '<pre>' + (text || '') + '</pre>';
+            if (typeof marked !== 'undefined') {
+                return marked.parse(md);
+            }
+            return '<pre>' + md + '</pre>';
         },
     }));
 });
