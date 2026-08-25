@@ -12,7 +12,20 @@
         <template x-for="(msg, i) in messages" :key="i">
             <div class="qa-msg" :class="msg.role === 'user' ? 'qa-user' : 'qa-bot'">
                 <template x-if="msg.role === 'bot'">
-                    <div x-html="renderMarkdown(msg.content, msg.sources)"></div>
+                    <div>
+                        <div x-html="renderMarkdown(msg.content, msg.sources)"></div>
+                        <!-- 底部统一参考条文区（兜底：正文复杂引用未能转链接的，这里都可点击） -->
+                        <template x-if="msg.sources && msg.sources.length">
+                            <div style="margin-top:0.4rem;padding-top:0.3rem;border-top:1px dashed var(--pico-muted-border-color);display:flex;flex-wrap:wrap;gap:0.3rem">
+                                <small style="color:var(--pico-muted-color);line-height:1.6">📎 参考条文：</small>
+                                <template x-for="s in msg.sources" :key="s.code + '|' + s.clause_no">
+                                    <a href="javascript:void(0)" @click.prevent="openClause(s.clause_id)"
+                                       x-text="'《' + s.code + '》' + s.clause_no"
+                                       style="font-size:0.75rem;color:var(--pico-primary);text-decoration:underline;white-space:nowrap"></a>
+                                </template>
+                            </div>
+                        </template>
+                    </div>
                 </template>
                 <template x-if="msg.role === 'user'">
                     <div x-text="msg.content"></div>

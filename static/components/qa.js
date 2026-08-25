@@ -66,18 +66,33 @@ document.addEventListener('alpine:init', () => {
             } else {
                 return '<pre>' + md + '</pre>';
             }
-            // 把正文出处【《规范编号》条文X】转超链接，点击复用 clause-modal 详情弹窗
+            // 把正文出处【《规范编号》条文X】转超链接，点击复用 clause-modal 详情弹窗。
+            // 兼容：表X 前缀（映射到对应条文）、顿号/逗号分隔的多个条文号（拆开逐个匹配）。
             if (sources && sources.length) {
-                html = html.replace(/【《([^》]+)》([^】]+)】/g, (m, code, clause_no) => {
-                    const src = sources.find(s =>
-                        s.code === code.trim() && s.clause_no === clause_no.trim());
-                    if (src && src.clause_id) {
-                        return `<a href="javascript:void(0)" style="color:var(--pico-primary);text-decoration:underline;cursor:pointer" onclick="window.dispatchEvent(new CustomEvent('view-clause',{detail:{id:${src.clause_id}}}))">${m}</a>`;
-                    }
-                    return m;
+                html = html.replace(/【《([^》]+)》([^】]+)】/g, (m, code, clauses) => {
+                    const codeT = code.trim();
+                    const parts = clauses.split(/[、，,]/).map(s => s.trim()).filter(Boolean);
+                    const linked = parts.map(part => {
+                        // 「表3.0.5」→ 优先匹配「表3.0.5」，其次匹配条文「3.0.5」（表嵌于该条文）
+                        const candidates = [part, part.replace(/^表/, '').trim()];
+                        const src = sources.find(s =>
+                            s.code === codeT && candidates.indexOf(s.clause_no) !== -1);
+                        if (src && src.clause_id) {
+                            return `<a href="javascript:void(0)" style="color:var(--pico-primary);text-decoration:underline;cursor:pointer" onclick="window.dispatchEvent(new CustomEvent('view-clause',{detail:{id:${src.clause_id}}}))">${part}</a>`;
+                        }
+                        return part;
+                    });
+                    return `【《${codeT}》${linked.join('、')}】`;
                 });
             }
             return html;
+        },
+
+        // 底部「参考条文」区链接点击：打开条文详情弹窗
+        openClause(clauseId) {
+            if (clauseId) {
+                window.dispatchEvent(new CustomEvent('view-clause', { detail: { id: clauseId } }));
+            }
         },
     }));
 });
