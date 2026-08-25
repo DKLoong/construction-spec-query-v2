@@ -55,6 +55,23 @@ def _mock_is_available_false(self):
     return False
 
 
+@pytest.fixture(autouse=True)
+def _mock_rerank_for_qa(monkeypatch, tmp_path):
+    """隔离 QA 测试环境：
+
+    1. CrossEncoder 精排 mock 返回固定高分，保证候选进入上下文、测试快速确定；
+    2. 向量库指向临时目录（不依赖真实 lance_db，避免测试与真实索引耦合）。
+    显式 monkeypatch 精排的单元测试会在 fixture 之后覆盖此设置。
+    """
+    monkeypatch.setattr(
+        "app.ai.reranker.rerank",
+        lambda question, texts: [0.9] * len(texts),
+    )
+    monkeypatch.setattr(
+        "app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance")
+    )
+
+
 # ═══════════════════════════════════════════
 # 测试用例
 # ═══════════════════════════════════════════
@@ -113,7 +130,8 @@ def test_qa_ask_with_sources(auth_client, monkeypatch, tmp_path):
         "app.ai.cli_client.ClaudeCodeCLI._run_cli", _mock_cli_success,
     )
 
-    resp = auth_client.post("/qa/ask", json={"question": "钢筋检验"})
+    # 「钢筋」可被测试库 5.2.1 的 SQL LIKE 命中（不依赖真实向量库）
+    resp = auth_client.post("/qa/ask", json={"question": "钢筋"})
     data = resp.json()
     assert len(data["sources"]) > 0
     for src in data["sources"]:
@@ -352,27 +370,23 @@ def test_qa_ask_keyword_qianyan_passes_through(auth_client, monkeypatch, tmp_pat
 
 
 # ═══════════════════════════════════════════
-# CrossEncoder 精排降级链（_rerank 单元测试）
+# CrossEncoder 精排降级链（_rerank_scored 单元测试）
 # ═══════════════════════════════════════════
 
 def _make_candidates(n):
-    """构造 n 条候选条文（content 足够长以触发截断路径）"""
+    """构造 n 条候选条文"""
     return [
-        {
-            "spec_code": "GB 50204",
-            "clause_no": str(i),
-            "content": f"条文内容{i}，用于精排打分排序测试。",
-        }
+        {"spec_code": "GB 50204", "clause_no": str(i),
+         "content": f"条文内容{i}，用于精排打分排序测试。"}
         for i in range(n)
     ]
 
 
-def test_rerank_crossencoder_scores_desc_order(monkeypatch):
-    """CrossEncoder 可用时按分数降序取 Top-K"""
+def test_rerank_scored_crossencoder_desc(monkeypatch):
+    """CrossEncoder 可用时返回 (候选, 分数) 按分数降序全量"""
     from app.routes import qa_routes
 
     candidates = _make_candidates(8)
-    # 分数故意乱序，验证按分数排序取前 5
     scores = [0.1, 0.9, 0.3, 0.8, 0.2, 0.7, 0.4, 0.5]
 
     def fake_rerank(question, texts):
@@ -382,80 +396,147 @@ def test_rerank_crossencoder_scores_desc_order(monkeypatch):
 
     monkeypatch.setattr("app.ai.reranker.rerank", fake_rerank)
 
-    results = qa_routes._rerank("模板设计要求", candidates, top_k=5)
+    ranked = qa_routes._rerank_scored("模板设计要求", candidates)
 
-    assert len(results) == 5
-    # 分数最高的 5 个候选按降序排列（索引 1,3,5,7,6）
-    assert [r["clause_no"] for r in results] == ["1", "3", "5", "7", "6"]
-
-
-def test_rerank_falls_back_to_vector_when_crossencoder_unavailable(monkeypatch):
-    """CrossEncoder 不可用（rerank 返回 None）时回退 bi-encoder 向量重排序"""
-    from app.routes import qa_routes
-
-    candidates = _make_candidates(8)
-    monkeypatch.setattr("app.ai.reranker.rerank", lambda q, t: None)
-
-    vector_calls = {"n": 0, "top_k": None}
-
-    def fake_vector(question, candidates_, top_k=qa_routes._CONTEXT_MAX_RESULTS):
-        vector_calls["n"] += 1
-        vector_calls["top_k"] = top_k
-        return candidates_[:top_k]
-
-    monkeypatch.setattr(qa_routes, "_rerank_by_vector", fake_vector)
-
-    results = qa_routes._rerank("模板设计要求", candidates, top_k=5)
-
-    assert vector_calls["n"] == 1
-    assert vector_calls["top_k"] == 5
-    assert len(results) == 5
+    assert qa_routes._last_rerank_used == "crossencoder"
+    # 全量返回、按分数降序（clause_no 为 str(i) 从 0 起；条数截断在编排层 dynamic_select）
+    assert [c["clause_no"] for c, _ in ranked] == ["1", "3", "5", "7", "6", "2", "4", "0"]
+    assert [s for _, s in ranked] == sorted(scores, reverse=True)
 
 
-def test_rerank_short_circuits_within_topk(monkeypatch):
-    """候选数 ≤ top_k 时直接返回，不触发任何精排"""
+def test_rerank_scored_falls_back_to_vector(monkeypatch):
+    """CrossEncoder 不可用（返回 None）时回退 bi-encoder 向量"""
     from app.routes import qa_routes
 
     candidates = _make_candidates(3)
-    called = {"rerank": False, "vector": False}
+    monkeypatch.setattr("app.ai.reranker.rerank", lambda q, t: None)
+    # mock embed_texts：q=[1,1]，条文 i 向量=[i+1,1] → dot=[2,3,4] → 降序为 2,1,0
+    monkeypatch.setattr(
+        "app.ai.embedding.embed_texts",
+        lambda texts: [[float(i + 1), 1.0] for i in range(len(texts))],
+    )
+
+    ranked = qa_routes._rerank_scored("模板设计要求", candidates)
+
+    assert qa_routes._last_rerank_used == "vector"
+    assert [c["clause_no"] for c, _ in ranked] == ["2", "1", "0"]
+
+
+def test_rerank_scored_short_circuit_single(monkeypatch):
+    """候选 ≤1 时直接返回，不打分、不分层"""
+    from app.routes import qa_routes
+
+    candidates = _make_candidates(1)
+    called = {"rerank": False}
 
     def fake_rerank(q, t):
         called["rerank"] = True
         return [1.0] * len(t)
 
-    def fake_vector(question, candidates_, top_k=qa_routes._CONTEXT_MAX_RESULTS):
-        called["vector"] = True
-        return candidates_
-
     monkeypatch.setattr("app.ai.reranker.rerank", fake_rerank)
-    monkeypatch.setattr(qa_routes, "_rerank_by_vector", fake_vector)
 
-    results = qa_routes._rerank("模板设计要求", candidates, top_k=5)
+    ranked = qa_routes._rerank_scored("模板设计要求", candidates)
 
-    assert results is candidates  # 直接返回原列表（同一对象）
+    assert ranked == [(candidates[0], 1.0)]
     assert not called["rerank"]
-    assert not called["vector"]
+    assert qa_routes._last_rerank_used == "none"
 
 
-def test_rerank_crossencoder_exception_falls_back_to_vector(monkeypatch):
-    """CrossEncoder 精排抛异常时回退 bi-encoder 向量重排序"""
+def test_rerank_scored_exception_falls_back_to_vector(monkeypatch):
+    """CrossEncoder 精排抛异常时回退 bi-encoder 向量"""
     from app.routes import qa_routes
 
-    candidates = _make_candidates(8)
+    candidates = _make_candidates(3)
     monkeypatch.setattr(
         "app.ai.reranker.rerank",
         lambda q, t: (_ for _ in ()).throw(RuntimeError("精排异常")),
     )
+    monkeypatch.setattr(
+        "app.ai.embedding.embed_texts",
+        lambda texts: [[1.0, 0.0] for _ in texts],
+    )
 
-    vector_calls = {"n": 0}
+    ranked = qa_routes._rerank_scored("模板设计要求", candidates)
 
-    def fake_vector(question, candidates_, top_k=qa_routes._CONTEXT_MAX_RESULTS):
-        vector_calls["n"] += 1
-        return candidates_[:top_k]
+    assert qa_routes._last_rerank_used == "vector"
+    assert len(ranked) == 3
 
-    monkeypatch.setattr(qa_routes, "_rerank_by_vector", fake_vector)
 
-    results = qa_routes._rerank("模板设计要求", candidates, top_k=5)
+# ═══════════════════════════════════════════
+# QA 优化新增：原文摘抄模式 / 元数据过滤开关 / 埋点
+# ═══════════════════════════════════════════
 
-    assert vector_calls["n"] == 1
-    assert len(results) == 5
+def test_qa_mode_verbatim_passes_system_prompt(auth_client, monkeypatch, tmp_path):
+    """mode=verbatim 时后端收到摘抄 system prompt（指令区含禁止归纳）"""
+    db_path = tmp_path / "test_qa_verbatim.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        _setup_qa_data(conn)
+
+    monkeypatch.setattr("app.ai.cli_client.ClaudeCodeCLI.is_available", _mock_is_available_true)
+    captured = {}
+
+    def _mock_cli_capture(self, prompt, context="", work_dir=None, timeout=60):
+        from app.ai.cli_client import CLIResponse
+        captured["prompt"] = prompt
+        return CLIResponse(success=True, content="原文摘抄", duration_ms=100)
+
+    monkeypatch.setattr("app.ai.cli_client.ClaudeCodeCLI._run_cli", _mock_cli_capture)
+
+    resp = auth_client.post("/qa/ask", json={"question": "钢筋", "mode": "verbatim"})
+    assert resp.status_code == 200
+    assert "[系统指令]" in captured["prompt"]
+    assert "禁止归纳" in captured["prompt"]
+
+
+def test_qa_include_invalid_controls_meta_filter(auth_client, monkeypatch, tmp_path):
+    """include_invalid 控制元数据过滤：默认过滤废止，True 时保留"""
+    db_path = tmp_path / "test_qa_invalid.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO specifications (code, title, status) VALUES ('GB-OLD', '旧规范', '废止')"
+        )
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?,?,?,?)",
+            (spec_id, "1.0.1", "", "钢筋旧规范内容"),
+        )
+
+    monkeypatch.setattr("app.ai.cli_client.ClaudeCodeCLI.is_available", _mock_is_available_true)
+    monkeypatch.setattr("app.ai.cli_client.ClaudeCodeCLI._run_cli", _mock_cli_success)
+
+    # 默认（include_invalid=False）：废止条文被元数据过滤 → sources 空
+    resp = auth_client.post("/qa/ask", json={"question": "钢筋"})
+    assert resp.json()["sources"] == []
+
+    # include_invalid=True：跳过过滤 → 废止条文进入上下文 → sources 非空
+    resp2 = auth_client.post("/qa/ask", json={"question": "钢筋", "include_invalid": True})
+    assert len(resp2.json()["sources"]) > 0
+
+
+def test_qa_trace_log_emitted(auth_client, monkeypatch, tmp_path, caplog):
+    """QA 请求落埋点日志（[QA_TRACE] 字段齐全）"""
+    db_path = tmp_path / "test_qa_trace.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        _setup_qa_data(conn)
+
+    monkeypatch.setattr("app.ai.cli_client.ClaudeCodeCLI.is_available", _mock_is_available_true)
+    monkeypatch.setattr("app.ai.cli_client.ClaudeCodeCLI._run_cli", _mock_cli_success)
+
+    with caplog.at_level("INFO", logger="app.routes.qa_routes"):
+        auth_client.post("/qa/ask", json={"question": "钢筋"})
+
+    trace_lines = [r.message for r in caplog.records if "[QA_TRACE]" in r.message]
+    assert len(trace_lines) == 1
+    # 「钢筋」仅命中 1 条候选 → _rerank_scored 候选 ≤1 短路，rerank_used="none"
+    assert '"rerank_used": "none"' in trace_lines[0]
+    assert '"high_count"' in trace_lines[0]
+    assert '"context_tokens"' in trace_lines[0]

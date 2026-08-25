@@ -197,6 +197,10 @@ class SearchResponse(BaseModel):
 class QaRequest(BaseModel):
     question: str
     backend: str | None = None
+    # 问答模式：rag 综合问答（默认） / verbatim 原文摘抄
+    mode: str = "rag"
+    # 是否包含废止/已替代规范（默认过滤，仅用户明确指定时放行）
+    include_invalid: bool = False
     # 分类筛选联动：随问答请求携带当前分类树选中维度，收窄检索范围
     dim1_hierarchy: str | None = None
     dim1_nature: str | None = None

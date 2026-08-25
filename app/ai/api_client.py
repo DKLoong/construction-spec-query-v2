@@ -19,6 +19,7 @@ class APIBackend(CLIBackend):
         return bool(self.api_key)
 
     async def ask(self, prompt: str, context: str = "",
+                  system_prompt: str = "",
                   work_dir: str | None = None) -> CLIResponse:
         """HTTP POST 调用 /chat/completions"""
         import time
@@ -33,7 +34,10 @@ class APIBackend(CLIBackend):
         messages = [
             {
                 "role": "system",
-                "content": "你是建筑施工规范查询助手。只根据提供的上下文回答，不要编造规范条文。如果上下文中没有相关信息，请如实告知。回答请使用中文。",
+                "content": system_prompt or (
+                    "你是建筑施工规范查询助手。只根据提供的上下文回答，不要编造规范条文。"
+                    "如果上下文中没有相关信息，请如实告知。回答请使用中文。"
+                ),
             },
             {"role": "user", "content": full_prompt},
         ]

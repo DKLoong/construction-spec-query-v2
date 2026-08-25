@@ -117,6 +117,7 @@ class CLIBackend(ABC):
 
     @abstractmethod
     async def ask(self, prompt: str, context: str = "",
+                  system_prompt: str = "",
                   work_dir: str | None = None) -> CLIResponse: ...
 
     def classify_batch_sync(self, clauses: list[dict], dimension: str,
@@ -182,10 +183,16 @@ class ClaudeCodeCLI(CLIBackend):
     command = "claude"
 
     async def ask(self, prompt: str, context: str = "",
+                  system_prompt: str = "",
                   work_dir: str | None = None) -> CLIResponse:
-        full_prompt = prompt
+        # CLI 后端无 system message 通道，把 system prompt 作为指令区拼入首部
+        parts = []
+        if system_prompt:
+            parts.append(f"[系统指令]\n{system_prompt}")
         if context:
-            full_prompt = f"{context}\n\n---\n\n请基于以上上下文回答：{prompt}"
+            parts.append(f"[参考上下文]\n{context}")
+        parts.append(f"[用户问题]\n{prompt}")
+        full_prompt = "\n\n---\n\n".join(parts)
         return self._run_cli(full_prompt, work_dir=work_dir, timeout=60)
 
 
@@ -193,10 +200,16 @@ class CodexCLI(CLIBackend):
     command = "codex"
 
     async def ask(self, prompt: str, context: str = "",
+                  system_prompt: str = "",
                   work_dir: str | None = None) -> CLIResponse:
-        full_prompt = prompt
+        # CLI 后端无 system message 通道，把 system prompt 作为指令区拼入首部
+        parts = []
+        if system_prompt:
+            parts.append(f"[系统指令]\n{system_prompt}")
         if context:
-            full_prompt = f"{context}\n\n---\n\n请基于以上上下文回答：{prompt}"
+            parts.append(f"[参考上下文]\n{context}")
+        parts.append(f"[用户问题]\n{prompt}")
+        full_prompt = "\n\n---\n\n".join(parts)
         return self._run_cli(full_prompt, work_dir=work_dir, timeout=60)
 
 

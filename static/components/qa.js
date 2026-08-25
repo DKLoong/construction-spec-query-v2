@@ -4,6 +4,11 @@ document.addEventListener('alpine:init', () => {
         messages: [],
         input: '',
         loading: false,
+        mode: 'rag',            // rag 综合问答（默认） / verbatim 原文摘抄
+
+        toggleMode() {
+            this.mode = (this.mode === 'rag') ? 'verbatim' : 'rag';
+        },
 
         async send() {
             const q = this.input.trim();
@@ -21,7 +26,7 @@ document.addEventListener('alpine:init', () => {
                 const resp = await fetch('/qa/ask', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question: q, ...filters }),
+                    body: JSON.stringify({ question: q, mode: this.mode, ...filters }),
                 });
                 const data = await resp.json();
                 this.messages.push({ role: 'bot', content: data.answer || '(AI 未返回回答)' });

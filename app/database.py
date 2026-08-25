@@ -97,6 +97,28 @@ CREATE TABLE IF NOT EXISTS synonym_map (
 
 -- source 唯一索引：保证预置同义词 INSERT OR IGNORE 的幂等性
 CREATE UNIQUE INDEX IF NOT EXISTS idx_synonym_map_source ON synonym_map(source);
+
+CREATE TABLE IF NOT EXISTS qa_request_logs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    question        TEXT,
+    mode            TEXT,
+    backend         TEXT,
+    include_invalid INTEGER DEFAULT 0,
+    rrf_total       INTEGER,
+    pool_size       INTEGER,
+    after_meta      INTEGER,
+    after_threshold INTEGER,
+    select_target   INTEGER,
+    high_count      INTEGER,
+    low_count       INTEGER,
+    context_tokens  INTEGER,
+    budget          INTEGER,
+    dropped_overflow INTEGER,
+    context_empty   INTEGER DEFAULT 0,
+    rerank_used     TEXT,
+    duration_ms     INTEGER,
+    created_at      TEXT DEFAULT (datetime('now','localtime'))
+);
 """
 
 TRIGGERS_SQL = """
