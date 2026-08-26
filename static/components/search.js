@@ -11,6 +11,14 @@ document.addEventListener('alpine:init', () => {
             this.$store.searchState.keyword = v;
         },
 
+        // 复选框「包含前言·条文说明」代理到共享 store（与分类树/搜索框状态一致）
+        get includeNonClause() {
+            return this.$store.searchState.includeNonClause;
+        },
+        set includeNonClause(v) {
+            this.$store.searchState.includeNonClause = v;
+        },
+
         async search() {
             this.loading = true;
             const params = new URLSearchParams();
@@ -20,6 +28,8 @@ document.addEventListener('alpine:init', () => {
             for (const [k, v] of Object.entries(this.$store.searchState.filters)) {
                 params.append(k, v);
             }
+            // 勾选「包含前言·条文说明」时放行打标非条文
+            if (this.includeNonClause) params.append('include_non_clause', '1');
             // 无关键词无筛选（如清空搜索框后回车）→ 显式请求全部条文
             if (!kw && Object.keys(this.$store.searchState.filters).length === 0) {
                 params.append('all', '1');

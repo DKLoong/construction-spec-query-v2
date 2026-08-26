@@ -4,6 +4,11 @@
     <div class="search-box" x-data="searchBox()">
         <input type="search" x-model="keyword" @keyup.enter="search()"
                placeholder="输入关键词搜索条文...">
+        <!-- 勾选立即重搜：放行前言/条文说明等打标非条文（后端 include_non_clause=1） -->
+        <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;font-size:0.8rem">
+            <input type="checkbox" x-model="includeNonClause" @change="search()">
+            <span>包含前言·条文说明</span>
+        </label>
     </div>
 
     <!-- 导入按钮 -->

@@ -225,3 +225,25 @@ def test_md_render_converts_literal_newline_to_br():
     # Python 源码中需写 "\\\\n" 才能表示两个反斜杠字符。
     assert "/\\\\n/g" in md_render, "md-render 应含字面 \\n 匹配正则"
     assert "'<br>'" in md_render, "字面 \\n 应替换为 <br> 而非真实换行"
+
+
+def test_search_include_non_clause_checkbox_present():
+    """检索页须有「包含前言·条文说明」复选框（勾选即重搜）"""
+    html = _read("tree_panel.html")
+    assert "include_non_clause" in html, "tree_panel 应含 include_non_clause 复选框"
+    assert 'type="checkbox"' in html
+    assert "包含前言·条文说明" in html, "复选框应有说明文案"
+
+
+def test_search_include_non_clause_carried_by_search_js():
+    """searchBox 应持有 includeNonClause 状态并在发起搜索时携带 include_non_clause=1"""
+    js = _read_static("components/search.js")
+    assert "includeNonClause" in js, "searchBox 应含 includeNonClause 状态"
+    assert "include_non_clause" in js, "search.js 发起搜索时应携带 include_non_clause"
+
+
+def test_search_include_non_clause_carried_by_tree_js():
+    """searchState store 应含 includeNonClause，分类树触发搜索时同样携带该参数"""
+    js = _read_static("components/tree.js")
+    assert "includeNonClause" in js, "searchState store 应含 includeNonClause"
+    assert "include_non_clause" in js, "tree.js dispatchSearch 应携带 include_non_clause"

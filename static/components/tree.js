@@ -5,6 +5,7 @@ document.addEventListener('alpine:init', () => {
     Alpine.store('searchState', {
         keyword: '',
         filters: {},
+        includeNonClause: false,
     });
 
     Alpine.data('treeView', () => ({
@@ -54,6 +55,10 @@ document.addEventListener('alpine:init', () => {
                 const kw = (this.$store.searchState.keyword || '').trim();
                 if (kw) {
                     params.append('keyword', kw);
+                }
+                // 与搜索框复选框状态保持一致：分类树触发搜索也携带 include_non_clause
+                if (this.$store.searchState.includeNonClause) {
+                    params.append('include_non_clause', '1');
                 }
                 // 用户主动操作但无关键词无筛选（如取消所有筛选）→ 显式请求全部条文
                 if (!kw && Object.keys(this.$store.searchState.filters).length === 0) {
