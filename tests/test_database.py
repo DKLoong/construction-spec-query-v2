@@ -224,3 +224,27 @@ def test_migrates_old_external_fts(monkeypatch, tmp_path):
         # FTS 表已回填该条文
         fts_row = conn.execute("SELECT search_text FROM clauses_fts").fetchone()
         assert fts_row is not None, "迁移后 FTS 表应有存量数据"
+
+
+def test_init_db_fts_backfill_idempotent(monkeypatch, tmp_path):
+    """重复 init_db 后 FTS 行数与 clauses 一致（backfill 幂等：先删后插，无重复/冲突）"""
+    db_path = tmp_path / "test_fts_idem.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-T', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # INSERT 不带 search_text → 触发器写空串 FTS 行，backfill 需先删后插避免 rowid 冲突
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
+            (spec_id, "1.0.1", "总则", "钢筋 内容"),
+        )
+    init_db()  # 再次触发迁移（backfill）
+    with get_db() as conn:
+        clause_n = conn.execute("SELECT COUNT(*) FROM clauses").fetchone()[0]
+        fts_n = conn.execute("SELECT COUNT(*) FROM clauses_fts").fetchone()[0]
+        assert fts_n == clause_n, "backfill 幂等：FTS 行数应与 clauses 一致，无重复/冲突"
+        row = conn.execute(
+            "SELECT search_text FROM clauses WHERE clause_no='1.0.1'"
+        ).fetchone()
+        assert row["search_text"] and "钢筋" in row["search_text"], "backfill 应生成非空 search_text"

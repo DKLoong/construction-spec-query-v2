@@ -193,7 +193,9 @@ def _migrate_search_text(conn):
         conn.execute("DROP TABLE clauses_fts")
     conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS clauses_fts USING fts5(search_text)")
 
-    # backfill：search_text 为空的行生成分词并回填 FTS（无触发器，手动同步）
+    # backfill：search_text 为空的行生成分词并回填 FTS（无触发器，手动同步）。
+    # 先 DELETE 再 INSERT：若该行已通过触发器写入 FTS（如 INSERT 不带 search_text
+    # 存了空串行），直接 INSERT 同 rowid 会触发 FTS rowid 唯一约束冲突。
     from app.search.tokenize import build_search_text
     rows = conn.execute(
         "SELECT id, clause_no, title, content, search_text FROM clauses"
@@ -202,6 +204,7 @@ def _migrate_search_text(conn):
         st = build_search_text(r["clause_no"], r["title"], r["content"])
         if (r["search_text"] or "") != st:
             conn.execute("UPDATE clauses SET search_text = ? WHERE id = ?", (st, r["id"]))
+            conn.execute("DELETE FROM clauses_fts WHERE rowid = ?", (r["id"],))
             conn.execute(
                 "INSERT INTO clauses_fts(rowid, search_text) VALUES (?, ?)",
                 (r["id"], st),
