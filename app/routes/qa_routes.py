@@ -30,41 +30,14 @@ _last_rerank_used = "none"
 def _rerank_scored(question: str, candidates: list[dict]) -> list[tuple[dict, float]]:
     """精排打分，返回 (候选, 分数) 按分数降序全部候选（不在此截断条数）。
 
-    - 候选 ≤ 1：直接返回 [(c, 1.0)]，不打分、不分层。
-    - CrossEncoder 可用：分数 = 模型输出（量纲约 0~1）。
-    - 降级 bi-encoder 向量：分数 = 余弦相似度（量纲 -1~1），阈值用 qa.vector.* 独立集。
+    降级链复用公共模块 app.search.rerank.rerank_candidates
+    （CrossEncoder → bi-encoder 向量 → 原始顺序），此处仅记录档位供埋点。
     """
     global _last_rerank_used
-    if len(candidates) <= 1:
-        _last_rerank_used = "none"
-        return [(c, 1.0) for c in candidates]
-
-    texts = [(c.get("content") or "")[:300] for c in candidates]
-
-    try:
-        from app.ai.reranker import rerank
-        scores = rerank(question, texts)
-        if scores is not None:
-            _last_rerank_used = "crossencoder"
-            ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
-            return [(c, float(s)) for c, s in ranked]
-    except Exception as e:
-        logger.warning("CrossEncoder 精排异常: %s", e)
-
-    try:
-        from app.ai.embedding import embed_texts
-        import numpy as np
-        q_vec = np.array(embed_texts([question])[0], dtype=np.float32)
-        emb = np.array(embed_texts(texts), dtype=np.float32)
-        scores = np.dot(emb, q_vec)
-        _last_rerank_used = "vector"
-        ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
-        return [(c, float(s)) for c, s in ranked]
-    except Exception as e:
-        logger.warning("向量重排序失败，降级为原始顺序: %s", e)
-
-    _last_rerank_used = "none"
-    return [(c, 1.0) for c in candidates]
+    from app.search.rerank import rerank_candidates
+    ranked, used = rerank_candidates(question, candidates)
+    _last_rerank_used = used
+    return ranked
 
 
 def _extract_sources(clauses: list[dict]) -> list[dict]:
