@@ -12,8 +12,8 @@
         </label>
     </div>
 
-    <!-- 导入按钮 -->
-    <div style="margin-bottom: 0.5rem;" x-data="importDialog()">
+    <!-- 导入按钮（margin-top 与上方复选框保持间距，防止误触） -->
+    <div style="margin-top:0.3rem;margin-bottom:0.5rem;" x-data="importDialog()">
         <button class="contrast" style="width: 100%;" @click="openDialog()">📥 导入规范</button>
         <!-- 导入对话框 -->
         <div class="dialog-overlay" x-show="open" x-cloak @click.self="closeDialog()">
