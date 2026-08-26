@@ -193,12 +193,16 @@ async def update_clause(
         if not existing:
             return JSONResponse({"detail": "条文不存在"}, status_code=404)
 
+        # 内容/编号/分类变更 → 同步更新 jieba 预分词 search_text（FTS5 检索一致性）
+        from app.search.tokenize import build_search_text
         conn.execute(
             """UPDATE clauses SET clause_no = ?, title = ?, content = ?,
-               dim4_specialty = ?, dim5_location = ?, dim6_material = ?
+               dim4_specialty = ?, dim5_location = ?, dim6_material = ?,
+               search_text = ?
                WHERE id = ?""",
             (clause_no, title, content,
              dim4_specialty, dim5_location, dim6_material,
+             build_search_text(clause_no, title, content),
              clause_id),
         )
 

@@ -198,6 +198,17 @@ def test_update_clause(auth_client, monkeypatch, tmp_path):
         updated = conn.execute(
             "SELECT * FROM clauses WHERE id = ?", (clause["id"],)
         ).fetchone()
+        # 编辑后 search_text 同步更新（jieba 分词），FTS 表可检索到新内容
+        assert updated["search_text"] and "更新" in updated["search_text"], \
+            "编辑后 search_text 应含新内容的分词"
+        # 与 sql_search 一致：用 build_match_query 构造 MATCH（裸词不命中中文分词）
+        from app.search.tokenize import build_match_query
+        fts = conn.execute(
+            "SELECT rowid FROM clauses_fts WHERE clauses_fts MATCH ?",
+            (build_match_query("更新后"),),
+        ).fetchall()
+        assert any(r["rowid"] == clause["id"] for r in fts), \
+            "FTS 应能检索到更新后的条文"
     assert updated["clause_no"] == "99.9"
     assert updated["title"] == "新标题"
     assert updated["content"] == "更新后的内容"

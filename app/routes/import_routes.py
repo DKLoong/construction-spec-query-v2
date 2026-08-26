@@ -304,13 +304,15 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
             dim5_val = best_labels.get("dim5", "")
             dim6_val = best_labels.get("dim6", "")
 
+            from app.search.tokenize import build_search_text
             conn.execute(
                 """INSERT INTO clauses (spec_id, clause_no, title, content, parent_clause,
-                   dim4_specialty, dim5_location, dim6_material, clause_is_non)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   dim4_specialty, dim5_location, dim6_material, clause_is_non, search_text)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (spec_id, cd["clause_no"], cd["title"], cd["content"], None,
                  dim4_val, dim5_val, dim6_val,
-                 1 if cd.get("is_non_clause") else 0),
+                 1 if cd.get("is_non_clause") else 0,
+                 build_search_text(cd["clause_no"], cd["title"], cd["content"])),
             )
             clause_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
