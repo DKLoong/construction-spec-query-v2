@@ -411,3 +411,113 @@ def test_hybrid_search_rerank_exception_keeps_rrf_order(monkeypatch, tmp_path):
 
     assert total == 4
     assert [r["id"] for r in results] == order_ids, "精排异常应回退 RRF 原序"
+
+
+# ═══════════════════════════════════════════
+# 混合搜索结果序列缓存（翻页零重复精排）
+# ═══════════════════════════════════════════
+
+def test_hybrid_search_cache_reuses_rerank(monkeypatch, tmp_path):
+    """同查询翻页命中缓存：精排只执行一次（解决翻页/往前翻重复精排）"""
+    db_path = tmp_path / "test_hybrid_cache.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        _seed_rerank_clauses(conn)
+
+    import app.search.hybrid_search as hs
+    calls = {"rerank": 0}
+
+    def _fake(question, candidates):
+        calls["rerank"] += 1
+        return ([(c, 1.0) for c in candidates], "none")
+
+    monkeypatch.setattr(hs, "rerank_candidates", _fake)
+
+    from app.search.hybrid_search import hybrid_search
+    results1, total1 = hybrid_search(SearchQuery(keyword="钢筋", page=1, per_page=2))
+    results2, total2 = hybrid_search(SearchQuery(keyword="钢筋", page=2, per_page=2))
+
+    assert calls["rerank"] == 1, "翻页应命中缓存，精排不重复执行"
+    assert total1 == 4
+    assert len(results1) == 2
+    assert len(results2) == 2
+
+
+def test_hybrid_search_cache_key_isolates_queries(monkeypatch, tmp_path):
+    """不同关键词使用不同缓存 key，精排分别执行（不互相污染）"""
+    db_path = tmp_path / "test_hybrid_cache_key.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        _seed_rerank_clauses(conn)
+
+    import app.search.hybrid_search as hs
+    calls = {"rerank": 0}
+
+    def _fake(question, candidates):
+        calls["rerank"] += 1
+        return ([(c, 1.0) for c in candidates], "none")
+
+    monkeypatch.setattr(hs, "rerank_candidates", _fake)
+
+    from app.search.hybrid_search import hybrid_search
+    hybrid_search(SearchQuery(keyword="钢筋"))
+    hybrid_search(SearchQuery(keyword="钢筋 相关内容"))  # 不同 key → 重新精排
+
+    assert calls["rerank"] == 2, "不同查询应分别精排"
+
+
+def test_hybrid_search_cache_expires_after_ttl(monkeypatch, tmp_path):
+    """缓存 TTL 过期后同查询重新精排（数据变更由 TTL 兜底）"""
+    db_path = tmp_path / "test_hybrid_cache_ttl.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        _seed_rerank_clauses(conn)
+
+    import app.search.hybrid_search as hs
+    monkeypatch.setattr(hs, "_CACHE_TTL", 0)  # 立即过期
+    calls = {"rerank": 0}
+
+    def _fake(question, candidates):
+        calls["rerank"] += 1
+        return ([(c, 1.0) for c in candidates], "none")
+
+    monkeypatch.setattr(hs, "rerank_candidates", _fake)
+
+    from app.search.hybrid_search import hybrid_search
+    hybrid_search(SearchQuery(keyword="钢筋"))
+    hybrid_search(SearchQuery(keyword="钢筋"))
+
+    assert calls["rerank"] == 2, "TTL 过期后应重新精排"
+
+
+def test_hybrid_search_cache_isolation_across_dbs(monkeypatch, tmp_path):
+    """不同数据库（DATABASE_PATH 不同）不共享缓存，避免测试跨库污染"""
+    db1 = tmp_path / "db1.db"
+    db2 = tmp_path / "db2.db"
+
+    import app.search.hybrid_search as hs
+    calls = {"rerank": 0}
+
+    def _fake(question, candidates):
+        calls["rerank"] += 1
+        return ([(c, 1.0) for c in candidates], "none")
+
+    monkeypatch.setattr(hs, "rerank_candidates", _fake)
+
+    for i, db in enumerate((db1, db2)):
+        monkeypatch.setattr("app.database.DATABASE_PATH", str(db))
+        monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH",
+                            str(tmp_path / f"lance{i}"))
+        init_db()
+        with get_db() as conn:
+            _seed_rerank_clauses(conn)
+        from app.search.hybrid_search import hybrid_search
+        hybrid_search(SearchQuery(keyword="钢筋"))
+
+    assert calls["rerank"] == 2, "不同数据库应各自独立缓存"
