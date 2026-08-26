@@ -2,11 +2,17 @@
 import logging
 from app.models import SearchQuery
 from app.database import get_db
+from app.search.rerank import rerank_candidates
 
 logger = logging.getLogger(__name__)
 
 # LIKE 搜索取全部结果时的一次性获取上限
 _FETCH_LIMIT = 10000
+
+# CrossEncoder 精排候选上限（暂定常量，后续按实际使用体验调整）：
+# RRF 融合后仅对前 TOP_N 条精排，N 之后保持 RRF 原序拼接。
+# 检索页展示全量结果、不做条数限制，精排只作用于头部以控耗时。
+_RERANK_TOP_N = 50
 
 
 def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
@@ -103,6 +109,17 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
     from app.search.rrf import rrf_fusion
     merged = rrf_fusion(sql_results, vector_results)
     total = len(merged)
+
+    # ── 4.5 精排前缀：对前 TOP_N 过 CrossEncoder 精排，N 之后保持 RRF 原序 ──
+    # 检索页全量分页展示（不做条数限制），精排仅作用于头部候选以控耗时；
+    # 无关键词（纯维度筛选/浏览全部）或候选 ≤1 时跳过精排。
+    if keyword and len(merged) > 1:
+        try:
+            head, tail = merged[:_RERANK_TOP_N], merged[_RERANK_TOP_N:]
+            ranked, _ = rerank_candidates(keyword, head)
+            merged = [d for d, _ in ranked] + tail
+        except Exception as e:
+            logger.warning("检索精排失败，降级为 RRF 原序: %s", e)
 
     # ── 5. 分页 ──
     per_page = min(query.per_page or 20, 100)
