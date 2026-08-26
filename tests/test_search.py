@@ -1,6 +1,7 @@
 from app.search.sql_search import search_clauses
 from app.database import init_db, get_db
 from app.models import SearchQuery
+from app.search.tokenize import build_search_text
 from tests.conftest import setup_search_data
 
 
@@ -55,20 +56,23 @@ def test_search_clause_no_exact_priority(monkeypatch, tmp_path):
     with get_db() as conn:
         conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        # 仅 content 命中（最低优先级）
+        # 仅 content 命中（content 分词含关键词）
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
-            (spec_id, "1.0.1", "其他标题", "本条内容包含关键词 钢筋 需要命中"),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "其他标题", "本条内容包含关键词 钢筋 需要命中",
+             build_search_text("1.0.1", "其他标题", "本条内容包含关键词 钢筋 需要命中")),
         )
-        # 仅 title 命中（中优先级）
+        # title 命中（title 分词含关键词）
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
-            (spec_id, "2.0.1", "钢筋 验收", "普通内容"),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "2.0.1", "钢筋 验收", "普通内容",
+             build_search_text("2.0.1", "钢筋 验收", "普通内容")),
         )
         # clause_no 精确命中（最高优先级）
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
-            (spec_id, "钢筋", "其他标题", "普通内容"),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "钢筋", "其他标题", "普通内容",
+             build_search_text("钢筋", "其他标题", "普通内容")),
         )
 
     results, total = search_clauses(SearchQuery(keyword="钢筋"))

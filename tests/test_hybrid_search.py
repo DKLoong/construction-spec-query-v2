@@ -2,6 +2,7 @@
 import pytest
 from app.models import SearchQuery
 from app.database import init_db, get_db
+from app.search.tokenize import build_search_text
 from tests.conftest import setup_search_data
 
 
@@ -91,8 +92,9 @@ def test_hybrid_search_per_page_cap(monkeypatch, tmp_path):
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         for i in range(10):
             conn.execute(
-                "INSERT INTO clauses (spec_id, clause_no, content) VALUES (?, ?, ?)",
-                (spec_id, f"{i}.1", f"测试内容{i}"),
+                "INSERT INTO clauses (spec_id, clause_no, content, search_text) VALUES (?, ?, ?, ?)",
+                (spec_id, f"{i}.1", f"测试内容{i}",
+                 build_search_text(f"{i}.1", "", f"测试内容{i}")),
             )
 
     from app.search.hybrid_search import hybrid_search
@@ -136,12 +138,14 @@ def test_hybrid_clause_no_priority(monkeypatch, tmp_path):
         conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
-            (spec_id, "1.0.1", "其他标题", "本条内容包含 钢筋 需要命中"),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "其他标题", "本条内容包含 钢筋 需要命中",
+             build_search_text("1.0.1", "其他标题", "本条内容包含 钢筋 需要命中")),
         )
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
-            (spec_id, "钢筋", "其他标题", "普通内容"),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "钢筋", "其他标题", "普通内容",
+             build_search_text("钢筋", "其他标题", "普通内容")),
         )
 
     from app.search.hybrid_search import hybrid_search
@@ -162,12 +166,14 @@ def test_hybrid_rrf_merges_overlap(monkeypatch, tmp_path):
         conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
-            (spec_id, "1.0.1", "标题甲", "钢筋 相关内容"),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "标题甲", "钢筋 相关内容",
+             build_search_text("1.0.1", "标题甲", "钢筋 相关内容")),
         )
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
-            (spec_id, "2.0.1", "标题乙", "其他内容"),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "2.0.1", "标题乙", "其他内容",
+             build_search_text("2.0.1", "标题乙", "其他内容")),
         )
         id1 = conn.execute("SELECT id FROM clauses WHERE clause_no='1.0.1'").fetchone()[0]
         id2 = conn.execute("SELECT id FROM clauses WHERE clause_no='2.0.1'").fetchone()[0]
@@ -206,12 +212,14 @@ def test_hybrid_search_filters_non_clause_in_vector_path(monkeypatch, tmp_path):
         conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
-            (spec_id, "1.0.1", "总则", "钢筋 相关内容", 0),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non, search_text) VALUES (?, ?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "总则", "钢筋 相关内容", 0,
+             build_search_text("1.0.1", "总则", "钢筋 相关内容")),
         )
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
-            (spec_id, "前言", "前言", "钢筋 编制说明", 1),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non, search_text) VALUES (?, ?, ?, ?, ?, ?)",
+            (spec_id, "前言", "前言", "钢筋 编制说明", 1,
+             build_search_text("前言", "前言", "钢筋 编制说明")),
         )
         id1 = conn.execute("SELECT id FROM clauses WHERE clause_no='1.0.1'").fetchone()[0]
         id2 = conn.execute("SELECT id FROM clauses WHERE clause_no='前言'").fetchone()[0]
@@ -246,12 +254,14 @@ def test_hybrid_search_include_non_clause_vector(monkeypatch, tmp_path):
         conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
-            (spec_id, "1.0.1", "总则", "钢筋 相关内容", 0),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non, search_text) VALUES (?, ?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "总则", "钢筋 相关内容", 0,
+             build_search_text("1.0.1", "总则", "钢筋 相关内容")),
         )
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non) VALUES (?, ?, ?, ?, ?)",
-            (spec_id, "前言", "前言", "钢筋 编制说明", 1),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, clause_is_non, search_text) VALUES (?, ?, ?, ?, ?, ?)",
+            (spec_id, "前言", "前言", "钢筋 编制说明", 1,
+             build_search_text("前言", "前言", "钢筋 编制说明")),
         )
         id1 = conn.execute("SELECT id FROM clauses WHERE clause_no='1.0.1'").fetchone()[0]
         id2 = conn.execute("SELECT id FROM clauses WHERE clause_no='前言'").fetchone()[0]
@@ -271,3 +281,66 @@ def test_hybrid_search_include_non_clause_vector(monkeypatch, tmp_path):
     assert total == 2
     ids = {r["id"] for r in results}
     assert ids == {id1, id2}
+
+
+# ═══════════════════════════════════════════
+# FTS5 + jieba 预分词检索（bm25 相关度 + clause_no 提权）
+# ═══════════════════════════════════════════
+
+def test_hybrid_search_bm25_ranks_by_relevance(monkeypatch, tmp_path):
+    """FTS bm25：内容多次出现关键词的条文排在前面（词频相关度）"""
+    db_path = tmp_path / "test_fts_bm25.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # A：钢筋 出现 4 次（词频高）；B：钢筋 出现 1 次
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "2.0.1", "标题A", "钢筋 钢筋 钢筋 钢筋 混凝土",
+             build_search_text("2.0.1", "标题A", "钢筋 钢筋 钢筋 钢筋 混凝土")),
+        )
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "标题B", "钢筋 混凝土 混凝土 混凝土",
+             build_search_text("1.0.1", "标题B", "钢筋 混凝土 混凝土 混凝土")),
+        )
+        id_a = conn.execute("SELECT id FROM clauses WHERE clause_no='2.0.1'").fetchone()[0]
+        id_b = conn.execute("SELECT id FROM clauses WHERE clause_no='1.0.1'").fetchone()[0]
+
+    from app.search.hybrid_search import hybrid_search
+    results, total = hybrid_search(SearchQuery(keyword="钢筋", per_page=100))
+
+    assert total == 2
+    assert results[0]["id"] == id_a, "bm25 应把钢筋词频更高的 A 排在前面"
+
+
+def test_hybrid_search_clause_no_exact_beats_bm25(monkeypatch, tmp_path):
+    """clause_no 精确命中优先于 bm25 相关度（编号检索提权，兼容原行为）"""
+    db_path = tmp_path / "test_fts_clauseno.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # A：content 钢筋 出现 4 次（bm25 高）；B：clause_no 恰为「钢筋」（精确命中）
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "1.0.1", "标题A", "钢筋 钢筋 钢筋 钢筋 混凝土",
+             build_search_text("1.0.1", "标题A", "钢筋 钢筋 钢筋 钢筋 混凝土")),
+        )
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "钢筋", "标题B", "普通内容",
+             build_search_text("钢筋", "标题B", "普通内容")),
+        )
+        id_b = conn.execute("SELECT id FROM clauses WHERE clause_no='钢筋'").fetchone()[0]
+
+    from app.search.hybrid_search import hybrid_search
+    results, total = hybrid_search(SearchQuery(keyword="钢筋", per_page=100))
+
+    assert total == 2
+    assert results[0]["id"] == id_b, "clause_no 精确命中应优先于 bm25 相关度"

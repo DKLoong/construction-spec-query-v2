@@ -44,7 +44,8 @@ def auth_client(client, monkeypatch, tmp_path):
 
 
 def setup_search_data(conn):
-    """写入 3 条测试条文（共享 helper，供搜索相关测试使用）"""
+    """写入 3 条测试条文（共享 helper，供搜索相关测试使用），INSERT 带 search_text"""
+    from app.search.tokenize import build_search_text
     conn.execute("INSERT INTO specifications (code, title) VALUES ('GB 50204', '混凝土规范')")
     spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     clauses_data = [
@@ -58,7 +59,8 @@ def setup_search_data(conn):
     for no, title, content, dim4, dim5, dim6 in clauses_data:
         conn.execute(
             """INSERT INTO clauses (spec_id, clause_no, title, content,
-               dim4_specialty, dim5_location, dim6_material)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (spec_id, no, title, content, dim4, dim5, dim6),
+               dim4_specialty, dim5_location, dim6_material, search_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (spec_id, no, title, content, dim4, dim5, dim6,
+             build_search_text(no, title, content)),
         )

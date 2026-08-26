@@ -1,5 +1,6 @@
 """QA 路由 HTTP 集成测试"""
 import pytest
+from app.search.tokenize import build_search_text
 
 
 # ═══════════════════════════════════════════
@@ -7,7 +8,7 @@ import pytest
 # ═══════════════════════════════════════════
 
 def _setup_qa_data(conn):
-    """写入测试用的规范与条文数据"""
+    """写入测试用的规范与条文数据（INSERT 带 search_text）"""
     conn.execute(
         "INSERT INTO specifications (code, title) VALUES ('GB 50204', '混凝土规范')"
     )
@@ -20,8 +21,8 @@ def _setup_qa_data(conn):
     ]
     for no, title, content in clauses_data:
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?, ?, ?, ?)",
-            (spec_id, no, title, content),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, no, title, content, build_search_text(no, title, content)),
         )
 
 
@@ -504,8 +505,9 @@ def test_qa_include_invalid_controls_meta_filter(auth_client, monkeypatch, tmp_p
         )
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
-            "INSERT INTO clauses (spec_id, clause_no, title, content) VALUES (?,?,?,?)",
-            (spec_id, "1.0.1", "", "钢筋旧规范内容"),
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?,?,?,?,?)",
+            (spec_id, "1.0.1", "", "钢筋旧规范内容",
+             build_search_text("1.0.1", "", "钢筋旧规范内容")),
         )
 
     monkeypatch.setattr("app.ai.cli_client.ClaudeCodeCLI.is_available", _mock_is_available_true)
