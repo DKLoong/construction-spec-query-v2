@@ -38,13 +38,16 @@ CREATE TABLE IF NOT EXISTS clauses (
     ai_classified   INTEGER DEFAULT 0,
     needs_review    INTEGER DEFAULT 0,
     clause_is_non   INTEGER DEFAULT 0,
+    search_text     TEXT,
     created_at      TEXT DEFAULT (datetime('now','localtime'))
 );
 
+-- FTS5 独立表：索引 jieba 预分词后的 search_text（rowid 即 clause id）。
+-- 不再是 external content 表——外部内容表只能索引 clauses 原列（存的必须是
+-- 原始文本供渲染），无法索引「分词后文本」，而 SQLite 触发器又不能调 Python，
+-- 故 jieba 分词结果由应用层写入 search_text 列，FTS 表只索引该列。
 CREATE VIRTUAL TABLE IF NOT EXISTS clauses_fts USING fts5(
-    clause_no, title, content,
-    dim4_specialty, dim5_location, dim6_material,
-    content=clauses, content_rowid=id
+    search_text
 );
 
 CREATE TABLE IF NOT EXISTS classification_rules (
@@ -122,29 +125,21 @@ CREATE TABLE IF NOT EXISTS qa_request_logs (
 """
 
 TRIGGERS_SQL = """
+-- FTS 表 rowid 有唯一约束；FTS5 的 'delete' 命令在本环境报 SQL logic error，
+-- 故同步删除用标准 DELETE FROM fts WHERE rowid（对不存在的 rowid 是 no-op）。
 CREATE TRIGGER IF NOT EXISTS clauses_ai AFTER INSERT ON clauses BEGIN
-    INSERT INTO clauses_fts(rowid, clause_no, title, content,
-        dim4_specialty, dim5_location, dim6_material)
-    VALUES (new.id, new.clause_no, new.title, new.content,
-        new.dim4_specialty, new.dim5_location, new.dim6_material);
+    INSERT INTO clauses_fts(rowid, search_text)
+    VALUES (new.id, COALESCE(new.search_text, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS clauses_ad AFTER DELETE ON clauses BEGIN
-    INSERT INTO clauses_fts(clauses_fts, rowid, clause_no, title, content,
-        dim4_specialty, dim5_location, dim6_material)
-    VALUES ('delete', old.id, old.clause_no, old.title, old.content,
-        old.dim4_specialty, old.dim5_location, old.dim6_material);
+    DELETE FROM clauses_fts WHERE rowid = old.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS clauses_au AFTER UPDATE ON clauses BEGIN
-    INSERT INTO clauses_fts(clauses_fts, rowid, clause_no, title, content,
-        dim4_specialty, dim5_location, dim6_material)
-    VALUES ('delete', old.id, old.clause_no, old.title, old.content,
-        old.dim4_specialty, old.dim5_location, old.dim6_material);
-    INSERT INTO clauses_fts(rowid, clause_no, title, content,
-        dim4_specialty, dim5_location, dim6_material)
-    VALUES (new.id, new.clause_no, new.title, new.content,
-        new.dim4_specialty, new.dim5_location, new.dim6_material);
+    DELETE FROM clauses_fts WHERE rowid = old.id;
+    INSERT INTO clauses_fts(rowid, search_text)
+    VALUES (new.id, COALESCE(new.search_text, ''));
 END;
 """
 
@@ -171,9 +166,53 @@ def get_db():
         conn.close()
 
 
+def _migrate_search_text(conn):
+    """FTS5 + jieba 预分词迁移：加 search_text 列、旧 external FTS 表重建为独立表、backfill。
+
+    顺序敏感：
+    1. 先加 search_text 列（旧库无此列时，触发器引用 new.search_text 会失败）；
+    2. drop 旧触发器 + 旧 external content FTS 表；
+    3. 建独立 fts5(search_text) 表；
+    4. backfill 存量条文（生成 search_text 并回填 FTS，此时无触发器干扰）。
+    幂等：已迁移库再次 init_db，FTS 表已是独立表、存量 search_text 非空则跳过。
+    """
+    try:
+        conn.execute("ALTER TABLE clauses ADD COLUMN search_text TEXT")
+    except Exception:
+        pass  # 列已存在
+
+    # drop 旧触发器（无论新旧先删，避免旧定义残留；重建在 TRIGGERS_SQL 中）
+    for t in ("clauses_ai", "clauses_ad", "clauses_au"):
+        conn.execute(f"DROP TRIGGER IF EXISTS {t}")
+
+    # 旧库 external content FTS 表 → drop 重建为独立表
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='clauses_fts'"
+    ).fetchone()
+    if row and "content=clauses" in (row["sql"] or ""):
+        conn.execute("DROP TABLE clauses_fts")
+    conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS clauses_fts USING fts5(search_text)")
+
+    # backfill：search_text 为空的行生成分词并回填 FTS（无触发器，手动同步）
+    from app.search.tokenize import build_search_text
+    rows = conn.execute(
+        "SELECT id, clause_no, title, content, search_text FROM clauses"
+    ).fetchall()
+    for r in rows:
+        st = build_search_text(r["clause_no"], r["title"], r["content"])
+        if (r["search_text"] or "") != st:
+            conn.execute("UPDATE clauses SET search_text = ? WHERE id = ?", (st, r["id"]))
+            conn.execute(
+                "INSERT INTO clauses_fts(rowid, search_text) VALUES (?, ?)",
+                (r["id"], st),
+            )
+
+
 def init_db():
     with get_db() as conn:
         conn.executescript(SCHEMA_SQL)
+        # FTS5 + jieba 迁移必须在建触发器之前（触发器引用 search_text 列）
+        _migrate_search_text(conn)
         conn.executescript(TRIGGERS_SQL)
         # 迁移：为已有数据库添加 file_hash 列
         try:
