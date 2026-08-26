@@ -5,20 +5,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-@pytest.fixture(autouse=True)
-def _mock_search_rerank(monkeypatch):
-    """检索页精排默认 mock 为原序（避免测试环境真实加载 CE/embedding 模型）。
-
-    精排接入 hybrid_search 后，默认把所有检索走成「原序」——现有测试断言
-    的 RRF/SQL 顺序不变；精排集成测试通过显式 monkeypatch 覆盖此设置。
-    """
-    import app.search.hybrid_search as hs
-    monkeypatch.setattr(
-        hs, "rerank_candidates",
-        lambda question, candidates: ([(d, 1.0) for d in candidates], "none"),
-    )
-
-
 @pytest.fixture
 def test_dir(tmp_path):
     """提供临时目录作为测试用的 data 根目录"""

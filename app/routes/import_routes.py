@@ -399,13 +399,6 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                     (len(clauses_data), spec_id))
         conn.commit()
 
-        # 数据已变更：清空混合搜索结果缓存，避免旧结果残留
-        try:
-            from app.search.hybrid_search import clear_search_cache
-            clear_search_cache()
-        except Exception:
-            pass
-
         progress_store[task_id].update(
             status="done", progress=100,
             message=f"导入完成：{len(clauses_data)} 条条文已解析，{classified_count} 个维度已分类"

@@ -202,10 +202,6 @@ async def update_clause(
              clause_id),
         )
 
-        # 内容/分类已变更：清空检索结果缓存
-        from app.search.hybrid_search import clear_search_cache
-        clear_search_cache()
-
         # 重索引向量
         try:
             from app.search.vector_search import VectorStore
@@ -257,10 +253,6 @@ async def delete_clause(request: Request, spec_id: int, clause_id: int):
                WHERE id = ?""",
             (spec_id, spec_id),
         )
-
-    # 条文已删除：清空检索结果缓存
-    from app.search.hybrid_search import clear_search_cache
-    clear_search_cache()
 
     return HTMLResponse("")
 
@@ -380,10 +372,6 @@ async def update_clause_class(
                WHERE id = ?""",
             (dim4_specialty, dim5_location, dim6_material, clause_id),
         )
-
-        # 分类已变更：清空检索结果缓存
-        from app.search.hybrid_search import clear_search_cache
-        clear_search_cache()
 
     from app.main import templates
     updated = dict(existing)
