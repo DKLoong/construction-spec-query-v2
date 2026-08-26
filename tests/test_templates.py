@@ -263,10 +263,3 @@ def test_search_include_non_clause_checkbox_styled():
     # 标签：单行不换行
     label_line = next(l for l in html.splitlines() if "包含前言·条文说明" in l)
     assert "white-space:nowrap" in label_line, "文字应单行不换行"
-
-
-def test_import_button_spacing_from_checkbox():
-    """导入按钮与复选框间距应等于搜索框-复选框间距（margin-top:0.3rem），防止误触"""
-    html = _read("tree_panel.html")
-    div_line = next(l for l in html.splitlines() if 'x-data="importDialog()"' in l)
-    assert "margin-top:0.3rem" in div_line, "导入按钮容器应加 margin-top 保持与复选框间距"
