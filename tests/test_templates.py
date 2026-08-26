@@ -247,3 +247,19 @@ def test_search_include_non_clause_carried_by_tree_js():
     js = _read_static("components/tree.js")
     assert "includeNonClause" in js, "searchState store 应含 includeNonClause"
     assert "include_non_clause" in js, "tree.js dispatchSearch 应携带 include_non_clause"
+
+
+def test_search_include_non_clause_checkbox_styled():
+    """复选框样式：文字单行(nowrap)、复选框正方形(等宽高)、文字行高与复选框一致对齐"""
+    import re
+    html = _read("tree_panel.html")
+    # 复选框 input：显式等宽高正方形，不被 flex 拉伸（标签属性可能跨行，正则匹配完整标签）
+    m = re.search(r'<input[^>]*x-model="includeNonClause"[^>]*>', html, re.S)
+    assert m, "应找到 include_non_clause 复选框 input"
+    input_tag = m.group(0)
+    assert "width:0.875rem" in input_tag, "复选框应固定宽度"
+    assert "height:0.875rem" in input_tag, "复选框应为正方形（宽高相等）"
+    assert "flex:none" in input_tag, "复选框不应被 flex 拉伸/压缩"
+    # 标签：单行不换行
+    label_line = next(l for l in html.splitlines() if "包含前言·条文说明" in l)
+    assert "white-space:nowrap" in label_line, "文字应单行不换行"
