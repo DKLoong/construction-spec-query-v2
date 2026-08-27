@@ -20,7 +20,8 @@
 | D4 | 分类树多选 | **全局同维多选**升级（filters 从标量变数组），非仅状态层 |
 | D5 | 导入版本校验 | **手动触发**：导入界面「校核有效性」按钮（全宽，与输入框同尺寸，放名称输入框下方），点一次校验一次；不自动触发（避免文件名乱命名/手动编辑时误触发与重复请求） |
 | D6 | 校验兜底 | AI 不可用/超时 → 默认"现行"+ ⚠️提示人工确认；规范管理页提供状态修改入口 |
-| D19 | 编号/名称校核 | **正则规范化（机械格式）+ AI 语义校核（代号/顺序号/年份/名称错误）**；与状态校验同一次 AI 调用，返回 `corrected_code`/`corrected_title`，前端回填需用户**确认应用**；AI 结果再过正则兜底 |
+| D19 | 编号/名称校核 | **正则规范化（机械格式 + 推荐性前缀规范化）+ AI 语义校核（代号/顺序号/年份/名称错误）**；与状态校验同一次 AI 调用，返回 `corrected_code`/`corrected_title`，前端回填需用户**确认应用**；AI 结果再过正则兜底 |
+| D20 | 推荐性命名复用 | 推荐性前缀知识复用现有 `_detect_nature` 判别（`GBT`/`JTT` 等无斜杠变体 → 补 `/` 成 `GB/T` 标准写法）；前缀映射**抽取为共享模块**，供 `_detect_nature`/`_detect_hierarchy`/`_parse_filename_to_code_title`/`normalize_spec_code` 统一引用，消除分散维护 |
 | D7 | 替代关系来源 | AI 识别被替代编号 + 人工可改（导入界面输入框 + 规范页维护） |
 | D8 | 提示语范围 | 条文详情弹窗底部 + 检索结果列表标注 + QA 输出指引（三处全做） |
 | D9 | 多版本共存 | 仅 schema 预留（同 code 多行共存 + replace_by 字段），本期不做版本对比 UI |
@@ -95,9 +96,13 @@ CREATE TABLE IF NOT EXISTS health_check_snapshots (
 - AI 不可用/超时 → 默认"现行"，标签旁显示 ⚠️「AI 校验不可用，请手动确认状态」
 - 提交导入时携带 `status` + `replaced_by_code` + 界面最终 code/title
 
-**正则规范化（`app/parser/norm_code.py` 新工具，D19 第一级，纯规则零成本）**
-- `normalize_spec_code(code)`：全角破折号 `—`/全角连字符 `－` → 半角 `-`；代号与顺序号之间保留半角空格；去除首尾空白、压缩连续空格；示例 `GB 50010—2010` → `GB 50010-2010`
-- 应用点：①导入入库前对 code 统一规范化；②AI 返回的 `corrected_code` 也过一遍正则兜底
+**正则规范化（`app/parser/norm_code.py` 新工具，D19 第一级，纯规则零成本；D20 复用现有判别知识）**
+- 先抽取共享前缀知识模块（D20）：前缀映射 + 推荐性变体集合（`GBT→GB/T`、`JTT→JT/T`、`JTGT→JTG/T`、`JGT→JG/T`、`CJT→CJ/T`、`JBT→JB/T`、`NYT→NY/T`、`DBT→DB/T`），与现有 `_detect_nature` 的 `RECOMMENDED` 集合及 `_detect_hierarchy` 前缀映射同源；`import_routes.py` 中 `_PREFIX_WHITELIST`/`_detect_nature`/`_detect_hierarchy`/`_parse_filename_to_code_title` 改为引用该模块（行为不变，消除分散维护）
+- `normalize_spec_code(code)` 三件事：
+  1. 机械修正：全角破折号 `—`/全角连字符 `－` → 半角 `-`；代号与顺序号间保留半角空格；去首尾空白、压缩连续空格；示例 `GB 50010—2010` → `GB 50010-2010`
+  2. **推荐性前缀补斜杠**：无斜杠推荐变体前缀（如 `GBT 50010-2010`、`JGJT 162-2008`）→ 标准写法 `GB/T 50010-2010`、`JGJ/T 162-2008`（复用共享知识，用户 `GBT` 写法自动纠正）
+  3. 保持 `_detect_nature`/`_detect_hierarchy` 兼容：normalize 在 detect 之前执行（`GB/T` 经 replace("/","") 后仍命中 `GBT`，现有判别不受影响）
+- 应用点：①导入入库前对 code 统一规范化（含文件名自动填充结果）；②AI 返回的 `corrected_code` 也过一遍 normalize 兜底
 - 该工具独立单测，不依赖 AI
 
 **后端（`import_routes.py`）**
@@ -105,7 +110,7 @@ CREATE TABLE IF NOT EXISTS health_check_snapshots (
   - `status`（现行/废止/修订中）
   - `replaced_by_code`（被替代编号，可空）
   - `corrected_code` / `corrected_title`（规范化命名，与输入一致时原样返回）
-  - 命名规则约束写入 prompt：`代号 顺序号-发布年份`，顺序号与年份间**半角短横线 `-`**，代号与顺序号间半角空格；示例 `GB 50010-2010`、`GB/T 50107-2010`
+  - 命名规则约束写入 prompt（含推荐性规范）：`代号[/T] 顺序号-发布年份`，顺序号与年份间**半角短横线 `-`**，代号与顺序号间半角空格；**推荐性规范代号带 `/T`**（如 `GB/T`、`JGJ/T`、`CJ/T`），用户常把 `GB/T` 误写为 `GBT`、`JGJ/T` 误写为 `JGJT`，AI 校核需识别此类错误并规范回填；示例 `GB 50010-2010`（强制性）、`GB/T 50107-2010`《燃气工程制图标准》（推荐性）
   - 后端不可用/异常 → 返回 `{status:'现行', ai_available:false}`（不抛错）
 - 导入入库（`POST /import/...` 现有流程）：`code` 先过 `normalize_spec_code`，写 `specifications.status` = 界面最终选定值
 - **反向联动**：若 `replaced_by_code` 命中库中已有规范（按 code 匹配）→ 反写该旧规范 `status='废止'` + `replace_by_spec_id=新规范id`；无命中则跳过（后续可通过规范页手动设置）。联动操作记入 `system_logs`
@@ -289,8 +294,8 @@ CREATE TABLE IF NOT EXISTS health_check_snapshots (
 | 文件 | 覆盖 |
 |---|---|
 | `tests/test_spec_lifecycle.py` | 导入打标（AI 可用/不可用/超时）、反向联动、状态列修改、检索 status_filter 组合（4 种）、QA 高亮、状态标签三处、替代提示语三处 |
-| `tests/test_norm_code.py` | `normalize_spec_code` 正则规范化（全角破折号/全角连字符/空格规整）、AI 返回 corrected_code 兜底、入库规范化 |
-| `tests/test_validate_version.py` | `POST /import/validate-version`：状态判断、编号/名称纠错（全角破折号、代号错误、年份错误、名称错误）、AI 不可用兜底、命名规则示例约束 |
+| `tests/test_norm_code.py` | `normalize_spec_code`：全角破折号/全角连字符/空格规整、**推荐性前缀补斜杠（GBT→GB/T、JGJT→JGJ/T、DBT→DB/T 等全变体）**、GB/T 已规范写法幂等不改、AI 返回 corrected_code 兜底、入库规范化；**共享前缀模块抽取后 `_detect_nature`/`_detect_hierarchy`/`_parse_filename_to_code_title` 行为回归** |
+| `tests/test_validate_version.py` | `POST /import/validate-version`：状态判断、编号/名称纠错（全角破折号、代号错误、年份错误、名称错误、**GBT→GB/T 推荐性写法纠正**）、AI 不可用兜底、命名规则示例约束（含 `GB/T 50107-2010`） |
 | `tests/test_search_multiselect.py` | 分类树多值参数解析、旧单值参数兼容 |
 | `tests/test_maintenance.py` | 健康检查 5 项判定+修复、备份、导出 JSON、FTS optimize、快照写入 |
 | `tests/test_rule_quality.py` | auto_adopted 沉淀规则、自动启用阈值、报表三类异常计算 |
