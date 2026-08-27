@@ -1,22 +1,71 @@
 // 搜索组件：关键词与分类树筛选共享 searchState store
+// 轻提示 / 雷达动画为模块级函数，供 searchBox、dispatchSearch、翻页建议复用
+
+function showSearchToast(msg, duration = 2000) {
+    let el = document.getElementById('search-toast');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'search-toast';
+        el.className = 'search-toast';
+        const center = document.querySelector('.center-panel-v2');
+        if (center) center.appendChild(el);
+    }
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => el.classList.remove('show'), duration);
+}
+
+function showRadar() {
+    let el = document.getElementById('radar-overlay');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'radar-overlay';
+        el.className = 'radar-overlay';
+        el.innerHTML = '<div class="radar-box">'
+            + '<div class="radar-circle"></div>'
+            + '<div class="radar-sweep"></div>'
+            + '<div class="radar-text">CE 精排中，请稍候…</div></div>';
+        const center = document.querySelector('.center-panel-v2');
+        if (center) center.appendChild(el);
+    }
+    el.classList.add('show');
+}
+
+function hideRadar() {
+    const el = document.getElementById('radar-overlay');
+    if (el) el.classList.remove('show');
+}
+
 document.addEventListener('alpine:init', () => {
     Alpine.data('searchBox', () => ({
         loading: false,
 
-        // keyword 代理到共享 store（搜索框输入与分类树触发读取同一状态）
+        // keyword / includeNonClause / ceRerank 都代理到共享 store
         get keyword() {
             return this.$store.searchState.keyword;
         },
         set keyword(v) {
             this.$store.searchState.keyword = v;
         },
-
-        // 复选框「包含前言·条文说明」代理到共享 store（与分类树/搜索框状态一致）
         get includeNonClause() {
             return this.$store.searchState.includeNonClause;
         },
         set includeNonClause(v) {
             this.$store.searchState.includeNonClause = v;
+        },
+        get ceRerank() {
+            return this.$store.searchState.ceRerank;
+        },
+        set ceRerank(v) {
+            this.$store.searchState.ceRerank = v;
+        },
+
+        // 勾选「启用 CE 精排」→ 轻提示（checkbox @change 触发）
+        toggleCeRerank() {
+            if (this.ceRerank) {
+                showSearchToast('CE精排已开启，请耐心等待搜索结果');
+            }
         },
 
         async search() {
@@ -30,12 +79,12 @@ document.addEventListener('alpine:init', () => {
             }
             // 勾选「包含前言·条文说明」时放行打标非条文
             if (this.includeNonClause) params.append('include_non_clause', '1');
+            // CE 精排热切换：开启时携带 ce_rerank
+            if (this.ceRerank) params.append('ce_rerank', '1');
             // 无关键词无筛选（如清空搜索框后回车）→ 显式请求全部条文
             if (!kw && Object.keys(this.$store.searchState.filters).length === 0) {
                 params.append('all', '1');
             }
-            // 滚动到顶部由结果页 #search-results 的 hx-on::after-settle 处理，
-            // 不在每次请求前累积 htmx:afterSettle 监听器
             htmx.ajax('GET', `/search?${params.toString()}`, {
                 target: '.center-panel-v2',
                 swap: 'innerHTML'
@@ -43,4 +92,26 @@ document.addEventListener('alpine:init', () => {
             this.loading = false;
         },
     }));
+});
+
+// 全局一次注册（不随每次搜索累积监听）：雷达动画显示/隐藏 + 翻页建议
+document.body.addEventListener('htmx:beforeRequest', () => {
+    try {
+        // CE 开启时搜索 → 覆盖雷达动画缓解等待
+        if (Alpine.store('searchState').ceRerank) showRadar();
+    } catch (e) { /* Alpine 未初始化时忽略 */ }
+});
+document.body.addEventListener('htmx:afterSettle', () => {
+    hideRadar();
+    // 翻页建议：未开 CE 且翻页超过总页数一半（向下取整）→ 提示开启 CE
+    try {
+        const res = document.querySelector('#search-results');
+        if (!res) return;
+        const page = parseInt(res.dataset.page || '1', 10);
+        const totalPages = parseInt(res.dataset.totalPages || '0', 10);
+        const ceOn = res.dataset.ceRerank === '1';
+        if (!ceOn && totalPages > 1 && page > Math.floor(totalPages / 2)) {
+            showSearchToast('对搜索结果不满意？请尝试在左侧开启CE精排');
+        }
+    } catch (e) { /* 结果区未就绪时忽略 */ }
 });

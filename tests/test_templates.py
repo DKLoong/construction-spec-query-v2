@@ -199,11 +199,16 @@ def test_import_inputs_clear_autofill_on_manual_edit():
 
 
 def test_search_dispatch_no_after_settle_listener():
-    """dispatchSearch/search 不应累积 htmx:afterSettle 监听器（结果页已有 hx-on 处理滚动）"""
+    """搜索函数不应累积 htmx:afterSettle 监听器（滚动由结果页 hx-on 处理）。
+
+    允许 search.js **模块级一次性**注册（翻页建议/隐藏雷达用），但禁止在
+    search()/dispatchSearch 函数内动态累积（那会随每次搜索越加越多）。
+    """
     tree_js = _read_static("components/tree.js")
     search_js = _read_static("components/search.js")
-    assert "addEventListener('htmx:afterSettle'" not in tree_js, "tree.js 不应累积滚动监听器"
-    assert "addEventListener('htmx:afterSettle'" not in search_js, "search.js 不应累积滚动监听器"
+    assert "addEventListener('htmx:afterSettle'" not in tree_js, "tree.js 不应注册滚动监听器"
+    assert search_js.count("addEventListener('htmx:afterSettle'") <= 1, \
+        "search.js 仅允许模块级一次性注册，禁止动态累积"
 
 
 def test_search_dispatch_sends_all_flag():
@@ -263,3 +268,35 @@ def test_search_include_non_clause_checkbox_styled():
     # 标签：单行不换行
     label_line = next(l for l in html.splitlines() if "包含前言·条文说明" in l)
     assert "white-space:nowrap" in label_line, "文字应单行不换行"
+
+
+def test_search_ce_rerank_checkbox_present():
+    """左栏应有「启用 CE 精排」复选框（searchBox 状态）"""
+    html = _read("tree_panel.html")
+    assert "ceRerank" in html, "tree_panel 应含 ceRerank 复选框绑定"
+    assert "启用 CE 精排" in html, "复选框应有说明文案"
+
+
+def test_search_ce_rerank_carried_by_js():
+    """searchBox 与 dispatchSearch 应携带 ce_rerank 参数（热切换）"""
+    js = _read_static("components/search.js")
+    tree_js = _read_static("components/tree.js")
+    assert "ceRerank" in js, "searchBox 应含 ceRerank 状态"
+    assert "ce_rerank" in js, "search.js 发起搜索时应携带 ce_rerank"
+    assert "ceRerank" in tree_js, "searchState store 应含 ceRerank"
+    assert "ce_rerank" in tree_js, "tree.js dispatchSearch 应携带 ce_rerank"
+
+
+def test_search_toast_and_radar_present():
+    """前端应有轻提示文案与雷达动画（CE 等待缓解）"""
+    js = _read_static("components/search.js")
+    assert "CE精排已开启" in js, "勾选 CE 应有轻提示文案"
+    assert "对搜索结果不满意" in js, "翻页建议应有轻提示文案"
+    assert "radar" in js.lower(), "应有雷达动画控制"
+
+
+def test_result_list_renders_pagination_meta():
+    """结果列表应渲染页码元数据（翻页建议判断用 data-total-pages）"""
+    html = _read("result_list.html")
+    assert "data-total-pages" in html, "结果容器应渲染总页数"
+    assert "data-page" in html, "结果容器应渲染当前页"

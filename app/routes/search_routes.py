@@ -68,6 +68,7 @@ async def search(
             "dim5_location": "",
             "dim6_material": "",
             "include_non_clause": include_non_clause,
+            "ce_rerank": ce_rerank,
             "empty_search": True,
         })
 
@@ -111,6 +112,7 @@ async def search(
         "dim5_location": dim5_location,
         "dim6_material": dim6_material,
         "include_non_clause": include_non_clause,
+        "ce_rerank": ce_rerank,
     })
 
 

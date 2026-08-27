@@ -1,5 +1,8 @@
-<!-- 搜索结果列表（外层 wrapper） -->
+<!-- 搜索结果列表（外层 wrapper；data-* 供前端翻页建议判断） -->
 <div id="search-results"
+     data-page="{{ page }}"
+     data-total-pages="{{ (total + page_size - 1) // page_size }}"
+     data-ce-rerank="{{ '1' if ce_rerank else '0' }}"
      hx-on::after-settle="document.querySelector('.center-panel-v2').scrollTop = 0">
 {% include "partials/result_content.html" %}
 </div>

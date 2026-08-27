@@ -14,6 +14,7 @@
     background: #faf7f3;
 }
 .center-panel-v2 {
+    position: relative;  /* 轻提示/雷达 overlay 的定位基准 */
     overflow-y: auto;
     padding: 1.5rem;
 }
@@ -266,3 +267,66 @@
     color: var(--pico-primary-inverse);
 }
 .tree-count { color: var(--pico-muted-color); font-size: 0.75rem; margin-left: 0.25rem; }
+
+/* ── 检索轻提示（右侧结果栏顶部，2s 自动消失） ── */
+.search-toast {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    background: rgba(0, 0, 0, 0.82);
+    color: #fff;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    white-space: nowrap;
+}
+.search-toast.show { opacity: 1; }
+
+/* ── CE 精排雷达扫描动画（搜索结果栏覆盖层，缓解等待焦虑） ── */
+.radar-overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(1px);
+}
+.radar-overlay.show { display: flex; }
+.radar-box {
+    position: relative;
+    width: 180px;
+    height: 180px;
+    border-radius: 50%;
+    border: 2px solid #46a758;
+    overflow: hidden;
+}
+.radar-circle {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1px solid #46a75855;
+}
+.radar-sweep {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, #46a75866, transparent 60deg);
+    animation: radar-spin 1.6s linear infinite;
+}
+.radar-text {
+    position: absolute;
+    bottom: -28px;
+    width: 100%;
+    text-align: center;
+    color: #2f7d4a;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+@keyframes radar-spin { to { transform: rotate(360deg); } }
