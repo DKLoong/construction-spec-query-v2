@@ -301,6 +301,9 @@ def test_search_toast_and_radar_present():
     assert "4000" in js, "翻页建议轻提示应展示 4 秒"
     # 轻提示挂 body（不随 .center-panel-v2 htmx 刷新被冲掉）
     assert "document.body.appendChild" in js, "轻提示应挂到 body，不随搜索刷新消失"
+    # 翻页建议：过半 + 最多 3 页兜底（min）+ 每会话仅提示一次
+    assert "_SUGGEST_PAGE_CAP" in js, "应有翻页建议页数上限常量（兜底提前）"
+    assert "_suggestShown" in js, "应有每会话仅提示一次的标记（避免反复弹）"
 
 
 def test_result_list_renders_pagination_meta():

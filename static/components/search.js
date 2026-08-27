@@ -95,6 +95,12 @@ document.addEventListener('alpine:init', () => {
     }));
 });
 
+// 翻页过半建议：兜底提前 + 每会话仅提示一次
+// 触发阈值 = min(floor(total_pages/2), _SUGGEST_PAGE_CAP)——大页数库（万级条文）
+// 下过半太晚，用绝对页数上限提前提示；_suggestShown 标记保证本会话只弹一次（刷新重置）。
+const _SUGGEST_PAGE_CAP = 3;
+let _suggestShown = false;
+
 // 全局一次注册（不随每次搜索累积监听）：雷达动画显示/隐藏 + 翻页建议
 document.body.addEventListener('htmx:beforeRequest', (evt) => {
     try {
@@ -107,14 +113,16 @@ document.body.addEventListener('htmx:beforeRequest', (evt) => {
 });
 document.body.addEventListener('htmx:afterSettle', () => {
     hideRadar();
-    // 翻页建议：未开 CE 且翻页超过总页数一半（向下取整）→ 提示开启 CE（展示 4s）
+    // 翻页建议：未开 CE 且翻页超过「过半 与 最多3页 取小值」→ 提示开启 CE（展示 4s）
     try {
         const res = document.querySelector('#search-results');
         if (!res) return;
         const page = parseInt(res.dataset.page || '1', 10);
         const totalPages = parseInt(res.dataset.totalPages || '0', 10);
         const ceOn = res.dataset.ceRerank === '1';
-        if (!ceOn && totalPages > 1 && page > Math.floor(totalPages / 2)) {
+        const triggerPage = Math.min(Math.floor(totalPages / 2), _SUGGEST_PAGE_CAP);
+        if (!_suggestShown && !ceOn && totalPages > 1 && page > triggerPage) {
+            _suggestShown = true;  // 每会话仅提示一次，避免后续翻页反复打扰
             showSearchToast('对搜索结果不满意？请尝试在左侧开启CE精排', 4000);
         }
     } catch (e) { /* 结果区未就绪时忽略 */ }
