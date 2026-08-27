@@ -299,6 +299,8 @@ def test_search_toast_and_radar_present():
     assert "path.startsWith('/search')" in js, "雷达应仅对 /search 请求触发"
     # 翻页过半建议展示 4s（阅读体验）
     assert "4000" in js, "翻页建议轻提示应展示 4 秒"
+    # 轻提示挂 body（不随 .center-panel-v2 htmx 刷新被冲掉）
+    assert "document.body.appendChild" in js, "轻提示应挂到 body，不随搜索刷新消失"
 
 
 def test_result_list_renders_pagination_meta():

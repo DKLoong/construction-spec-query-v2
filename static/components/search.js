@@ -7,8 +7,8 @@ function showSearchToast(msg, duration = 2000) {
         el = document.createElement('div');
         el.id = 'search-toast';
         el.className = 'search-toast';
-        const center = document.querySelector('.center-panel-v2');
-        if (center) center.appendChild(el);
+        // 挂到 body：不随 .center-panel-v2 的 htmx innerHTML 刷新被冲掉
+        document.body.appendChild(el);
     }
     el.textContent = msg;
     el.classList.add('show');

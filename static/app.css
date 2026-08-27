@@ -268,13 +268,13 @@
 }
 .tree-count { color: var(--pico-muted-color); font-size: 0.75rem; margin-left: 0.25rem; }
 
-/* ── 检索轻提示（右侧结果栏顶部，2s 自动消失） ── */
+/* ── 检索轻提示（fixed 视口顶部，不随页面滚动/刷新消失） ── */
 .search-toast {
-    position: absolute;
-    top: 8px;
+    position: fixed;
+    top: 16px;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 100;
+    z-index: 1000;
     background: rgba(0, 0, 0, 0.82);
     color: #fff;
     padding: 6px 14px;
