@@ -36,14 +36,15 @@ def build_search_text(clause_no: str, title: str, content: str) -> str:
     return " ".join(parts) or " "
 
 
-def build_match_query(keyword: str) -> str:
+def build_match_query(keyword: str, join_with: str = "AND") -> str:
     """查询侧切词 → FTS5 MATCH 查询串。
 
     - 每个 token 加双引号包裹（短语查询）并转义内部引号，防止 FTS5 语法注入
-    - token 间用 AND 连接（隐式「同时出现」语义）
+    - join_with 默认 AND（隐式「同时出现」语义）；多词 AND 无结果时，
+      调用方用 join_with="OR" 降级召回（任一 token 命中即返回）
     - keyword 切不出有效词时返回空串（调用方走纯 SQL 分支）
     """
     toks = tokenize(keyword)
     if not toks:
         return ""
-    return " AND ".join('"' + t.replace('"', '""') + '"' for t in toks)
+    return f" {join_with} ".join('"' + t.replace('"', '""') + '"' for t in toks)

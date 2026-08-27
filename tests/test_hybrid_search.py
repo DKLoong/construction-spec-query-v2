@@ -344,3 +344,27 @@ def test_hybrid_search_clause_no_exact_beats_bm25(monkeypatch, tmp_path):
 
     assert total == 2
     assert results[0]["id"] == id_b, "clause_no 精确命中应优先于 bm25 相关度"
+
+
+def test_hybrid_search_multiword_or_fallback(monkeypatch, tmp_path):
+    """多词 AND 无结果时降级 OR 召回（解决「I级接头强度」这类严格匹配查空）"""
+    db_path = tmp_path / "test_hybrid_or.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # 条文含「接头」「强度」，但缺「I」「级」→ AND('I' AND '级' AND '接头' AND '强度') 不命中
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "3.0.5", "接头强度", "钢筋机械连接接头的强度应满足规定。",
+             build_search_text("3.0.5", "接头强度", "钢筋机械连接接头的强度应满足规定。")),
+        )
+        id1 = conn.execute("SELECT id FROM clauses WHERE clause_no='3.0.5'").fetchone()[0]
+
+    from app.search.hybrid_search import hybrid_search
+    results, total = hybrid_search(SearchQuery(keyword="I级接头强度"))
+
+    assert total >= 1, "多词 AND 无结果时 OR 兜底应能召回"
+    assert any(r["id"] == id1 for r in results), "OR 兜底应包含含部分词的条文"

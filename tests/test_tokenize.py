@@ -68,3 +68,11 @@ def test_build_match_query_empty():
     """切不出有效词时返回空串（调用方走纯 SQL 分支）"""
     assert build_match_query("") == ""
     assert build_match_query("。。。") == ""
+
+
+def test_build_match_query_or_joins_tokens():
+    """OR 变体：token 用 OR 连接（AND 空结果时的降级召回用）"""
+    q = build_match_query("I级接头强度", "OR")
+    assert q == '"I" OR "级" OR "接头" OR "强度"'
+    # 默认仍是 AND（不破坏原调用）
+    assert build_match_query("I级接头强度") == '"I" AND "级" AND "接头" AND "强度"'
