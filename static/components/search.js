@@ -61,11 +61,12 @@ document.addEventListener('alpine:init', () => {
             this.$store.searchState.ceRerank = v;
         },
 
-        // 勾选「启用 CE 精排」→ 轻提示（checkbox @change 触发）
-        toggleCeRerank() {
+        // 勾选/取消「启用 CE 精排」→ 弹提示 + 立即重搜（热切换，结果实时按新开关排序）
+        onCeChange() {
             if (this.ceRerank) {
                 showSearchToast('CE精排已开启，请耐心等待搜索结果');
             }
+            this.search();
         },
 
         async search() {
@@ -95,15 +96,18 @@ document.addEventListener('alpine:init', () => {
 });
 
 // 全局一次注册（不随每次搜索累积监听）：雷达动画显示/隐藏 + 翻页建议
-document.body.addEventListener('htmx:beforeRequest', () => {
+document.body.addEventListener('htmx:beforeRequest', (evt) => {
     try {
-        // CE 开启时搜索 → 覆盖雷达动画缓解等待
-        if (Alpine.store('searchState').ceRerank) showRadar();
+        // 仅搜索请求触发雷达（排除条文详情等其它 htmx 请求）；CE 开启时显示
+        const path = (evt.detail && evt.detail.requestConfig && evt.detail.requestConfig.path) || '';
+        if (path.startsWith('/search') && Alpine.store('searchState').ceRerank) {
+            showRadar();
+        }
     } catch (e) { /* Alpine 未初始化时忽略 */ }
 });
 document.body.addEventListener('htmx:afterSettle', () => {
     hideRadar();
-    // 翻页建议：未开 CE 且翻页超过总页数一半（向下取整）→ 提示开启 CE
+    // 翻页建议：未开 CE 且翻页超过总页数一半（向下取整）→ 提示开启 CE（展示 4s）
     try {
         const res = document.querySelector('#search-results');
         if (!res) return;
@@ -111,7 +115,7 @@ document.body.addEventListener('htmx:afterSettle', () => {
         const totalPages = parseInt(res.dataset.totalPages || '0', 10);
         const ceOn = res.dataset.ceRerank === '1';
         if (!ceOn && totalPages > 1 && page > Math.floor(totalPages / 2)) {
-            showSearchToast('对搜索结果不满意？请尝试在左侧开启CE精排');
+            showSearchToast('对搜索结果不满意？请尝试在左侧开启CE精排', 4000);
         }
     } catch (e) { /* 结果区未就绪时忽略 */ }
 });

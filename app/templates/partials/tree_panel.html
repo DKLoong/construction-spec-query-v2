@@ -10,9 +10,9 @@
                    style="width:0.875rem;height:0.875rem;flex:none;margin:0;padding:0">
             <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">包含前言·条文说明</span>
         </label>
-        <!-- CE 精排热切换：开启后搜索结果走 CrossEncoder 精排（勾选即轻提示） -->
+        <!-- CE 精排热切换：勾选/取消立即重搜（onCeChange 弹提示 + 触发重搜），结果实时按新开关排序 -->
         <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1">
-            <input type="checkbox" x-model="ceRerank" @change="toggleCeRerank()"
+            <input type="checkbox" x-model="ceRerank" @change="onCeChange()"
                    style="width:0.875rem;height:0.875rem;flex:none;margin:0;padding:0">
             <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">启用 CE 精排</span>
         </label>

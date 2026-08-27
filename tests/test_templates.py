@@ -293,6 +293,12 @@ def test_search_toast_and_radar_present():
     assert "CE精排已开启" in js, "勾选 CE 应有轻提示文案"
     assert "对搜索结果不满意" in js, "翻页建议应有轻提示文案"
     assert "radar" in js.lower(), "应有雷达动画控制"
+    # 热切换：勾选/取消立即重搜
+    assert "onCeChange" in js, "CE 复选框变化应触发 onCeChange（弹提示 + 重搜）"
+    # 雷达仅搜索请求触发（排除条文详情弹窗等其它 htmx 请求）
+    assert "path.startsWith('/search')" in js, "雷达应仅对 /search 请求触发"
+    # 翻页过半建议展示 4s（阅读体验）
+    assert "4000" in js, "翻页建议轻提示应展示 4 秒"
 
 
 def test_result_list_renders_pagination_meta():
