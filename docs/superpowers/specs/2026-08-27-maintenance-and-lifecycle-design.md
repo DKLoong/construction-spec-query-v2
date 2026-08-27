@@ -18,8 +18,9 @@
 | D2 | 实施顺序 | 生命周期(P0) → 维护工具(P1) → 复核减负(P2) → 日志界面(P3) |
 | D3 | 状态呈现方式 | 检索/QA 用**"仅现行"+"修订中"两个复选框并排一行**（不进分类树），组合决定状态过滤 |
 | D4 | 分类树多选 | **全局同维多选**升级（filters 从标量变数组），非仅状态层 |
-| D5 | 导入版本校验 | 填完编号/名称防抖自动校验 + 实时可编辑标签（下拉切换） |
+| D5 | 导入版本校验 | **手动触发**：导入界面「校核有效性」按钮（全宽，与输入框同尺寸，放名称输入框下方），点一次校验一次；不自动触发（避免文件名乱命名/手动编辑时误触发与重复请求） |
 | D6 | 校验兜底 | AI 不可用/超时 → 默认"现行"+ ⚠️提示人工确认；规范管理页提供状态修改入口 |
+| D19 | 编号/名称校核 | **正则规范化（机械格式）+ AI 语义校核（代号/顺序号/年份/名称错误）**；与状态校验同一次 AI 调用，返回 `corrected_code`/`corrected_title`，前端回填需用户**确认应用**；AI 结果再过正则兜底 |
 | D7 | 替代关系来源 | AI 识别被替代编号 + 人工可改（导入界面输入框 + 规范页维护） |
 | D8 | 提示语范围 | 条文详情弹窗底部 + 检索结果列表标注 + QA 输出指引（三处全做） |
 | D9 | 多版本共存 | 仅 schema 预留（同 code 多行共存 + replace_by 字段），本期不做版本对比 UI |
@@ -81,19 +82,32 @@ CREATE TABLE IF NOT EXISTS health_check_snapshots (
 
 ## 4. P0 · 规范生命周期管理
 
-### 4.1 导入自动打标（含人工修改入口）
+### 4.1 导入校核（手动触发，含编号/名称规范化回填与人工修改入口）
 
 **前端（`import.js` + `tree_panel.html` 导入对话框）**
-- `code` / `title` 输入防抖（800ms）→ `GET /import/validate-version?code=&title=`
-- 响应渲染在导入框下方：
-  - 状态标签下拉（`现行`/`废止`/`修订中`），AI 结果作为默认选中值，**可点击切换**
-  - "被替代编号"输入框，AI 识别结果作默认值（可改）
+- 编号/名称下方新增全宽「🔍 校核有效性」按钮（尺寸与输入框一致），**手动点击触发**一次校验（D5）
+- 点击时先校验 code/title 非空，空则提示先填写，不发请求
+- `POST /import/validate-version`（body: code, title）→ 响应渲染在按钮下方：
+  - **状态标签下拉**（`现行`/`废止`/`修订中`），AI 结果作为默认选中值，可点击切换
+  - **编号/名称规范化建议**：若 AI 返回 `corrected_code`/`corrected_title` 与输入不同，显示「AI 建议：`新编号` 新名称」+「应用」/「忽略」按钮；应用后回填输入框（用户仍可再编辑）
+  - **被替代编号**输入框，AI 识别结果作默认值（可改）
+- 校验完成后若用户再次修改 code/title，按钮旁显示小灰字「内容已修改，建议重新校核」提示（不自动触发）
 - AI 不可用/超时 → 默认"现行"，标签旁显示 ⚠️「AI 校验不可用，请手动确认状态」
-- 提交导入时携带 `status` + `replaced_by_code` 字段
+- 提交导入时携带 `status` + `replaced_by_code` + 界面最终 code/title
+
+**正则规范化（`app/parser/norm_code.py` 新工具，D19 第一级，纯规则零成本）**
+- `normalize_spec_code(code)`：全角破折号 `—`/全角连字符 `－` → 半角 `-`；代号与顺序号之间保留半角空格；去除首尾空白、压缩连续空格；示例 `GB 50010—2010` → `GB 50010-2010`
+- 应用点：①导入入库前对 code 统一规范化；②AI 返回的 `corrected_code` 也过一遍正则兜底
+- 该工具独立单测，不依赖 AI
 
 **后端（`import_routes.py`）**
-- 新路由 `GET /import/validate-version`：复用 AI 分类后端（`app.ai.cli_client.get_backend` / `classifier_ai` 同链路），prompt 判断 `{status, replaced_by_code}`；后端不可用/异常 → 返回 `{status:'现行', ai_available:false}`（不抛错）
-- 导入入库（`POST /import/...` 现有流程）：写 `specifications.status` = 界面最终选定值
+- 新路由 `POST /import/validate-version`：复用 AI 分类后端（`app.ai.cli_client.get_backend` / `classifier_ai` 同链路），prompt 同时输出结构化字段（D19 第二级）：
+  - `status`（现行/废止/修订中）
+  - `replaced_by_code`（被替代编号，可空）
+  - `corrected_code` / `corrected_title`（规范化命名，与输入一致时原样返回）
+  - 命名规则约束写入 prompt：`代号 顺序号-发布年份`，顺序号与年份间**半角短横线 `-`**，代号与顺序号间半角空格；示例 `GB 50010-2010`、`GB/T 50107-2010`
+  - 后端不可用/异常 → 返回 `{status:'现行', ai_available:false}`（不抛错）
+- 导入入库（`POST /import/...` 现有流程）：`code` 先过 `normalize_spec_code`，写 `specifications.status` = 界面最终选定值
 - **反向联动**：若 `replaced_by_code` 命中库中已有规范（按 code 匹配）→ 反写该旧规范 `status='废止'` + `replace_by_spec_id=新规范id`；无命中则跳过（后续可通过规范页手动设置）。联动操作记入 `system_logs`
 
 ### 4.2 规范状态管理入口（历史存量统一维护）
@@ -131,10 +145,11 @@ CREATE TABLE IF NOT EXISTS health_check_snapshots (
   - 来源为被替代规范（`replace_by_spec_id` 非空）→ ⚠️「本规范已被《新编号 新名称》替代，请以新规范为准」
   - 来源提取沿用现有 `context.picked` 链路，需在候选 dict 中带出 `spec_status`（已有）与 `replace_by` 信息
 
-### 4.5 替代提示语（三处，D8）
+### 4.5 状态标签与替代提示语（三处，D8 + 状态标签补充）
 
-1. **条文详情弹窗底部**（`clause_detail.html` footer 下）：`spec_status='废止'` 或 `replace_by_spec_id` 非空时，底部红框提示「本规范已被《xxx》替代，请以新规范的规定为准」；`spec_status='废止'` 时附加废止提示。clause-detail 查询需 JOIN 带出被替代规范编号与名称
-2. **检索结果列表**（`result_list.html`）：来源行标注小标签（废止=红「已废止」/ 被替代=橙「已被替代」）
+**三处统一显示三色状态标签**（现行=绿 / 修订中=橙 / 废止=红）：
+1. **条文详情弹窗**（`clause_detail.html` footer）：状态标签 + 底部红框提示——`replace_by_spec_id` 非空显示「本规范已被《新编号 新名称》替代，请以新规范的规定为准」；`spec_status='废止'` 附加「本规范已废止」提示。clause-detail 查询需 JOIN 带出被替代规范编号与名称
+2. **检索结果列表**（`result_list.html`）：来源行显示状态小标签；废止/被替代时叠加「已废止」「已被替代」标识
 3. **QA 输出指引**：见 4.4
 
 ### 4.6 多版本共存预留（D9）
@@ -273,7 +288,9 @@ CREATE TABLE IF NOT EXISTS health_check_snapshots (
 
 | 文件 | 覆盖 |
 |---|---|
-| `tests/test_spec_lifecycle.py` | 导入打标（AI 可用/不可用/超时）、反向联动、状态列修改、检索 status_filter 组合（4 种）、QA 高亮、替代提示语三处 |
+| `tests/test_spec_lifecycle.py` | 导入打标（AI 可用/不可用/超时）、反向联动、状态列修改、检索 status_filter 组合（4 种）、QA 高亮、状态标签三处、替代提示语三处 |
+| `tests/test_norm_code.py` | `normalize_spec_code` 正则规范化（全角破折号/全角连字符/空格规整）、AI 返回 corrected_code 兜底、入库规范化 |
+| `tests/test_validate_version.py` | `POST /import/validate-version`：状态判断、编号/名称纠错（全角破折号、代号错误、年份错误、名称错误）、AI 不可用兜底、命名规则示例约束 |
 | `tests/test_search_multiselect.py` | 分类树多值参数解析、旧单值参数兼容 |
 | `tests/test_maintenance.py` | 健康检查 5 项判定+修复、备份、导出 JSON、FTS optimize、快照写入 |
 | `tests/test_rule_quality.py` | auto_adopted 沉淀规则、自动启用阈值、报表三类异常计算 |
@@ -285,6 +302,7 @@ CREATE TABLE IF NOT EXISTS health_check_snapshots (
 | 风险 | 应对 |
 |---|---|
 | AI 版本校验误判（打标错误） | 导入标签可编辑 + 规范页状态列人工修改兜底；校验失败默认现行不拦截导入 |
+| AI 校核误改编号/名称 | corrected 结果仅作"建议"，回填需用户确认应用；结果再过正则兜底；应用后仍可手动编辑 |
 | 分类树多选升级破坏现有交互 | 后端兼容单值/多值参数；前端 active 判定改 includes；回归现有搜索/QA 用例 |
 | 批量重分类覆盖人工标签 | 默认 scope=unclassified 不动已确认标签；scope=all 需二次确认 |
 | auto_adopted 规则自动启用可能引入噪声 | 阈值可配置（config）；报表「建议停用」可批量回退；低正确率自动停用逻辑保留 |
