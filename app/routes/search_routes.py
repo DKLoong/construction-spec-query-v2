@@ -38,6 +38,7 @@ async def search(
     page_size: int = Query(20),
     all: bool = Query(False),
     include_non_clause: bool = Query(False),
+    ce_rerank: bool = Query(False),
 ):
     """混合搜索：关键词 + 六维筛选 + 分页
 
@@ -84,6 +85,7 @@ async def search(
         page=page,
         per_page=effective_page_size,
         include_non_clause=include_non_clause,
+        ce_rerank=ce_rerank,
     )
 
     results, total = hybrid_search(sq)

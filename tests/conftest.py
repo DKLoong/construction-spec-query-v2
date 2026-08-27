@@ -5,6 +5,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+@pytest.fixture(autouse=True)
+def _mock_search_rerank(monkeypatch):
+    """检索页 CE 精排默认 mock 为原序（避免测试环境真实加载 CE/embedding 模型）。
+
+    ce_rerank=True 的测试会显式 monkeypatch 覆盖此设置来验证精排被触发。
+    """
+    import app.search.hybrid_search as hs
+    monkeypatch.setattr(
+        hs, "rerank_candidates",
+        lambda question, candidates: ([(d, 1.0) for d in candidates], "none"),
+    )
+
+
 @pytest.fixture
 def test_dir(tmp_path):
     """提供临时目录作为测试用的 data 根目录"""

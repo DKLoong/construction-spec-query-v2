@@ -368,3 +368,73 @@ def test_hybrid_search_multiword_or_fallback(monkeypatch, tmp_path):
 
     assert total >= 1, "多词 AND 无结果时 OR 兜底应能召回"
     assert any(r["id"] == id1 for r in results), "OR 兜底应包含含部分词的条文"
+
+
+# ═══════════════════════════════════════════
+# CE 精排热切换（ce_rerank 开关 + 缓存隔离）
+# ═══════════════════════════════════════════
+
+def test_hybrid_search_ce_rerank_triggers_rerank(monkeypatch, tmp_path):
+    """ce_rerank=True 时触发 CrossEncoder 精排；默认 False 不触发"""
+    db_path = tmp_path / "test_hybrid_ce.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for i in range(1, 3):
+            conn.execute(
+                "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+                (spec_id, f"{i}.0.1", f"标题{i}", f"钢筋 内容{i}",
+                 build_search_text(f"{i}.0.1", f"标题{i}", f"钢筋 内容{i}")),
+            )
+
+    import app.search.hybrid_search as hs
+    calls = {"rerank": 0}
+
+    def _fake(question, candidates):
+        calls["rerank"] += 1
+        return ([(c, 1.0) for c in candidates], "crossencoder")
+
+    monkeypatch.setattr(hs, "rerank_candidates", _fake)
+
+    from app.search.hybrid_search import hybrid_search
+    hybrid_search(SearchQuery(keyword="钢筋"))
+    assert calls["rerank"] == 0, "ce_rerank 默认 False 不应触发精排"
+
+    hybrid_search(SearchQuery(keyword="钢筋", ce_rerank=True))
+    assert calls["rerank"] == 1, "ce_rerank=True 应触发精排"
+
+
+def test_hybrid_search_ce_rerank_cache_isolated(monkeypatch, tmp_path):
+    """ce_rerank 开关纳入缓存 key：开关状态切换不命中对方缓存"""
+    db_path = tmp_path / "test_hybrid_ce_cache.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for i in range(1, 3):
+            conn.execute(
+                "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+                (spec_id, f"{i}.0.1", f"标题{i}", f"钢筋 内容{i}",
+                 build_search_text(f"{i}.0.1", f"标题{i}", f"钢筋 内容{i}")),
+            )
+
+    import app.search.hybrid_search as hs
+    calls = {"rerank": 0}
+
+    def _fake(question, candidates):
+        calls["rerank"] += 1
+        return ([(c, 1.0) for c in candidates], "crossencoder")
+
+    monkeypatch.setattr(hs, "rerank_candidates", _fake)
+
+    from app.search.hybrid_search import hybrid_search
+    hybrid_search(SearchQuery(keyword="钢筋", ce_rerank=True))   # 精排 1，缓存 True
+    hybrid_search(SearchQuery(keyword="钢筋"))                    # False：不精排，缓存 False 独立
+    hybrid_search(SearchQuery(keyword="钢筋", ce_rerank=True))   # 命中 True 缓存，不重复精排
+
+    assert calls["rerank"] == 1, "开关状态应隔离缓存；True 第二次应命中缓存不重复精排"

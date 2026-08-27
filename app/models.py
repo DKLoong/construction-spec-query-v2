@@ -185,6 +185,8 @@ class SearchQuery(BaseModel):
     per_page: int = 20
     # 是否包含非条文（前言/条文说明等打标项）。默认 False → 检索层隐藏
     include_non_clause: bool = False
+    # 是否启用 CrossEncoder 精排（用户按需开启，热切换）。默认 False → 纯 RRF
+    ce_rerank: bool = False
 
 
 class SearchResponse(BaseModel):
