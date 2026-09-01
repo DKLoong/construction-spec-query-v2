@@ -8,6 +8,9 @@ from app.config import UPLOAD_DIR, OUTPUT_DIR, ADAPTIVE_THRESHOLDS
 from app.database import get_db
 from app.parser.md_parser import parse_markdown, is_cover_clause
 from app.parser.ocr_clean import clean_ocr_text
+from app.parser.spec_prefix import (
+    detect_hierarchy, detect_nature, normalize_spec_code, PREFIX_WHITELIST,
+)
 from app.ocr.pdf_extract import extract_text, is_scanned
 from app.classifier.rule_engine import classify_clause, should_use_ai
 from app.search.vector_search import VectorStore
@@ -19,16 +22,6 @@ progress_store = {}
 def _compute_file_hash(file_bytes: bytes) -> str:
     """计算文件的 SHA256 哈希值"""
     return hashlib.sha256(file_bytes).hexdigest()
-
-
-# 规范编号前缀白名单（与 _detect_hierarchy / _detect_nature 前缀知识保持一致）。
-# 仅含纯字母前缀；DB 地方标准带地区号的格式（如 DB13/T）不在此列。
-_PREFIX_WHITELIST = {
-    "JTGT", "JTG", "JTT", "JT", "JGT", "JG", "JGJ", "CJT", "CJ",
-    "JBT", "JB", "NYT", "NY", "GBT", "GB", "TB", "MH", "YZ",
-    "DB", "DBT", "T", "Q",
-    "CJJ", "GJB", "GBZ", "GBJ", "JJG", "JJF", "XB", "QC", "JGJT",
-}
 
 
 def _parse_filename_to_code_title(filename: str) -> tuple[str, str, bool]:
@@ -51,7 +44,7 @@ def _parse_filename_to_code_title(filename: str) -> tuple[str, str, bool]:
         return "", "", False
     prefix, slash_t, number, year, title = m.groups()
     prefix = prefix.upper()
-    if prefix not in _PREFIX_WHITELIST:
+    if prefix not in PREFIX_WHITELIST:
         return "", "", False
 
     title = title.strip("- _—–.（）()　").strip()
@@ -245,8 +238,8 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         clauses_data = _filter_cover_clauses(parse_markdown(md_text))
 
         # Step 3: 规范级分类
-        dim1_hierarchy = _detect_hierarchy(code)
-        dim1_nature = _detect_nature(code)
+        dim1_hierarchy = detect_hierarchy(code)
+        dim1_nature = detect_nature(code)
 
         progress_store[task_id].update(progress=70, message=f"正在分类 {len(clauses_data)} 条条文...")
 
@@ -418,93 +411,6 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 conn.close()
             except Exception:
                 pass
-
-
-def _detect_hierarchy(code: str) -> str:
-    """根据规范编号前缀判断规范层级"""
-    if not code:
-        return ""
-
-    # 规范化：去掉可能存在的斜杠（Windows 不允许文件名含 /）
-    c = code.replace("/", "").strip()
-    if not c:
-        return ""
-
-    # 前缀按长度降序排列，确保最长前缀优先匹配
-    # 例如 JTG 必须在 JT 之前检查，GBT 必须在 GB 之前检查
-    PREFIX_MAP = [
-        ("JTGT", "公路工程"),
-        ("JTG", "公路工程"),
-        ("JTT", "交通运输"),
-        ("JT", "交通运输"),
-        ("JGT", "建筑工业"),
-        ("JG", "建筑工业"),
-        ("JGJ", "建筑工程"),
-        ("CJT", "城镇建设"),
-        ("CJ", "城镇建设"),
-        ("JBT", "机械"),
-        ("JB", "机械"),
-        ("NYT", "农业"),
-        ("NY", "农业"),
-        ("GBT", "国家标准"),
-        ("GB", "国家标准"),
-        ("TB", "铁路"),
-        ("MH", "民用航空"),
-        ("YZ", "邮政"),
-        ("DB", "地方标准"),
-    ]
-
-    for prefix, hierarchy in PREFIX_MAP:
-        if c.startswith(prefix):
-            return hierarchy
-
-    # 单字母前缀
-    if c.startswith("T"):
-        return "团体标准"
-    if c.startswith("Q"):
-        return "企业标准"
-
-    return ""
-
-
-def _detect_nature(code: str) -> str:
-    """根据规范编号判断强制性/推荐性"""
-    if not code:
-        return ""
-
-    c = code.replace("/", "").strip()
-    if not c:
-        return ""
-
-    # 企业标准：无强制/推荐之分
-    if c.startswith("Q"):
-        return ""
-
-    # 团体标准：始终推荐性（T 后不能紧跟字母，以区分 TB）
-    if re.match(r"^T($|\s|\d)", c):
-        return "推荐性"
-
-    # 邮政标准：始终推荐性
-    if c.startswith("YZ"):
-        return "推荐性"
-
-    # 提取前缀字母段
-    m = re.match(r"^([A-Za-z]+)", c)
-    if not m:
-        return "强制性"
-
-    letters = m.group(1)
-
-    # 已知的推荐性变体（前缀字母段精确匹配）
-    RECOMMENDED = {"GBT", "JTT", "JTGT", "JGT", "CJT", "JBT", "NYT", "DBT"}
-    if letters in RECOMMENDED:
-        return "推荐性"
-
-    # 原始字符串中包含 "/T" 模式（如 DB13/T 这种非规范写法）
-    if "/T" in code:
-        return "推荐性"
-
-    return "强制性"
 
 
 # ═══════════════════════════════════════════
