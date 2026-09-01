@@ -44,6 +44,11 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
                 if val:
                     conditions.append(f"s.{col} LIKE ?")
                     params.append(f"%{val}%")
+
+            if query.status_filter:
+                ph = ",".join("?" * len(query.status_filter))
+                conditions.append(f"s.status IN ({ph})")
+                params.extend(query.status_filter)
             return conditions, params, joins
 
         # keyword → FTS5 MATCH 查询串（jieba 切词，token 间 AND）

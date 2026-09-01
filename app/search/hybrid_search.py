@@ -40,6 +40,7 @@ def _cache_key(query: SearchQuery) -> tuple:
         query.keyword, query.dim1_hierarchy, query.dim1_nature, query.dim2_stage,
         query.dim3_usage, query.dim4_specialty, query.dim5_location, query.dim6_material,
         query.include_non_clause, query.ce_rerank,
+        tuple(query.status_filter),
     )
 
 
@@ -129,6 +130,11 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
                     if val:
                         dim_conditions.append(f"s.{col} LIKE ?")
                         dim_params.append(f"%{val}%")
+
+                if query.status_filter:
+                    ph = ",".join("?" * len(query.status_filter))
+                    dim_conditions.append(f"s.status IN ({ph})")
+                    dim_params.extend(query.status_filter)
 
                 dim_where = (" AND " + " AND ".join(dim_conditions)) if dim_conditions else ""
 

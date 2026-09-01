@@ -187,6 +187,8 @@ class SearchQuery(BaseModel):
     include_non_clause: bool = False
     # 是否启用 CrossEncoder 精排（用户按需开启，热切换）。默认 False → 纯 RRF
     ce_rerank: bool = False
+    # 状态过滤白名单（如 ['现行','修订中']）。空列表 = 不过滤（含废止/被替代）。
+    status_filter: list[str] = []
 
 
 class SearchResponse(BaseModel):
