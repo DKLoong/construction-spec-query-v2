@@ -227,6 +227,41 @@ def init_db():
             conn.execute("ALTER TABLE clauses ADD COLUMN clause_is_non INTEGER DEFAULT 0")
         except Exception:
             pass  # 列已存在
+        # 迁移：为已有数据库添加 replace_by_spec_id（被替代关系引用）与 spec_version（预留）
+        try:
+            conn.execute(
+                "ALTER TABLE specifications ADD COLUMN replace_by_spec_id INTEGER "
+                "REFERENCES specifications(id)"
+            )
+        except Exception:
+            pass  # 列已存在
+        try:
+            conn.execute("ALTER TABLE specifications ADD COLUMN spec_version TEXT")
+        except Exception:
+            pass  # 列已存在
+        # 日志表 + 健康检查快照表（P1 维护工具先建表，P3 日志界面消费）
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS system_logs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                category    TEXT NOT NULL,
+                level       TEXT NOT NULL,
+                action      TEXT NOT NULL,
+                detail      TEXT,
+                username    TEXT,
+                duration_ms INTEGER,
+                created_at  TEXT DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_system_logs_category ON system_logs(category);
+            CREATE INDEX IF NOT EXISTS idx_system_logs_level ON system_logs(level);
+            CREATE INDEX IF NOT EXISTS idx_system_logs_created ON system_logs(created_at);
+            CREATE TABLE IF NOT EXISTS health_check_snapshots (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                result      TEXT NOT NULL,
+                created_at  TEXT DEFAULT (datetime('now','localtime'))
+            );
+            """
+        )
         # 预置常用同义词（幂等：依赖 source 唯一索引 + INSERT OR IGNORE）
         conn.execute(
             "INSERT OR IGNORE INTO synonym_map (source, target, is_active) VALUES (?, ?, 1)",
