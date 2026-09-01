@@ -95,8 +95,10 @@ document.addEventListener('alpine:init', () => {
             const kw = (this.$store.searchState.keyword || '').trim();
             if (kw) params.append('keyword', kw);
             // 携带当前分类筛选，避免「先选分类再搜关键词」丢失筛选状态
+            // 维度值为数组（同维多选）：逐个 append，同名参数后端聚合为列表（OR 语义）
             for (const [k, v] of Object.entries(this.$store.searchState.filters)) {
-                params.append(k, v);
+                if (Array.isArray(v)) v.forEach(x => params.append(k, x));
+                else params.append(k, v);
             }
             // 勾选「包含前言·条文说明」时放行打标非条文
             if (this.includeNonClause) params.append('include_non_clause', '1');
