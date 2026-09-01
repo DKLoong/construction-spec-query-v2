@@ -13,6 +13,9 @@ router = APIRouter()
 # 规范管理
 # ═══════════════════════════════════════════
 
+# 规范状态合法值域（与 spec 生命周期决策一致）
+SPEC_STATUS_ALLOWED = {"现行", "废止", "修订中"}
+
 @router.get("/specs")
 async def specs_page(request: Request):
     """规范管理页"""
@@ -39,6 +42,34 @@ async def specs_list(request: Request):
     return templates.TemplateResponse(request, "partials/specs_table.html", {
         "specs": [dict(r) for r in rows],
     })
+
+
+@router.put("/specs/{spec_id}/status")
+async def update_spec_status(request: Request, spec_id: int, status: str = Form("")):
+    """更新规范状态（现行/废止/修订中），供规范页行内切换与 AI 校验兜底"""
+    from fastapi.responses import JSONResponse
+    from app.search.hybrid_search import clear_search_cache
+
+    if status not in SPEC_STATUS_ALLOWED:
+        return JSONResponse({"detail": f"非法状态: {status}"}, status_code=400)
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT * FROM specifications WHERE id = ?", (spec_id,)
+        ).fetchone()
+        if not existing:
+            return JSONResponse({"detail": "规范不存在"}, status_code=404)
+        conn.execute(
+            "UPDATE specifications SET status = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+            (status, spec_id),
+        )
+    clear_search_cache()  # 状态影响检索过滤，必须清缓存
+    return HTMLResponse(f"""<div id="spec-status-{spec_id}" hx-swap-oob="true">
+        <span class="spec-status-tag status-{_status_class(status)}">{status}</span>
+    </div>""")
+
+
+def _status_class(status: str) -> str:
+    return {"现行": "current", "修订中": "revising", "废止": "obsolete"}.get(status, "current")
 
 
 @router.delete("/specs/{spec_id}")

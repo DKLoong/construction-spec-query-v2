@@ -6,6 +6,7 @@
             <th>编号</th>
             <th>名称</th>
             <th>分类</th>
+            <th>状态</th>
             <th>条文数</th>
             <th>导入时间</th>
             <th>操作</th>
@@ -20,6 +21,15 @@
             {% if s.dim2_stage %}<span class="dim-tag">{{ s.dim2_stage }}</span>{% endif %}
             {% if s.dim3_usage %}<span class="dim-tag">{{ s.dim3_usage }}</span>{% endif %}
             {% if not s.dim2_stage and not s.dim3_usage %}<span style="color:#999">-</span>{% endif %}
+        </td>
+        <td>
+            <select class="spec-status-select" data-id="{{ s.id }}"
+                    style="font-size:0.75rem;padding:0.15rem 0.3rem"
+                    onchange="window.dispatchEvent(new CustomEvent('spec-status-change', {detail:{id:{{ s.id }}, status:this.value}}))">
+                {% for st in ['现行', '修订中', '废止'] %}
+                <option value="{{ st }}" {% if s.status == st %}selected{% endif %}>{{ st }}</option>
+                {% endfor %}
+            </select>
         </td>
         <td>{{ s.clause_count }}</td>
         <td>{{ s.created_at[:10] if s.created_at else '-' }}</td>

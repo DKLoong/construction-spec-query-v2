@@ -330,3 +330,9 @@
     font-weight: 600;
 }
 @keyframes radar-spin { to { transform: rotate(360deg); } }
+
+/* ── 规范状态三色标签（现行=绿 / 修订中=橙 / 废止=红） ── */
+.spec-status-tag { padding:0.15rem 0.5rem; border-radius:4px; font-size:0.75rem; }
+.status-current { background:#d8f5d8; color:#1a7a1a; }
+.status-revising { background:#ffe8c2; color:#a06500; }
+.status-obsolete { background:#fbd8d8; color:#b00000; }
