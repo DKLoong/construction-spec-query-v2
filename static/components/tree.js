@@ -10,9 +10,10 @@ document.addEventListener('alpine:init', () => {
         statusCurrent: true,     // 「仅现行」默认勾选（D3）
         statusRevising: false,
         // 状态过滤组合：仅现行→'现行'；仅现行+修订中→'现行,修订中'；仅修订中→'修订中'；全不勾→null（不过滤+轻提示）
+        // 注意：store 方法内 this 即 searchState store 本身，不能使用 this.$store（$store magic 仅在组件/DOM 表达式上下文生效）
         buildStatusFilter() {
-            const c = this.$store.searchState.statusCurrent;
-            const r = this.$store.searchState.statusRevising;
+            const c = this.statusCurrent;
+            const r = this.statusRevising;
             if (c && r) return '现行,修订中';
             if (c) return '现行';
             if (r) return '修订中';
