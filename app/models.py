@@ -172,15 +172,18 @@ class SearchRequest(BaseModel):
 
 
 class SearchQuery(BaseModel):
-    """内部搜索查询参数（供 sql_search / vector_search 使用）"""
+    """内部搜索查询参数（供 sql_search / vector_search 使用）
+
+    7 个维度字段为 list[str]：同维多值语义 = OR（(col LIKE ? OR col LIKE ? ...)）。
+    """
     keyword: Optional[str] = None
-    dim1_hierarchy: Optional[str] = None
-    dim1_nature: Optional[str] = None
-    dim2_stage: Optional[str] = None
-    dim3_usage: Optional[str] = None
-    dim4_specialty: Optional[str] = None
-    dim5_location: Optional[str] = None
-    dim6_material: Optional[str] = None
+    dim1_hierarchy: list[str] = []
+    dim1_nature: list[str] = []
+    dim2_stage: list[str] = []
+    dim3_usage: list[str] = []
+    dim4_specialty: list[str] = []
+    dim5_location: list[str] = []
+    dim6_material: list[str] = []
     page: int = 1
     per_page: int = 20
     # 是否包含非条文（前言/条文说明等打标项）。默认 False → 检索层隐藏
@@ -206,13 +209,14 @@ class QaRequest(BaseModel):
     # 是否包含废止/已替代规范（默认过滤，仅用户明确指定时放行）
     include_invalid: bool = False
     # 分类筛选联动：随问答请求携带当前分类树选中维度，收窄检索范围
-    dim1_hierarchy: str | None = None
-    dim1_nature: str | None = None
-    dim2_stage: str | None = None
-    dim3_usage: str | None = None
-    dim4_specialty: str | None = None
-    dim5_location: str | None = None
-    dim6_material: str | None = None
+    # 同维多选（与检索页一致）：list[str]，多值语义 = OR
+    dim1_hierarchy: list[str] = []
+    dim1_nature: list[str] = []
+    dim2_stage: list[str] = []
+    dim3_usage: list[str] = []
+    dim4_specialty: list[str] = []
+    dim5_location: list[str] = []
+    dim6_material: list[str] = []
 
 
 class QAResponse(BaseModel):

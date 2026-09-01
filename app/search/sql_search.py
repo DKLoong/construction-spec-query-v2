@@ -24,26 +24,24 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
                 params.append(match_expr)
                 joins = " JOIN clauses_fts f ON c.id = f.rowid"
 
-            dim_filters = {
-                "dim4_specialty": query.dim4_specialty,
-                "dim5_location": query.dim5_location,
-                "dim6_material": query.dim6_material,
-            }
-            for col, val in dim_filters.items():
-                if val:
-                    conditions.append(f"c.{col} LIKE ?")
-                    params.append(f"%{val}%")
+            def _add_multi(cond_list, params_list, col, vals):
+                """同维多值 → OR 组：(col LIKE ? OR col LIKE ? ...)；空列表跳过"""
+                if not vals:
+                    return
+                ors = []
+                for v in vals:
+                    ors.append(f"{col} LIKE ?")
+                    params_list.append(f"%{v}%")
+                cond_list.append("(" + " OR ".join(ors) + ")")
 
-            spec_filters = {
-                "dim1_hierarchy": query.dim1_hierarchy,
-                "dim1_nature": query.dim1_nature,
-                "dim2_stage": query.dim2_stage,
-                "dim3_usage": query.dim3_usage,
-            }
-            for col, val in spec_filters.items():
-                if val:
-                    conditions.append(f"s.{col} LIKE ?")
-                    params.append(f"%{val}%")
+            # dim4~dim6 挂在 clauses 表，dim1~dim3 挂在 specifications 表
+            _add_multi(conditions, params, "c.dim4_specialty", query.dim4_specialty)
+            _add_multi(conditions, params, "c.dim5_location", query.dim5_location)
+            _add_multi(conditions, params, "c.dim6_material", query.dim6_material)
+            _add_multi(conditions, params, "s.dim1_hierarchy", query.dim1_hierarchy)
+            _add_multi(conditions, params, "s.dim1_nature", query.dim1_nature)
+            _add_multi(conditions, params, "s.dim2_stage", query.dim2_stage)
+            _add_multi(conditions, params, "s.dim3_usage", query.dim3_usage)
 
             if query.status_filter:
                 ph = ",".join("?" * len(query.status_filter))

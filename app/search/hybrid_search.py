@@ -37,8 +37,14 @@ def _cache_key(query: SearchQuery) -> tuple:
     from app.database import DATABASE_PATH
     return (
         DATABASE_PATH,
-        query.keyword, query.dim1_hierarchy, query.dim1_nature, query.dim2_stage,
-        query.dim3_usage, query.dim4_specialty, query.dim5_location, query.dim6_material,
+        query.keyword,
+        tuple(query.dim1_hierarchy or ()),
+        tuple(query.dim1_nature or ()),
+        tuple(query.dim2_stage or ()),
+        tuple(query.dim3_usage or ()),
+        tuple(query.dim4_specialty or ()),
+        tuple(query.dim5_location or ()),
+        tuple(query.dim6_material or ()),
         query.include_non_clause, query.ce_rerank,
         tuple(query.status_filter),
     )
@@ -110,26 +116,22 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
                 if not query.include_non_clause:
                     dim_conditions.append("c.clause_is_non = 0")
 
-                clause_filters = {
-                    "dim4_specialty": query.dim4_specialty,
-                    "dim5_location": query.dim5_location,
-                    "dim6_material": query.dim6_material,
-                }
-                for col, val in clause_filters.items():
-                    if val:
-                        dim_conditions.append(f"c.{col} LIKE ?")
-                        dim_params.append(f"%{val}%")
-
-                spec_filters = {
-                    "dim1_hierarchy": query.dim1_hierarchy,
-                    "dim1_nature": query.dim1_nature,
-                    "dim2_stage": query.dim2_stage,
-                    "dim3_usage": query.dim3_usage,
-                }
-                for col, val in spec_filters.items():
-                    if val:
-                        dim_conditions.append(f"s.{col} LIKE ?")
-                        dim_params.append(f"%{val}%")
+                # 同维多值 → OR 组：与 SQL 层一致（空列表跳过）
+                # dim4~dim6 挂在 clauses 表，dim1~dim3 挂在 specifications 表
+                for col, vals in (
+                    ("c.dim4_specialty", query.dim4_specialty),
+                    ("c.dim5_location", query.dim5_location),
+                    ("c.dim6_material", query.dim6_material),
+                    ("s.dim1_hierarchy", query.dim1_hierarchy),
+                    ("s.dim1_nature", query.dim1_nature),
+                    ("s.dim2_stage", query.dim2_stage),
+                    ("s.dim3_usage", query.dim3_usage),
+                ):
+                    if vals:
+                        dim_conditions.append(
+                            "(" + " OR ".join(f"{col} LIKE ?" for _ in vals) + ")"
+                        )
+                        dim_params.extend(f"%{v}%" for v in vals)
 
                 if query.status_filter:
                     ph = ",".join("?" * len(query.status_filter))

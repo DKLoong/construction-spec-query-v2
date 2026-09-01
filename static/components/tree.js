@@ -48,12 +48,12 @@ document.addEventListener('alpine:init', () => {
         },
 
         selectFilter(dimension, value) {
+            // 同维多选：每个维度存数组，点击切换（选中→移除，未选→追加）；清空则删除该键
             const next = { ...this.$store.searchState.filters };
-            if (next[dimension] === value) {
-                delete next[dimension];
-            } else {
-                next[dimension] = value;
-            }
+            const arr = Array.isArray(next[dimension]) ? next[dimension].slice() : [];
+            const idx = arr.indexOf(value);
+            if (idx >= 0) arr.splice(idx, 1); else arr.push(value);
+            if (arr.length) next[dimension] = arr; else delete next[dimension];
             this.$store.searchState.filters = next;
             this.dispatchSearch();
         },
@@ -62,8 +62,10 @@ document.addEventListener('alpine:init', () => {
             try {
                 const params = new URLSearchParams();
                 // 从共享 store 读取筛选维度 + 搜索关键词（与搜索框保持一致）
+                // 维度值为数组（同维多选）：逐个 append，同名参数后端聚合为列表（OR 语义）
                 for (const [k, v] of Object.entries(this.$store.searchState.filters)) {
-                    params.append(k, v);
+                    if (Array.isArray(v)) v.forEach(x => params.append(k, x));
+                    else params.append(k, v);
                 }
                 const kw = (this.$store.searchState.keyword || '').trim();
                 if (kw) {

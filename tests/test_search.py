@@ -22,7 +22,7 @@ def test_search_dimension_filter(monkeypatch, tmp_path):
     init_db()
     with get_db() as conn:
         setup_search_data(conn)
-    results, total = search_clauses(SearchQuery(dim5_location="屋面"))
+    results, total = search_clauses(SearchQuery(dim5_location=["屋面"]))
     assert total >= 1
     assert results[0]["dim5_location"] == "屋面"
 
@@ -33,7 +33,7 @@ def test_search_combined(monkeypatch, tmp_path):
     init_db()
     with get_db() as conn:
         setup_search_data(conn)
-    results, total = search_clauses(SearchQuery(keyword="混凝土", dim6_material="模板"))
+    results, total = search_clauses(SearchQuery(keyword="混凝土", dim6_material=["模板"]))
     assert total == 0
 
 

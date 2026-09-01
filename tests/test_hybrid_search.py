@@ -30,7 +30,7 @@ def test_hybrid_search_dimension_filter(monkeypatch, tmp_path):
         setup_search_data(conn)
 
     from app.search.hybrid_search import hybrid_search
-    results, total = hybrid_search(SearchQuery(dim5_location="屋面"))
+    results, total = hybrid_search(SearchQuery(dim5_location=["屋面"]))
 
     assert total >= 1
     assert results[0]["dim5_location"] == "屋面"

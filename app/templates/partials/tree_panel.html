@@ -89,7 +89,7 @@
                 <template x-for="node in dim.nodes" :key="node.value">
                     <div class="tree-node">
                         <span class="tree-label"
-                              :class="{ active: activeFilters[dim.key] === node.value }"
+                              :class="{ active: (Array.isArray(activeFilters[dim.key]) ? activeFilters[dim.key].includes(node.value) : activeFilters[dim.key] === node.value) }"
                               @click="selectFilter(dim.key, node.value)">
                             <span x-text="node.label"></span>
                             <span class="tree-count" x-text="'(' + node.count + ')'"></span>
@@ -97,7 +97,7 @@
                         <template x-for="child in node.children" :key="child.value">
                             <div class="tree-node">
                                 <span class="tree-label"
-                                      :class="{ active: activeFilters[dim.key] === child.value }"
+                                      :class="{ active: (Array.isArray(activeFilters[dim.key]) ? activeFilters[dim.key].includes(child.value) : activeFilters[dim.key] === child.value) }"
                                       @click="selectFilter(dim.key, child.value)">
                                     <span x-text="child.label"></span>
                                     <span class="tree-count" x-text="'(' + child.count + ')'"></span>

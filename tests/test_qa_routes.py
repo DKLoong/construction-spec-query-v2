@@ -264,13 +264,13 @@ def test_qa_ask_passes_dim_filters(auth_client, monkeypatch, tmp_path):
 
     resp = auth_client.post("/qa/ask", json={
         "question": "模板",
-        "dim4_specialty": "结构",
+        "dim4_specialty": ["结构"],
     })
     assert resp.status_code == 200
     assert query_log, "应调用 hybrid_search"
     first = query_log[0]
     assert first.keyword == "模板"
-    assert first.dim4_specialty == "结构"
+    assert first.dim4_specialty == ["结构"]
 
 
 def test_qa_ask_falls_back_wide_when_dim_filter_sparse(auth_client, monkeypatch, tmp_path):
@@ -287,13 +287,13 @@ def test_qa_ask_falls_back_wide_when_dim_filter_sparse(auth_client, monkeypatch,
 
     resp = auth_client.post("/qa/ask", json={
         "question": "模板",
-        "dim5_location": "屋面",
+        "dim5_location": ["屋面"],
     })
     assert resp.status_code == 200
     # 第一次带维度（0 条 < 3）→ 第二次放宽为无维度
     assert len(query_log) == 2, "候选不足时应放宽为全局检索"
-    assert query_log[0].dim5_location == "屋面"
-    assert query_log[1].dim5_location is None
+    assert query_log[0].dim5_location == ["屋面"]
+    assert query_log[1].dim5_location == []
 
 
 def test_qa_ask_no_dim_no_wide_fallback(auth_client, monkeypatch, tmp_path):
