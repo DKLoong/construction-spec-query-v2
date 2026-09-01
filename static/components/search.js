@@ -60,11 +60,31 @@ document.addEventListener('alpine:init', () => {
         set ceRerank(v) {
             this.$store.searchState.ceRerank = v;
         },
+        get statusCurrent() {
+            return this.$store.searchState.statusCurrent;
+        },
+        set statusCurrent(v) {
+            this.$store.searchState.statusCurrent = v;
+        },
+        get statusRevising() {
+            return this.$store.searchState.statusRevising;
+        },
+        set statusRevising(v) {
+            this.$store.searchState.statusRevising = v;
+        },
 
         // 勾选/取消「启用 CE 精排」→ 弹提示 + 立即重搜（热切换，结果实时按新开关排序）
         onCeChange() {
             if (this.ceRerank) {
                 showSearchToast('CE精排已开启，请耐心等待搜索结果');
+            }
+            this.search();
+        },
+
+        // 勾选/取消「仅现行」「修订中」→ 全不勾选时顶部轻提示（复用 showSearchToast）+ 立即重搜
+        onStatusChange() {
+            if (!this.statusCurrent && !this.statusRevising) {
+                showSearchToast('注意：当前展示结果未过滤非现行规范', 4000);
             }
             this.search();
         },
@@ -82,6 +102,9 @@ document.addEventListener('alpine:init', () => {
             if (this.includeNonClause) params.append('include_non_clause', '1');
             // CE 精排热切换：开启时携带 ce_rerank
             if (this.ceRerank) params.append('ce_rerank', '1');
+            // 状态过滤：buildStatusFilter() 全不勾返回 null → 不过滤（旧行为兼容）
+            const sf = this.$store.searchState.buildStatusFilter();
+            if (sf) params.append('status_filter', sf);
             // 无关键词无筛选（如清空搜索框后回车）→ 显式请求全部条文
             if (!kw && Object.keys(this.$store.searchState.filters).length === 0) {
                 params.append('all', '1');

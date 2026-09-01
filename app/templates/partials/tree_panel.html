@@ -16,6 +16,17 @@
                    style="width:0.875rem;height:0.875rem;flex:none;margin:0;padding:0">
             <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">启用 CE 精排</span>
         </label>
+        <!-- 仅现行/修订中：状态过滤热切换；全不勾选 → 不过滤 + 4s 顶部轻提示 -->
+        <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1">
+            <input type="checkbox" x-model="statusCurrent" @change="onStatusChange()"
+                   style="width:0.875rem;height:0.875rem;flex:none;margin:0;padding:0">
+            <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">仅现行</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1">
+            <input type="checkbox" x-model="statusRevising" @change="onStatusChange()"
+                   style="width:0.875rem;height:0.875rem;flex:none;margin:0;padding:0">
+            <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">修订中</span>
+        </label>
     </div>
 
     <!-- 导入按钮 -->

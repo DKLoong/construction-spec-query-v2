@@ -7,6 +7,17 @@ document.addEventListener('alpine:init', () => {
         filters: {},
         includeNonClause: false,
         ceRerank: false,
+        statusCurrent: true,     // 「仅现行」默认勾选（D3）
+        statusRevising: false,
+        // 状态过滤组合：仅现行→'现行'；仅现行+修订中→'现行,修订中'；仅修订中→'修订中'；全不勾→null（不过滤+轻提示）
+        buildStatusFilter() {
+            const c = this.$store.searchState.statusCurrent;
+            const r = this.$store.searchState.statusRevising;
+            if (c && r) return '现行,修订中';
+            if (c) return '现行';
+            if (r) return '修订中';
+            return null;
+        },
     });
 
     Alpine.data('treeView', () => ({
@@ -64,6 +75,11 @@ document.addEventListener('alpine:init', () => {
                 // CE 精排热切换：开启时携带 ce_rerank
                 if (this.$store.searchState.ceRerank) {
                     params.append('ce_rerank', '1');
+                }
+                // 状态过滤：buildStatusFilter() 全不勾返回 null → 不过滤（旧行为兼容）
+                const sf = this.$store.searchState.buildStatusFilter();
+                if (sf) {
+                    params.append('status_filter', sf);
                 }
                 // 用户主动操作但无关键词无筛选（如取消所有筛选）→ 显式请求全部条文
                 if (!kw && Object.keys(this.$store.searchState.filters).length === 0) {
