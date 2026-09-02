@@ -240,6 +240,8 @@ document.addEventListener('alpine:init', () => {
                     }
                     this.showEditForm = false;
                     document.getElementById('edit-result').innerHTML = '';
+                    // fetch 成功路径显式派发质量报表刷新（与 htmx:afterSettle dispatcher 互补）
+                    document.body.dispatchEvent(new CustomEvent('rulesQualityRefresh'));
                 } else {
                     const err = await resp.json();
                     document.getElementById('edit-result').innerHTML = `<p style="color:red">❌ ${err.detail || '编辑失败'}</p>`;
@@ -257,6 +259,8 @@ document.addEventListener('alpine:init', () => {
             document.getElementById('create-result').innerHTML = html;
             this.showForm = false;
             this.newRule = {dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6};
+            // fetch 成功路径显式派发质量报表刷新（与 htmx:afterSettle dispatcher 互补）
+            document.body.dispatchEvent(new CustomEvent('rulesQualityRefresh'));
             // 触发列表刷新
             setTimeout(() => this.loadRules(), 500);
         },
