@@ -435,10 +435,12 @@ async def rules_quality(request: Request):
 
 
 @router.post("/rules/quality/batch")
-async def rules_quality_batch(request: Request, body: dict):
-    """批量处理：enable_all/disable_all/delete_all × kind"""
-    action = body.get("action", "")
-    kind = body.get("kind", "")
+async def rules_quality_batch(request: Request,
+                              action: str = Form(""), kind: str = Form("")):
+    """批量处理：enable_all/disable_all/delete_all × kind
+
+    前端按钮用 htmx hx-vals（默认 urlencoded 表单），故端点收 Form 而非 JSON body。
+    """
     if action not in ("enable_all", "disable_all", "delete_all") or kind not in (
         "suggest_enable", "suggest_disable", "zombie"
     ):

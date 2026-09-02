@@ -65,7 +65,7 @@ def test_batch_action_enable_all(auth_client, monkeypatch, tmp_path):
     init_db()
     with get_db() as conn:
         _seed(conn)
-    resp = auth_client.post("/rules/quality/batch", json={"action": "enable_all", "kind": "suggest_enable"})
+    resp = auth_client.post("/rules/quality/batch", data={"action": "enable_all", "kind": "suggest_enable"})
     assert resp.status_code == 200
     with get_db() as conn:
         row = conn.execute("SELECT is_active FROM classification_rules WHERE pattern='钢筋'").fetchone()
@@ -78,7 +78,7 @@ def test_batch_action_delete_all_zombie(auth_client, monkeypatch, tmp_path):
     init_db()
     with get_db() as conn:
         _seed(conn)
-    resp = auth_client.post("/rules/quality/batch", json={"action": "delete_all", "kind": "zombie"})
+    resp = auth_client.post("/rules/quality/batch", data={"action": "delete_all", "kind": "zombie"})
     assert resp.status_code == 200
     with get_db() as conn:
         row = conn.execute("SELECT COUNT(*) FROM classification_rules WHERE pattern='老词'").fetchone()

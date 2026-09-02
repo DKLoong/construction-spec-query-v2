@@ -1,23 +1,23 @@
 <!-- 规范列表表格 -->
 <div id="specs-list">
 {% if specs %}
-    <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap">
-        <label style="font-size:0.75rem;display:flex;align-items:center;gap:0.3rem;margin:0">
-            <input type="checkbox" id="spec-select-all" style="width:0.9rem;height:0.9rem"
+    <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;line-height:1">
+        <label style="font-size:0.75rem;display:flex;align-items:center;gap:0.3rem;margin:0;height:1.75rem;line-height:1">
+            <input type="checkbox" id="spec-select-all" style="width:0.9rem;height:0.9rem;margin:0;flex:none"
                    onchange="toggleSpecAll(this)"> 全选
         </label>
-        <select id="reclassify-scope" style="font-size:0.75rem;padding:0.15rem 0.3rem;width:auto">
+        <select id="reclassify-scope" style="font-size:0.75rem;padding:0 0.3rem;width:auto;height:1.75rem;margin:0">
             <option value="unclassified">仅未分类条文</option>
             <option value="all">全部条文（清标签重跑）</option>
         </select>
         <button id="spec-batch-reclassify" class="outline" disabled
-                style="font-size:0.75rem;padding:0.15rem 0.5rem"
+                style="font-size:0.75rem;padding:0 0.6rem;height:1.75rem;margin:0;line-height:1"
                 onclick="specBatchReclassify()">🔄 重新分类所选</button>
     </div>
     <table class="striped" style="font-size:0.85rem">
         <thead>
             <tr>
-                <th><input type="checkbox" style="width:0.9rem;height:0.9rem" disabled></th>
+                <th style="width:1.4rem"></th>
                 <th>编号</th>
                 <th>名称</th>
                 <th>分类</th>
