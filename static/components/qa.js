@@ -84,6 +84,10 @@ document.addEventListener('alpine:init', () => {
             }
             // 把正文出处【《规范编号》条文X】转超链接，点击复用 clause-modal 详情弹窗。
             // 兼容：表X 前缀（映射到对应条文）、顿号/逗号分隔的多个条文号（拆开逐个匹配）。
+            // 安全：DOMPurify 消毒后回插 DB/用户可控字符串，必须先转义（防消毒后注入绕过）。
+            const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+            }[c]));
             if (sources && sources.length) {
                 html = html.replace(/【《([^》]+)》([^】]+)】/g, (m, code, clauses) => {
                     const codeT = code.trim();
@@ -97,13 +101,13 @@ document.addEventListener('alpine:init', () => {
                             let warn = '';
                             if (src.status === '废止' || src.replace_by_code) {
                                 warn = '<span style="color:#b00000;font-size:0.7rem;margin-left:0.25rem">⚠️' +
-                                    (src.replace_by_code ? `已被《${src.replace_by_code}》替代` : '已废止') + '</span>';
+                                    (src.replace_by_code ? `已被《${esc(src.replace_by_code)}》替代` : '已废止') + '</span>';
                             }
-                            return `<a href="javascript:void(0)" style="color:var(--pico-primary);text-decoration:underline;cursor:pointer" onclick="window.dispatchEvent(new CustomEvent('view-clause',{detail:{id:${src.clause_id}}}))">${part}</a>${warn}`;
+                            return `<a href="javascript:void(0)" style="color:var(--pico-primary);text-decoration:underline;cursor:pointer" onclick="window.dispatchEvent(new CustomEvent('view-clause',{detail:{id:${src.clause_id}}}))">${esc(part)}</a>${warn}`;
                         }
-                        return part;
+                        return esc(part);
                     });
-                    return `【《${codeT}》${linked.join('、')}】`;
+                    return `【《${esc(codeT)}》${linked.join('、')}】`;
                 });
             }
             return html;

@@ -208,8 +208,10 @@ class QaRequest(BaseModel):
     mode: str = "rag"
     # 是否包含废止/已替代规范（默认过滤，仅用户明确指定时放行）
     include_invalid: bool = False
-    # 状态过滤：逗号分隔白名单（如 '现行' / '现行,修订中'）。空 = 不过滤（含废止）。
-    status_filter: str = ""
+    # 状态过滤：逗号分隔白名单（如 '现行' / '现行,修订中'）。
+    # None（缺参，旧客户端不携带）→ settings 默认白名单 + include_invalid（旧语义）；
+    # ""（显式全不勾）→ 放行非现行；非空 → 覆盖默认白名单。
+    status_filter: Optional[str] = None
     # 分类筛选联动：随问答请求携带当前分类树选中维度，收窄检索范围
     # 同维多选（与检索页一致）：list[str]，多值语义 = OR
     dim1_hierarchy: list[str] = []

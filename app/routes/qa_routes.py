@@ -198,8 +198,16 @@ async def qa_ask(request: Request, body: QaRequest):
             logger.error("QA hybrid_search (wide) failed: %s", e)
 
     # ② 元数据过滤（RRF 后、CrossEncoder 前；默认过滤废止/已替代规范）
-    # UI 传 status_filter 覆盖默认 status_allow；全不勾（空）→ 放行非现行
-    if body.status_filter.strip():
+    # status_filter 三分支：
+    #   None（缺参，旧客户端）→ settings 默认白名单 + include_invalid（旧语义，过滤废止）
+    #   ""（显式全不勾）    → 放行非现行（eff_include_invalid=True）
+    #   非空                 → 覆盖默认白名单 + include_invalid
+    if body.status_filter is None:
+        status_allow = tuple(
+            s.strip() for s in get_qa_str("meta.status_allow").split(",") if s.strip()
+        )
+        eff_include_invalid = body.include_invalid
+    elif body.status_filter.strip():
         status_allow = tuple(
             s.strip() for s in body.status_filter.split(",") if s.strip()
         )
@@ -208,7 +216,7 @@ async def qa_ask(request: Request, body: QaRequest):
         status_allow = tuple(
             s.strip() for s in get_qa_str("meta.status_allow").split(",") if s.strip()
         )
-        eff_include_invalid = True  # 全不勾 → 不过滤状态
+        eff_include_invalid = True  # 显式全不勾 → 不过滤状态
     candidates = filter_by_metadata(
         candidates, eff_include_invalid, status_allow=status_allow,
     )

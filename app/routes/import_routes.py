@@ -14,9 +14,26 @@ from app.parser.spec_prefix import (
 from app.ocr.pdf_extract import extract_text, is_scanned
 from app.classifier.rule_engine import classify_clause, should_use_ai
 from app.search.vector_search import VectorStore
+from app.routes.spec_routes import SPEC_STATUS_ALLOWED
 
 router = APIRouter()
 progress_store = {}
+
+# replaced_by_code 长度上限（防超长输入污染 DB / 前端渲染）
+REPLACED_BY_CODE_MAX_LEN = 100
+
+
+def _sanitize_status(status: str) -> str:
+    """status 白名单校验（单一来源 SPEC_STATUS_ALLOWED）：非法值回退默认「现行」。
+
+    非法 status 直接入库会导致检索默认「仅现行」下该规范静默消失。
+    """
+    return status if status in SPEC_STATUS_ALLOWED else "现行"
+
+
+def _sanitize_replaced_by_code(replaced_by_code: str) -> str:
+    """replaced_by_code 长度上限截断"""
+    return (replaced_by_code or "")[:REPLACED_BY_CODE_MAX_LEN]
 
 
 def _compute_file_hash(file_bytes: bytes) -> str:
@@ -174,6 +191,9 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
     force_ocr=True 时强制走 OCR（适用于「半扫描」PDF：有少量文本层但格式
     会丢失，is_scanned 自动判定不可靠）。
     """
+    # 入口白名单校验（status 非法回退默认「现行」；replaced_by_code 截断）
+    status = _sanitize_status(status)
+    replaced_by_code = _sanitize_replaced_by_code(replaced_by_code)
     conn = None
     try:
         from app.database import get_connection
@@ -275,6 +295,9 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                             file_path: str, file_hash: str = "",
                             status: str = "现行", replaced_by_code: str = ""):
     """后台任务 Phase 2：解析 → 分类 → 索引（始终创建新连接，线程安全）"""
+    # 入库前白名单兜底校验（覆盖 upload_file → _process_import 与 confirm_review 两条路径）
+    status = _sanitize_status(status)
+    replaced_by_code = _sanitize_replaced_by_code(replaced_by_code)
     conn = None
     try:
         from app.database import get_connection
@@ -334,8 +357,11 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         # 反向联动：replaced_by_code 命中库中旧规范 → 反写旧规范废止 + 关联
         if replaced_by_code:
             norm_old = normalize_spec_code(replaced_by_code)
+            # 排除自引用：同码重导时 code = norm_old 会命中刚 INSERT 的新行自身，
+            # 误把自己标废止；加 id != spec_id 只匹配真正的旧规范。
             old = conn.execute(
-                "SELECT id FROM specifications WHERE code = ?", (norm_old,)
+                "SELECT id FROM specifications WHERE code = ? AND id != ?",
+                (norm_old, spec_id),
             ).fetchone()
             if old:
                 conn.execute(

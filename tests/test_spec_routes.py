@@ -128,6 +128,52 @@ def test_delete_spec_returns_oob_clear_for_detail_area(auth_client, monkeypatch,
     assert 'hx-swap-oob="true"' in resp.text, "OOB 元素须带 hx-swap-oob=true"
 
 
+def test_delete_spec_nulls_referencing_replace_by(auth_client, monkeypatch, tmp_path):
+    """删除被引用为替代者的新规范 → 200 且旧规范 replace_by_spec_id 置空
+
+    replace_by_spec_id 无 ON DELETE 动作（foreign_keys=ON），删除被 old 引用为
+    替代者的新规范时，若不先置空引用会抛 FOREIGN KEY constraint failed → 500。
+    """
+    db_path = tmp_path / "test_delete_replace_by.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr(
+        "app.search.vector_search.VectorStore.__init__", lambda self: None,
+    )
+    monkeypatch.setattr(
+        "app.search.vector_search.VectorStore.delete_clause", lambda self, x: None,
+    )
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO specifications (code, title, status) VALUES (?, ?, ?)",
+            ("GB 50010-2011", "旧规范", "废止"),
+        )
+        old_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO specifications (code, title, status) VALUES (?, ?, ?)",
+            ("GB 50010-2015", "新规范", "现行"),
+        )
+        new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # 旧规范 replace_by_spec_id 指向新规范（被替代关系）
+        conn.execute(
+            "UPDATE specifications SET replace_by_spec_id = ? WHERE id = ?",
+            (new_id, old_id),
+        )
+
+    resp = auth_client.delete(f"/specs/{new_id}")
+    assert resp.status_code == 200
+
+    with get_db() as conn:
+        assert conn.execute(
+            "SELECT id FROM specifications WHERE id = ?", (new_id,)
+        ).fetchone() is None, "新规范应被删除"
+        old = conn.execute(
+            "SELECT replace_by_spec_id FROM specifications WHERE id = ?", (old_id,)
+        ).fetchone()
+        assert old["replace_by_spec_id"] is None, "旧规范 replace_by_spec_id 应被置空防悬挂"
+
+
 # ═══════════════════════════════════════════
 # 条文列表
 # ═══════════════════════════════════════════

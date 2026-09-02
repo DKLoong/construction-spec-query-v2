@@ -98,6 +98,13 @@ async def delete_spec(request: Request, spec_id: int):
 
     # 3. 删除规范（FK CASCADE 自动清理 clauses、queue、FTS5）
     with get_db() as conn:
+        # 先置空指向本规范的 replace_by_spec_id：被 old 引用为替代者的新规范
+        # 删除时若无 ON DELETE 动作（foreign_keys=ON）会抛 FOREIGN KEY 约束失败，
+        # 且向量已在前面清理造成不一致；置空引用防悬挂（对应 spec §10 要求）。
+        conn.execute(
+            "UPDATE specifications SET replace_by_spec_id = NULL WHERE replace_by_spec_id = ?",
+            (spec_id,),
+        )
         conn.execute("DELETE FROM specifications WHERE id = ?", (spec_id,))
 
     # OOB swap 清空仍在显示该规范条文/分类编辑的区域（详情区不被替换时同步刷新）

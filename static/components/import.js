@@ -12,7 +12,13 @@ document.addEventListener('alpine:init', () => {
         checkResult: null,   // {status, replacedBy, ai_available, corrected: {code,title}|null}
         contentEdited: false,
 
-        openDialog() { this.open = true; },
+        // 打开对话框时重置校核状态，避免上次导入的 checkResult/contentEdited 残留
+        // 污染本次 handleUpload（携带上一轮陈旧 status/replacedBy 错误标废旧规范）
+        openDialog() {
+            this.open = true;
+            this.checkResult = null;
+            this.contentEdited = false;
+        },
         closeDialog() { this.open = false; this.uploading = false; },
 
         // 用户手动编辑输入框时清除自动填充标记：后续选文件不再覆盖手动输入
