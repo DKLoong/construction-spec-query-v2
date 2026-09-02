@@ -8,6 +8,20 @@
         </label>
         <small x-text="mode==='verbatim' ? '🔤 原文摘抄' : '📖 综合问答'" style="color:var(--pico-muted-color)"></small>
     </div>
+    <!-- 状态过滤：仅现行/修订中 复选框（全不勾 = 不过滤非现行规范） -->
+    <div style="display:flex;gap:0.75rem;margin-bottom:0.35rem;font-size:0.75rem">
+        <label style="display:flex;align-items:center;gap:0.25rem;margin:0;cursor:pointer">
+            <input type="checkbox" x-model="statusCurrent" @change="onStatusChange()" style="width:0.875rem;height:0.875rem">
+            仅现行
+        </label>
+        <label style="display:flex;align-items:center;gap:0.25rem;margin:0;cursor:pointer">
+            <input type="checkbox" x-model="statusRevising" @change="onStatusChange()" style="width:0.875rem;height:0.875rem">
+            修订中
+        </label>
+        <small x-show="!statusCurrent && !statusRevising" style="color:var(--pico-del-color, #c44)">
+            ⚠️ 未过滤非现行规范
+        </small>
+    </div>
     <div class="qa-messages" x-ref="msgBox" style="min-height: 50vh; max-height: 55vh; overflow-y: auto; padding: 0.5rem; border: 1px solid var(--pico-muted-border-color); border-radius: 6px; margin-bottom: 0.5rem; background: var(--pico-card-background-color)">
         <template x-for="(msg, i) in messages" :key="i">
             <div class="qa-msg" :class="msg.role === 'user' ? 'qa-user' : 'qa-bot'">

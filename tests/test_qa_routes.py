@@ -494,7 +494,11 @@ def test_qa_mode_verbatim_passes_system_prompt(auth_client, monkeypatch, tmp_pat
 
 
 def test_qa_include_invalid_controls_meta_filter(auth_client, monkeypatch, tmp_path):
-    """include_invalid 控制元数据过滤：默认过滤废止，True 时保留"""
+    """include_invalid 控制元数据过滤：status_filter 非空时默认过滤废止，True 时保留
+
+    注：Task 9 起空 status_filter = 全不勾（不过滤非现行）；此处显式传 status_filter=现行
+    走过滤分支，验证 include_invalid 仍可覆盖。
+    """
     db_path = tmp_path / "test_qa_invalid.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
     from app.database import init_db, get_db
@@ -513,12 +517,14 @@ def test_qa_include_invalid_controls_meta_filter(auth_client, monkeypatch, tmp_p
     monkeypatch.setattr("app.ai.cli_client.ClaudeCodeCLI.is_available", _mock_is_available_true)
     monkeypatch.setattr("app.ai.cli_client.ClaudeCodeCLI._run_cli", _mock_cli_success)
 
-    # 默认（include_invalid=False）：废止条文被元数据过滤 → sources 空
-    resp = auth_client.post("/qa/ask", json={"question": "钢筋"})
+    # status_filter=现行、include_invalid=False：废止条文被元数据过滤 → sources 空
+    resp = auth_client.post("/qa/ask", json={"question": "钢筋", "status_filter": "现行"})
     assert resp.json()["sources"] == []
 
     # include_invalid=True：跳过过滤 → 废止条文进入上下文 → sources 非空
-    resp2 = auth_client.post("/qa/ask", json={"question": "钢筋", "include_invalid": True})
+    resp2 = auth_client.post(
+        "/qa/ask", json={"question": "钢筋", "status_filter": "现行", "include_invalid": True},
+    )
     assert len(resp2.json()["sources"]) > 0
 
 

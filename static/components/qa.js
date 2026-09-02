@@ -5,6 +5,9 @@ document.addEventListener('alpine:init', () => {
         input: '',
         loading: false,
         mode: 'rag',            // rag 综合问答（默认） / verbatim 原文摘抄
+        // 状态过滤：默认仅勾「现行」（与检索侧 tree.js 语义一致，全不勾=不过滤非现行）
+        statusCurrent: true,
+        statusRevising: false,
 
         toggleMode() {
             this.mode = (this.mode === 'rag') ? 'verbatim' : 'rag';
@@ -26,7 +29,10 @@ document.addEventListener('alpine:init', () => {
                 const resp = await fetch('/qa/ask', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question: q, mode: this.mode, ...filters }),
+                    body: JSON.stringify({
+                        question: q, mode: this.mode, ...filters,
+                        status_filter: this.buildStatusFilter(),
+                    }),
                 });
                 const data = await resp.json();
                 this.messages.push({
@@ -46,6 +52,16 @@ document.addEventListener('alpine:init', () => {
             this.messages = [];
             this.input = '';
         },
+
+        // 组合状态过滤白名单（与检索侧 tree.js buildStatusFilter 语义一致）：
+        // 现行+修订中 → '现行,修订中'；仅现行 → '现行'；仅修订中 → '修订中'；全不勾 → ''（不过滤）
+        buildStatusFilter() {
+            if (this.statusCurrent && this.statusRevising) return '现行,修订中';
+            if (this.statusCurrent) return '现行';
+            if (this.statusRevising) return '修订中';
+            return '';
+        },
+        onStatusChange() {},
 
         scrollToBottom() {
             this.$nextTick(() => {
