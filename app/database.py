@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS specifications (
     dim1_nature     TEXT,
     dim1_sys_level  TEXT,
     dim1_spec_type  TEXT,
+    dim1_industry   TEXT,           -- 规范所属行业（JGJ→建筑工程，仅行业标准类有值）
     dim2_stage      TEXT,
     dim3_usage      TEXT,
     dim3_construction TEXT,
@@ -249,6 +250,11 @@ def init_db():
         # 迁移：locked 列（锁定后不纳入僵尸规则判断）
         try:
             conn.execute("ALTER TABLE classification_rules ADD COLUMN locked INTEGER DEFAULT 0")
+        except Exception:
+            pass  # 列已存在
+        # 迁移：specifications 加 dim1_industry（规范所属行业，层级归并后单独承载行业）
+        try:
+            conn.execute("ALTER TABLE specifications ADD COLUMN dim1_industry TEXT")
         except Exception:
             pass  # 列已存在
         # 日志表 + 健康检查快照表（P1 维护工具先建表，P3 日志界面消费）

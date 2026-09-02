@@ -29,6 +29,7 @@ async def search(
     keyword: str = Query("", max_length=200),
     # 维度筛选同维多选：list[str] = Query([])，重复参数（?dim4_specialty=a&dim4_specialty=b）聚合为列表
     dim1_hierarchy: list[str] = Query([]),
+    dim1_industry: list[str] = Query([]),
     dim1_nature: list[str] = Query([]),
     dim2_stage: list[str] = Query([]),
     dim3_usage: list[str] = Query([]),
@@ -54,6 +55,7 @@ async def search(
     sq = SearchQuery(
         keyword=keyword,
         dim1_hierarchy=dim1_hierarchy,
+        dim1_industry=dim1_industry,
         dim1_nature=dim1_nature,
         dim2_stage=dim2_stage,
         dim3_usage=dim3_usage,
@@ -73,7 +75,7 @@ async def search(
     all_empty = not any([
         keyword,
         *[getattr(sq, f) for f in (
-            'dim1_hierarchy', 'dim1_nature', 'dim2_stage', 'dim3_usage',
+            'dim1_hierarchy', 'dim1_industry', 'dim1_nature', 'dim2_stage', 'dim3_usage',
             'dim4_specialty', 'dim5_location', 'dim6_material',
         )],
     ])
@@ -85,7 +87,7 @@ async def search(
             "page": 1,
             "page_size": 20,
             "keyword": "",
-            "dim1_hierarchy": [],
+            "dim1_hierarchy": [], "dim1_industry": [],
             "dim1_nature": [],
             "dim2_stage": [],
             "dim3_usage": [],
@@ -113,7 +115,7 @@ async def search(
         "page": page,
         "page_size": effective_page_size,
         "keyword": keyword,
-        "dim1_hierarchy": dim1_hierarchy,
+        "dim1_hierarchy": dim1_hierarchy, "dim1_industry": dim1_industry,
         "dim1_nature": dim1_nature,
         "dim2_stage": dim2_stage,
         "dim3_usage": dim3_usage,

@@ -1,7 +1,8 @@
 """规范编号前缀共享模块测试"""
 import pytest
 from app.parser.spec_prefix import (
-    normalize_spec_code, detect_hierarchy, detect_nature, PREFIX_WHITELIST, RECOMMENDED_T,
+    normalize_spec_code, detect_hierarchy, detect_nature, detect_industry,
+    PREFIX_WHITELIST, RECOMMENDED_T,
 )
 
 
@@ -49,12 +50,29 @@ def test_hierarchy_gt():
 
 
 def test_hierarchy_jgj():
-    assert detect_hierarchy("JGJ 162-2008") == "建筑工程"
+    """JGJ 归行业标准（层级语义；行业归属由 detect_industry 单独给出）"""
+    assert detect_hierarchy("JGJ 162-2008") == "行业标准"
 
 
 def test_hierarchy_longest_prefix_first():
-    assert detect_hierarchy("JTG D40-2011") == "公路工程"
-    assert detect_hierarchy("JT T 001-2012") == "交通运输"
+    assert detect_hierarchy("JTG D40-2011") == "行业标准"
+    assert detect_hierarchy("JT T 001-2012") == "行业标准"
+
+
+def test_industry_jgj_building():
+    """JGJ（建筑工程行业）行业检测"""
+    assert detect_industry("JGJ 162-2008") == "建筑工程"
+
+
+def test_industry_jtg_highway():
+    assert detect_industry("JTG D40-2011") == "公路工程"
+    assert detect_industry("JT T 001-2012") == "交通运输"
+
+
+def test_industry_gb_empty():
+    """国家标准无特定行业归属"""
+    assert detect_industry("GB 50010-2010") == ""
+    assert detect_industry("DB13/T 1234") == ""
 
 
 def test_nature_gb_is_mandatory():

@@ -166,12 +166,14 @@ async def qa_ask(request: Request, body: QaRequest):
     pool = get_qa_int("retrieve.candidate_pool")
     keyword_mentions_non_clause = ("前言" in question) or ("条文说明" in question)
     has_dim = any([
-        body.dim1_hierarchy, body.dim1_nature, body.dim2_stage, body.dim3_usage,
+        body.dim1_hierarchy, body.dim1_industry, body.dim1_nature, body.dim2_stage,
+        body.dim3_usage,
         body.dim4_specialty, body.dim5_location, body.dim6_material,
     ])
     sq = SearchQuery(
         keyword=question, per_page=pool,
-        dim1_hierarchy=body.dim1_hierarchy, dim1_nature=body.dim1_nature,
+        dim1_hierarchy=body.dim1_hierarchy, dim1_industry=body.dim1_industry,
+        dim1_nature=body.dim1_nature,
         dim2_stage=body.dim2_stage, dim3_usage=body.dim3_usage,
         dim4_specialty=body.dim4_specialty, dim5_location=body.dim5_location,
         dim6_material=body.dim6_material,

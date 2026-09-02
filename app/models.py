@@ -178,6 +178,7 @@ class SearchQuery(BaseModel):
     """
     keyword: Optional[str] = None
     dim1_hierarchy: list[str] = []
+    dim1_industry: list[str] = []
     dim1_nature: list[str] = []
     dim2_stage: list[str] = []
     dim3_usage: list[str] = []
@@ -215,6 +216,7 @@ class QaRequest(BaseModel):
     # 分类筛选联动：随问答请求携带当前分类树选中维度，收窄检索范围
     # 同维多选（与检索页一致）：list[str]，多值语义 = OR
     dim1_hierarchy: list[str] = []
+    dim1_industry: list[str] = []
     dim1_nature: list[str] = []
     dim2_stage: list[str] = []
     dim3_usage: list[str] = []

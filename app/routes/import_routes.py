@@ -9,7 +9,7 @@ from app.database import get_db
 from app.parser.md_parser import parse_markdown, is_cover_clause
 from app.parser.ocr_clean import clean_ocr_text
 from app.parser.spec_prefix import (
-    detect_hierarchy, detect_nature, normalize_spec_code, PREFIX_WHITELIST,
+    detect_hierarchy, detect_nature, detect_industry, normalize_spec_code, PREFIX_WHITELIST,
 )
 from app.ocr.pdf_extract import extract_text, is_scanned
 from app.classifier.rule_engine import classify_clause, should_use_ai
@@ -314,10 +314,11 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         # Step 2: 解析条文 + 过滤封面/出版信息页脏数据
         clauses_data = _filter_cover_clauses(parse_markdown(md_text))
 
-        # Step 3: 规范级分类（code 先归一化，再 detect 层级/性质）
+        # Step 3: 规范级分类（code 先归一化，再 detect 层级/性质/行业）
         code = normalize_spec_code(code) or Path(file_path).stem
         dim1_hierarchy = detect_hierarchy(code)
         dim1_nature = detect_nature(code)
+        dim1_industry = detect_industry(code)
 
         progress_store[task_id].update(progress=70, message=f"正在分类 {len(clauses_data)} 条条文...")
 
@@ -351,10 +352,10 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
         conn.execute(
             """INSERT INTO specifications (code, title, dim1_hierarchy, dim1_nature,
-               dim2_stage, dim3_usage, source_path, output_dir, file_hash, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               dim1_industry, dim2_stage, dim3_usage, source_path, output_dir, file_hash, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (code or Path(file_path).stem, title or Path(file_path).stem,
-             dim1_hierarchy, dim1_nature,
+             dim1_hierarchy, dim1_nature, dim1_industry,
              dim2_stage, dim3_usage,
              file_path, output_dir, file_hash, status),
         )
@@ -672,6 +673,7 @@ async def get_tree(request: Request):
     # dim1/2/3 在 specifications 表，dim4/5/6 在 clauses 表
     spec_dims = [
         {"key": "dim1_hierarchy", "label": "规范层级", "field": "dim1_hierarchy"},
+        {"key": "dim1_industry", "label": "规范行业", "field": "dim1_industry"},
         {"key": "dim1_nature", "label": "规范性质", "field": "dim1_nature"},
         {"key": "dim2_stage", "label": "工程阶段", "field": "dim2_stage"},
         {"key": "dim3_usage", "label": "工程用途", "field": "dim3_usage"},

@@ -39,6 +39,7 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
             _add_multi(conditions, params, "c.dim5_location", query.dim5_location)
             _add_multi(conditions, params, "c.dim6_material", query.dim6_material)
             _add_multi(conditions, params, "s.dim1_hierarchy", query.dim1_hierarchy)
+            _add_multi(conditions, params, "s.dim1_industry", query.dim1_industry)
             _add_multi(conditions, params, "s.dim1_nature", query.dim1_nature)
             _add_multi(conditions, params, "s.dim2_stage", query.dim2_stage)
             _add_multi(conditions, params, "s.dim3_usage", query.dim3_usage)

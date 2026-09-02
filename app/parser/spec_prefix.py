@@ -6,7 +6,10 @@
 """
 import re
 
-# 前缀 → 层级（按长度降序，最长前缀优先匹配；已去斜杠写法）
+# 前缀匹配序（按长度降序，最长前缀优先匹配；已去斜杠写法）。
+# value 为该前缀的「行业归属」（国标/地方标准无行业，值为空）：
+# 规范「层级」与「行业」是两维——层级由 detect_hierarchy 按前缀组判定
+# （国标→国家标准 / 地标→地方标准 / 其余行业前缀→行业标准），行业由 detect_industry 返回。
 PREFIX_MAP: list[tuple[str, str]] = [
     ("JTGT", "公路工程"), ("JTG", "公路工程"),
     ("JTT", "交通运输"), ("JT", "交通运输"),
@@ -14,9 +17,9 @@ PREFIX_MAP: list[tuple[str, str]] = [
     ("CJT", "城镇建设"), ("CJ", "城镇建设"),
     ("JBT", "机械"), ("JB", "机械"),
     ("NYT", "农业"), ("NY", "农业"),
-    ("GBT", "国家标准"), ("GB", "国家标准"),
+    ("GBT", ""), ("GB", ""),
     ("TB", "铁路"), ("MH", "民用航空"),
-    ("YZ", "邮政"), ("DB", "地方标准"),
+    ("YZ", "邮政"), ("DB", ""),  # 地方标准（带地区号，行业为空）
 ]
 
 # 推荐性变体（无斜杠写法 → 标准带 /T 代号）。归一化与性质判别共用一份。
@@ -61,20 +64,49 @@ def normalize_spec_code(code: str) -> str:
     return c
 
 
+def _hierarchy_of(prefix: str) -> str:
+    """前缀 → 规范层级（国家标准/地方标准为独立层级，其余行业前缀归行业标准）"""
+    if prefix in ("GB", "GBT"):
+        return "国家标准"
+    if prefix in ("DB", "DBT"):
+        return "地方标准"
+    return "行业标准"  # JGJ/JTG/CJ/JB/NY/TB/MH/YZ 等均为行业标准
+
+
 def detect_hierarchy(code: str) -> str:
-    """根据规范编号前缀判断规范层级（去斜杠后按最长前缀匹配）"""
+    """根据规范编号前缀判断规范层级（去斜杠后按最长前缀匹配）
+
+    层级语义：GB→国家标准 / DB→地方标准 / JGJ/JTG 等→行业标准 / T→团体 / Q→企业。
+    行业归属（JGJ 属于建筑工程等）由 detect_industry 返回，不再混入层级字段。
+    """
     if not code:
         return ""
     c = code.replace("/", "").strip()
     if not c:
         return ""
-    for prefix, hierarchy in PREFIX_MAP:
+    for prefix, _ in PREFIX_MAP:
         if c.startswith(prefix):
-            return hierarchy
+            return _hierarchy_of(prefix)
     if c.startswith("T"):
         return "团体标准"
     if c.startswith("Q"):
         return "企业标准"
+    return ""
+
+
+def detect_industry(code: str) -> str:
+    """根据规范编号前缀判断规范所属行业（仅行业标准类有行业；国标/地标等行业为空）
+
+    示例：JGJ 162-2008 → 建筑工程；JTG D40 → 公路工程；GB 50010 → 空。
+    """
+    if not code:
+        return ""
+    c = code.replace("/", "").strip()
+    if not c:
+        return ""
+    for prefix, industry in PREFIX_MAP:
+        if c.startswith(prefix):
+            return industry or ""
     return ""
 
 
