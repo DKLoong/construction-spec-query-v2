@@ -18,9 +18,10 @@ LANCE_DB_PATH = os.getenv("LANCE_DB_PATH", str(BASE_DIR / "lance_db"))
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", str(BASE_DIR / "data" / "uploads"))
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", str(BASE_DIR / "data" / "outputs"))
 WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", str(BASE_DIR / "data" / "workspace"))
+BACKUP_DIR = os.getenv("BACKUP_DIR", str(BASE_DIR / "data" / "backups"))
 
 # 确保目录存在
-for d in [UPLOAD_DIR, OUTPUT_DIR, WORKSPACE_DIR, LANCE_DB_PATH]:
+for d in [UPLOAD_DIR, OUTPUT_DIR, WORKSPACE_DIR, LANCE_DB_PATH, BACKUP_DIR]:
     Path(d).mkdir(parents=True, exist_ok=True)
 Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
 

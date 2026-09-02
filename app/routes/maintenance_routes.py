@@ -2,7 +2,7 @@
 import time
 from pathlib import Path
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from app.database import get_db
 from app.logging_util import log_action
 
@@ -70,3 +70,67 @@ async def rebuild_vectors(request: Request):
     from app.main import templates
     return HTMLResponse(f"""<p style="color:green;margin-top:0.5rem">✅ 向量索引已重建：{len(records)} 条</p>
     <div hx-post="/maintenance/health-check" hx-trigger="load" hx-swap="outerHTML"></div>""")
+
+
+@router.post("/maintenance/backup")
+async def backup_db(request: Request):
+    """SQLite 单文件备份：VACUUM INTO data/backups/spec_query_<ts>.db
+
+    注意：VACUUM INTO 的目标路径必须是字面量（不支持 ? 参数绑定），且目标文件
+    已存在时会报错。路径由 BACKUP_DIR + 服务端时间戳生成（非用户输入），单引号
+    转义后安全拼接；同秒重复备份追加 _2 序号避免冲突。
+    """
+    import sqlite3
+    from app.database import DATABASE_PATH  # database 模块路径（测试 monkeypatch 该处）
+    from app.config import BACKUP_DIR
+    Path(BACKUP_DIR).mkdir(parents=True, exist_ok=True)
+    base = time.strftime("%Y%m%d_%H%M%S")
+    target = Path(BACKUP_DIR) / f"spec_query_{base}.db"
+    seq = 2
+    while target.exists():
+        target = Path(BACKUP_DIR) / f"spec_query_{base}_{seq}.db"
+        seq += 1
+    escaped = str(target).replace("'", "''")
+    conn = sqlite3.connect(DATABASE_PATH)
+    try:
+        conn.execute(f"VACUUM INTO '{escaped}'")
+    finally:
+        conn.close()
+    log_action("maintenance", "INFO", "SQLite 备份", detail=str(target))
+    return HTMLResponse(f"""<p style="color:green;margin-top:0.5rem">✅ 已备份至：<code>{target.name}</code></p>""")
+
+
+@router.get("/maintenance/export/rules")
+async def export_rules(request: Request):
+    """导出全部分类规则 JSON（附件下载）"""
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM classification_rules ORDER BY dimension, id").fetchall()
+    data = [dict(r) for r in rows]
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    log_action("maintenance", "INFO", "导出规则", detail=str(len(data)))
+    return JSONResponse(data, headers={
+        "Content-Disposition": f'attachment; filename="classification_rules_{ts}.json"'
+    })
+
+
+@router.get("/maintenance/export/review-queue")
+async def export_review_queue(request: Request):
+    """导出待复核队列 JSON（含条文内容/AI 标签/置信度）"""
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT q.id as queue_id, q.clause_id, q.dimension, q.keyword_score,
+                      q.ai_label, q.ai_confidence, q.status, q.created_at,
+                      c.clause_no, c.title as clause_title, c.content,
+                      s.code as spec_code, s.title as spec_title
+               FROM classification_queue q
+               JOIN clauses c ON q.clause_id = c.id
+               JOIN specifications s ON c.spec_id = s.id
+               WHERE q.status = 'review'
+               ORDER BY q.created_at DESC"""
+        ).fetchall()
+    data = [dict(r) for r in rows]
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    log_action("maintenance", "INFO", "导出复核队列", detail=str(len(data)))
+    return JSONResponse(data, headers={
+        "Content-Disposition": f'attachment; filename="review_queue_{ts}.json"'
+    })
