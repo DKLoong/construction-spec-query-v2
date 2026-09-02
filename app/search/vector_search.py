@@ -75,28 +75,32 @@ class VectorStore:
             for r in results
         ]
 
+    def get_orphans(self) -> list[int]:
+        """返回向量表有而 SQLite 无的孤儿 clause_id（只读，不删除）"""
+        if not self._table_exists():
+            return []
+        try:
+            rows = self._get_table().to_arrow()
+        except Exception as e:
+            logger.warning("读取向量表 clause_id 失败: %s", e)
+            return []
+        if rows.num_rows == 0:
+            return []
+        vector_ids = {int(v) for v in rows.column("clause_id").to_pylist()}
+        with get_db() as conn:
+            db_ids = {r[0] for r in conn.execute("SELECT id FROM clauses").fetchall()}
+        return sorted(vector_ids - db_ids)
+
     def sync_with_db(self) -> int:
         """对比向量表与数据库现存条文，删除孤儿向量（返回清理条数）
 
         用于自愈历史遗留或删除未同步的向量记录，避免旧数据污染语义检索候选池。
         仅比对 clause_id，不涉及 embedding，开销轻量，可在启动时/删除后调用。
         """
-        if not self._table_exists():
+        orphans = self.get_orphans()
+        if not orphans:
             return 0
         tbl = self._get_table()
-        try:
-            rows = tbl.to_arrow()
-        except Exception as e:
-            logger.warning("读取向量表 clause_id 失败: %s", e)
-            return 0
-        if rows.num_rows == 0:
-            return 0
-
-        vector_ids = {int(v) for v in rows.column("clause_id").to_pylist()}
-        with get_db() as conn:
-            db_ids = {r[0] for r in conn.execute("SELECT id FROM clauses").fetchall()}
-
-        orphans = sorted(vector_ids - db_ids)
         removed = 0
         for cid in orphans:
             try:
@@ -105,6 +109,41 @@ class VectorStore:
             except Exception as e:
                 logger.warning("清理孤儿向量 clause_id=%s 失败: %s", cid, e)
         return removed
+
+    def index_missing(self) -> int:
+        """SQLite 有而向量表无的条文补索引（返回补齐数）。
+
+        复用导入链路的 embedding 文本构造（code/title/[clause_no]/title/content）。
+        """
+        if not self._table_exists():
+            # 向量表不存在：无可补（全量重建走 rebuild-vectors）
+            return 0
+        try:
+            rows = self._get_table().to_arrow()
+            vector_ids = {int(v) for v in rows.column("clause_id").to_pylist()} if rows.num_rows else set()
+        except Exception as e:
+            logger.warning("读取向量表失败: %s", e)
+            return 0
+        with get_db() as conn:
+            missing = conn.execute(
+                """SELECT c.id, c.spec_id, c.clause_no, c.title, c.content,
+                          s.code, s.title as spec_title
+                   FROM clauses c JOIN specifications s ON c.spec_id = s.id
+                   WHERE c.id NOT IN ({})
+                   ORDER BY c.id""".format(
+                    ",".join("?" * len(vector_ids)) if vector_ids else "0"
+                ),
+                list(vector_ids) if vector_ids else [],
+            ).fetchall()
+        added = 0
+        for r in missing:
+            embed_text = f"{r['code'] or ''} {r['spec_title'] or ''} [{r['clause_no']}] {r['title'] or ''} {r['content']}"
+            try:
+                self.index_clause(r["id"], r["spec_id"], embed_text)
+                added += 1
+            except Exception as e:
+                logger.warning("补齐向量 clause_id=%s 失败: %s", r["id"], e)
+        return added
 
     def delete_clause(self, clause_id: int):
         if self._table_exists():
