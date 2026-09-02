@@ -1,0 +1,40 @@
+<!-- 维护界面：三 Tab（健康检查 / 导出备份 / 日志管理占位） -->
+<div x-data="{ tab: 'health' }" style="padding:1rem">
+    <h2>🛠 知识库维护</h2>
+    <div style="display:flex;gap:0.5rem;margin:1rem 0;flex-wrap:wrap">
+        <button class="outline" style="font-size:0.8rem"
+                :class="tab==='health' ? 'contrast' : ''" @click="tab='health'">📋 健康检查</button>
+        <button class="outline" style="font-size:0.8rem"
+                :class="tab==='export' ? 'contrast' : ''" @click="tab='export'">💾 导出备份</button>
+        <button class="outline" style="font-size:0.8rem"
+                :class="tab==='logs' ? 'contrast' : ''" @click="tab='logs'">📜 日志管理</button>
+    </div>
+
+    <!-- Tab 1: 健康检查 -->
+    <div x-show="tab==='health'">
+        <button hx-post="/maintenance/health-check" hx-target="#health-result" hx-swap="innerHTML"
+                style="background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:var(--pico-primary-inverse)">
+            🔍 运行健康检查
+        </button>
+        <div id="health-result" style="margin-top:1rem"></div>
+    </div>
+
+    <!-- Tab 2: 导出备份 -->
+    <div x-show="tab==='export'">
+        <p style="color:var(--pico-muted-color);font-size:0.85rem">备份/导出为 JSON 或 SQLite 单文件，用于迁移环境或存档。</p>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.8rem">
+            <button hx-post="/maintenance/backup" hx-target="#export-result" hx-swap="innerHTML"
+                    hx-confirm="确定执行 SQLite 备份？" class="outline">💾 SQLite 备份</button>
+            <a href="/maintenance/export/rules"><button class="outline">📋 导出分类规则</button></a>
+            <a href="/maintenance/export/review-queue"><button class="outline">📝 导出复核队列</button></a>
+            <button hx-post="/maintenance/fts-optimize" hx-target="#export-result" hx-swap="innerHTML"
+                    class="outline">🧩 FTS5 optimize</button>
+        </div>
+        <div id="export-result" style="margin-top:0.8rem"></div>
+    </div>
+
+    <!-- Tab 3: 日志管理（占位，P3 实现） -->
+    <div x-show="tab==='logs'">
+        <p style="color:var(--pico-muted-color)">📜 日志管理将在后续版本提供（行为筛选/异常导出）。</p>
+    </div>
+</div>

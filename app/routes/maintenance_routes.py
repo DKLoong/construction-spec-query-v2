@@ -16,6 +16,16 @@ def _render_health_result(request: Request, result: dict):
     })
 
 
+@router.get("/maintenance")
+async def maintenance_page(request: Request):
+    """维护界面（三 Tab：健康检查 / 导出备份 / 日志管理-占位）"""
+    from app.main import templates
+    return templates.TemplateResponse(request, "base.html", {
+        "left_content": "partials/tree_panel.html",
+        "center_content": "partials/maintenance.html",
+    })
+
+
 @router.post("/maintenance/health-check")
 async def health_check_run(request: Request):
     """运行健康检查，返回结果片段"""
