@@ -331,9 +331,11 @@
 }
 @keyframes radar-spin { to { transform: rotate(360deg); } }
 
-/* ── 重建向量索引进度环（全视口覆盖 + conic 圆环进度 + 中央百分比，后台完成自动消失） ── */
+/* ── 重建向量索引进度环（仅遮罩右侧显示区 .center-panel-v2，左侧栏可继续操作）
+   absolute 定位相对 .center-panel-v2（position:relative）；维护页渲染的 overlay
+   随页面消失，进入其他页面不遮罩 ── */
 .rebuild-overlay {
-    position: fixed; inset: 0; display: none;
+    position: absolute; inset: 0; display: none;
     flex-direction: column; align-items: center; justify-content: center;
     z-index: 100; background: rgba(255, 255, 255, 0.88); backdrop-filter: blur(1px);
 }
