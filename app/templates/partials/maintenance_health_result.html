@@ -31,8 +31,7 @@
         hx-confirm="一键修复将执行全部可修复项，若含缺失向量索引可能耗时较长，确定继续？"
         style="margin-top:0.5rem;background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:var(--pico-primary-inverse)">🧹 一键修复全部</button>
 {% endif %}
-<button hx-post="/maintenance/rebuild-vectors" hx-target="#health-result" hx-swap="innerHTML"
-        hx-confirm="将清空并全量重建向量索引（耗时较长），确定继续？"
+<button type="button" onclick="startRebuild()"
         class="outline" style="margin-top:0.5rem">🔄 重建向量索引</button>
 {% else %}
 <p style="color:var(--pico-muted-color)">点击「运行健康检查」开始。</p>

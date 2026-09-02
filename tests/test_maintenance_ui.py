@@ -24,10 +24,13 @@ def test_maintenance_page_has_three_tabs(auth_client, monkeypatch, tmp_path):
 
 
 def test_maintenance_page_has_rebuild_overlay(auth_client, monkeypatch, tmp_path):
-    """重建向量索引同步动画元素与文案存在（确认后 spinner，完成自动消失）"""
+    """重建向量索引进度环元素与后台确认文案存在（百分比/轻提示触发路径）"""
     _setup(monkeypatch, tmp_path)
     resp = auth_client.get("/maintenance")
     assert resp.status_code == 200
     assert "rebuild-overlay" in resp.text
-    assert "正在同步向量索引" in resp.text
-    assert "/maintenance/rebuild-vectors" in resp.text
+    assert "rebuild-pct" in resp.text
+    assert "startRebuild" in resp.text
+    assert "可在后台进行，完成后将提醒你" in resp.text  # 更新后的确认文案
+    assert "向量索引重建已完成" in resp.text  # 完成轻提示文案
+    assert "/maintenance/rebuild-progress/" in resp.text  # 进度轮询端点

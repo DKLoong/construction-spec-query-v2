@@ -116,3 +116,28 @@ def test_index_missing_diffset_no_placeholders(monkeypatch, tmp_path):
     assert [c[0] for c in calls] == [2]
     from app.search.embed_text import build_embed_text
     assert calls[0][1] == build_embed_text("GB T", "t", "2", "", "x")
+
+
+def test_batch_index_progress_cb(monkeypatch, tmp_path):
+    """batch_index 每批回调 progress_cb(done, total)，末批 done=total"""
+    lance_path = tmp_path / "lance-bi"
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(lance_path))
+
+    import numpy as np
+    def fake_embed_texts(texts):
+        return [np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32) for _ in texts]
+    monkeypatch.setattr("app.search.vector_search.embed_texts", fake_embed_texts)
+
+    clauses = [
+        {"clause_id": i, "spec_id": 1, "text": f"文本{i}", "dim_scores": ""}
+        for i in range(1, 71)
+    ]
+    calls: list[tuple[int, int]] = []
+    VectorStore().batch_index(clauses, batch_size=32,
+                              progress_cb=lambda d, t: calls.append((d, t)))
+    # first 32 → (32,70)；循环 (64,70)、(70,70)
+    assert len(calls) == 3
+    assert calls[0] == (32, 70)
+    assert calls[-1] == (70, 70)
+    assert VectorStore()._table_exists()
+    assert VectorStore()._get_table().to_arrow().num_rows == 70

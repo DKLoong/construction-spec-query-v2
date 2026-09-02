@@ -1,11 +1,13 @@
 """维护工具路由：健康检查 / 导出备份 / FTS optimize / 日志界面（P3）"""
+import logging
 import time
 from pathlib import Path
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from app.database import get_db
 from app.logging_util import log_action
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -53,33 +55,71 @@ async def health_fix_all(request: Request):
     return _render_health_result(request, run_health_check())
 
 
+# 后台重建进度（task_id -> {status, progress, message}），与导入进度相互独立
+rebuild_progress: dict = {}
+
+
+def _run_rebuild(task_id: str):
+    """后台线程：清空并全量重建向量索引，逐批更新 rebuild_progress（不阻塞请求处理）"""
+    try:
+        rebuild_progress[task_id] = {"status": "running", "progress": 0,
+                                     "message": "正在清空旧向量索引…"}
+        from app.search.vector_search import VectorStore
+        from app.search.embed_text import build_embed_text
+        with get_db() as conn:
+            clauses = conn.execute(
+                """SELECT c.id, c.spec_id, c.clause_no, c.title, c.content,
+                          s.code, s.title as spec_title
+                   FROM clauses c JOIN specifications s ON c.spec_id = s.id
+                   ORDER BY c.id"""
+            ).fetchall()
+        if not clauses:
+            rebuild_progress[task_id] = {"status": "done", "progress": 100,
+                                         "message": "无条文，无需重建"}
+            log_action("maintenance", "INFO", "重建向量索引", detail="0")
+            return
+        records = []
+        for c in clauses:
+            records.append({
+                "clause_id": c["id"], "spec_id": c["spec_id"],
+                "text": build_embed_text(c["code"], c["spec_title"], c["clause_no"],
+                                         c["title"], c["content"]),
+                "dim_scores": "",
+            })
+        total = len(records)
+
+        def _cb(done: int, n: int) -> None:
+            pct = int(done * 100 / n) if n else 100
+            rebuild_progress[task_id] = {"status": "running", "progress": pct,
+                                         "message": f"已重建 {done}/{n} 条"}
+
+        # batch_index 内部先 clear_all 再逐批写入，progress_cb 每批上报
+        VectorStore().batch_index(records, progress_cb=_cb)
+        rebuild_progress[task_id] = {"status": "done", "progress": 100,
+                                     "message": f"重建完成，共 {total} 条"}
+        log_action("maintenance", "INFO", "重建向量索引", detail=str(total))
+    except Exception as e:
+        logger.warning("重建向量索引失败: %s", e)
+        rebuild_progress[task_id] = {"status": "error", "progress": 0, "message": str(e)}
+        log_action("maintenance", "ERROR", "重建向量索引失败", detail=str(e))
+
+
 @router.post("/maintenance/rebuild-vectors")
 async def rebuild_vectors(request: Request):
-    """全量重建向量索引（清空 + 全部条文重新 embedding）"""
-    from app.database import get_db as _get_db
-    from app.search.vector_search import VectorStore
-    from app.search.embed_text import build_embed_text
+    """启动后台全量重建向量索引，立即返回 task_id（前端轮询 rebuild-progress 展示进度）"""
+    import threading
+    task_id = f"rb{int(time.time() * 1000)}"
+    rebuild_progress[task_id] = {"status": "pending", "progress": 0, "message": "正在启动…"}
+    threading.Thread(target=_run_rebuild, args=(task_id,), daemon=True).start()
+    return JSONResponse({"task_id": task_id})
 
-    vs = VectorStore()
-    vs.clear_all()
-    with _get_db() as conn:
-        clauses = conn.execute(
-            """SELECT c.id, c.spec_id, c.clause_no, c.title, c.content,
-                      s.code, s.title as spec_title
-               FROM clauses c JOIN specifications s ON c.spec_id = s.id
-               ORDER BY c.id"""
-        ).fetchall()
-    records = []
-    for c in clauses:
-        embed_text = build_embed_text(
-            c["code"], c["spec_title"], c["clause_no"], c["title"], c["content"])
-        records.append({"clause_id": c["id"], "spec_id": c["spec_id"],
-                        "text": embed_text, "dim_scores": ""})
-    vs.batch_index(records)
-    log_action("maintenance", "INFO", "重建向量索引", detail=str(len(records)))
-    from app.main import templates
-    return HTMLResponse(f"""<p style="color:green;margin-top:0.5rem">✅ 向量索引已重建：{len(records)} 条</p>
-    <div hx-post="/maintenance/health-check" hx-trigger="load" hx-swap="outerHTML"></div>""")
+
+@router.get("/maintenance/rebuild-progress/{task_id}")
+async def rebuild_progress_endpoint(request: Request, task_id: str):
+    """重建进度 JSON：{status: pending|running|done|error|unknown, progress: 0-100, message}"""
+    p = rebuild_progress.get(task_id, {"status": "unknown", "progress": 0,
+                                       "message": "任务不存在或已过期"})
+    return JSONResponse(p)
 
 
 @router.post("/maintenance/backup")

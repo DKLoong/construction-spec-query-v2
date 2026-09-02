@@ -166,15 +166,18 @@ class VectorStore:
         if table_dir.exists():
             shutil.rmtree(table_dir, ignore_errors=True)
 
-    def batch_index(self, clauses: list[dict], batch_size: int = 32):
+    def batch_index(self, clauses: list[dict], batch_size: int = 32,
+                    progress_cb=None):
         """批量索引条文（先建表再逐批插入）
 
         clauses: [{"clause_id": int, "spec_id": int, "text": str, "dim_scores": str}, ...]
+        progress_cb(done: int, total: int) — 每处理完一批回调一次（供后台重建显示进度）
         """
         import numpy as np
 
         if not clauses:
             return
+        total = len(clauses)
 
         # 先清空旧表
         self.clear_all()
@@ -205,6 +208,8 @@ class VectorStore:
                 "dim_scores": c.get("dim_scores", ""),
             })
         tbl.add(records)
+        if progress_cb:
+            progress_cb(len(first_batch), total)
 
         # 逐批写入剩余
         for start in range(batch_size, len(clauses), batch_size):
@@ -220,3 +225,5 @@ class VectorStore:
                     "dim_scores": c.get("dim_scores", ""),
                 })
             tbl.add(records)
+            if progress_cb:
+                progress_cb(min(start + batch_size, total), total)
