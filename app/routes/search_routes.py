@@ -94,6 +94,7 @@ async def search(
             "dim6_material": [],
             "include_non_clause": include_non_clause,
             "ce_rerank": ce_rerank,
+            "status_filter": status_filter,
             "empty_search": True,
         })
 
@@ -121,6 +122,7 @@ async def search(
         "dim6_material": dim6_material,
         "include_non_clause": include_non_clause,
         "ce_rerank": ce_rerank,
+        "status_filter": status_filter,
     })
 
 
@@ -129,9 +131,12 @@ async def clause_detail(request: Request, clause_id: int):
     """条文详情"""
     with get_db() as conn:
         clause = conn.execute(
-            """SELECT c.*, s.code as spec_code, s.title as spec_title
+            """SELECT c.*, s.code as spec_code, s.title as spec_title,
+                      s.status as spec_status, s.replace_by_spec_id,
+                      r.code as replace_by_code, r.title as replace_by_title
                FROM clauses c
                JOIN specifications s ON c.spec_id = s.id
+               LEFT JOIN specifications r ON r.id = s.replace_by_spec_id
                WHERE c.id = ?""",
             (clause_id,),
         ).fetchone()

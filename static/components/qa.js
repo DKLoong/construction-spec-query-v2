@@ -94,7 +94,12 @@ document.addEventListener('alpine:init', () => {
                         const src = sources.find(s =>
                             s.code === codeT && candidates.indexOf(s.clause_no) !== -1);
                         if (src && src.clause_id) {
-                            return `<a href="javascript:void(0)" style="color:var(--pico-primary);text-decoration:underline;cursor:pointer" onclick="window.dispatchEvent(new CustomEvent('view-clause',{detail:{id:${src.clause_id}}}))">${part}</a>`;
+                            let warn = '';
+                            if (src.status === '废止' || src.replace_by_code) {
+                                warn = '<span style="color:#b00000;font-size:0.7rem;margin-left:0.25rem">⚠️' +
+                                    (src.replace_by_code ? `已被《${src.replace_by_code}》替代` : '已废止') + '</span>';
+                            }
+                            return `<a href="javascript:void(0)" style="color:var(--pico-primary);text-decoration:underline;cursor:pointer" onclick="window.dispatchEvent(new CustomEvent('view-clause',{detail:{id:${src.clause_id}}}))">${part}</a>${warn}`;
                         }
                         return part;
                     });

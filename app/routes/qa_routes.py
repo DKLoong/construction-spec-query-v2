@@ -68,7 +68,7 @@ def _rerank_scored(question: str, candidates: list[dict]) -> list[tuple[dict, fl
 
 
 def _extract_sources(clauses: list[dict]) -> list[dict]:
-    """从实际进入上下文的条文提取去重引文来源（含 clause_id 供前端弹详情）"""
+    """从实际进入上下文的条文提取去重引文来源（含 clause_id / status 供前端弹详情与高亮）"""
     seen = set()
     sources = []
     for r in clauses:
@@ -78,6 +78,8 @@ def _extract_sources(clauses: list[dict]) -> list[dict]:
             sources.append({
                 "code": key[0], "clause_no": key[1],
                 "clause_id": r.get("id"),
+                "status": r.get("spec_status") or "",
+                "replace_by_code": r.get("replace_by_code") or "",
             })
     return sources
 

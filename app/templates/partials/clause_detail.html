@@ -34,6 +34,21 @@
                 </span>
                 {% endif %}
             </div>
+            <div style="margin-top:0.6rem;display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
+                {% if clause.spec_status %}
+                <span class="spec-status-tag status-{{ 'current' if clause.spec_status == '现行' else 'revising' if clause.spec_status == '修订中' else 'obsolete' }}"
+                      style="font-size:0.75rem">{{ clause.spec_status }}</span>
+                {% endif %}
+            </div>
+            {% if clause.spec_status == '废止' or clause.replace_by_code %}
+            <div style="margin-top:0.5rem;padding:0.5rem;background:#fdecec;border:1px solid #f2c4c4;border-radius:6px;font-size:0.8rem;color:#b00000">
+                {% if clause.replace_by_code %}
+                本规范已被《{{ clause.replace_by_code }} {{ clause.replace_by_title or '' }}》替代，请以新规范的规定为准
+                {% else %}
+                本规范已废止，请查阅新版规范
+                {% endif %}
+            </div>
+            {% endif %}
             <small style="color:var(--pico-muted-color)">
                 来源：{{ clause.spec_title or clause.spec_code }}
             </small>

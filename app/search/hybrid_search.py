@@ -143,9 +143,11 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
                 placeholders = ",".join("?" * len(clause_ids))
                 rows = conn.execute(
                     f"""SELECT c.*, s.code as spec_code, s.title as spec_title,
-                               s.status as spec_status, s.dim1_nature as spec_nature
+                               s.status as spec_status, s.dim1_nature as spec_nature,
+                               s.replace_by_spec_id, r.code as replace_by_code, r.title as replace_by_title
                         FROM clauses c
                         JOIN specifications s ON c.spec_id = s.id
+                        LEFT JOIN specifications r ON r.id = s.replace_by_spec_id
                         WHERE c.id IN ({placeholders}){dim_where}""",
                     clause_ids + dim_params,
                 ).fetchall()
