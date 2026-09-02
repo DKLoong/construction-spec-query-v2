@@ -45,6 +45,11 @@ ADAPTIVE_THRESHOLDS = {
     "dim6": 0.6,
 }
 
+# 规则自动启停阈值（半监督闭环）：按长期命中正确率，而非单次置信度
+RULE_AUTO_ENABLE_RATIO = 0.8    # 正确率 ≥ 80% 且命中≥5 → 自动启用
+RULE_AUTO_ENABLE_MIN_HIT = 5    # 自动启用最少命中次数
+RULE_AUTO_ENABLE_CONF = 0.9     # 新规则由高置信来源生成时初始启用
+
 AI_CONFIDENCE_THRESHOLD = 0.7
 BATCH_SIZE = 20
 BATCH_TIMEOUT_SECONDS = 30
