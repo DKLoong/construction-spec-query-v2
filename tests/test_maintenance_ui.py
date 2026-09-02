@@ -24,13 +24,16 @@ def test_maintenance_page_has_three_tabs(auth_client, monkeypatch, tmp_path):
 
 
 def test_maintenance_page_has_rebuild_overlay(auth_client, monkeypatch, tmp_path):
-    """重建向量索引进度环元素与后台确认文案存在（百分比/轻提示触发路径）"""
+    """重建进度环元素、确认文案与全局追踪器引入（跨页完成轻提示在 rebuild.js）"""
     _setup(monkeypatch, tmp_path)
     resp = auth_client.get("/maintenance")
     assert resp.status_code == 200
     assert "rebuild-overlay" in resp.text
     assert "rebuild-pct" in resp.text
     assert "startRebuild" in resp.text
+    assert "RebuildTracker" in resp.text  # 接全局追踪器
     assert "可在后台进行，完成后将提醒你" in resp.text  # 更新后的确认文案
-    assert "向量索引重建已完成" in resp.text  # 完成轻提示文案
-    assert "/maintenance/rebuild-progress/" in resp.text  # 进度轮询端点
+    assert "/static/components/rebuild.js" in resp.text  # 全局跨页追踪器已引入
+    assert "rebuild-finished" in resp.text  # 完成事件监听（刷新健康结果）
+    # health-result 自动加载健康检查（切回维护页不空白）
+    assert 'hx-post="/maintenance/health-check" hx-trigger="load"' in resp.text
