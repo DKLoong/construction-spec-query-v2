@@ -38,9 +38,39 @@
                 <h3>导入规范文件</h3>
                 <form @submit.prevent="handleUpload">
                     <label>规范编号 <input type="text" name="code" placeholder="如 GB 50204-2015"
-                                           @input="markManual('code')"></label>
+                                           x-model="codeInput" @input="markManual('code')"></label>
                     <label>规范名称 <input type="text" name="title" placeholder="如 混凝土结构工程施工质量验收规范"
-                                           @input="markManual('title')"></label>
+                                           x-model="titleInput" @input="markManual('title')"></label>
+                    <button type="button" class="outline" style="width:100%;margin-top:0.3rem"
+                            @click="runVersionCheck()" :disabled="checking">
+                        <span x-text="checking ? '校核中...' : '🔍 校核有效性'"></span>
+                    </button>
+                    <div id="version-check-result" x-show="checkResult" x-cloak style="margin-top:0.5rem">
+                        <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">
+                            <span style="font-size:0.8rem">状态：</span>
+                            <select x-model="checkResult.status" style="font-size:0.8rem;padding:0.15rem 0.3rem;width:auto">
+                                <option value="现行">现行</option>
+                                <option value="修订中">修订中</option>
+                                <option value="废止">废止</option>
+                            </select>
+                            <small x-show="!checkResult.ai_available" style="color:var(--pico-del-color, #c44);font-size:0.75rem">⚠️ AI 校验不可用，请手动确认状态</small>
+                        </div>
+                        <template x-if="checkResult.corrected && (checkResult.corrected.code !== codeInput || checkResult.corrected.title !== titleInput)">
+                            <div style="margin-top:0.3rem;font-size:0.8rem">
+                                <small>AI 建议：<code x-text="checkResult.corrected.code"></code> <span x-text="checkResult.corrected.title"></span></small>
+                                <button type="button" class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem" @click="applySuggestion()">应用</button>
+                                <button type="button" class="secondary" style="font-size:0.75rem;padding:0.1rem 0.4rem" @click="checkResult.corrected = null">忽略</button>
+                            </div>
+                        </template>
+                        <label style="margin-top:0.4rem;font-size:0.8rem">
+                            被替代编号
+                            <input type="text" x-model="checkResult.replacedBy" placeholder="如 GB 50010-2011（可留空）"
+                                   style="font-size:0.8rem;padding:0.2rem 0.4rem">
+                        </label>
+                    </div>
+                    <small x-show="contentEdited && checkResult" style="color:var(--pico-muted-color);font-size:0.75rem">
+                        内容已修改，建议重新校核
+                    </small>
                     <label>选择文件 <input type="file" name="file" accept=".md,.pdf"
                                            @change="autoFillFromFilename($event)"
                                            title="选择文件后将自动识别规范编号与名称"></label>
