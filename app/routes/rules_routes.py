@@ -329,3 +329,92 @@ async def queue_stats(request: Request):
         stats[dim]["total"] += r["cnt"]
 
     return stats
+
+
+# ═══════════════════════════════════════════
+# 规则质量报表（三类异常 + 一键处理 + 导出）
+# ═══════════════════════════════════════════
+
+import json as _json
+from fastapi.responses import JSONResponse
+
+
+def _quality_rows(conn):
+    """规则质量三类（供报表渲染/一键处理/导出共用）"""
+    ratio = 0.8  # 与 RULE_AUTO_ENABLE_RATIO 同值（防止 import 环可复制常量语义）
+    min_hit = 5
+    suggest_enable = conn.execute(
+        """SELECT * FROM classification_rules
+           WHERE is_active = 0 AND hit_count >= ? AND confirmed * 1.0 / hit_count >= ?
+           ORDER BY hit_count DESC""",
+        (min_hit, ratio),
+    ).fetchall()
+    suggest_disable = conn.execute(
+        """SELECT * FROM classification_rules
+           WHERE is_active = 1 AND hit_count > 10 AND confirmed * 1.0 / hit_count < 0.3
+           ORDER BY hit_count DESC"""
+    ).fetchall()
+    zombie = conn.execute(
+        """SELECT * FROM classification_rules
+           WHERE hit_count = 0 AND created_at < datetime('now', 'localtime', '-30 days')
+           ORDER BY created_at"""
+    ).fetchall()
+    return {
+        "suggest_enable": [dict(r) for r in suggest_enable],
+        "suggest_disable": [dict(r) for r in suggest_disable],
+        "zombie": [dict(r) for r in zombie],
+    }
+
+
+def _action_sql(action: str, kind: str) -> tuple[str, list]:
+    """返回批量动作的 UPDATE/DELETE SQL 与参数（kind 决定过滤条件）"""
+    conds = {
+        "suggest_enable": "is_active = 0 AND hit_count >= 5 AND confirmed * 1.0 / hit_count >= 0.8",
+        "suggest_disable": "is_active = 1 AND hit_count > 10 AND confirmed * 1.0 / hit_count < 0.3",
+        "zombie": "hit_count = 0 AND created_at < datetime('now','localtime','-30 days')",
+    }
+    cond = conds[kind]
+    if action == "delete_all":
+        return f"DELETE FROM classification_rules WHERE {cond}", []
+    if action == "enable_all":
+        return f"UPDATE classification_rules SET is_active = 1, updated_at = datetime('now','localtime') WHERE {cond}", []
+    return f"UPDATE classification_rules SET is_active = 0, updated_at = datetime('now','localtime') WHERE {cond}", []
+
+
+@router.get("/rules/quality")
+async def rules_quality(request: Request):
+    """规则质量报表 HTML 片段"""
+    with get_db() as conn:
+        q = _quality_rows(conn)
+    from app.main import templates
+    return templates.TemplateResponse(request, "partials/rules_quality.html", {"quality": q})
+
+
+@router.post("/rules/quality/batch")
+async def rules_quality_batch(request: Request, body: dict):
+    """批量处理：enable_all/disable_all/delete_all × kind"""
+    action = body.get("action", "")
+    kind = body.get("kind", "")
+    if action not in ("enable_all", "disable_all", "delete_all") or kind not in (
+        "suggest_enable", "suggest_disable", "zombie"
+    ):
+        return JSONResponse({"detail": "非法参数"}, status_code=400)
+    with get_db() as conn:
+        sql, params = _action_sql(action, kind)
+        conn.execute(sql, params)
+    with get_db() as conn:
+        q = _quality_rows(conn)
+    from app.main import templates
+    return templates.TemplateResponse(request, "partials/rules_quality.html", {"quality": q})
+
+
+@router.get("/rules/quality/export")
+async def rules_quality_export(request: Request):
+    """导出规则质量汇总 JSON 附件"""
+    import time as _t
+    with get_db() as conn:
+        q = _quality_rows(conn)
+    ts = _t.strftime("%Y%m%d_%H%M%S")
+    return JSONResponse(q, headers={
+        "Content-Disposition": f'attachment; filename="rule_quality_{ts}.json"'
+    })

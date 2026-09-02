@@ -15,6 +15,11 @@
         </template>
     </div>
 
+    <!-- 规则质量报表（实时：三类异常 + 一键处理） -->
+    <div id="rules-quality-wrap"
+         hx-get="/rules/quality" hx-trigger="load, rulesQualityRefresh from:body" hx-swap="innerHTML">
+    </div>
+
     <!-- 操作按钮行 -->
     <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
         <button @click="showForm = !showForm" class="secondary">➕ 新建规则</button>

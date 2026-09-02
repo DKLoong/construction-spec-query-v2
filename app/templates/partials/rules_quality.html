@@ -1,0 +1,36 @@
+<!-- 规则质量报表：三类异常 + 一键处理 + 导出 -->
+<div id="rules-quality" style="margin-bottom:1rem">
+    {% set kinds = [('suggest_enable','🔔 建议启用', 'enable_all'), ('suggest_disable','⚠️ 建议停用','disable_all'), ('zombie','🧟 僵尸规则','delete_all')] %}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.5rem">
+    {% for key, label, act in kinds %}
+        <div style="border:1px solid var(--pico-muted-border-color);border-radius:6px;padding:0.5rem">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+                <strong style="font-size:0.8rem">{{ label }}</strong>
+                <span style="font-size:0.85rem;color:{{ 'var(--pico-del-color)' if key=='suggest_disable' else '#a06500' }}">{{ quality[key]|length }}</span>
+            </div>
+            {% if quality[key] %}
+            <div style="margin-top:0.3rem;max-height:90px;overflow-y:auto;font-size:0.72rem">
+                {% for r in quality[key] %}
+                <div style="display:flex;justify-content:space-between">
+                    <code>{{ r.pattern }}</code>
+                    <small style="color:var(--pico-muted-color)">{{ r.hit_count }}/{{ r.confirmed }}</small>
+                </div>
+                {% endfor %}
+            </div>
+            <button hx-post="/rules/quality/batch" hx-vals='{"action":"{{ act }}","kind":"{{ key }}"}'
+                    hx-target="#rules-quality" hx-swap="outerHTML"
+                    hx-confirm="确定{{ '删除' if key=='zombie' else ('全部启用' if act=='enable_all' else '全部停用') }}这 {{ quality[key]|length }} 条规则？"
+                    class="outline" style="font-size:0.7rem;padding:0.1rem 0.4rem;margin-top:0.3rem">
+                {{ '全部删除' if key=='zombie' else ('全部启用' if act=='enable_all' else '全部停用') }}
+            </button>
+            {% else %}
+            <small style="color:var(--pico-muted-color)">无</small>
+            {% endif %}
+        </div>
+    {% endfor %}
+    </div>
+    <div style="margin-top:0.4rem">
+        <a href="/rules/quality/export" class="outline"
+           style="font-size:0.75rem;padding:0.15rem 0.5rem;text-decoration:none">📤 导出质量报表</a>
+    </div>
+</div>
