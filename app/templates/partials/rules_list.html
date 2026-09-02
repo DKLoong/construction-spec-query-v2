@@ -142,7 +142,7 @@
     </div>
 
     <!-- 规则表格 -->
-    <div id="rules-table" hx-get="/rules/list" hx-trigger="load">
+    <div id="rules-table" hx-get="/rules/list" hx-trigger="load, rulesListRefresh from:body">
         <p aria-busy="true">加载中...</p>
     </div>
 </div>
@@ -269,10 +269,17 @@ document.addEventListener('alpine:init', () => {
 });
 </script>
 <script>
-// 规则变更（新增/编辑/删除/启停）完成后自动刷新质量报表（排除 quality 自身请求防循环）
+// 规则变更后自动刷新：
+// - 普通 /rules 请求（新增/编辑/删除/启停）→ 刷新质量报表（报表挂载区已 hx-trigger rulesQualityRefresh）
+// - 报表批量动作 /rules/quality/batch → 刷新下方规则列表（质量报表由批量按钮 hx-target 自刷，避免循环）
 document.body.addEventListener('htmx:afterSettle', function (evt) {
     var path = (evt.detail && evt.detail.requestConfig && evt.detail.requestConfig.path) || '';
-    if (path.indexOf('/rules') === 0 && path.indexOf('/rules/quality') === -1) {
+    if (path.indexOf('/rules') !== 0) return;
+    if (path.indexOf('/rules/quality/batch') === 0) {
+        document.body.dispatchEvent(new CustomEvent('rulesListRefresh'));
+        return;
+    }
+    if (path.indexOf('/rules/quality') === -1) {
         document.body.dispatchEvent(new CustomEvent('rulesQualityRefresh'));
     }
 });

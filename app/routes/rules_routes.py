@@ -145,6 +145,26 @@ async def toggle_rule(request: Request, rule_id: int):
     return HTMLResponse(row_html + "\n" + _render_stats_oob())
 
 
+@router.post("/rules/{rule_id}/lock")
+async def toggle_rule_lock(request: Request, rule_id: int):
+    """锁定/解锁规则（锁定后不纳入僵尸规则判断，预置/长期保留规则用）— 返回更新行"""
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE classification_rules SET locked = 1 - COALESCE(locked, 0), "
+            "updated_at = datetime('now','localtime') WHERE id = ?",
+            (rule_id,),
+        )
+        rule = conn.execute(
+            "SELECT * FROM classification_rules WHERE id = ?", (rule_id,)
+        ).fetchone()
+        if not rule:
+            return HTMLResponse("", status_code=404)
+    from app.main import templates
+    return templates.TemplateResponse(request, "partials/rules_row.html", {
+        "rule": dict(rule),
+    })
+
+
 @router.get("/rules/stats")
 async def rules_stats(request: Request):
     """规则统计面板 HTML 片段（供 HTMX 局部刷新）"""
@@ -400,7 +420,8 @@ def _quality_rows(conn):
     ).fetchall()
     zombie = conn.execute(
         """SELECT * FROM classification_rules
-           WHERE hit_count = 0 AND created_at < datetime('now', 'localtime', '-30 days')
+           WHERE hit_count = 0 AND (locked IS NULL OR locked = 0)
+             AND created_at < datetime('now', 'localtime', '-30 days')
            ORDER BY created_at"""
     ).fetchall()
     return {
@@ -415,7 +436,7 @@ def _action_sql(action: str, kind: str) -> tuple[str, list]:
     conds = {
         "suggest_enable": "is_active = 0 AND hit_count >= 5 AND confirmed * 1.0 / hit_count >= 0.8",
         "suggest_disable": "is_active = 1 AND confirmed > 0 AND hit_count > 10 AND confirmed * 1.0 / hit_count < 0.3",
-        "zombie": "hit_count = 0 AND created_at < datetime('now','localtime','-30 days')",
+        "zombie": "hit_count = 0 AND (locked IS NULL OR locked = 0) AND created_at < datetime('now','localtime','-30 days')",
     }
     cond = conds[kind]
     if action == "delete_all":

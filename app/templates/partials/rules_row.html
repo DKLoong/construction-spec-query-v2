@@ -13,6 +13,7 @@
     <td>{{ r.threshold }}</td>
     <td><small>{{ r.hit_count }}/{{ r.confirmed }}</small></td>
     <td>
+        {% if r.locked %}<span title="已锁定（不纳入僵尸判断）" style="margin-right:0.2rem">🔒</span>{% endif %}
         {% if r.is_active %}
         <span style="color:green">● 启用</span>
         {% else %}
@@ -21,6 +22,11 @@
     </td>
     <td>
         <div style="display:flex;gap:0.25rem">
+            <button hx-post="/rules/{{ r.id }}/lock" hx-target="closest tr" hx-swap="outerHTML"
+                    class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                    title="{{ '点击解锁' if r.locked else '锁定（不纳入僵尸判断）' }}">
+                {{ '🔓' if r.locked else '🔒' }}
+            </button>
             <button hx-post="/rules/{{ r.id }}/toggle"
                     hx-target="closest tr" hx-swap="outerHTML"
                     class="{% if r.is_active %}secondary{% endif %} outline"

@@ -59,6 +59,50 @@ def test_quality_rows_suggest_disable_exempts_zero_confirmed(monkeypatch, tmp_pa
     assert q["suggest_disable"] == []
 
 
+def test_locked_rule_excluded_from_zombie(monkeypatch, tmp_path):
+    """locked 规则不纳入僵尸判断（预置/长期保留规则免受误清）"""
+    db_path = tmp_path / "rq6.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        # 两条 hit=0 超 30 天：一条 locked、一条未锁
+        conn.execute(
+            """INSERT INTO classification_rules (dimension, sub_field, pattern, match_type,
+               priority, threshold, hit_count, confirmed, is_active, created_at)
+               VALUES ('dim1','hierarchy','行业标准','keyword',0,0.6,0,0,1,datetime('now','localtime','-40 days'))"""
+        )
+        conn.execute(
+            """INSERT INTO classification_rules (dimension, sub_field, pattern, match_type,
+               priority, threshold, hit_count, confirmed, is_active, locked, created_at)
+               VALUES ('dim1','hierarchy','地方标准','keyword',0,0.6,0,0,1,1,datetime('now','localtime','-40 days'))"""
+        )
+        from app.routes.rules_routes import _quality_rows
+        q = _quality_rows(conn)
+    assert [r["pattern"] for r in q["zombie"]] == ["行业标准"]  # 未锁的进僵尸，locked 的排除
+
+
+def test_toggle_rule_lock_endpoint(auth_client, monkeypatch, tmp_path):
+    """POST /rules/{id}/lock 切换锁定状态"""
+    db_path = tmp_path / "rq7.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO classification_rules (dimension, sub_field, pattern, match_type,
+               priority, threshold) VALUES ('dim1','hierarchy','行业标准','keyword',0,0.6)"""
+        )
+        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    resp = auth_client.post(f"/rules/{rid}/lock")
+    assert resp.status_code == 200
+    with get_db() as conn:
+        row = conn.execute("SELECT locked FROM classification_rules WHERE id=?", (rid,)).fetchone()
+    assert row["locked"] == 1
+    resp2 = auth_client.post(f"/rules/{rid}/lock")
+    with get_db() as conn:
+        row2 = conn.execute("SELECT locked FROM classification_rules WHERE id=?", (rid,)).fetchone()
+    assert row2["locked"] == 0
+
+
 def test_batch_action_enable_all(auth_client, monkeypatch, tmp_path):
     db_path = tmp_path / "rq2.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))

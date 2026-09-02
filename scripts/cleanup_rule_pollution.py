@@ -53,7 +53,7 @@ def _report(conn):
                 WHERE c.{col} IS NOT NULL AND c.{col} != ''
                   AND NOT EXISTS (
                     SELECT 1 FROM classification_rules r
-                    WHERE r.dimension = ? AND (r.label = c.{col} OR (r.label IS NULL AND r.pattern = c.{col})))
+                    WHERE r.dimension = ? AND r.is_active = 1 AND (r.label = c.{col} OR (r.label IS NULL AND r.pattern = c.{col})))
                 ORDER BY c.{col} LIMIT 20""",
             (dim,),
         ).fetchall()
@@ -62,7 +62,7 @@ def _report(conn):
                 WHERE c.{col} IS NOT NULL AND c.{col} != ''
                   AND NOT EXISTS (
                     SELECT 1 FROM classification_rules r
-                    WHERE r.dimension = ? AND (r.label = c.{col} OR (r.label IS NULL AND r.pattern = c.{col})))""",
+                    WHERE r.dimension = ? AND r.is_active = 1 AND (r.label = c.{col} OR (r.label IS NULL AND r.pattern = c.{col})))""",
             (dim,),
         ).fetchone()[0]
         print(f"\n{label_cn}（共 {cnt} 条孤儿，显示前 20）:")
@@ -99,7 +99,7 @@ def _reset_orphan_labels(conn):
                   WHERE c.{col} IS NOT NULL AND c.{col} != ''
                     AND NOT EXISTS (
                       SELECT 1 FROM classification_rules r
-                      WHERE r.dimension = ? AND (r.label = c.{col} OR (r.label IS NULL AND r.pattern = c.{col}))))""",
+                      WHERE r.dimension = ? AND r.is_active = 1 AND (r.label = c.{col} OR (r.label IS NULL AND r.pattern = c.{col}))))""",
             (dim,),
         ).rowcount
         print(f"{label_cn}: 已重置 {n} 条孤儿标签条文为待复核")

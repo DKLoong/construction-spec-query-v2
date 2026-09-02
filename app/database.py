@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS classification_rules (
     confirmed       INTEGER DEFAULT 0,
     is_active       INTEGER DEFAULT 1,
     label           TEXT,           -- 规则赋值标签（命中后写入分类列）；NULL 时兼容回退用 pattern
+    locked          INTEGER DEFAULT 0,  -- 锁定后不纳入僵尸规则判断（预置/需长期保留的规则）
     created_at      TEXT DEFAULT (datetime('now','localtime')),
     updated_at      TEXT DEFAULT (datetime('now','localtime'))
 );
@@ -243,6 +244,11 @@ def init_db():
         # 迁移：为已有数据库的 classification_rules 添加 label 列（规则赋值标签，NULL 回退 pattern）
         try:
             conn.execute("ALTER TABLE classification_rules ADD COLUMN label TEXT")
+        except Exception:
+            pass  # 列已存在
+        # 迁移：locked 列（锁定后不纳入僵尸规则判断）
+        try:
+            conn.execute("ALTER TABLE classification_rules ADD COLUMN locked INTEGER DEFAULT 0")
         except Exception:
             pass  # 列已存在
         # 日志表 + 健康检查快照表（P1 维护工具先建表，P3 日志界面消费）
