@@ -222,6 +222,11 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
                         message=str(e)
                     )
                     return
+                # 透传 OCR 等待/重试提示到进度 UI（如「队列繁忙，正在自动重试…」）
+                if hasattr(api, "progress_cb"):
+                    def _ocr_progress(msg: str, _tid: str = task_id) -> None:
+                        progress_store[_tid].update(message=msg)
+                    api.progress_cb = _ocr_progress
                 md_path = api.ocr_pdf_to_md(file_path)
                 md_text = Path(md_path).read_text(encoding="utf-8")
             else:

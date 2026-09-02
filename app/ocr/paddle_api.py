@@ -179,9 +179,20 @@ class PaddleVLClient:
         "restructurePages": True,
     }
 
-    def __init__(self, access_token: str, params: dict | None = None):
+    def __init__(self, access_token: str, params: dict | None = None,
+                 progress_cb=None):
+        """progress_cb(message) — 可选进度回调，用于向界面透传等待/重试提示"""
         self.access_token = access_token
         self.params = self._normalize_params(params or {})
+        self.progress_cb = progress_cb
+
+    def _notify_progress(self, message: str) -> None:
+        """透传进度消息到上层（回调异常不影响 OCR 主流程）"""
+        if self.progress_cb:
+            try:
+                self.progress_cb(message)
+            except Exception:
+                pass
 
     def _normalize_params(self, params: dict) -> dict:
         """将旧 snake_case 参数名映射为官网 camelCase，未知参数原样透传"""
@@ -267,6 +278,9 @@ class PaddleVLClient:
                 logger.warning(
                     "PaddleOCR-VL 任务队列已满 (HTTP 400 code=10010)，第 %d/%d 次，%.0fs 后重试: %s",
                     queue_tries, self._QUEUE_FULL_RETRIES, wait, resp.text[:300],
+                )
+                self._notify_progress(
+                    f"OCR 任务队列繁忙，正在自动重试（第 {queue_tries}/{self._QUEUE_FULL_RETRIES} 次，约 {int(wait)}s 后重试）…"
                 )
                 await asyncio.sleep(wait)
                 continue
