@@ -28,8 +28,9 @@ def test_seed_rules_inserts_rules(monkeypatch, tmp_path):
         ).fetchall()
 
     rule_counts = {r["dimension"]: r["cnt"] for r in rules}
-    # 六个维度都应被覆盖
-    for dim in ["dim1", "dim2", "dim3", "dim4", "dim5", "dim6"]:
+    # dim1（规范属性）由编号前缀硬编码管理、规则引擎不参与，不 seed；
+    # dim2~dim6（规则引擎实际参与的维度）都应被覆盖
+    for dim in ["dim2", "dim3", "dim4", "dim5", "dim6"]:
         assert dim in rule_counts, f"{dim} 缺少规则"
         assert rule_counts[dim] >= 1, f"{dim} 规则数 {rule_counts[dim]} < 1"
 

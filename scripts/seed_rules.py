@@ -10,24 +10,6 @@ from app.database import init_db, get_db, get_connection
 # 六维种子规则定义
 # 每个规则: (dimension, sub_field, pattern, match_type, priority, threshold)
 RULES: list[tuple] = [
-    # ===== 维度一：规范属性 (dim1) =====
-    # -- 层级 hierarchy --
-    ("dim1", "hierarchy", "国家标准", "keyword", 3, 0.25),
-    ("dim1", "hierarchy", "行业标准", "keyword", 3, 0.25),
-    ("dim1", "hierarchy", "地方标准", "keyword", 3, 0.25),
-    ("dim1", "hierarchy", "团体标准", "keyword", 2, 0.25),
-    ("dim1", "hierarchy", "企业标准", "keyword", 2, 0.25),
-    # -- 性质 nature --
-    ("dim1", "nature", "强制性", "keyword", 2, 0.25),
-    ("dim1", "nature", "推荐性", "keyword", 2, 0.25),
-    # -- 体系层次 sys_level --
-    ("dim1", "sys_level", "基础标准", "keyword", 1, 0.25),
-    ("dim1", "sys_level", "通用标准", "keyword", 1, 0.25),
-    ("dim1", "sys_level", "专用标准", "keyword", 1, 0.25),
-    # -- 规范类型 spec_type --
-    ("dim1", "spec_type", "项目规范", "keyword", 1, 0.25),
-    ("dim1", "spec_type", "通用技术规范", "keyword", 1, 0.25),
-
     # ===== 维度二：工程阶段 (dim2) =====
     # 前期
     ("dim2", "stage", "勘察", "keyword", 2, 0.25),

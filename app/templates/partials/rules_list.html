@@ -159,7 +159,7 @@ document.addEventListener('alpine:init', () => {
         subFieldTimer: null,
         editRule: {id:'', dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6},
         dimensions: [
-            {key: 'dim1', label: '规范属性'},
+            // dim1（规范属性）由编号前缀硬编码管理，规则引擎不参与，故不纳入规则管理
             {key: 'dim2', label: '工程阶段'},
             {key: 'dim3', label: '工程类型'},
             {key: 'dim4', label: '所属专业'},
