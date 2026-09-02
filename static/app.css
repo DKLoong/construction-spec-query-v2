@@ -331,6 +331,20 @@
 }
 @keyframes radar-spin { to { transform: rotate(360deg); } }
 
+/* ── 重建向量索引同步动画（全视口覆盖 + 旋转 spinner，请求完成自动消失） ── */
+.rebuild-overlay {
+    position: fixed; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    z-index: 100; background: rgba(255, 255, 255, 0.88); backdrop-filter: blur(1px);
+}
+.rebuild-overlay.show { display: flex; }
+.rebuild-spinner {
+    width: 56px; height: 56px; border-radius: 50%;
+    border: 5px solid rgba(70, 167, 88, 0.2); border-top-color: #46a758;
+    animation: radar-spin 1s linear infinite;
+}
+.rebuild-spinner-text { margin-top: 1rem; color: #2f7d4a; font-size: 0.9rem; font-weight: 600; }
+
 /* ── 规范状态三色标签（现行=绿 / 修订中=橙 / 废止=红） ── */
 .spec-status-tag { padding:0.15rem 0.5rem; border-radius:4px; font-size:0.75rem; }
 .status-current { background:#d8f5d8; color:#1a7a1a; }

@@ -37,4 +37,27 @@
     <div x-show="tab==='logs'">
         <p style="color:var(--pico-muted-color)">📜 日志管理将在后续版本提供（行为筛选/异常导出）。</p>
     </div>
+
+    <!-- 重建向量索引同步动画：请求期间覆盖全视口显示 spinner，完成自动消失 -->
+    <div id="rebuild-overlay" class="rebuild-overlay" style="display:none">
+        <div class="rebuild-spinner" role="status" aria-label="正在同步向量索引"></div>
+        <div class="rebuild-spinner-text">正在同步向量索引…</div>
+    </div>
 </div>
+<script>
+// 重建向量索引为长耗时同步请求：确认提交后显示循环同步动画，请求完成（响应替换结果）自动消失。
+// 与 search.js 的 htmx 监听并存（各自按 path 判断，互不干扰）。
+(function () {
+    var IS_REBUILD = '/maintenance/rebuild-vectors';
+    function getPath(evt) {
+        return (evt.detail && evt.detail.requestConfig && evt.detail.requestConfig.path) || '';
+    }
+    function overlay() { return document.getElementById('rebuild-overlay'); }
+    document.body.addEventListener('htmx:beforeRequest', function (evt) {
+        if (getPath(evt).indexOf(IS_REBUILD) === 0 && overlay()) overlay().style.display = 'flex';
+    });
+    document.body.addEventListener('htmx:afterSettle', function (evt) {
+        if (getPath(evt).indexOf(IS_REBUILD) === 0 && overlay()) overlay().style.display = 'none';
+    });
+})();
+</script>
