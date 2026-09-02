@@ -48,10 +48,27 @@ def _startup_warmup_embedding():
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _startup_fts_optimize():
+    """后台线程执行 FTS5 optimize（合并碎片），不阻塞应用启动"""
+    import threading
+
+    def _run():
+        try:
+            from app.database import get_db
+            with get_db() as conn:
+                conn.execute("INSERT INTO clauses_fts(clauses_fts) VALUES('optimize')")
+            logger.info("FTS5 optimize 完成")
+        except Exception as e:
+            logger.warning("FTS5 optimize 失败: %s", e)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def startup():
     init_db()
     _startup_vector_sync()
     _startup_warmup_embedding()
+    _startup_fts_optimize()
 
 
 app.on_event("startup")(startup)

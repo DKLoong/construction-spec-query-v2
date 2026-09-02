@@ -134,3 +134,12 @@ async def export_review_queue(request: Request):
     return JSONResponse(data, headers={
         "Content-Disposition": f'attachment; filename="review_queue_{ts}.json"'
     })
+
+
+@router.post("/maintenance/fts-optimize")
+async def fts_optimize(request: Request):
+    """SQLite FTS5 定期 optimize：合并碎片，提升检索性能"""
+    with get_db() as conn:
+        conn.execute("INSERT INTO clauses_fts(clauses_fts) VALUES('optimize')")
+    log_action("maintenance", "INFO", "FTS optimize")
+    return HTMLResponse('<p style="color:green;margin-top:0.5rem">✅ FTS5 optimize 完成</p>')
