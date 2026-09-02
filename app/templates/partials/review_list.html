@@ -87,7 +87,11 @@
             });
             var html = await resp.text();
             var host = document.getElementById('review-list');
-            if (host) { host.innerHTML = html; if (window.htmx) htmx.process(host); }
+            if (host) {
+                host.outerHTML = html;
+                // outerHTML 后 host 已脱离文档，需重新获取再交给 htmx 重绑
+                if (window.htmx) htmx.process(document.getElementById('review-list'));
+            }
         } catch (e) { alert('批量操作失败：' + e.message); }
     }
     </script>

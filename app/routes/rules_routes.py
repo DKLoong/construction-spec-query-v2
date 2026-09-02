@@ -298,7 +298,8 @@ async def batch_confirm(request: Request, body: dict):
         return _JR({"detail": "queue_ids 须为数组"}, status_code=400)
     with get_db() as conn:
         rows = conn.execute(
-            f"SELECT id, clause_id, dimension, ai_label, ai_confidence FROM classification_queue WHERE id IN ({','.join('?' * len(ids))})",
+            f"SELECT id, clause_id, dimension, ai_label, ai_confidence FROM classification_queue "
+            f"WHERE status='review' AND id IN ({','.join('?' * len(ids))})",
             ids,
         ).fetchall()
     for item in rows:
@@ -319,7 +320,7 @@ async def batch_reject(request: Request, body: dict):
         with get_db() as conn:
             for i in ids:
                 item = conn.execute(
-                    "SELECT clause_id FROM classification_queue WHERE id = ?", (i,)
+                    "SELECT clause_id FROM classification_queue WHERE id = ? AND status='review'", (i,)
                 ).fetchone()
                 if item:
                     conn.execute(
@@ -394,7 +395,7 @@ def _quality_rows(conn):
     ).fetchall()
     suggest_disable = conn.execute(
         """SELECT * FROM classification_rules
-           WHERE is_active = 1 AND hit_count > 10 AND confirmed * 1.0 / hit_count < 0.3
+           WHERE is_active = 1 AND confirmed > 0 AND hit_count > 10 AND confirmed * 1.0 / hit_count < 0.3
            ORDER BY hit_count DESC"""
     ).fetchall()
     zombie = conn.execute(
@@ -413,7 +414,7 @@ def _action_sql(action: str, kind: str) -> tuple[str, list]:
     """返回批量动作的 UPDATE/DELETE SQL 与参数（kind 决定过滤条件）"""
     conds = {
         "suggest_enable": "is_active = 0 AND hit_count >= 5 AND confirmed * 1.0 / hit_count >= 0.8",
-        "suggest_disable": "is_active = 1 AND hit_count > 10 AND confirmed * 1.0 / hit_count < 0.3",
+        "suggest_disable": "is_active = 1 AND confirmed > 0 AND hit_count > 10 AND confirmed * 1.0 / hit_count < 0.3",
         "zombie": "hit_count = 0 AND created_at < datetime('now','localtime','-30 days')",
     }
     cond = conds[kind]

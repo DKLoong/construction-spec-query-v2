@@ -42,7 +42,7 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
                     "UPDATE classification_rules SET is_active = 1, updated_at = datetime('now','localtime') WHERE id = ?",
                     (row["id"],),
                 )
-        elif ratio < _DISABLE_RATIO and new_hit > _DISABLE_MIN_HIT:
+        elif new_conf > 0 and ratio < _DISABLE_RATIO and new_hit > _DISABLE_MIN_HIT:
             if row["is_active"]:
                 conn.execute(
                     "UPDATE classification_rules SET is_active = 0, updated_at = datetime('now','localtime') WHERE id = ?",

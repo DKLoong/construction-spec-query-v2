@@ -59,3 +59,22 @@ def test_bump_existing_rule_auto_disable(monkeypatch, tmp_path):
         row = conn.execute("SELECT * FROM classification_rules WHERE pattern='废词'").fetchone()
     # hit 12, confirmed 3 → 3/12 < 0.3 且 hit>10 → 停用
     assert row["is_active"] == 0
+
+
+def test_auto_adopted_rule_exempt_from_auto_disable(monkeypatch, tmp_path):
+    """纯 AI 采纳规则（confirmed=0 无人工信号）豁免自动停用：连 hit 12 次仍保持启用"""
+    _setup(monkeypatch, tmp_path)
+    from app.classifier.rule_sink import bump_rule
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO classification_rules (dimension, sub_field, pattern, match_type,
+               priority, threshold, hit_count, confirmed, is_active)
+               VALUES ('dim4','specialty','AI词','keyword',0,0.6,1,0,1)"""
+        )
+        # 连续命中 11 次（累计 hit 12），is_confirmed=False 仅 hit++，confirmed 恒 0
+        for _ in range(11):
+            bump_rule(conn, "dim4", "AI词", is_confirmed=False, new_rule_active=False)
+        row = conn.execute("SELECT * FROM classification_rules WHERE pattern='AI词'").fetchone()
+    assert row["hit_count"] == 12
+    assert row["confirmed"] == 0
+    assert row["is_active"] == 1  # confirmed=0 豁免自动停用，不被锁死

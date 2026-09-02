@@ -43,6 +43,22 @@ def test_quality_rows_classify(monkeypatch, tmp_path):
     assert [r["pattern"] for r in q["zombie"]] == ["老词"]
 
 
+def test_quality_rows_suggest_disable_exempts_zero_confirmed(monkeypatch, tmp_path):
+    """confirmed=0 的纯 AI 采纳规则（hit 多但无人工信号）不应进入建议停用"""
+    db_path = tmp_path / "rq5.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO classification_rules (dimension, sub_field, pattern, match_type,
+               priority, threshold, hit_count, confirmed, is_active)
+               VALUES ('dim4','specialty','AI词','keyword',0,0.6,20,0,1)"""
+        )
+        from app.routes.rules_routes import _quality_rows
+        q = _quality_rows(conn)
+    assert q["suggest_disable"] == []
+
+
 def test_batch_action_enable_all(auth_client, monkeypatch, tmp_path):
     db_path = tmp_path / "rq2.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))

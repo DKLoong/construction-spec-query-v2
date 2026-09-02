@@ -482,7 +482,10 @@ async def batch_reclassify(request: Request, body: dict):
         try:
             count = process_pending_batches(force=True)
         except Exception as e:
-            return HTMLResponse(f"""<p style="color:orange;margin-top:0.5rem">已重新入队 {len(target_ids)} 条，但 AI 分类未完成：{e}</p>""")
+            logger.exception("批量重新分类失败: %s", e)
+            return HTMLResponse(
+                f"""<p style="color:orange;margin-top:0.5rem">已重新入队 {len(target_ids)} 条，但 AI 分类未完成，请查看服务端日志</p>"""
+            )
     from app.main import templates
     return HTMLResponse(f"""<p style="color:green;margin-top:0.5rem">✅ 已对 {len(target_ids)} 条条文重新分类（AI 处理 {count} 条）</p>
     <div id="spec-class-area" hx-swap-oob="true"></div>""")
