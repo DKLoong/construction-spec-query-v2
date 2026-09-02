@@ -48,21 +48,22 @@ def _count_bad_classification() -> int:
         ).fetchone()[0]
 
 
-def _vector_ids() -> set[int]:
-    """读取向量表全部 clause_id（表不存在返回空集）"""
+def _vector_ids() -> set[int] | None:
+    """读取向量表全部 clause_id；表不存在/读失败返回 None（区别于空集）"""
     try:
         from app.search.vector_search import VectorStore
         vs = VectorStore()
         if not vs._table_exists():
-            return set()
+            return None
         tbl = vs._get_table()
         return {int(v) for v in tbl.to_arrow().column("clause_id").to_pylist()}
     except Exception:
-        return set()
+        return None
 
 
-def _count_vector_orphan() -> int:
-    vids = _vector_ids()
+def _count_vector_orphan(vids: set[int] | None = None) -> int:
+    if vids is None:
+        vids = _vector_ids()
     if not vids:
         return 0
     with get_db() as conn:
@@ -70,11 +71,15 @@ def _count_vector_orphan() -> int:
     return len(vids - db_ids)
 
 
-def _count_vector_missing() -> int:
-    vids = _vector_ids()
+def _count_vector_missing(vids: set[int] | None = None) -> int:
+    if vids is None:
+        vids = _vector_ids()
+    if vids is None:
+        # 向量表不存在：缺失数按 0 计，语义由 run_health_check 标 error（待重建）
+        return 0
     with get_db() as conn:
         db_ids = {r[0] for r in conn.execute("SELECT id FROM clauses").fetchall()}
-    return len(db_ids - vids) if vids else len(db_ids)
+    return len(db_ids - vids)
 
 
 def _count_fts_mismatch() -> int:
@@ -87,21 +92,28 @@ def _count_fts_mismatch() -> int:
 
 def run_health_check() -> dict:
     """执行全部检查，写 system_logs + health_check_snapshots，返回结果 dict"""
+    vector_ids = _vector_ids()  # None 表示向量表不存在/读失败（区别于空集）
     counts = {
         "orphan_parent": _count_orphan_parent(),
         "empty_content": _count_empty_content(),
         "bad_classification": _count_bad_classification(),
-        "vector_orphan": _count_vector_orphan(),
-        "vector_missing": _count_vector_missing(),
+        "vector_orphan": _count_vector_orphan(vector_ids),
+        "vector_missing": _count_vector_missing(vector_ids),
         "fts_mismatch": _count_fts_mismatch(),
     }
     checks = []
     for key, label in LABELS.items():
         count = counts[key]
         fixable = key != "empty_content"
+        severity = "ok" if count == 0 else ("warn" if fixable else "error")
+        if key == "vector_missing" and vector_ids is None:
+            # 向量表不存在：语义为「待重建」，非「可单项修复」，标 error 走「需人工」分支
+            count = 0
+            fixable = False
+            severity = "error"
         checks.append({
             "key": key, "label": label, "count": count,
-            "severity": "ok" if count == 0 else ("warn" if fixable else "error"),
+            "severity": severity,
             "fixable": fixable,
         })
     result = {"checks": checks}
@@ -152,6 +164,10 @@ def fix_issue(key: str) -> dict:
     if key == "vector_missing":
         from app.search.vector_search import VectorStore
         added = VectorStore().index_missing()
+        if added < 0:
+            # 向量表不存在/读失败：单项补齐无意义，需全量重建
+            log_action("maintenance", "WARN", "补齐缺失向量失败（向量表不存在）")
+            return {"key": key, "fixed": False, "detail": "向量表不存在，请使用「重建向量索引」"}
         log_action("maintenance", "INFO", "补齐缺失向量", detail=str(added))
         return {"key": key, "fixed": added > 0, "detail": f"已补齐 {added} 条向量"}
     if key == "fts_mismatch":

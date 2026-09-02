@@ -4,6 +4,7 @@ import pyarrow as pa
 from app.config import LANCE_DB_PATH
 from app.database import get_db
 from app.ai.embedding import embed_texts
+from app.search.embed_text import build_embed_text
 
 logger = logging.getLogger(__name__)
 
@@ -113,31 +114,32 @@ class VectorStore:
     def index_missing(self) -> int:
         """SQLite 有而向量表无的条文补索引（返回补齐数）。
 
-        复用导入链路的 embedding 文本构造（code/title/[clause_no]/title/content）。
+        向量表不存在/读取失败返回 -1（区别于「无需补齐」的 0），供调用方
+        识别「需全量重建」而非「单项修复」。
+
+        缺失集在 Python 侧做差集：先全量查 SQLite 条文，再过滤不在 vector_ids
+        中的记录，避免 NOT IN 动态占位符数量超过 SQLite 变量上限（32766）。
         """
         if not self._table_exists():
-            # 向量表不存在：无可补（全量重建走 rebuild-vectors）
-            return 0
+            return -1
         try:
             rows = self._get_table().to_arrow()
             vector_ids = {int(v) for v in rows.column("clause_id").to_pylist()} if rows.num_rows else set()
         except Exception as e:
             logger.warning("读取向量表失败: %s", e)
-            return 0
+            return -1
         with get_db() as conn:
-            missing = conn.execute(
+            all_rows = conn.execute(
                 """SELECT c.id, c.spec_id, c.clause_no, c.title, c.content,
                           s.code, s.title as spec_title
                    FROM clauses c JOIN specifications s ON c.spec_id = s.id
-                   WHERE c.id NOT IN ({})
-                   ORDER BY c.id""".format(
-                    ",".join("?" * len(vector_ids)) if vector_ids else "0"
-                ),
-                list(vector_ids) if vector_ids else [],
+                   ORDER BY c.id"""
             ).fetchall()
+        missing = [r for r in all_rows if r["id"] not in vector_ids]
         added = 0
         for r in missing:
-            embed_text = f"{r['code'] or ''} {r['spec_title'] or ''} [{r['clause_no']}] {r['title'] or ''} {r['content']}"
+            embed_text = build_embed_text(
+                r["code"], r["spec_title"], r["clause_no"], r["title"], r["content"])
             try:
                 self.index_clause(r["id"], r["spec_id"], embed_text)
                 added += 1

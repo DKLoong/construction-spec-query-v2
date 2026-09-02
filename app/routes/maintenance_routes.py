@@ -58,7 +58,7 @@ async def rebuild_vectors(request: Request):
     """全量重建向量索引（清空 + 全部条文重新 embedding）"""
     from app.database import get_db as _get_db
     from app.search.vector_search import VectorStore
-    from app.search.tokenize import build_search_text  # noqa: F401
+    from app.search.embed_text import build_embed_text
 
     vs = VectorStore()
     vs.clear_all()
@@ -71,8 +71,8 @@ async def rebuild_vectors(request: Request):
         ).fetchall()
     records = []
     for c in clauses:
-        embed_text = (f"{c['code'] or ''} {c['spec_title'] or ''} "
-                      f"[{c['clause_no']}] {c['title'] or ''} {c['content']}")
+        embed_text = build_embed_text(
+            c["code"], c["spec_title"], c["clause_no"], c["title"], c["content"])
         records.append({"clause_id": c["id"], "spec_id": c["spec_id"],
                         "text": embed_text, "dim_scores": ""})
     vs.batch_index(records)

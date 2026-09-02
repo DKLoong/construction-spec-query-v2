@@ -28,6 +28,7 @@
 </table>
 {% if checks|selectattr('count','gt',0)|selectattr('fixable','equalto',true)|list %}
 <button hx-post="/maintenance/fix-all" hx-target="#health-result" hx-swap="innerHTML"
+        hx-confirm="一键修复将执行全部可修复项，若含缺失向量索引可能耗时较长，确定继续？"
         style="margin-top:0.5rem;background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:var(--pico-primary-inverse)">🧹 一键修复全部</button>
 {% endif %}
 <button hx-post="/maintenance/rebuild-vectors" hx-target="#health-result" hx-swap="innerHTML"

@@ -247,11 +247,12 @@ async def update_clause(
         # 重索引向量
         try:
             from app.search.vector_search import VectorStore
+            from app.search.embed_text import build_embed_text
             spec = conn.execute(
                 "SELECT code, title FROM specifications WHERE id = ?", (spec_id,)
             ).fetchone()
             vs = VectorStore()
-            embed_text = f"{spec['code'] or ''} {spec['title'] or ''} [{clause_no}] {title or ''} {content}"
+            embed_text = build_embed_text(spec["code"], spec["title"], clause_no, title, content)
             vs.index_clause(clause_id, spec_id, embed_text)
         except Exception as e:
             logger.warning("向量重索引失败: %s", e)

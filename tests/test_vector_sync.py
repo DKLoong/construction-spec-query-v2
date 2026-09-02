@@ -78,3 +78,41 @@ def test_sync_with_db_no_table(monkeypatch, tmp_path):
     monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(lance_path))
     init_db()
     assert VectorStore().sync_with_db() == 0
+
+
+def test_index_missing_no_table(monkeypatch, tmp_path):
+    """向量表不存在时 index_missing 返回 -1（供 fix_issue 识别「需重建」）"""
+    db_path = tmp_path / "test.db"
+    lance_path = tmp_path / "lance"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(lance_path))
+    init_db()
+    assert VectorStore().index_missing() == -1
+
+
+def test_index_missing_diffset_no_placeholders(monkeypatch, tmp_path):
+    """Python 侧差集补齐缺失向量（不依赖 NOT IN 动态占位符）"""
+    db_path = tmp_path / "test.db"
+    lance_path = tmp_path / "lance"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(lance_path))
+    init_db()
+    _make_table(lance_path, [(1, 1, "a")])  # 向量表仅含 clause_id=1
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB T', 't')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for no in ("1", "2"):
+            conn.execute(
+                "INSERT INTO clauses (spec_id, clause_no, content) VALUES (?,?,?)",
+                (spec_id, no, "x"),
+            )
+    calls = []
+    monkeypatch.setattr(
+        VectorStore, "index_clause",
+        lambda self, clause_id, spec_id, text, dim_scores="": calls.append((clause_id, text)),
+    )
+    added = VectorStore().index_missing()
+    assert added == 1  # 仅 clause_id=2 缺失
+    assert [c[0] for c in calls] == [2]
+    from app.search.embed_text import build_embed_text
+    assert calls[0][1] == build_embed_text("GB T", "t", "2", "", "x")
