@@ -10,9 +10,11 @@
 用法（对当前库只读诊断，改库操作均需显式传参；改动前建议先备份 SQLite）：
   D:/Python/python.exe scripts/cleanup_rule_pollution.py                 # 诊断报告
   D:/Python/python.exe scripts/cleanup_rule_pollution.py --disable-unconfirmed
-      # 停用 confirmed=0 的规则（历史 auto_adopted 沉淀，多为碎片且无人工确认；禁用比删除安全可恢复）
+      # 停用 confirmed=0 且未锁定的规则（历史 auto_adopted 沉淀，多为碎片且无人工确认；
+      # 禁用比删除安全可恢复；锁定 locked=1 的规则豁免，不在此列）
   D:/Python/python.exe scripts/cleanup_rule_pollution.py --reset-orphan-labels
-      # 把 dim4/5/6 无规则支撑的标签条文重置为待复核（清标签、needs_review=1）
+      # 把 dim4/5/6 无启用规则支撑的标签条文重置为待复核（清标签、needs_review=1；
+      # 仅动 clauses 条文，不触碰任何规则）
 """
 import argparse
 import sys
@@ -80,13 +82,17 @@ def _disable_unconfirmed(conn):
     """
     rows = conn.execute(
         "SELECT dimension, COUNT(*) n FROM classification_rules "
-        "WHERE confirmed = 0 AND is_active = 1 GROUP BY dimension"
+        "WHERE confirmed = 0 AND is_active = 1 AND (locked IS NULL OR locked = 0) "
+        "GROUP BY dimension"
     ).fetchall()
     for r in rows:
         dim_label = {"dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"}.get(r["dimension"], r["dimension"])
         print(f"{dim_label}: 将停用 {r['n']} 条 confirmed=0 规则")
-    conn.execute("UPDATE classification_rules SET is_active = 0 WHERE confirmed = 0 AND is_active = 1")
-    print("\n已停用全部 confirmed=0 规则（碎片止损）。")
+    conn.execute(
+        "UPDATE classification_rules SET is_active = 0 "
+        "WHERE confirmed = 0 AND is_active = 1 AND (locked IS NULL OR locked = 0)"
+    )
+    print("\n已停用全部 confirmed=0 规则（锁定规则豁免，碎片止损）。")
 
 
 def _reset_orphan_labels(conn):
