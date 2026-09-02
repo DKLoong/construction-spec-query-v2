@@ -19,4 +19,8 @@
     <p style="color: red;">导入失败: {{ progress.message }}</p>
     {% endif %}
     {# 处理中状态：外层 div 自带的 hx-get 负责轮询，无需内层 div #}
+    {# 终态广播：通知 import.js 复位 uploading（允许再次导入/恢复开始导入按钮） #}
+    {% if progress.status in ("done", "review_needed", "error") %}
+    <script>(function(){ window.dispatchEvent(new CustomEvent('import-finished')); })();</script>
+    {% endif %}
 </div>

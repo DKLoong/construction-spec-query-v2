@@ -14,6 +14,13 @@ document.addEventListener('alpine:init', () => {
 
         // 打开对话框时重置校核状态，避免上次导入的 checkResult/contentEdited 残留
         // 污染本次 handleUpload（携带上一轮陈旧 status/replacedBy 错误标废旧规范）
+        init() {
+            // 导入进入终态（done/review_needed/error）时由 import_progress.html 广播
+            // import-finished 事件，这里复位 uploading，允许再次导入
+            window.addEventListener('import-finished', () => {
+                this.uploading = false;
+            });
+        },
         openDialog() {
             this.open = true;
             this.checkResult = null;
@@ -79,6 +86,11 @@ document.addEventListener('alpine:init', () => {
                 // 让 htmx 扫描新插入的元素，启动轮询
                 if (window.htmx) {
                     htmx.process(resultEl);
+                }
+                // 轮询态（上传成功进入后台处理）由 import-finished 事件复位 uploading；
+                // 非轮询响应（重复导入/即时错误，返回最终态 HTML）直接复位，允许再次上传
+                if (!html.includes('hx-get="/import/progress/')) {
+                    this.uploading = false;
                 }
             } catch (e) {
                 document.getElementById('import-result').innerHTML = `<p style="color:red;">上传失败: ${e.message}</p>`;

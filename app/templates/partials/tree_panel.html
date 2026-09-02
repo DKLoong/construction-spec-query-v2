@@ -45,7 +45,7 @@
                             @click="runVersionCheck()" :disabled="checking">
                         <span x-text="checking ? '校核中...' : '🔍 校核有效性'"></span>
                     </button>
-                    <div id="version-check-result" x-show="checkResult" x-cloak style="margin-top:0.5rem">
+                    <template x-if="checkResult"><div id="version-check-result" style="margin-top:0.5rem">
                         <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">
                             <span style="font-size:0.8rem">状态：</span>
                             <select x-model="checkResult.status" style="font-size:0.8rem;padding:0.15rem 0.3rem;width:auto">
@@ -67,7 +67,7 @@
                             <input type="text" x-model="checkResult.replacedBy" placeholder="如 GB 50010-2011（可留空）"
                                    style="font-size:0.8rem;padding:0.2rem 0.4rem">
                         </label>
-                    </div>
+                    </div></template>
                     <small x-show="contentEdited && checkResult" style="color:var(--pico-muted-color);font-size:0.75rem">
                         内容已修改，建议重新校核
                     </small>
