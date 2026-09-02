@@ -1,0 +1,38 @@
+<!-- 健康检查结果片段：各检查项 + 分项修复 + 一键修复 + 重建向量 -->
+{% if checks %}
+<table class="striped" style="font-size:0.85rem">
+    <thead><tr><th>检查项</th><th>数量</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for c in checks %}
+    <tr>
+        <td>{{ c.label }}</td>
+        <td>{{ c.count }}</td>
+        <td>
+            {% if c.severity == 'ok' %}
+            <span style="color:#1a7a1a">✅ 正常</span>
+            {% elif c.fixable %}
+            <span style="color:#a06500">⚠️ 可修复</span>
+            {% else %}
+            <span style="color:#b00000">⛔ 需人工</span>
+            {% endif %}
+        </td>
+        <td>
+            {% if c.count > 0 and c.fixable %}
+            <button class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem"
+                    hx-post="/maintenance/fix/{{ c.key }}" hx-target="#health-result" hx-swap="innerHTML">修复</button>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% if checks|selectattr('count','gt',0)|selectattr('fixable','equalto',true)|list %}
+<button hx-post="/maintenance/fix-all" hx-target="#health-result" hx-swap="innerHTML"
+        style="margin-top:0.5rem;background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:var(--pico-primary-inverse)">🧹 一键修复全部</button>
+{% endif %}
+<button hx-post="/maintenance/rebuild-vectors" hx-target="#health-result" hx-swap="innerHTML"
+        hx-confirm="将清空并全量重建向量索引（耗时较长），确定继续？"
+        class="outline" style="margin-top:0.5rem">🔄 重建向量索引</button>
+{% else %}
+<p style="color:var(--pico-muted-color)">点击「运行健康检查」开始。</p>
+{% endif %}

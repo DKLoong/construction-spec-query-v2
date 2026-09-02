@@ -109,6 +109,9 @@ app.include_router(settings_router)
 from app.routes.synonym_routes import router as synonym_router
 app.include_router(synonym_router)
 
+from app.routes.maintenance_routes import router as maintenance_router
+app.include_router(maintenance_router)
+
 
 @app.get("/")
 async def home(request: Request):
