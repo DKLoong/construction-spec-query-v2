@@ -247,12 +247,14 @@ async def confirm_review(request: Request, queue_id: int):
 
     with get_db() as conn:
         item = conn.execute(
-            "SELECT clause_id, dimension, ai_label FROM classification_queue WHERE id = ?",
+            "SELECT clause_id, dimension, ai_label, ai_confidence "
+            "FROM classification_queue WHERE id = ?",
             (queue_id,),
         ).fetchone()
 
     if item:
-        process_feedback(item["clause_id"], item["dimension"], item["ai_label"])
+        process_feedback(item["clause_id"], item["dimension"], item["ai_label"],
+                         source_conf=item["ai_confidence"] or 0.0)
 
     # 返回更新后的列表
     from app.main import templates

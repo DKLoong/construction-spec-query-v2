@@ -66,12 +66,31 @@ def apply_ai_results(batch_id: str, results: list[dict]):
                         f"UPDATE clauses SET {col} = ?, ai_classified = 1 WHERE id = ?",
                         (r["label"], r["clause_id"]),
                     )
+                    # 半监督闭环：auto_adopted 也沉淀规则（新规则直接启用；confirmed 不累加，
+                    # 避免 AI 未经人工确认虚增正确率）
+                    from app.classifier.feedback import extract_keywords
+                    from app.classifier.rule_sink import bump_rule
+                    content_row = conn.execute(
+                        "SELECT content FROM clauses WHERE id = ?", (r["clause_id"],)
+                    ).fetchone()
+                    if content_row:
+                        sub_field = _DIM_SUB_FIELD.get(dim, "")
+                        for kw in extract_keywords(content_row["content"] or "", top_n=3):
+                            bump_rule(conn, dim, kw, sub_field,
+                                      is_confirmed=False, new_rule_active=True)
 
 
 _DIM_COLUMN = {
     "dim4": "dim4_specialty",
     "dim5": "dim5_location",
     "dim6": "dim6_material",
+}
+
+# 维度 → 规则子字段映射（auto_adopted 沉淀规则时填充 sub_field）
+_DIM_SUB_FIELD = {
+    "dim4": "specialty",
+    "dim5": "location",
+    "dim6": "material",
 }
 
 

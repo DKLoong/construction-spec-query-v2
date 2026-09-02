@@ -12,7 +12,12 @@ def extract_keywords(text: str, top_n: int = 5) -> list[str]:
     return [w for w, _ in counter.most_common(top_n)]
 
 
-def process_feedback(clause_id: int, dimension: str, confirmed_label: str):
+def process_feedback(clause_id: int, dimension: str, confirmed_label: str,
+                     source_conf: float = 0.0):
+    """人工确认反馈：写回分类后，对提取关键词逐个沉淀规则（复用 rule_sink.bump_rule）。
+
+    source_conf 为 AI 置信度；≥ RULE_AUTO_ENABLE_CONF 时新规则初始启用。
+    """
     with get_db() as conn:
         conn.execute(
             "UPDATE classification_queue SET status = 'done' WHERE clause_id = ? AND dimension = ?",
@@ -29,30 +34,12 @@ def process_feedback(clause_id: int, dimension: str, confirmed_label: str):
 
         keywords = extract_keywords(row["content"], top_n=3)
         sub_field = {"dim4": "specialty", "dim5": "location", "dim6": "material"}.get(dimension, "")
-
+        from app.classifier.rule_sink import bump_rule
+        from app.config import RULE_AUTO_ENABLE_CONF
         for kw in keywords:
-            existing = conn.execute(
-                "SELECT id, hit_count, confirmed FROM classification_rules WHERE dimension = ? AND pattern = ?",
-                (dimension, kw),
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE classification_rules SET hit_count = hit_count + 1, confirmed = confirmed + 1 WHERE id = ?",
-                    (existing["id"],),
-                )
-                new_hit = existing["hit_count"] + 1
-                new_confirmed = existing["confirmed"] + 1
-                if new_confirmed / new_hit < 0.3 and new_hit > 10:
-                    conn.execute(
-                        "UPDATE classification_rules SET is_active = 0 WHERE id = ?",
-                        (existing["id"],),
-                    )
-            else:
-                conn.execute(
-                    """INSERT INTO classification_rules (dimension, sub_field, pattern, match_type, priority, threshold, is_active)
-                       VALUES (?, ?, ?, 'keyword', 0, 0.6, 0)""",
-                    (dimension, sub_field, kw),
-                )
+            bump_rule(conn, dimension, kw, sub_field,
+                      is_confirmed=True,
+                      new_rule_active=(source_conf >= RULE_AUTO_ENABLE_CONF))
 
 
 def _dim_to_column(dim: str) -> str:
