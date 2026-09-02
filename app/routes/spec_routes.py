@@ -425,3 +425,64 @@ async def update_clause_class(
         "spec_id": spec_id,
         "saved": True,
     })
+
+
+from fastapi.responses import JSONResponse as _JR
+
+
+@router.post("/specs/batch-reclassify")
+async def batch_reclassify(request: Request, body: dict):
+    """对所选规范条文批量重新分类（scope: all=全量清标签重跑 / unclassified=仅未分类）
+
+    unclassified 不动已有标签（防覆盖人工修正）；all 需清空 dim4/5/6 再重跑。
+    """
+    spec_ids = body.get("spec_ids") or []
+    scope = body.get("scope") or "unclassified"
+    if not isinstance(spec_ids, list) or not spec_ids:
+        return _JR({"detail": "spec_ids 须为非空数组"}, status_code=400)
+    if scope not in ("all", "unclassified"):
+        return _JR({"detail": "scope 须为 all 或 unclassified"}, status_code=400)
+
+    from app.classifier.batch_queue import add_to_queue
+    from app.ai.classifier_ai import process_pending_batches
+
+    ph = ",".join("?" * len(spec_ids))
+    with get_db() as conn:
+        # 收集目标条文
+        base = ("SELECT c.id, c.clause_no, c.title, c.content, "
+                "c.ai_classified, c.needs_review FROM clauses c WHERE c.spec_id IN (" + ph + ")")
+        if scope == "unclassified":
+            clauses = conn.execute(
+                base + " AND (c.ai_classified = 0 OR c.needs_review = 1)", spec_ids
+            ).fetchall()
+        else:
+            clauses = conn.execute(base, spec_ids).fetchall()
+            # scope=all：清空已有标签（防旧分类干扰重跑）
+            conn.execute(
+                "UPDATE clauses SET dim4_specialty='', dim5_location='', dim6_material='', "
+                "ai_classified=0, needs_review=1 WHERE spec_id IN (" + ph + ")",
+                spec_ids,
+            )
+        target_ids = [c["id"] for c in clauses]
+        if target_ids:
+            # 清旧队列项（先在外层事务提交，见下：add_to_queue 自带连接须避免写锁冲突）
+            tph = ",".join("?" * len(target_ids))
+            conn.execute(
+                "DELETE FROM classification_queue WHERE clause_id IN (" + tph + ")", target_ids)
+
+    # add_to_queue 内部自建 get_db 连接；若在外层 with get_db() 未提交事务内调用，
+    # 会与未提交写锁冲突抛 database is locked。故外层事务提交后再循环重入队（dim4/5/6 待 AI）。
+    if target_ids:
+        for cid in target_ids:
+            for dim in ("dim4", "dim5", "dim6"):
+                add_to_queue(cid, dim, 0.0)
+
+    count = 0
+    if target_ids:
+        try:
+            count = process_pending_batches(force=True)
+        except Exception as e:
+            return HTMLResponse(f"""<p style="color:orange;margin-top:0.5rem">已重新入队 {len(target_ids)} 条，但 AI 分类未完成：{e}</p>""")
+    from app.main import templates
+    return HTMLResponse(f"""<p style="color:green;margin-top:0.5rem">✅ 已对 {len(target_ids)} 条条文重新分类（AI 处理 {count} 条）</p>
+    <div id="spec-class-area" hx-swap-oob="true"></div>""")
