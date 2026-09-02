@@ -287,6 +287,49 @@ async def reject_review(request: Request, queue_id: int):
     )
 
 
+@router.post("/review/batch-confirm")
+async def batch_confirm(request: Request, body: dict):
+    """批量确认复核项（逐条走 process_feedback 反馈闭环）"""
+    from app.classifier.feedback import process_feedback
+    from fastapi.responses import JSONResponse as _JR
+
+    ids = body.get("queue_ids") or []
+    if not isinstance(ids, list):
+        return _JR({"detail": "queue_ids 须为数组"}, status_code=400)
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT id, clause_id, dimension, ai_label, ai_confidence FROM classification_queue WHERE id IN ({','.join('?' * len(ids))})",
+            ids,
+        ).fetchall()
+    for item in rows:
+        process_feedback(item["clause_id"], item["dimension"], item["ai_label"],
+                         source_conf=item["ai_confidence"] or 0.0)
+    return await review_list(request)
+
+
+@router.post("/review/batch-reject")
+async def batch_reject(request: Request, body: dict):
+    """批量驳回复核项"""
+    from fastapi.responses import JSONResponse as _JR
+
+    ids = body.get("queue_ids") or []
+    if not isinstance(ids, list):
+        return _JR({"detail": "queue_ids 须为数组"}, status_code=400)
+    if ids:
+        with get_db() as conn:
+            for i in ids:
+                item = conn.execute(
+                    "SELECT clause_id FROM classification_queue WHERE id = ?", (i,)
+                ).fetchone()
+                if item:
+                    conn.execute(
+                        "UPDATE classification_queue SET status='rejected', ai_label=NULL WHERE id=?",
+                        (i,),
+                    )
+                    conn.execute("UPDATE clauses SET needs_review=0 WHERE id=?", (item["clause_id"],))
+    return await review_list(request)
+
+
 # ═══════════════════════════════════════════
 # AI 分类运行
 # ═══════════════════════════════════════════

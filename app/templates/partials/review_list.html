@@ -1,51 +1,97 @@
-<!-- 审核队列片段 -->
+<!-- 审核队列片段（/review 页面 center_content 与 /review/list、批量端点共用） -->
+<div id="review-list">
 {% if items %}
-<table class="striped" style="font-size:0.85rem">
-    <thead>
+    <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
+        <label style="font-size:0.75rem;display:flex;align-items:center;gap:0.3rem;margin:0">
+            <input type="checkbox" id="review-select-all" style="width:0.9rem;height:0.9rem"
+                   onchange="toggleReviewAll(this)"> 全选
+        </label>
+        <button id="review-batch-confirm" class="outline" disabled
+                style="font-size:0.75rem;padding:0.15rem 0.5rem;background:green;border-color:green;color:white"
+                onclick="reviewBatch('confirm')">✅ 批量确认所选</button>
+        <button id="review-batch-reject" class="outline secondary" disabled
+                style="font-size:0.75rem;padding:0.15rem 0.5rem"
+                onclick="reviewBatch('reject')">❌ 批量驳回所选</button>
+    </div>
+    <table class="striped" style="font-size:0.85rem">
+        <thead>
+            <tr>
+                <th><input type="checkbox" style="width:0.9rem;height:0.9rem" disabled></th>
+                <th>规范</th>
+                <th>条文</th>
+                <th>内容</th>
+                <th>维度</th>
+                <th>AI 建议</th>
+                <th>置信度</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for item in items %}
         <tr>
-            <th>规范</th>
-            <th>条文</th>
-            <th>内容</th>
-            <th>维度</th>
-            <th>AI 建议</th>
-            <th>置信度</th>
-            <th>操作</th>
+            <td><input type="checkbox" class="review-check" value="{{ item.queue_id }}"
+                       style="width:0.9rem;height:0.9rem"
+                       onchange="reviewSelectionChanged()"></td>
+            <td><small>{{ item.spec_code }}</small></td>
+            <td><code>{{ item.clause_no }}</code></td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                title="{{ item.content }}">{{ item.content[:50] }}</td>
+            <td><small>
+                {% set labels = {"dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"} %}
+                {{ labels.get(item.dimension, item.dimension) }}
+            </small></td>
+            <td><span class="dim-tag">{{ item.ai_label }}</span></td>
+            <td>{{ "%.0f"|format(item.ai_confidence * 100) if item.ai_confidence else '-' }}%</td>
+            <td>
+                <div style="display:flex;gap:0.25rem">
+                    <button hx-post="/review/{{ item.queue_id }}/confirm"
+                            hx-target="closest tr" hx-swap="outerHTML"
+                            style="font-size:0.75rem;padding:0.15rem 0.4rem;background:green;border-color:green">
+                        ✅ 确认
+                    </button>
+                    <button hx-post="/review/{{ item.queue_id }}/reject"
+                            hx-target="closest tr" hx-swap="outerHTML"
+                            class="secondary"
+                            style="font-size:0.75rem;padding:0.15rem 0.4rem">
+                        ❌ 驳回
+                    </button>
+                </div>
+            </td>
         </tr>
-    </thead>
-    <tbody>
-    {% for item in items %}
-    <tr>
-        <td><small>{{ item.spec_code }}</small></td>
-        <td><code>{{ item.clause_no }}</code></td>
-        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-            title="{{ item.content }}">{{ item.content[:50] }}</td>
-        <td><small>
-            {% set labels = {"dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"} %}
-            {{ labels.get(item.dimension, item.dimension) }}
-        </small></td>
-        <td><span class="dim-tag">{{ item.ai_label }}</span></td>
-        <td>{{ "%.0f"|format(item.ai_confidence * 100) if item.ai_confidence else '-' }}%</td>
-        <td>
-            <div style="display:flex;gap:0.25rem">
-                <button hx-post="/review/{{ item.queue_id }}/confirm"
-                        hx-target="closest tr" hx-swap="outerHTML"
-                        style="font-size:0.75rem;padding:0.15rem 0.4rem;background:green;border-color:green">
-                    ✅ 确认
-                </button>
-                <button hx-post="/review/{{ item.queue_id }}/reject"
-                        hx-target="closest tr" hx-swap="outerHTML"
-                        class="secondary"
-                        style="font-size:0.75rem;padding:0.15rem 0.4rem">
-                    ❌ 驳回
-                </button>
-            </div>
-        </td>
-    </tr>
-    {% endfor %}
-    </tbody>
-</table>
+        {% endfor %}
+        </tbody>
+    </table>
+    <script>
+    function toggleReviewAll(el) {
+        document.querySelectorAll('.review-check').forEach(function (c) { c.checked = el.checked; });
+        reviewSelectionChanged();
+    }
+    function reviewSelectionChanged() {
+        var n = document.querySelectorAll('.review-check:checked').length;
+        document.getElementById('review-batch-confirm').disabled = n === 0;
+        document.getElementById('review-batch-reject').disabled = n === 0;
+    }
+    async function reviewBatch(action) {
+        var ids = Array.from(document.querySelectorAll('.review-check:checked'))
+            .map(function (c) { return parseInt(c.value, 10); });
+        if (!ids.length) return;
+        var ok = action === 'confirm'
+            ? confirm('确认所选 ' + ids.length + ' 条审核结果？')
+            : confirm('驳回所选 ' + ids.length + ' 条？');
+        if (!ok) return;
+        var url = action === 'confirm' ? '/review/batch-confirm' : '/review/batch-reject';
+        try {
+            var resp = await fetch(url, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ queue_ids: ids }),
+            });
+            var html = await resp.text();
+            var host = document.getElementById('review-list');
+            if (host) { host.innerHTML = html; if (window.htmx) htmx.process(host); }
+        } catch (e) { alert('批量操作失败：' + e.message); }
+    }
+    </script>
 {% else %}
-<p style="color:var(--pico-muted-color);text-align:center;padding:2rem">
-    🎉 暂无待审核项
-</p>
+    <p style="color:var(--pico-muted-color);text-align:center;padding:2rem">🎉 暂无待审核项</p>
 {% endif %}
+</div>
