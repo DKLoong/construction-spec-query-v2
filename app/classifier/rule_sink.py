@@ -13,15 +13,18 @@ _DISABLE_MIN_HIT = 10
 
 
 def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
-              is_confirmed: bool = False, new_rule_active: bool = False) -> None:
+              is_confirmed: bool = False, new_rule_active: bool = False,
+              label: str | None = None) -> None:
     """规则命中沉淀：存在则 hit++（人工确认时 confirmed++）并自动启停；不存在则新建。
 
     - is_confirmed：人工确认来源为 True（confirmed+1）；auto_adopted 自动采纳为 False
       （仅 hit++，避免 AI 未人工确认虚增正确率）
     - new_rule_active：新生成规则初始是否启用（auto_adopted 或人工确认 conf≥0.9 传 True）
+    - label：规则赋值标签（命中后写入分类列，区别于匹配词 pattern）。历史规则 label 为
+      NULL（旧 pattern 当标签语义）时，本次带 label 沉淀会回填纠正
     """
     row = conn.execute(
-        "SELECT id, hit_count, confirmed, is_active FROM classification_rules "
+        "SELECT id, hit_count, confirmed, is_active, label FROM classification_rules "
         "WHERE dimension = ? AND pattern = ?",
         (dimension, pattern),
     ).fetchone()
@@ -34,6 +37,12 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
             "updated_at = datetime('now','localtime') WHERE id = ?",
             (new_hit, new_conf, row["id"]),
         )
+        # 历史规则 label 为空且本次带 label → 回填（纠正「匹配词被当标签」的旧语义）
+        if not row["label"] and label:
+            conn.execute(
+                "UPDATE classification_rules SET label = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+                (label, row["id"]),
+            )
         # 自动启停：按长期正确率
         ratio = (new_conf * 1.0 / new_hit) if new_hit else 0.0
         if ratio >= RULE_AUTO_ENABLE_RATIO and new_hit >= RULE_AUTO_ENABLE_MIN_HIT:
@@ -52,10 +61,11 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
         conn.execute(
             """INSERT INTO classification_rules
                (dimension, sub_field, pattern, match_type, priority, threshold,
-                hit_count, confirmed, is_active)
-               VALUES (?, ?, ?, 'keyword', 0, 0.6, ?, ?, ?)""",
+                hit_count, confirmed, is_active, label)
+               VALUES (?, ?, ?, 'keyword', 0, 0.6, ?, ?, ?, ?)""",
             (dimension, sub_field, pattern,
              1,  # 本次 bump 即该规则首次命中
              1 if is_confirmed else 0,  # 人工确认来源首次即记 confirmed
-             1 if new_rule_active else 0),
+             1 if new_rule_active else 0,
+             label),
         )

@@ -76,8 +76,10 @@ def apply_ai_results(batch_id: str, results: list[dict]):
                     if content_row:
                         sub_field = _DIM_SUB_FIELD.get(dim, "")
                         for kw in extract_keywords(content_row["content"] or "", top_n=3):
+                            # label=AI 采纳的分类标签：匹配词 kw 只负责命中，赋值写 label
                             bump_rule(conn, dim, kw, sub_field,
-                                      is_confirmed=False, new_rule_active=True)
+                                      is_confirmed=False, new_rule_active=True,
+                                      label=r["label"])
 
 
 _DIM_COLUMN = {

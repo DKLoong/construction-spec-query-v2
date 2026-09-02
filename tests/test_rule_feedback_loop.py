@@ -33,9 +33,9 @@ def test_auto_adopted_sinks_rule_active(monkeypatch, tmp_path):
         {"clause_id": clause["id"], "label": "结构专业", "confidence": 0.85},
     ])
     with _g() as conn:
-        # 关键词由 extract_keywords 提取，内容「钢筋进场应检验屈服强度」首词为「钢筋进场」
+        # 关键词由 extract_keywords 提取，内容「钢筋进场应检验屈服强度」首词为「钢筋」（jieba 分词）
         rule = conn.execute(
-            "SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋进场'"
+            "SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋'"
         ).fetchone()
         q = conn.execute(
             "SELECT status FROM classification_queue WHERE clause_id=? AND dimension='dim4'",
@@ -57,8 +57,8 @@ def test_feedback_high_conf_rule_auto_active(monkeypatch, tmp_path):
         conn.execute("UPDATE clauses SET content='钢筋进场应检验屈服强度' WHERE id=?", (clause["id"],))
     process_feedback(clause["id"], "dim4", "结构专业", source_conf=0.95)
     with get_db() as conn:
-        rule = conn.execute("SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋进场'").fetchone()
-        # 关键词含 钢筋进场 → 新规则；高置信 → is_active=1；人工确认来源首条即记 confirmed=1
+        rule = conn.execute("SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋'").fetchone()
+        # 关键词含 钢筋（jieba 首词）→ 新规则；高置信 → is_active=1；人工确认来源首条即记 confirmed=1
         assert rule is not None
         assert rule["is_active"] == 1
         assert rule["confirmed"] == 1
@@ -74,7 +74,7 @@ def test_feedback_low_conf_rule_inactive(monkeypatch, tmp_path):
         conn.execute("UPDATE clauses SET content='钢筋进场应检验屈服强度' WHERE id=?", (clause["id"],))
     process_feedback(clause["id"], "dim4", "结构专业", source_conf=0.6)
     with get_db() as conn:
-        rule = conn.execute("SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋进场'").fetchone()
+        rule = conn.execute("SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋'").fetchone()
         # 低置信 → 新规则初态 inactive，待审核
         assert rule is not None
         assert rule["is_active"] == 0

@@ -141,7 +141,9 @@ def classify_clause(clause_text: str, parent_path: list[str],
         # 必须超过规则自身的阈值才参与该维度的竞争
         if score >= rule_threshold and score > scores[dim]:
             scores[dim] = score
-            best_labels[dim] = rule["pattern"]
+            # 规则赋值 label（沉淀规则存确认标签，避免把匹配词直接当标签）；
+            # 旧规则 label 为 NULL 时兼容回退用 pattern（关键词即标签的旧语义）
+            best_labels[dim] = rule.get("label") or rule["pattern"]
             best_rule_ids[dim] = rule["id"]
 
     return scores, best_labels, best_rule_ids
