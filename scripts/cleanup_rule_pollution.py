@@ -13,8 +13,10 @@
       # 停用 confirmed=0 且未锁定的规则（历史 auto_adopted 沉淀，多为碎片且无人工确认；
       # 禁用比删除安全可恢复；锁定 locked=1 的规则豁免，不在此列）
   D:/Python/python.exe scripts/cleanup_rule_pollution.py --reset-orphan-labels
-      # 把 dim4/5/6 无启用规则支撑的标签条文重置为待复核（清标签、needs_review=1；
-      # 仅动 clauses 条文，不触碰任何规则）
+      # 把 dim4/5/6 无启用规则支撑的标签条文重置为待复核（清标签、needs_review=1）
+      # 并重新加入分类队列（dim pending）——跑规则页「运行 AI 分类」后，
+      # AI 低置信项进入审核页队列（classification_queue.status='review'）供人工复核。
+      # 仅动 clauses + classification_queue 的该批条文，不触碰任何规则。
 """
 import argparse
 import sys
@@ -96,21 +98,48 @@ def _disable_unconfirmed(conn):
 
 
 def _reset_orphan_labels(conn):
+    """重置孤儿标签条文为待复核，并重新加入分类队列（供「运行 AI 分类」处理）。
+
+    审核页来源是 classification_queue.status='review'（由 AI 分类低置信项产生）——
+    若只清标签不入队，AI 分类管线不会处理这些条文，也就无法进入审核页。
+    """
     total = 0
     for dim, col, label_cn in DIMS:
-        n = conn.execute(
-            f"""UPDATE clauses SET {col} = '', ai_classified = 0, needs_review = 1
-                WHERE id IN (
-                  SELECT c.id FROM clauses c
-                  WHERE c.{col} IS NOT NULL AND c.{col} != ''
-                    AND NOT EXISTS (
-                      SELECT 1 FROM classification_rules r
-                      WHERE r.dimension = ? AND r.is_active = 1 AND (r.label = c.{col} OR (r.label IS NULL AND r.pattern = c.{col}))))""",
+        ids = conn.execute(
+            f"""SELECT c.id FROM clauses c
+                WHERE c.{col} IS NOT NULL AND c.{col} != ''
+                  AND NOT EXISTS (
+                    SELECT 1 FROM classification_rules r
+                    WHERE r.dimension = ? AND r.is_active = 1
+                      AND (r.label = c.{col} OR (r.label IS NULL AND r.pattern = c.{col})))""",
             (dim,),
-        ).rowcount
-        print(f"{label_cn}: 已重置 {n} 条孤儿标签条文为待复核")
-        total += n
-    print(f"\n共重置 {total} 条。可运行规则页「运行 AI 分类」重新分类。")
+        ).fetchall()
+        clause_ids = [r["id"] for r in ids]
+        if not clause_ids:
+            print(f"{label_cn}: 无孤儿标签")
+            continue
+        # 清标签 + 标记待复核
+        conn.execute(
+            f"""UPDATE clauses SET {col} = '', ai_classified = 0, needs_review = 1
+                WHERE id IN ({','.join('?' * len(clause_ids))})""",
+            clause_ids,
+        )
+        # 清该批旧队列项后重新入队（dim 维度 pending），供 AI 分类处理
+        conn.execute(
+            f"""DELETE FROM classification_queue
+                WHERE clause_id IN ({','.join('?' * len(clause_ids))}) AND dimension = ?""",
+            clause_ids + [dim],
+        )
+        for cid in clause_ids:
+            conn.execute(
+                "INSERT INTO classification_queue (clause_id, dimension, keyword_score) "
+                "VALUES (?, ?, ?)",
+                (cid, dim, 0.0),
+            )
+        print(f"{label_cn}: 已重置并重新入队 {len(clause_ids)} 条孤儿标签条文")
+        total += len(clause_ids)
+    print(f"\n共重置并重新入队 {total} 条。请到规则页点击「运行 AI 分类」重新分类——"
+          f"AI 低置信项将进入审核队列供人工复核。")
 
 
 def main():
