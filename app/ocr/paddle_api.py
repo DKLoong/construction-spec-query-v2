@@ -196,52 +196,99 @@ class PaddleVLClient:
     def _headers(self) -> dict:
         return {"Authorization": f"bearer {self.access_token}"}
 
+    # 官网服务端用 HTTP 400 + code=10010 表示「任务提交队列已满」（限流，非客户端错误）。
+    # 队列会随前序任务完成而缓解，属瞬时可重试；用递增退避避免短时间高频提交被进一步限制。
+    _QUEUE_FULL_RETRIES = 5       # 队列满最大尝试次数（含首次）
+    _QUEUE_FULL_BASE_DELAY = 6.0  # 队列满首次重试等待（秒），后续 ×1.5 递增，封顶 30s
+
     async def _submit_task(self, file_path: str,
                            retries: int = 3, retry_delay: float = 2.0) -> str:
         """multipart 上传 PDF，返回 jobId
 
-        官网服务端偶发 HTTP 5xx（瞬时故障），对 5xx 做有限重试；
-        4xx 属客户端错误（token 无效/文件问题），直接失败不重试。
+        可重试的瞬时故障两类：
+        - HTTP 5xx（服务端瞬时故障）→ 沿用 retries/retry_delay 有限重试；
+        - HTTP 400 code=10010「任务提交队列已满」（官网限流）→ 独立递增退避
+          （6s → 9s → 13.5s → 20s → 30s，最多 _QUEUE_FULL_RETRIES 次）。
+        其它 4xx 属客户端错误（token 无效/文件问题），直接失败不重试。
         """
         import httpx
 
         file_name = Path(file_path).name
         optional = json.dumps(self._optional_payload())
-        last_err: RuntimeError | None = None
 
-        for attempt in range(1, retries + 1):
+        async def _post():
             with open(file_path, "rb") as f:
                 files = {"file": (file_name, f, "application/pdf")}
                 data = {"model": self.MODEL, "optionalPayload": optional}
                 async with httpx.AsyncClient(timeout=120) as client:
-                    resp = await client.post(
+                    return await client.post(
                         self.SUBMIT_URL,
                         headers=self._headers(),
                         data=data,
                         files=files,
                     )
 
+        def _job_id(resp) -> str:
             if resp.status_code == 200:
-                body = resp.json()
-                job_id = (body.get("data") or {}).get("jobId", "")
-                if job_id:
-                    return job_id
+                try:
+                    return (resp.json().get("data") or {}).get("jobId", "")
+                except Exception:
+                    return ""
+            return ""
+
+        def _is_queue_full(resp) -> bool:
+            """HTTP 400 且响应体 code=10010 → 官网「任务队列已满」"""
+            if resp.status_code != 400:
+                return False
+            try:
+                return (resp.json() or {}).get("code") == 10010
+            except Exception:
+                return False
+
+        srv_tries = 0    # 5xx / 200-无 jobId 的重试计数
+        queue_tries = 0  # 队列满的重试计数（独立，退避更长）
+        last_err: RuntimeError | None = None
+
+        while True:
+            resp = await _post()
+            jid = _job_id(resp)
+            if jid:
+                return jid
+
+            if resp.status_code == 200:
                 # 200 但未返回 jobId：响应异常，视作可重试
                 last_err = RuntimeError("OCR 任务提交失败: 未返回 jobId")
+            elif _is_queue_full(resp):
+                queue_tries += 1
+                last_err = RuntimeError("OCR 任务队列已满，请稍后重试")
+                if queue_tries >= self._QUEUE_FULL_RETRIES:
+                    break
+                wait = min(self._QUEUE_FULL_BASE_DELAY * (1.5 ** (queue_tries - 1)), 30.0)
+                logger.warning(
+                    "PaddleOCR-VL 任务队列已满 (HTTP 400 code=10010)，第 %d/%d 次，%.0fs 后重试: %s",
+                    queue_tries, self._QUEUE_FULL_RETRIES, wait, resp.text[:300],
+                )
+                await asyncio.sleep(wait)
+                continue
             elif resp.status_code < 500:
-                # 4xx 客户端错误：重试无意义，直接失败
+                # 其它 4xx 客户端错误：重试无意义，直接失败
                 logger.error("PaddleOCR-VL 任务提交失败 (HTTP %s): %s",
                              resp.status_code, resp.text[:500])
                 raise RuntimeError(f"OCR 任务提交失败 (HTTP {resp.status_code})")
             else:
                 # 5xx 服务端瞬时错误：重试
                 last_err = RuntimeError(f"OCR 任务提交失败 (HTTP {resp.status_code})")
-                logger.warning(
-                    "PaddleOCR-VL 任务提交 5xx (HTTP %s)，第 %d/%d 次，稍后重试: %s",
-                    resp.status_code, attempt, retries, resp.text[:300],
-                )
-                if attempt < retries:
-                    await asyncio.sleep(retry_delay * attempt)
+
+            # 5xx / 200-无 jobId：沿用 retries/retry_delay 有限重试
+            srv_tries += 1
+            if srv_tries >= retries:
+                break
+            logger.warning(
+                "PaddleOCR-VL 任务提交 %s (HTTP %s)，第 %d/%d 次，稍后重试: %s",
+                "成功但无 jobId" if resp.status_code == 200 else "5xx",
+                resp.status_code, srv_tries, retries, resp.text[:300],
+            )
+            await asyncio.sleep(retry_delay * srv_tries)
 
         assert last_err is not None
         raise last_err

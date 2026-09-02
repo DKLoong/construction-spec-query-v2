@@ -345,6 +345,42 @@ def test_submit_task_no_retry_on_4xx(monkeypatch, tmp_path):
     assert calls["n"] == 1
 
 
+def test_submit_task_retries_queue_full_then_succeeds(monkeypatch, tmp_path):
+    """队列满（HTTP 400 code=10010）退避重试后成功返回 jobId"""
+    monkeypatch.setattr(PaddleVLClient, "_QUEUE_FULL_BASE_DELAY", 0)
+    calls = {"n": 0}
+
+    async def mock_post(self, url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return MockResponse({"code": 10010, "msg": "任务提交队列已满"}, status_code=400)
+        return MockResponse({"data": {"jobId": "job-q"}})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    job_id = asyncio.run(_new_client()._submit_task(str(pdf)))
+    assert job_id == "job-q"
+    assert calls["n"] == 3
+
+
+def test_submit_task_raises_after_queue_full_exhausted(monkeypatch, tmp_path):
+    """队列满重试耗尽（5 次）→ RuntimeError 提示稍后重试"""
+    monkeypatch.setattr(PaddleVLClient, "_QUEUE_FULL_BASE_DELAY", 0)
+    calls = {"n": 0}
+
+    async def mock_post(self, url, **kwargs):
+        calls["n"] += 1
+        return MockResponse({"code": 10010, "msg": "任务提交队列已满"}, status_code=400)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    with pytest.raises(RuntimeError, match="队列已满"):
+        asyncio.run(_new_client()._submit_task(str(pdf)))
+    assert calls["n"] == 5
+
+
 def test_submit_task_retries_when_200_without_jobid(monkeypatch, tmp_path):
     """200 但无 jobId → 重试"""
     calls = {"n": 0}
