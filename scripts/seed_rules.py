@@ -9,6 +9,8 @@ from app.database import init_db, get_db, get_connection
 
 # 六维种子规则定义
 # 每个规则: (dimension, sub_field, pattern, match_type, priority, threshold)
+# 预置规则默认锁定（locked=1）：作为受保护的标准规则，分享后不被僵尸规则判断/批量停用误删。
+# 动态沉淀的规则（auto_adopted / feedback）不带 locked，默认不锁定。
 RULES: list[tuple] = [
     # ===== 维度二：工程阶段 (dim2) =====
     # 前期
@@ -166,8 +168,8 @@ def seed(conn=None):
 
             c.execute(
                 """INSERT INTO classification_rules
-                   (dimension, sub_field, pattern, match_type, priority, threshold, is_active)
-                   VALUES (?, ?, ?, ?, ?, ?, 1)""",
+                   (dimension, sub_field, pattern, match_type, priority, threshold, is_active, locked)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, 1)""",
                 (dim, sub_field, pattern, match_type, priority, threshold),
             )
             inserted += 1
