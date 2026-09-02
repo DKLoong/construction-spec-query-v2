@@ -35,3 +35,26 @@ PROMPT_MODES = {
 def build_system_prompt(mode: str) -> str:
     """按模式返回 system prompt；未知模式回退 RAG。"""
     return PROMPT_MODES.get(mode, SYSTEM_PROMPT_RAG)
+
+
+def build_version_check_prompt(code: str, title: str) -> str:
+    """构造规范版本/命名校核 prompt，要求严格 JSON 输出。
+
+    输出字段：
+    - status: 现行 | 废止 | 修订中（判断规范当前是否有效）
+    - replaced_by_code: 被替代的规范编号（废止/修订中时若有），无则空串
+    - corrected_code / corrected_title: 规范化命名，与输入一致时原样返回
+    命名规则：代号[/T] 顺序号-发布年份，顺序号与年份间半角短横线 -，
+    代号与顺序号间半角空格。推荐性规范代号带 /T（GB/T、JGJ/T、CJ/T），
+    用户常把 GB/T 误写为 GBT、JGJ/T 误写为 JGJT，需识别并规范回填。
+    示例：GB 50010-2010（强制性）、GB/T 50107-2010《燃气工程制图标准》（推荐性）。
+    """
+    return (
+        "你是工程规范编号与版本校核助手。请对给定规范编号和名称判断其有效性状态，"
+        "并校核编号、名称是否符合规范命名规则。\n"
+        f"输入规范编号：{code}\n"
+        f"输入规范名称：{title}\n"
+        "只输出一个 JSON 对象，不要任何其他文字：\n"
+        '{"status": "现行|废止|修订中", "replaced_by_code": "被替代编号或空串", '
+        '"corrected_code": "规范化编号", "corrected_title": "规范化名称"}'
+    )

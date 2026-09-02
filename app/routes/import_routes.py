@@ -66,6 +66,46 @@ async def parse_filename(filename: str = Form("")):
     return {"code": code, "title": title, "matched": matched}
 
 
+@router.post("/import/validate-version")
+async def validate_version(body: dict):
+    """AI 校核规范版本与命名：返回 {status, replaced_by_code, corrected_code, corrected_title, ai_available}
+
+    AI 不可用/异常/输出非 JSON → 兜底返回 status=现行、ai_available=False（不抛错）。
+    corrected_code 一律再过 normalize_spec_code 兜底（D19 第一级正则）。
+    """
+    from app.ai.prompts import build_version_check_prompt
+    from app.ai.cli_client import get_backend
+
+    code = (body.get("code") or "").strip()
+    title = (body.get("title") or "").strip()
+    fallback = {
+        "status": "现行", "replaced_by_code": "", "ai_available": False,
+        "corrected_code": normalize_spec_code(code), "corrected_title": title,
+    }
+    if not code:
+        return fallback
+    try:
+        backend = get_backend()
+        if not backend.is_available():
+            return fallback
+        import json as _json
+        from app.config import WORKSPACE_DIR
+        prompt = build_version_check_prompt(code, title)
+        resp = await backend.ask(prompt, context="", system_prompt="", work_dir=WORKSPACE_DIR)
+        if not (resp.success and resp.content.strip()):
+            return fallback
+        parsed = _json.loads(resp.content)
+        return {
+            "status": parsed.get("status", "现行") if parsed.get("status") in ("现行", "废止", "修订中") else "现行",
+            "replaced_by_code": (parsed.get("replaced_by_code") or "").strip(),
+            "corrected_code": normalize_spec_code(parsed.get("corrected_code") or code),
+            "corrected_title": (parsed.get("corrected_title") or title).strip(),
+            "ai_available": True,
+        }
+    except Exception:
+        return fallback
+
+
 @router.post("/import/upload")
 async def upload_file(
     request: Request,
@@ -74,6 +114,8 @@ async def upload_file(
     title: str = Form(""),
     code: str = Form(""),
     force_ocr: bool = Form(False),
+    status: str = Form("现行"),
+    replaced_by_code: str = Form(""),
 ):
     content = await file.read()
     file_hash = _compute_file_hash(content)
@@ -107,7 +149,8 @@ async def upload_file(
     save_path.write_bytes(content)
 
     background_tasks.add_task(
-        _process_import, task_id, str(save_path), title, code, file_hash, force_ocr
+        _process_import, task_id, str(save_path), title, code, file_hash, force_ocr,
+        status, replaced_by_code,
     )
     return HTMLResponse(
         f'<div id="import-status" hx-get="/import/progress/{task_id}" hx-trigger="every 2s" hx-swap="outerHTML">处理中...</div>'
@@ -124,7 +167,8 @@ async def get_progress(request: Request, task_id: str):
 
 
 def _process_import(task_id: str, file_path: str, title: str, code: str,
-                    file_hash: str = "", force_ocr: bool = False):
+                    file_hash: str = "", force_ocr: bool = False,
+                    status: str = "现行", replaced_by_code: str = ""):
     """后台任务 Phase 1：OCR(如需) → 暂停等待审查 → 审查后继续 Phase 2
 
     force_ocr=True 时强制走 OCR（适用于「半扫描」PDF：有少量文本层但格式
@@ -144,7 +188,7 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
             # 保守清洗（删除页码行/纯数字行/OCR失败标记/重复页眉），再进入 Phase 2
             md_text = clean_ocr_text(md_text)
             # MD 文件直接继续 Phase 2（同一线程内安全）
-            _process_import_phase2(task_id, md_text, title, code, file_path, file_hash)
+            _process_import_phase2(task_id, md_text, title, code, file_path, file_hash, status, replaced_by_code)
             return
         elif ext == ".pdf":
             if force_ocr or is_scanned(file_path):
@@ -176,6 +220,9 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
         progress_store[task_id]["file_path"] = file_path
         progress_store[task_id]["file_name"] = path.name
         progress_store[task_id]["file_hash"] = file_hash
+        # 表单传入的规范状态/被替代编号（用 spec_status 键，避免与任务处理状态 status 冲突）
+        progress_store[task_id]["spec_status"] = status
+        progress_store[task_id]["replaced_by_code"] = replaced_by_code
 
         progress_store[task_id].update(
             status="review_needed", progress=50,
@@ -225,7 +272,8 @@ def _filter_cover_clauses(clauses: list[dict]) -> list[dict]:
 
 
 def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
-                            file_path: str, file_hash: str = ""):
+                            file_path: str, file_hash: str = "",
+                            status: str = "现行", replaced_by_code: str = ""):
     """后台任务 Phase 2：解析 → 分类 → 索引（始终创建新连接，线程安全）"""
     conn = None
     try:
@@ -237,7 +285,8 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         # Step 2: 解析条文 + 过滤封面/出版信息页脏数据
         clauses_data = _filter_cover_clauses(parse_markdown(md_text))
 
-        # Step 3: 规范级分类
+        # Step 3: 规范级分类（code 先归一化，再 detect 层级/性质）
+        code = normalize_spec_code(code) or Path(file_path).stem
         dim1_hierarchy = detect_hierarchy(code)
         dim1_nature = detect_nature(code)
 
@@ -273,14 +322,26 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
         conn.execute(
             """INSERT INTO specifications (code, title, dim1_hierarchy, dim1_nature,
-               dim2_stage, dim3_usage, source_path, output_dir, file_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               dim2_stage, dim3_usage, source_path, output_dir, file_hash, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (code or Path(file_path).stem, title or Path(file_path).stem,
              dim1_hierarchy, dim1_nature,
              dim2_stage, dim3_usage,
-             file_path, output_dir, file_hash),
+             file_path, output_dir, file_hash, status),
         )
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        # 反向联动：replaced_by_code 命中库中旧规范 → 反写旧规范废止 + 关联
+        if replaced_by_code:
+            norm_old = normalize_spec_code(replaced_by_code)
+            old = conn.execute(
+                "SELECT id FROM specifications WHERE code = ?", (norm_old,)
+            ).fetchone()
+            if old:
+                conn.execute(
+                    "UPDATE specifications SET status = '废止', replace_by_spec_id = ? WHERE id = ?",
+                    (spec_id, old["id"]),
+                )
 
         classified_count = 0
         vs = None
@@ -491,6 +552,8 @@ async def confirm_review(
     code = task.get("code", "")
     file_path = task.get("file_path", "")
     file_hash = task.get("file_hash", "")
+    status = task.get("spec_status", "现行")
+    replaced_by_code = task.get("replaced_by_code", "")
 
     # 更新为审查后的文本
     task["md_text"] = content
@@ -498,7 +561,8 @@ async def confirm_review(
 
     # 启动 Phase 2（不再跨线程传递 conn，Phase 2 自己创建连接）
     background_tasks.add_task(
-        _process_import_phase2, task_id, content, title, code, file_path, file_hash
+        _process_import_phase2, task_id, content, title, code, file_path, file_hash,
+        status, replaced_by_code,
     )
 
     return HTMLResponse(
