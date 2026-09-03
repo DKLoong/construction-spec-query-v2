@@ -48,17 +48,29 @@ def _count_bad_classification() -> int:
         ).fetchone()[0]
 
 
-def _vector_ids() -> set[int] | None:
-    """读取向量表全部 clause_id；表不存在/读失败返回 None（区别于空集）"""
+def _vector_ids_and_state() -> tuple[set[int], str]:
+    """读取向量表全部 clause_id，返回 (ids, state)。
+
+    state：
+      - ok      正常，ids=向量表现存 clause_id
+      - missing 向量表不存在（空集，语义为「待重建」而非异常）
+      - error   表存在但读取失败（空集，需人工查服务端日志）
+    """
     try:
         from app.search.vector_search import VectorStore
         vs = VectorStore()
         if not vs._table_exists():
-            return None
+            return set(), "missing"
         tbl = vs._get_table()
-        return {int(v) for v in tbl.to_arrow().column("clause_id").to_pylist()}
+        return {int(v) for v in tbl.to_arrow().column("clause_id").to_pylist()}, "ok"
     except Exception:
-        return None
+        return set(), "error"
+
+
+def _vector_ids() -> set[int] | None:
+    """兼容封装：正常返回 id 集；表缺失/读失败返回 None（历史语义）"""
+    ids, state = _vector_ids_and_state()
+    return ids if state == "ok" else None
 
 
 def _count_vector_orphan(vids: set[int] | None = None) -> int:
@@ -92,30 +104,39 @@ def _count_fts_mismatch() -> int:
 
 def run_health_check() -> dict:
     """执行全部检查，写 system_logs + health_check_snapshots，返回结果 dict"""
-    vector_ids = _vector_ids()  # None 表示向量表不存在/读失败（区别于空集）
+    vector_ids, vstate = _vector_ids_and_state()
     counts = {
         "orphan_parent": _count_orphan_parent(),
         "empty_content": _count_empty_content(),
         "bad_classification": _count_bad_classification(),
-        "vector_orphan": _count_vector_orphan(vector_ids),
-        "vector_missing": _count_vector_missing(vector_ids),
+        "vector_orphan": _count_vector_orphan(vector_ids if vstate == "ok" else None),
+        "vector_missing": _count_vector_missing(vector_ids if vstate == "ok" else None),
         "fts_mismatch": _count_fts_mismatch(),
     }
+    if vstate == "error":
+        log_action("maintenance", "WARN", "健康检查向量索引读取失败")
     checks = []
     for key, label in LABELS.items():
         count = counts[key]
         fixable = key != "empty_content"
         severity = "ok" if count == 0 else ("warn" if fixable else "error")
-        if key == "vector_missing" and vector_ids is None:
-            # 向量表不存在：语义为「待重建」，非「可单项修复」，标 error 走「需人工」分支
-            count = 0
-            fixable = False
-            severity = "error"
-        checks.append({
-            "key": key, "label": label, "count": count,
-            "severity": severity,
-            "fixable": fixable,
-        })
+        item = {"key": key, "label": label, "count": count,
+                "severity": severity, "fixable": fixable}
+        if key == "vector_missing":
+            if vstate == "missing":
+                # 向量表不存在：语义为「待重建」，非「可单项修复」，也不宜当异常
+                item.update(count=0, severity="rebuild", fixable=False,
+                            count_text="待重建", status_text="⚠️ 待重建",
+                            hint="请使用下方「🔄 重建向量索引」")
+            elif vstate == "error":
+                # 表存在但读取失败：真异常，需人工查服务端日志
+                item.update(count=0, severity="error", fixable=False,
+                            count_text="—", status_text="⛔ 读取失败",
+                            hint="请查看服务端日志（向量索引读取异常）")
+        elif key == "empty_content" and count > 0:
+            # 仅报告不自动删：操作列给指引而非空白
+            item["hint"] = "请在条文管理中人工处理（不自动删除）"
+        checks.append(item)
     result = {"checks": checks}
     # 持久化：写日志 + 快照（表由 P0 schema 迁移建好）
     import json

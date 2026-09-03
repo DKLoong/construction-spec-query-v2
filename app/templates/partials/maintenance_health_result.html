@@ -6,9 +6,14 @@
     {% for c in checks %}
     <tr>
         <td>{{ c.label }}</td>
-        <td>{{ c.count }}</td>
+        <td>{{ c.get('count_text', c.count) }}</td>
         <td>
-            {% if c.severity == 'ok' %}
+            {% if c.get('status_text') %}
+                {% if c.severity == 'ok' %}<span style="color:#1a7a1a">✅ {{ c.status_text }}</span>
+                {% elif c.severity == 'rebuild' %}<span style="color:#a06500;font-weight:bold">{{ c.status_text }}</span>
+                {% elif c.severity == 'error' %}<span style="color:#b00000;font-weight:bold">{{ c.status_text }}</span>
+                {% else %}<span style="color:#a06500">{{ c.status_text }}</span>{% endif %}
+            {% elif c.severity == 'ok' %}
             <span style="color:#1a7a1a">✅ 正常</span>
             {% elif c.fixable %}
             <span style="color:#a06500">⚠️ 可修复</span>
@@ -17,7 +22,9 @@
             {% endif %}
         </td>
         <td>
-            {% if c.count > 0 and c.fixable %}
+            {% if c.get('hint') %}
+            <span style="color:var(--pico-muted-color);font-size:0.75rem">{{ c.hint }}</span>
+            {% elif c.count > 0 and c.fixable %}
             <button class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem"
                     hx-post="/maintenance/fix/{{ c.key }}" hx-target="#health-result" hx-swap="innerHTML">修复</button>
             {% endif %}
