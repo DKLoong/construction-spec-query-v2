@@ -331,3 +331,90 @@ def test_batch_reclassify_ai_failure_logs_warn(auth_client, monkeypatch, tmp_pat
     assert len(rows) == 1 and rows[0]["level"] == "WARN"
     assert "ai-boom" in rows[0]["detail"]
     assert len(_logs(action="批量重分类", category="classify")) == 1
+
+
+# ---------- rule 埋点 ----------
+
+def _seed_rule(pattern="钢筋", is_active=1, hit_count=0, confirmed=0,
+               locked=None, created_at_old=False):
+    """插入一条规则，返回 rule_id"""
+    with get_db() as conn:
+        if created_at_old:
+            conn.execute(
+                """INSERT INTO classification_rules
+                   (dimension, sub_field, pattern, match_type, priority, threshold,
+                    is_active, hit_count, confirmed, locked, created_at)
+                   VALUES ('dim4', 't', ?, 'keyword', 0, 0.6, ?, ?, ?, ?, datetime('now','localtime','-40 days'))""",
+                (pattern, is_active, hit_count, confirmed, locked))
+        else:
+            conn.execute(
+                """INSERT INTO classification_rules
+                   (dimension, sub_field, pattern, match_type, priority, threshold,
+                    is_active, hit_count, confirmed, locked)
+                   VALUES ('dim4', 't', ?, 'keyword', 0, 0.6, ?, ?, ?, ?)""",
+                (pattern, is_active, hit_count, confirmed, locked))
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def test_create_rule_logs_rule_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    resp = auth_client.post("/rules/create", data={
+        "dimension": "dim4", "sub_field": "梁", "pattern": "梁柱节点",
+        "match_type": "keyword"})
+    assert resp.status_code == 200
+    rows = _logs(action="新建规则", category="rule")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert "梁柱节点" in rows[0]["detail"]
+
+
+def test_toggle_rule_logs_rule_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    rid = _seed_rule(is_active=1)
+    resp = auth_client.post(f"/rules/{rid}/toggle")
+    assert resp.status_code == 200
+    rows = _logs(action="停用规则", category="rule")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert '"is_active": 0' in rows[0]["detail"]
+
+
+def test_toggle_rule_lock_logs_rule_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    rid = _seed_rule()
+    resp = auth_client.post(f"/rules/{rid}/lock")
+    assert resp.status_code == 200
+    rows = _logs(action="锁定规则", category="rule")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert '"locked": 1' in rows[0]["detail"]
+
+
+def test_delete_rule_logs_rule_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    rid = _seed_rule()
+    resp = auth_client.delete(f"/rules/{rid}")
+    assert resp.status_code == 200
+    rows = _logs(action="删除规则", category="rule")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+
+
+def test_update_rule_logs_rule_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    rid = _seed_rule()
+    resp = auth_client.put(f"/rules/{rid}",
+                           data={"dimension": "dim5", "pattern": "外墙保温"})
+    assert resp.status_code == 200
+    rows = _logs(action="编辑规则", category="rule")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert "外墙保温" in rows[0]["detail"]
+
+
+def test_quality_batch_logs_rule_info(auth_client, monkeypatch, tmp_path):
+    """一键删除僵尸规则 → rule/INFO/规则质量批量处理，detail 含 affected"""
+    _setup(monkeypatch, tmp_path)
+    _seed_rule(pattern="僵尸规则", hit_count=0, confirmed=0,
+               locked=None, created_at_old=True)
+    resp = auth_client.post("/rules/quality/batch",
+                            data={"action": "delete_all", "kind": "zombie"})
+    assert resp.status_code == 200
+    rows = _logs(action="规则质量批量处理", category="rule")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert '"affected": 1' in rows[0]["detail"]

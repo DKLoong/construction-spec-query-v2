@@ -3,6 +3,7 @@ from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from app.database import get_db
 from app.models import ClassificationRuleCreate
+from app.logging_util import log_action, json_detail
 
 router = APIRouter()
 
@@ -107,12 +108,18 @@ async def create_rule(
 ):
     """创建新规则"""
     with get_db() as conn:
-        conn.execute(
+        cur = conn.execute(
             """INSERT INTO classification_rules
                (dimension, sub_field, pattern, match_type, priority, threshold, is_active)
                VALUES (?, ?, ?, ?, ?, ?, 1)""",
             (dimension, sub_field, pattern, match_type, priority, threshold),
         )
+        new_id = cur.lastrowid
+
+    log_action("rule", "INFO", "新建规则",
+               detail=json_detail({"rule_id": new_id, "dimension": dimension,
+                                   "pattern": pattern}),
+               username=getattr(request.state, "username", ""))
 
     # 返回更新后的列表
     from app.main import templates
@@ -134,6 +141,11 @@ async def toggle_rule(request: Request, rule_id: int):
         rule = conn.execute(
             "SELECT * FROM classification_rules WHERE id = ?", (rule_id,)
         ).fetchone()
+
+    action = "启用规则" if rule["is_active"] else "停用规则"
+    log_action("rule", "INFO", action,
+               detail=json_detail({"rule_id": rule_id, "is_active": rule["is_active"]}),
+               username=getattr(request.state, "username", ""))
 
     from app.main import templates
 
@@ -159,6 +171,10 @@ async def toggle_rule_lock(request: Request, rule_id: int):
         ).fetchone()
         if not rule:
             return HTMLResponse("", status_code=404)
+    action = "锁定规则" if rule["locked"] else "解锁规则"
+    log_action("rule", "INFO", action,
+               detail=json_detail({"rule_id": rule_id, "locked": rule["locked"]}),
+               username=getattr(request.state, "username", ""))
     from app.main import templates
     return templates.TemplateResponse(request, "partials/rules_row.html", {
         "rule": dict(rule),
@@ -181,6 +197,9 @@ async def delete_rule(request: Request, rule_id: int):
     """删除规则 — 返回完整规则列表 + 统计面板"""
     with get_db() as conn:
         conn.execute("DELETE FROM classification_rules WHERE id = ?", (rule_id,))
+    log_action("rule", "INFO", "删除规则",
+               detail=json_detail({"rule_id": rule_id}),
+               username=getattr(request.state, "username", ""))
     return await rules_list(request)
 
 
@@ -212,6 +231,11 @@ async def update_rule(
                WHERE id = ?""",
             (dimension, sub_field, pattern, match_type, priority, threshold, rule_id),
         )
+
+    log_action("rule", "INFO", "编辑规则",
+               detail=json_detail({"rule_id": rule_id, "dimension": dimension,
+                                   "pattern": pattern}),
+               username=getattr(request.state, "username", ""))
 
     # 返回更新后的规则行 HTML 片段（供 htmx 替换）
     from app.main import templates
@@ -475,7 +499,11 @@ async def rules_quality_batch(request: Request,
         return JSONResponse({"detail": "非法参数"}, status_code=400)
     with get_db() as conn:
         sql, params = _action_sql(action, kind)
-        conn.execute(sql, params)
+        cur = conn.execute(sql, params)
+        affected = cur.rowcount
+    log_action("rule", "INFO", "规则质量批量处理",
+               detail=json_detail({"action": action, "kind": kind, "affected": affected}),
+               username=getattr(request.state, "username", ""))
     with get_db() as conn:
         q = _quality_rows(conn)
     from app.main import templates
