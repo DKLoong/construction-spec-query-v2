@@ -141,6 +141,23 @@ async def params_profile_update(request: Request, profile_id: int):
     return _profile_dict(row)
 
 
+@router.delete("/maintenance/params/profiles/{profile_id}")
+async def params_profile_delete(request: Request, profile_id: int):
+    """删除自定义方案（默认方案 id=0 不可删；删除不影响已生效参数，需另点「应用」切换）"""
+    if profile_id == 0:
+        return JSONResponse({"detail": "默认方案不可删除"}, status_code=400)
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT name FROM param_profiles WHERE id = ?", (profile_id,)).fetchone()
+        if not row:
+            return JSONResponse({"detail": "方案不存在"}, status_code=404)
+        conn.execute("DELETE FROM param_profiles WHERE id = ?", (profile_id,))
+    log_action("maintenance", "INFO", "删除参数方案",
+               detail=json_detail({"profile_id": profile_id, "name": row["name"]}),
+               username=getattr(request.state, "username", ""))
+    return {"status": "ok"}
+
+
 @router.post("/maintenance/params/profiles/{profile_id}/apply")
 async def params_profile_apply(request: Request, profile_id: int):
     """应用方案：id=0 → 删除全部注册表覆盖键（回退内置默认）；否则写该方案值并置 marker"""

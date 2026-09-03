@@ -38,7 +38,7 @@
         <div style="display:inline-flex;align-items:flex-end;gap:0.6rem;flex-wrap:wrap">
             <span class="params-hint" x-show="currentId === 0">默认方案不可修改（另存为副本后编辑）；「应用」=回滚内置默认</span>
             <label class="params-ctl">方案
-                <select x-model="currentId" @change="loadProfile()">
+                <select x-model.number="currentId" @change="loadProfile()">
                     <template x-for="p in profiles" :key="p.id">
                         <option :value="p.id" x-text="p.name"></option>
                     </template>
@@ -46,6 +46,8 @@
             </label>
             <button class="outline" style="font-size:0.8rem" x-show="currentId > 0"
                     @click="openRename()" title="重命名方案">✏️</button>
+            <button class="outline" style="font-size:0.8rem" x-show="currentId > 0"
+                    @click="deleteProfile()" title="删除方案">🗑</button>
             <div class="params-actions">
                 <button class="outline" style="font-size:0.8rem"
                         :disabled="currentId === 0 || busy" @click="save()">保存</button>
@@ -199,6 +201,20 @@ function paramsManager() {
                 this.dlg.open = false;
                 this.setMsg(`已重命名为「${p.name}」`, false);
             }
+        },
+        async deleteProfile() {
+            const cur = this.current();
+            if (!cur) return;
+            if (!window.confirm(`确定删除方案「${cur.name}」？该操作不可恢复。`)) return;
+            this.busy = true;
+            try {
+                const r = await fetch(`/maintenance/params/profiles/${cur.id}`, { method: 'DELETE' });
+                if (!r.ok) { this.setMsg(((await r.json()).detail) || '删除失败', true); return; }
+                this.profiles = this.profiles.filter(p => p.id !== cur.id);
+                this.currentId = 0;
+                this.loadProfile();
+                this.setMsg(`已删除方案「${cur.name}」（生效参数不受影响，可点「应用」切回）`, false);
+            } finally { this.busy = false; }
         },
         async apply() {
             this.busy = true;

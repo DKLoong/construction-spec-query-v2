@@ -93,6 +93,20 @@ def test_apply_custom_then_default_rollback(auth_client, monkeypatch, tmp_path):
     assert _get("params.applied_profile_id") is None
 
 
+def test_delete_profile(auth_client, monkeypatch, tmp_path):
+    """删除自定义方案（默认 id=0 拒绝；不存在 404）"""
+    _setup(monkeypatch, tmp_path)
+    p = auth_client.post("/maintenance/params/profiles",
+                         json={"name": "待删", "values": {"search.rrf_k": "90"}}).json()
+    pid = p["id"]
+    r = auth_client.delete(f"/maintenance/params/profiles/{pid}")
+    assert r.status_code == 200
+    assert auth_client.get("/maintenance/params/profiles").json() == [
+        {"id": 0, "name": "默认方案", "is_system": True, "values": {}}]
+    assert auth_client.delete("/maintenance/params/profiles/0").status_code == 400
+    assert auth_client.delete("/maintenance/params/profiles/999").status_code == 404
+
+
 def test_param_operations_logged_with_username(auth_client, monkeypatch, tmp_path):
     """参数方案 新建/应用/回滚 均有审计且操作者=admin"""
     _setup(monkeypatch, tmp_path)
