@@ -220,3 +220,114 @@ def test_import_phase2_failure_logs_error(monkeypatch, tmp_path):
         assert "boom" in rows[0]["detail"]
     finally:
         ir.progress_store.pop(tid, None)
+
+
+# ---------- spec / clause 埋点 ----------
+
+def _seed_spec_clause(with_clause=True):
+    """插入一条规范（可选含一条未分类条文），返回 (spec_id, clause_id|None)"""
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO specifications (code, title, status) VALUES ('GB/T 1-2020', '测试规范', '现行')")
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        cid = None
+        if with_clause:
+            conn.execute(
+                """INSERT INTO clauses (spec_id, clause_no, title, content, search_text,
+                   dim4_specialty, dim5_location, dim6_material, ai_classified, needs_review)
+                   VALUES (?, '3.1.1', '钢筋', '进场应检验。', '', '', '', '', 0, 0)""",
+                (sid,))
+            cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return sid, cid
+
+
+def test_update_spec_status_logs_spec_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    sid, _ = _seed_spec_clause(with_clause=False)
+    resp = auth_client.put(f"/specs/{sid}/status", data={"status": "废止"})
+    assert resp.status_code == 200
+    rows = _logs(action="修改规范状态", category="spec")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert '"old": "现行"' in rows[0]["detail"] and '"new": "废止"' in rows[0]["detail"]
+
+
+def test_delete_spec_logs_spec_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    sid, _ = _seed_spec_clause()
+    resp = auth_client.delete(f"/specs/{sid}")
+    assert resp.status_code == 200
+    rows = _logs(action="删除规范", category="spec")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert '"clause_count": 1' in rows[0]["detail"]
+
+
+def test_update_clause_logs_spec_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    sid, cid = _seed_spec_clause()
+    resp = auth_client.put(f"/specs/{sid}/clauses/{cid}",
+                           data={"clause_no": "4.1.1", "title": "更新", "content": "新内容"})
+    assert resp.status_code == 200
+    rows = _logs(action="编辑条文", category="spec")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+
+
+def test_delete_clause_logs_spec_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    sid, cid = _seed_spec_clause()
+    resp = auth_client.delete(f"/specs/{sid}/clauses/{cid}")
+    assert resp.status_code == 200
+    rows = _logs(action="删除条文", category="spec")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+
+
+def test_update_spec_class_logs_spec_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    sid, _ = _seed_spec_clause(with_clause=False)
+    resp = auth_client.put(f"/specs/{sid}/class",
+                           data={"dim2_stage": "施工", "dim3_usage": "验收"})
+    assert resp.status_code == 200
+    rows = _logs(action="修改规范分类", category="spec")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+
+
+def test_update_clause_class_logs_spec_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    sid, cid = _seed_spec_clause()
+    resp = auth_client.put(f"/specs/{sid}/clauses/{cid}/class",
+                           data={"dim4_specialty": "结构专业", "dim5_location": "主体"})
+    assert resp.status_code == 200
+    rows = _logs(action="修改条文分类", category="spec")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+
+
+def test_batch_reclassify_logs_classify(auth_client, monkeypatch, tmp_path):
+    """批量重分类归属 classify 类；AI 完成正常 → INFO"""
+    import app.ai.classifier_ai as ca
+    _setup(monkeypatch, tmp_path)
+    sid, _ = _seed_spec_clause(with_clause=True)
+    monkeypatch.setattr(ca, "process_pending_batches", lambda **k: None)
+    resp = auth_client.post("/specs/batch-reclassify",
+                            json={"spec_ids": [sid], "scope": "unclassified"})
+    assert resp.status_code == 200
+    rows = _logs(action="批量重分类", category="classify")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert '"target_count": 1' in rows[0]["detail"]
+
+
+def test_batch_reclassify_ai_failure_logs_warn(auth_client, monkeypatch, tmp_path):
+    """入队后 AI 抛异常 → classify/WARN；入队动作本身仍记 INFO"""
+    import app.ai.classifier_ai as ca
+    _setup(monkeypatch, tmp_path)
+    sid, _ = _seed_spec_clause(with_clause=True)
+
+    def _boom(**k):
+        raise RuntimeError("ai-boom")
+
+    monkeypatch.setattr(ca, "process_pending_batches", _boom)
+    resp = auth_client.post("/specs/batch-reclassify",
+                            json={"spec_ids": [sid], "scope": "unclassified"})
+    assert resp.status_code == 200 and "AI 分类未完成" in resp.text
+    rows = _logs(action="批量重分类已入队但AI未完成", category="classify")
+    assert len(rows) == 1 and rows[0]["level"] == "WARN"
+    assert "ai-boom" in rows[0]["detail"]
+    assert len(_logs(action="批量重分类", category="classify")) == 1

@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from app.database import get_db
+from app.logging_util import log_action, json_detail
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -63,6 +64,10 @@ async def update_spec_status(request: Request, spec_id: int, status: str = Form(
             (status, spec_id),
         )
     clear_search_cache()  # 状态影响检索过滤，必须清缓存
+    log_action("spec", "INFO", "修改规范状态",
+               detail=json_detail({"spec_id": spec_id, "code": existing["code"],
+                                   "old": existing["status"], "new": status}),
+               username=getattr(request.state, "username", ""))
     return HTMLResponse(f"""<div id="spec-status-{spec_id}" hx-swap-oob="true">
         <span class="spec-status-tag status-{_status_class(status)}">{status}</span>
     </div>""")
@@ -107,6 +112,9 @@ async def delete_spec(request: Request, spec_id: int):
         )
         conn.execute("DELETE FROM specifications WHERE id = ?", (spec_id,))
 
+    log_action("spec", "INFO", "删除规范",
+               detail=json_detail({"spec_id": spec_id, "clause_count": len(clause_ids)}),
+               username=getattr(request.state, "username", ""))
     # OOB swap 清空仍在显示该规范条文/分类编辑的区域（详情区不被替换时同步刷新）
     return HTMLResponse(
         '<div id="clause-detail-area" hx-swap-oob="true"></div>'
@@ -264,6 +272,9 @@ async def update_clause(
             "dim6_material": dim6_material,
         })
 
+    log_action("spec", "INFO", "编辑条文",
+               detail=json_detail({"spec_id": spec_id, "clause_id": clause_id}),
+               username=getattr(request.state, "username", ""))
     from app.main import templates
     return templates.TemplateResponse(request, "partials/clause_edit_form.html", {
         "clause": updated,
@@ -297,6 +308,9 @@ async def delete_clause(request: Request, spec_id: int, clause_id: int):
             (spec_id, spec_id),
         )
 
+    log_action("spec", "INFO", "删除条文",
+               detail=json_detail({"spec_id": spec_id, "clause_id": clause_id}),
+               username=getattr(request.state, "username", ""))
     return HTMLResponse("")
 
 
@@ -341,6 +355,10 @@ async def update_spec_class(
             (dim2_stage, dim3_usage, spec_id),
         )
 
+    log_action("spec", "INFO", "修改规范分类",
+               detail=json_detail({"spec_id": spec_id,
+                                   "dim2_stage": dim2_stage, "dim3_usage": dim3_usage}),
+               username=getattr(request.state, "username", ""))
     from app.main import templates
     updated = dict(spec)
     updated["dim2_stage"] = dim2_stage
@@ -416,6 +434,12 @@ async def update_clause_class(
             (dim4_specialty, dim5_location, dim6_material, clause_id),
         )
 
+    log_action("spec", "INFO", "修改条文分类",
+               detail=json_detail({"spec_id": spec_id, "clause_id": clause_id,
+                                   "dim4_specialty": dim4_specialty,
+                                   "dim5_location": dim5_location,
+                                   "dim6_material": dim6_material}),
+               username=getattr(request.state, "username", ""))
     from app.main import templates
     updated = dict(existing)
     updated.update({"dim4_specialty": dim4_specialty, "dim5_location": dim5_location,
@@ -478,10 +502,19 @@ async def batch_reclassify(request: Request, body: dict):
                 add_to_queue(cid, dim, 0.0)
 
     if target_ids:
+        # 入队动作完成即记 INFO（AI 阶段失败也保留入队审计）
+        log_action("classify", "INFO", "批量重分类",
+                   detail=json_detail({"spec_count": len(spec_ids), "scope": scope,
+                                       "target_count": len(target_ids)}),
+                   username=getattr(request.state, "username", ""))
         try:
             process_pending_batches(force=True)
         except Exception as e:
             logger.exception("批量重新分类失败: %s", e)
+            log_action("classify", "WARN", "批量重分类已入队但AI未完成",
+                       detail=json_detail({"target_count": len(target_ids),
+                                           "error": str(e)}),
+                       username=getattr(request.state, "username", ""))
             return HTMLResponse(
                 f"""<p style="color:orange;margin-top:0.5rem">已重新入队 {len(target_ids)} 条，但 AI 分类未完成，请查看服务端日志</p>"""
             )
