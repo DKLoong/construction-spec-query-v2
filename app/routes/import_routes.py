@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
-from app.config import UPLOAD_DIR, OUTPUT_DIR, ADAPTIVE_THRESHOLDS
+from app.config import UPLOAD_DIR, OUTPUT_DIR
 from app.database import get_db
 from app.logging_util import log_action, json_detail
 from app.parser.md_parser import parse_markdown, is_cover_clause
@@ -410,6 +410,9 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
             pass
 
         # 第一步：先插入所有条文到 SQLite，收集需要 embedding 的记录
+        # 整批只取一次 AI 介入阈值（DB 覆盖热生效），避免条文循环内反复查
+        from app.params.registry import get_adaptive_thresholds
+        adaptive_thresholds = get_adaptive_thresholds()
         embedding_records = []
         for cd in clauses_data:
             scores, best_labels, best_rule_ids = classify_clause(cd["content"], cd.get("parent_path", []), rules)
@@ -431,7 +434,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
             for dim in ["dim4", "dim5", "dim6"]:
                 rule_id = best_rule_ids.get(dim)
-                if should_use_ai(dim, scores, ADAPTIVE_THRESHOLDS):
+                if should_use_ai(dim, scores, adaptive_thresholds):
                     conn.execute(
                         "INSERT INTO classification_queue (clause_id, dimension, keyword_score) VALUES (?, ?, ?)",
                         (clause_id, dim, scores[dim]),

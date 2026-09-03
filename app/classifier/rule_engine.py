@@ -1,7 +1,6 @@
 import os
 import re
 import time
-from app.config import ADAPTIVE_THRESHOLDS
 
 # 父标题噪声黑名单：无意义通用父标题不进入规则匹配文本
 # 禁止放入真实专业词（如 钢筋/混凝土/主体结构 等），否则会误杀合法标签继承
@@ -151,8 +150,12 @@ def classify_clause(clause_text: str, parent_path: list[str],
 
 def should_use_ai(dimension: str, scores: dict[str, float],
                   thresholds: dict[str, float] | None = None) -> bool:
-    """判断该维度是否需要 AI 辅助分类"""
+    """判断该维度是否需要 AI 辅助分类
+
+    thresholds 未显式传入时，从参数注册表读 DB 覆盖后的 dim1~6 阈值（热生效）。
+    """
     if thresholds is None:
-        thresholds = ADAPTIVE_THRESHOLDS
+        from app.params.registry import get_adaptive_thresholds
+        thresholds = get_adaptive_thresholds()
     threshold = thresholds.get(dimension, 0.6)
     return scores.get(dimension, 0.0) < threshold

@@ -1,5 +1,4 @@
 import uuid
-from app.config import BATCH_SIZE
 from app.database import get_db
 from app.logging_util import log_action, json_detail
 
@@ -13,6 +12,8 @@ def add_to_queue(clause_id: int, dimension: str, keyword_score: float):
 
 
 def get_pending_batch(dimension: str, force: bool = False) -> list[dict]:
+    from app.params.registry import get_param_int
+    batch_size = get_param_int("classify.batch_size")
     with get_db() as conn:
         rows = conn.execute(
             """SELECT q.*, c.content, c.clause_no, c.title as clause_title,
@@ -22,14 +23,14 @@ def get_pending_batch(dimension: str, force: bool = False) -> list[dict]:
                JOIN specifications s ON c.spec_id = s.id
                WHERE q.dimension = ? AND q.status = 'pending'
                ORDER BY q.created_at LIMIT ?""",
-            (dimension, BATCH_SIZE),
+            (dimension, batch_size),
         ).fetchall()
 
         if not rows:
             return []
 
         # force=True 时不检查满批条件
-        if not force and len(rows) < BATCH_SIZE:
+        if not force and len(rows) < batch_size:
             return []
 
         batch_id = uuid.uuid4().hex[:12]
@@ -46,9 +47,11 @@ def get_pending_batch(dimension: str, force: bool = False) -> list[dict]:
 
 
 def apply_ai_results(batch_id: str, results: list[dict]):
+    from app.params.registry import get_param_float
+    conf_threshold = get_param_float("classify.ai_confidence_threshold")
     with get_db() as conn:
         for r in results:
-            status = "auto_adopted" if r["confidence"] >= 0.7 else "review"
+            status = "auto_adopted" if r["confidence"] >= conf_threshold else "review"
             conn.execute(
                 """UPDATE classification_queue
                    SET ai_label = ?, ai_confidence = ?, status = ?
@@ -83,7 +86,7 @@ def apply_ai_results(batch_id: str, results: list[dict]):
                                       label=r["label"])
 
     # 事务已提交，写一条本批汇总（log_action 自开连接，须在 commit 后调用）
-    auto_count = sum(1 for r in results if r["confidence"] >= 0.7)
+    auto_count = sum(1 for r in results if r["confidence"] >= conf_threshold)
     log_action("classify", "INFO", "AI分类结果入库",
                detail=json_detail({"batch_id": batch_id, "total": len(results),
                                    "auto_adopted": auto_count,
@@ -104,7 +107,7 @@ _DIM_SUB_FIELD = {
 }
 
 
-def collect_label_candidates(dimension: str, limit: int = 40) -> list[str]:
+def collect_label_candidates(dimension: str, limit: int | None = None) -> list[str]:
     """收集某维度已有标签候选，供 AI 分类 prompt 约束标签口径
 
     来源合并：
@@ -112,6 +115,9 @@ def collect_label_candidates(dimension: str, limit: int = 40) -> list[str]:
     - clauses 表中该维度已填写的值（拆逗号分隔的多标签）
     结果去重保序，优先规则关键词（更稳定）。
     """
+    if limit is None:
+        from app.params.registry import get_param_int
+        limit = get_param_int("classify.label_candidate_limit")
     col = _DIM_COLUMN.get(dimension)
     candidates: list[str] = []
     seen: set[str] = set()

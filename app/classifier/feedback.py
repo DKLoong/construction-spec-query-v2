@@ -49,11 +49,12 @@ def process_feedback(clause_id: int, dimension: str, confirmed_label: str,
         keywords = extract_keywords(row["content"], top_n=3)
         sub_field = {"dim4": "specialty", "dim5": "location", "dim6": "material"}.get(dimension, "")
         from app.classifier.rule_sink import bump_rule
-        from app.config import RULE_AUTO_ENABLE_CONF
+        from app.params.registry import get_param_float
+        enable_conf = get_param_float("classify.rule_auto_enable_conf")
         for kw in keywords:
             bump_rule(conn, dimension, kw, sub_field,
                       is_confirmed=True,
-                      new_rule_active=(source_conf >= RULE_AUTO_ENABLE_CONF),
+                      new_rule_active=(source_conf >= enable_conf),
                       label=confirmed_label)
 
 

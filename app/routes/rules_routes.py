@@ -465,20 +465,32 @@ import json as _json
 from fastapi.responses import JSONResponse
 
 
+def _param_thresholds():
+    """从参数注册表读自动启停阈值（与 rule_sink 同源，消除复制常量失同步）"""
+    from app.params.registry import get_param_float, get_param_int
+    return {
+        "enable_ratio": get_param_float("classify.rule_auto_enable_ratio"),
+        "enable_min_hit": get_param_int("classify.rule_auto_enable_min_hit"),
+        "disable_ratio": get_param_float("classify.rule_disable_ratio"),
+        "disable_min_hit": get_param_int("classify.rule_disable_min_hit"),
+    }
+
+
 def _quality_rows(conn):
     """规则质量三类（供报表渲染/一键处理/导出共用）"""
-    ratio = 0.8  # 与 RULE_AUTO_ENABLE_RATIO 同值（防止 import 环可复制常量语义）
-    min_hit = 5
+    t = _param_thresholds()
     suggest_enable = conn.execute(
         """SELECT * FROM classification_rules
            WHERE is_active = 0 AND hit_count >= ? AND confirmed * 1.0 / hit_count >= ?
            ORDER BY hit_count DESC""",
-        (min_hit, ratio),
+        (t["enable_min_hit"], t["enable_ratio"]),
     ).fetchall()
     suggest_disable = conn.execute(
         """SELECT * FROM classification_rules
-           WHERE is_active = 1 AND confirmed > 0 AND hit_count > 10 AND confirmed * 1.0 / hit_count < 0.3
-           ORDER BY hit_count DESC"""
+           WHERE is_active = 1 AND confirmed > 0 AND hit_count > ?
+             AND confirmed * 1.0 / hit_count < ?
+           ORDER BY hit_count DESC""",
+        (t["disable_min_hit"], t["disable_ratio"]),
     ).fetchall()
     zombie = conn.execute(
         """SELECT * FROM classification_rules
@@ -494,18 +506,25 @@ def _quality_rows(conn):
 
 
 def _action_sql(action: str, kind: str) -> tuple[str, list]:
-    """返回批量动作的 UPDATE/DELETE SQL 与参数（kind 决定过滤条件）"""
+    """返回批量动作的 UPDATE/DELETE SQL 与参数（kind 决定过滤条件；阈值绑定参数防失同步）"""
+    t = _param_thresholds()
     conds = {
-        "suggest_enable": "is_active = 0 AND hit_count >= 5 AND confirmed * 1.0 / hit_count >= 0.8",
-        "suggest_disable": "is_active = 1 AND confirmed > 0 AND hit_count > 10 AND confirmed * 1.0 / hit_count < 0.3",
-        "zombie": "hit_count = 0 AND (locked IS NULL OR locked = 0) AND created_at < datetime('now','localtime','-30 days')",
+        "suggest_enable": ("is_active = 0 AND hit_count >= ? AND confirmed * 1.0 / hit_count >= ?",
+                           [t["enable_min_hit"], t["enable_ratio"]]),
+        "suggest_disable": ("is_active = 1 AND confirmed > 0 AND hit_count > ? "
+                            "AND confirmed * 1.0 / hit_count < ?",
+                            [t["disable_min_hit"], t["disable_ratio"]]),
+        "zombie": ("hit_count = 0 AND (locked IS NULL OR locked = 0) "
+                   "AND created_at < datetime('now','localtime','-30 days')", []),
     }
-    cond = conds[kind]
+    cond, params = conds[kind]
     if action == "delete_all":
-        return f"DELETE FROM classification_rules WHERE {cond}", []
+        return f"DELETE FROM classification_rules WHERE {cond}", list(params)
     if action == "enable_all":
-        return f"UPDATE classification_rules SET is_active = 1, updated_at = datetime('now','localtime') WHERE {cond}", []
-    return f"UPDATE classification_rules SET is_active = 0, updated_at = datetime('now','localtime') WHERE {cond}", []
+        return (f"UPDATE classification_rules SET is_active = 1, updated_at = datetime('now','localtime') WHERE {cond}",
+                list(params))
+    return (f"UPDATE classification_rules SET is_active = 0, updated_at = datetime('now','localtime') WHERE {cond}",
+            list(params))
 
 
 @router.get("/rules/quality")

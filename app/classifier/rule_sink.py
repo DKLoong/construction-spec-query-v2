@@ -2,14 +2,9 @@
 
 bump_rule 统一维护 classification_rules 的 hit_count/confirmed，并按「长期正确率」
 自动启停——不是单条置信度（单条可能恰好命中，规则质量看积累）。
+自动启停/新规则阈值均从参数注册表读 DB 覆盖（rule_sink / rules_routes 报表共用同一来源）。
 """
-from app.config import (
-    RULE_AUTO_ENABLE_RATIO, RULE_AUTO_ENABLE_MIN_HIT, RULE_AUTO_ENABLE_CONF,
-)
-
-# 与旧逻辑一致的自动停用下界
-_DISABLE_RATIO = 0.3
-_DISABLE_MIN_HIT = 10
+from app.params.registry import get_param_float, get_param_int
 
 
 def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
@@ -19,10 +14,15 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
 
     - is_confirmed：人工确认来源为 True（confirmed+1）；auto_adopted 自动采纳为 False
       （仅 hit++，避免 AI 未人工确认虚增正确率）
-    - new_rule_active：新生成规则初始是否启用（auto_adopted 或人工确认 conf≥0.9 传 True）
+    - new_rule_active：新生成规则初始是否启用（auto_adopted 或人工确认 conf≥阈值 传 True）
     - label：规则赋值标签（命中后写入分类列，区别于匹配词 pattern）。历史规则 label 为
       NULL（旧 pattern 当标签语义）时，本次带 label 沉淀会回填纠正
     """
+    enable_ratio = get_param_float("classify.rule_auto_enable_ratio")
+    enable_min_hit = get_param_int("classify.rule_auto_enable_min_hit")
+    disable_ratio = get_param_float("classify.rule_disable_ratio")
+    disable_min_hit = get_param_int("classify.rule_disable_min_hit")
+    new_threshold = get_param_float("classify.new_rule_threshold")
     row = conn.execute(
         "SELECT id, hit_count, confirmed, is_active, label FROM classification_rules "
         "WHERE dimension = ? AND pattern = ?",
@@ -45,13 +45,13 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
             )
         # 自动启停：按长期正确率
         ratio = (new_conf * 1.0 / new_hit) if new_hit else 0.0
-        if ratio >= RULE_AUTO_ENABLE_RATIO and new_hit >= RULE_AUTO_ENABLE_MIN_HIT:
+        if ratio >= enable_ratio and new_hit >= enable_min_hit:
             if not row["is_active"]:
                 conn.execute(
                     "UPDATE classification_rules SET is_active = 1, updated_at = datetime('now','localtime') WHERE id = ?",
                     (row["id"],),
                 )
-        elif new_conf > 0 and ratio < _DISABLE_RATIO and new_hit > _DISABLE_MIN_HIT:
+        elif new_conf > 0 and ratio < disable_ratio and new_hit > disable_min_hit:
             if row["is_active"]:
                 conn.execute(
                     "UPDATE classification_rules SET is_active = 0, updated_at = datetime('now','localtime') WHERE id = ?",
@@ -62,8 +62,9 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
             """INSERT INTO classification_rules
                (dimension, sub_field, pattern, match_type, priority, threshold,
                 hit_count, confirmed, is_active, label)
-               VALUES (?, ?, ?, 'keyword', 0, 0.6, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, 'keyword', 0, ?, ?, ?, ?, ?)""",
             (dimension, sub_field, pattern,
+             new_threshold,
              1,  # 本次 bump 即该规则首次命中
              1 if is_confirmed else 0,  # 人工确认来源首次即记 confirmed
              1 if new_rule_active else 0,
