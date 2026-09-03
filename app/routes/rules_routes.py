@@ -227,36 +227,43 @@ async def update_rule(
 # 审核队列
 # ═══════════════════════════════════════════
 
+def _fetch_review_items(conn) -> list[dict]:
+    """查询待审核队列项（status='review'），审核页与 /review/list 共用"""
+    rows = conn.execute(
+        """SELECT q.id as queue_id, q.clause_id, q.dimension, q.keyword_score,
+                  q.ai_label, q.ai_confidence, q.status,
+                  c.clause_no, c.title as clause_title, c.content,
+                  s.code as spec_code, s.title as spec_title
+           FROM classification_queue q
+           JOIN clauses c ON q.clause_id = c.id
+           JOIN specifications s ON c.spec_id = s.id
+           WHERE q.status = 'review'
+           ORDER BY q.created_at DESC LIMIT 50"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 @router.get("/review")
 async def review_page(request: Request):
-    """审核队列页"""
+    """审核队列页（初始渲染需带 items，否则 review_list.html 恒显示空态）"""
     from app.main import templates
+    with get_db() as conn:
+        items = _fetch_review_items(conn)
     return templates.TemplateResponse(request, "base.html", {
         "left_content": "partials/tree_panel.html",
         "center_content": "partials/review_list.html",
+        "items": items,
     })
 
 
 @router.get("/review/list")
 async def review_list(request: Request):
     """待审核项列表"""
-    with get_db() as conn:
-        # 获取所有待审核的队列项（状态为 review）
-        rows = conn.execute(
-            """SELECT q.id as queue_id, q.clause_id, q.dimension, q.keyword_score,
-                      q.ai_label, q.ai_confidence, q.status,
-                      c.clause_no, c.title as clause_title, c.content,
-                      s.code as spec_code, s.title as spec_title
-               FROM classification_queue q
-               JOIN clauses c ON q.clause_id = c.id
-               JOIN specifications s ON c.spec_id = s.id
-               WHERE q.status = 'review'
-               ORDER BY q.created_at DESC LIMIT 50"""
-        ).fetchall()
-
     from app.main import templates
+    with get_db() as conn:
+        items = _fetch_review_items(conn)
     return templates.TemplateResponse(request, "partials/review_list.html", {
-        "items": [dict(r) for r in rows],
+        "items": items,
     })
 
 
