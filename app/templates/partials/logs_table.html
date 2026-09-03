@@ -1,0 +1,54 @@
+<!-- 日志列表 fragment（logs_panel 容器 #logs-list innerHTML 刷新目标） -->
+{% if rows %}
+<p style="color:var(--pico-muted-color);font-size:0.85rem;margin-bottom:0.3rem">
+    共 {{ total }} 条{% if total > page_size %}（第 {{ page }}/{{ page_count }} 页）{% endif %}
+</p>
+<table class="striped">
+    <thead>
+        <tr>
+            <th style="white-space:nowrap">时间</th>
+            <th>操作者</th>
+            <th>类别</th>
+            <th>级别</th>
+            <th>动作</th>
+            <th style="width:38%">详情</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+        <tr>
+            <td style="white-space:nowrap;font-size:0.8rem">{{ r.created_at }}</td>
+            <td style="font-size:0.85rem">{{ r.username or '—' }}</td>
+            <td style="font-size:0.85rem">{{ r.category }}</td>
+            <td>
+                {% if r.level == 'ERROR' %}<span style="color:#e5484d;font-weight:bold">ERROR</span>
+                {% elif r.level == 'WARN' %}<span style="color:#f5a623;font-weight:bold">WARN</span>
+                {% else %}<span style="color:var(--pico-muted-color)">INFO</span>{% endif %}
+            </td>
+            <td style="font-size:0.85rem">{{ r.action }}</td>
+            <td>
+                {% if r.pretty_detail %}
+                <details style="font-size:0.8rem">
+                    <summary style="cursor:pointer">查看</summary>
+                    <pre style="white-space:pre-wrap;word-break:break-all;font-size:0.75rem;margin-top:0.3rem">{{ r.pretty_detail }}</pre>
+                </details>
+                {% else %}<span style="color:var(--pico-muted-color);font-size:0.8rem">—</span>{% endif %}
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% if total > page_size %}
+<div style="display:flex;gap:1rem;align-items:center;margin-top:0.5rem">
+    {% if page > 1 %}
+    <a hx-get="/maintenance/logs?{{ prev_qs }}" hx-target="#logs-list" hx-swap="innerHTML">上一页</a>
+    {% endif %}
+    <span style="color:var(--pico-muted-color);font-size:0.85rem">第 {{ page }}/{{ page_count }} 页</span>
+    {% if page < page_count %}
+    <a hx-get="/maintenance/logs?{{ next_qs }}" hx-target="#logs-list" hx-swap="innerHTML">下一页</a>
+    {% endif %}
+</div>
+{% endif %}
+{% else %}
+<p style="color:var(--pico-muted-color);padding:1rem 0">暂无符合条件的日志记录。</p>
+{% endif %}

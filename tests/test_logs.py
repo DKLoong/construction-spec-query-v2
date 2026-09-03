@@ -595,3 +595,123 @@ def test_manual_clean_invalid_scope_raises(monkeypatch, tmp_path):
     except ValueError:
         pass
     assert len(_logs()) == 1  # 非法范围不误删
+
+
+# ---------- 日志列表 / 导出 / QA 日志 / 手动清理 路由 ----------
+
+def _ins_log(category="spec", action="做分类", level="INFO", username="admin",
+             detail=None, old=False):
+    with get_db() as conn:
+        if old:
+            conn.execute(
+                """INSERT INTO system_logs (category, level, action, detail, username, created_at)
+                   VALUES (?, ?, ?, ?, ?, datetime('now','localtime','-200 days'))""",
+                (category, level, action, detail, username))
+        else:
+            conn.execute(
+                """INSERT INTO system_logs (category, level, action, detail, username)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (category, level, action, detail, username))
+
+
+def test_logs_list_filter_by_level(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    _ins_log("spec", "做分类", "INFO")
+    _ins_log("rule", "删除规则", "WARN")
+    _ins_log("auth", "登录失败", "ERROR")
+    resp = auth_client.get("/maintenance/logs?level=ERROR,WARN")
+    assert resp.status_code == 200
+    assert "删除规则" in resp.text and "登录失败" in resp.text
+    assert "做分类" not in resp.text  # INFO 被筛掉
+
+
+def test_logs_list_filter_by_category_and_user(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    _ins_log("spec", "做分类", "INFO", username="admin")
+    _ins_log("rule", "删除规则", "INFO", username="zhang")
+    resp = auth_client.get("/maintenance/logs?category=rule&user=zhang")
+    assert "删除规则" in resp.text
+    assert "做分类" not in resp.text
+
+
+def test_logs_list_filter_by_keyword_and_date(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    _ins_log("spec", "修改规范状态", "INFO", detail='{"old":"现行"}')
+    _ins_log("spec", "删除条文", "INFO")
+    resp = auth_client.get("/maintenance/logs?keyword=修改")
+    assert "修改规范状态" in resp.text and "删除条文" not in resp.text
+    # 非法日期应被忽略而非报错
+    resp2 = auth_client.get("/maintenance/logs?start=not-a-date&keyword=修改")
+    assert resp2.status_code == 200 and "修改规范状态" in resp2.text
+
+
+def test_logs_list_pagination(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    with get_db() as conn:
+        for i in range(55):
+            conn.execute(
+                "INSERT INTO system_logs (category, level, action, username) VALUES ('spec','INFO',?,'admin')",
+                (f"翻页条目{i:02d}",))
+    resp1 = auth_client.get("/maintenance/logs?page_size=50")
+    assert resp1.status_code == 200
+    assert "共 55 条" in resp1.text
+    assert "第 1/2 页" in resp1.text and "下一页" in resp1.text
+    resp2 = auth_client.get("/maintenance/logs?page_size=50&page=2")
+    assert "上一页" in resp2.text
+    assert "翻页条目54" not in resp2.text and "翻页条目00" in resp2.text
+
+
+def test_logs_export_default_only_error_warn(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    _ins_log("spec", "做分类", "INFO")
+    _ins_log("rule", "删除规则", "WARN")
+    _ins_log("auth", "登录失败", "ERROR")
+    resp = auth_client.get("/maintenance/logs/export")
+    assert resp.status_code == 200
+    assert resp.headers.get("content-disposition", "").startswith("attachment")
+    data = resp.json()
+    assert {r["level"] for r in data} == {"WARN", "ERROR"}
+
+
+def test_logs_export_level_override(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    _ins_log("spec", "做分类", "INFO")
+    _ins_log("auth", "登录失败", "ERROR")
+    resp = auth_client.get("/maintenance/logs/export?level=INFO")
+    data = resp.json()
+    assert [r["level"] for r in data] == ["INFO"]
+
+
+def test_logs_clean_older_keeps_audit(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    _ins_log("spec", "旧日志", "INFO", old=True)
+    _ins_log("spec", "新日志", "INFO")
+    resp = auth_client.post("/maintenance/logs/clean", data={"scope": "older"})
+    assert resp.status_code == 200 and "已清理 1 条" in resp.text
+    assert [r["action"] for r in _logs() if r["category"] == "spec"] == ["新日志"]
+    audit = _logs(action="手动清理日志", category="system")
+    assert len(audit) == 1 and '"deleted": 1' in audit[0]["detail"]
+
+
+def test_logs_clean_category_and_invalid(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    _ins_log("spec", "a", "INFO")
+    _ins_log("rule", "b", "INFO")
+    resp = auth_client.post("/maintenance/logs/clean",
+                            data={"scope": "category", "category": "spec"})
+    assert resp.status_code == 200
+    assert len(_logs(category="spec")) == 0 and len(_logs(category="rule")) == 1
+    resp2 = auth_client.post("/maintenance/logs/clean", data={"scope": "nonsense"})
+    assert resp2.status_code == 400
+    assert len(_logs(category="rule")) == 1  # 非法范围未误删
+    assert len(_logs(action="手动清理日志", category="system")) == 1  # 首次清理的审计保留
+
+
+def test_qa_logs_list_readonly(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    with get_db() as conn:
+        conn.execute("INSERT INTO qa_request_logs (question, mode, backend, duration_ms) VALUES ('问题A', 'qa', 'bge', 100)")
+        conn.execute("INSERT INTO qa_request_logs (question, mode, backend, duration_ms) VALUES ('问题B', 'qa', 'bge', 200)")
+    resp = auth_client.get("/maintenance/qa-logs")
+    assert resp.status_code == 200
+    assert "问题A" in resp.text and "问题B" in resp.text

@@ -153,6 +153,9 @@ app.include_router(synonym_router)
 from app.routes.maintenance_routes import router as maintenance_router
 app.include_router(maintenance_router)
 
+from app.routes.log_routes import router as log_router
+app.include_router(log_router)
+
 
 @app.get("/")
 async def home(request: Request):
