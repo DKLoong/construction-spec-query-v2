@@ -1,23 +1,13 @@
 <!-- 日志管理面板（Tab 3）：筛选 + 导出异常 + 手动清理 + 列表 -->
 <style>
-.log-filters { display:flex; gap:0.75rem; flex-wrap:wrap; align-items:flex-end; margin-top:0.5rem; }
-.log-ctl { display:inline-flex; flex-direction:column; gap:0.2rem; font-size:0.75rem; color:var(--pico-muted-color); }
-.log-ctl > input[type=text], .log-ctl > select, .log-ctl > input[type=date] {
-    margin:0; height:2.1rem; width:auto; min-width:0;
-}
-.log-ctl input[name=user] { width:6.5rem; }
-.log-actions { display:inline-flex; gap:0.5rem; align-items:center; height:2.1rem; }
-.log-actions button { height:2.1rem; line-height:1.2; }
-.range-box {
-    display:inline-flex; align-items:center; gap:0.15rem;
-    border:1px solid var(--pico-muted-border-color, #c0c0c0);
-    border-radius:4px; padding:0.05rem 0.25rem; height:2.1rem; box-sizing:border-box;
-}
-.range-box input[type=date] {
-    margin:0; border:none; box-shadow:none; background:transparent;
-    padding:0.15rem 0.1rem; width:7.4rem; height:auto; font-size:0.8rem;
-}
-.range-box .sep { color:var(--pico-muted-color); padding:0 0.1rem; }
+/* 只做基线对齐，不改控件原生高度 */
+.log-filters { display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end; margin-top:0.6rem; }
+.log-ctl { display:inline-flex; flex-direction:column; gap:0.25rem; font-size:0.75rem; color:var(--pico-muted-color); margin:0; }
+.log-ctl select { width:auto; margin:0; }
+.log-ctl input[type=text] { width:8.5rem; margin:0; }
+.log-ctl input[type=date] { width:8.2rem; margin:0; }
+.log-actions { display:inline-flex; gap:0.5rem; align-items:flex-end; }
+.log-actions button { margin:0; }
 </style>
 
 <div x-data="logsManager()">
@@ -49,10 +39,10 @@
                     </template>
                 </select>
             </label>
-            <label class="log-ctl">日期
-                <span class="range-box">
+            <label class="log-ctl">日期范围
+                <span style="display:inline-flex;align-items:center;gap:0.35rem">
                     <input x-model="start" type="date" title="开始日期">
-                    <span class="sep">~</span>
+                    <span style="color:var(--pico-muted-color)">~</span>
                     <input x-model="end" type="date" title="结束日期">
                 </span>
             </label>
@@ -69,31 +59,36 @@
 
     <details>
         <summary>🧹 手动清理</summary>
-        <form style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;margin-top:0.5rem" onsubmit="return false">
-            <label><input type="radio" name="scope" value="older" checked> 90 天前</label>
-            <label><input type="radio" name="scope" value="all"> 全部</label>
-            <label><input type="radio" name="scope" value="category"> 指定分类</label>
-            <select name="category" style="width:auto">
-                {% for c, label in [('import','导入'),('spec','规范'),('rule','规则'),('classify','分类'),('review','复核'),('maintenance','维护'),('auth','登录'),('system','系统')] %}
-                <option value="{{ c }}">{{ label }}</option>
-                {% endfor %}
-            </select>
-            <button class="outline" style="font-size:0.8rem"
-                hx-post="/maintenance/logs/clean" hx-include="closest form"
-                hx-target="#clean-result" hx-swap="innerHTML"
-                hx-confirm="确定执行日志清理？该操作不可恢复。"
-                hx-on::after-request="document.body.dispatchEvent(new CustomEvent('logsRefresh'))">执行清理</button>
+        <form style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:1rem;margin-top:0.6rem" onsubmit="return false">
+            <label style="display:inline-flex;align-items:center;gap:0.3rem;margin:0"><input type="radio" name="scope" value="older" checked> 90 天前</label>
+            <label style="display:inline-flex;align-items:center;gap:0.3rem;margin:0"><input type="radio" name="scope" value="all"> 全部</label>
+            <label style="display:inline-flex;align-items:center;gap:0.3rem;margin:0"><input type="radio" name="scope" value="category"> 指定分类</label>
+            <span style="display:inline-flex;align-items:flex-end;gap:0.5rem">
+                <select name="category" style="width:auto;margin:0">
+                    {% for c, label in [('import','导入'),('spec','规范'),('rule','规则'),('classify','分类'),('review','复核'),('maintenance','维护'),('auth','登录'),('system','系统')] %}
+                    <option value="{{ c }}">{{ label }}</option>
+                    {% endfor %}
+                </select>
+                <button class="outline" style="margin:0"
+                    hx-post="/maintenance/logs/clean" hx-include="closest form"
+                    hx-target="#clean-result" hx-swap="innerHTML"
+                    hx-confirm="确定执行日志清理？该操作不可恢复。"
+                    hx-on::after-request="document.body.dispatchEvent(new CustomEvent('logsRefresh'))">执行清理</button>
+            </span>
         </form>
         <div id="clean-result" style="margin-top:0.5rem"></div>
     </details>
 
-    <div id="logs-list" hx-get="/maintenance/logs" hx-trigger="load, logsRefresh from:body" hx-swap="innerHTML">
+    <!-- 回顶挂在常驻容器（非分页链接，链接随 innerHTML 替换失效；对照搜索 result_list.html 约定） -->
+    <div id="logs-list" hx-get="/maintenance/logs" hx-trigger="load, logsRefresh from:body"
+         hx-swap="innerHTML"
+         hx-on::after-settle="document.querySelector('.center-panel-v2').scrollTop = 0">
         <p style="color:var(--pico-muted-color);padding:0.5rem 0">加载中…</p>
     </div>
 </div>
 <script>
 // 日志筛选状态与请求（内联组件，与 rules_list 一致的 fetch 约定）。操作者候选项
-// 从 /maintenance/logs/operators 拉取填充下拉；日期范围为两个 date 的紧凑组合。
+// 从 /maintenance/logs/operators 拉取填充下拉；日期范围为两个原生 date 的紧凑组合。
 function logsManager() {
     return {
         category: '', level: '', user: '', start: '', end: '', keyword: '',

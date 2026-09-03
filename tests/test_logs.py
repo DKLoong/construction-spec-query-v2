@@ -656,8 +656,6 @@ def test_logs_list_pagination(auth_client, monkeypatch, tmp_path):
     assert resp1.status_code == 200
     assert "共 55 条" in resp1.text
     assert "第 1/2 页" in resp1.text and "下一页" in resp1.text
-    # 翻页须回顶（对照搜索分页既有约定）：分页链接携带 after-settle 滚动 center 面板
-    assert "after-settle" in resp1.text and "center-panel-v2" in resp1.text
     resp2 = auth_client.get("/maintenance/logs?page_size=50&page=2")
     assert "上一页" in resp2.text
     assert "翻页条目54" not in resp2.text and "翻页条目00" in resp2.text

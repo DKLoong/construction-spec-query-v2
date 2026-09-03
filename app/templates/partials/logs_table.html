@@ -41,13 +41,11 @@
 {% if total > page_size %}
 <div style="display:flex;gap:1rem;align-items:center;margin-top:0.5rem">
     {% if page > 1 %}
-    <a hx-get="/maintenance/logs?{{ prev_qs }}" hx-target="#logs-list" hx-swap="innerHTML"
-       hx-on::after-settle="document.querySelector('.center-panel-v2').scrollTop = 0">上一页</a>
+    <a hx-get="/maintenance/logs?{{ prev_qs }}" hx-target="#logs-list" hx-swap="innerHTML">上一页</a>
     {% endif %}
     <span style="color:var(--pico-muted-color);font-size:0.85rem">第 {{ page }}/{{ page_count }} 页</span>
     {% if page < page_count %}
-    <a hx-get="/maintenance/logs?{{ next_qs }}" hx-target="#logs-list" hx-swap="innerHTML"
-       hx-on::after-settle="document.querySelector('.center-panel-v2').scrollTop = 0">下一页</a>
+    <a hx-get="/maintenance/logs?{{ next_qs }}" hx-target="#logs-list" hx-swap="innerHTML">下一页</a>
     {% endif %}
 </div>
 {% endif %}

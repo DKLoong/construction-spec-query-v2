@@ -19,6 +19,9 @@ def test_maintenance_page_has_logs_tabs(auth_client, monkeypatch, tmp_path):
     assert "日志管理" in resp.text and "QA 日志" in resp.text
     assert "导出异常日志" in resp.text
     assert "手动清理" in resp.text
+    # 翻页回顶机制挂常驻容器（对照搜索分页 result_list.html 约定），logs-list 可见
+    assert 'id="logs-list"' in resp.text and "after-settle" in resp.text
+    assert "center-panel-v2" in resp.text
 
 
 def test_maintenance_logs_fragment_lists_rows(auth_client, monkeypatch, tmp_path):
