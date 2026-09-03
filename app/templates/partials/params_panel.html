@@ -47,7 +47,7 @@
             <button class="outline" style="font-size:0.8rem" x-show="currentId > 0"
                     @click="openRename()" title="重命名方案">✏️</button>
             <button class="outline" style="font-size:0.8rem" x-show="currentId > 0"
-                    @click="deleteProfile()" title="删除方案">🗑</button>
+                    @click="openDelete()" title="删除方案">🗑</button>
             <div class="params-actions">
                 <button class="outline" style="font-size:0.8rem"
                         :disabled="currentId === 0 || busy" @click="save()">保存</button>
@@ -85,8 +85,13 @@
          x-cloak @click.self="dlg.open = false">
         <div class="dialog-box">
             <h4 style="margin-top:0" x-text="dlg.title"></h4>
-            <input type="text" x-model="dlg.name" placeholder="方案名称"
-                   style="width:100%" @keydown.enter="dlgConfirm()">
+            <template x-if="dlg.mode === 'delete'">
+                <p x-text="dlg.message" style="margin:.5rem 0;font-size:.85rem;color:#5a4a33"></p>
+            </template>
+            <template x-if="dlg.mode !== 'delete'">
+                <input type="text" x-model="dlg.name" placeholder="方案名称"
+                       style="width:100%" @keydown.enter="dlgConfirm()">
+            </template>
             <div style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:1rem">
                 <button class="outline" @click="dlg.open = false">取消</button>
                 <button @click="dlgConfirm()" x-text="dlg.okText"></button>
@@ -173,6 +178,7 @@ function paramsManager() {
             return `方案${maxN + 1}`;
         },
         async dlgConfirm() {
+            if (this.dlg.mode === 'delete') { await this.doDelete(); return; }
             const name = (this.dlg.name || '').trim();
             if (!name) return;
             if (this.dlg.mode === 'saveas') {
@@ -202,22 +208,26 @@ function paramsManager() {
                 this.setMsg(`已重命名为「${p.name}」`, false);
             }
         },
-        async deleteProfile() {
+        openDelete() {
             const cur = this.current();
             if (!cur) return;
-            if (!window.confirm(`确定删除方案「${cur.name}」？该操作不可恢复。`)) return;
+            this.dlg = { open: true, mode: 'delete', id: cur.id, name: cur.name,
+                message: `确定删除方案「${cur.name}」？该操作不可恢复。`,
+                title: '删除方案', okText: '删除' };
+        },
+        async doDelete() {
+            const id = this.dlg.id;
+            const name = this.dlg.name;
             this.busy = true;
-            this.dlg.open = false;   // 兜底复位，避免任何残留对话框遮罩影响后续交互
+            this.dlg.open = false;
             try {
-                const r = await fetch(`/maintenance/params/profiles/${cur.id}`, { method: 'DELETE' });
+                const r = await fetch(`/maintenance/params/profiles/${id}`, { method: 'DELETE' });
                 if (!r.ok) { this.setMsg(((await r.json()).detail) || '删除失败', true); return; }
-                // 重新拉取权威方案列表并切回默认，避免就地裁数组导致 select/工作区状态失同步
-                const profRes = await fetch('/maintenance/params/profiles');
-                this.profiles = await profRes.json();
+                // 本地即时复位（不额外往返）：移除该项并切回默认，select/工作区立即一致
+                this.profiles = this.profiles.filter(p => p.id !== id);
                 this.currentId = 0;
-                this.workspace = {};
                 this.loadProfile();
-                this.setMsg(`已删除方案「${cur.name}」（生效参数不受影响，可点「应用」切回）`, false);
+                this.setMsg(`已删除方案「${name}」（生效参数不受影响，可点「应用」切回）`, false);
             } finally { this.busy = false; }
         },
         async apply() {
