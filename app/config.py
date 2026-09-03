@@ -54,6 +54,17 @@ AI_CONFIDENCE_THRESHOLD = 0.7
 BATCH_SIZE = 20
 BATCH_TIMEOUT_SECONDS = 30
 
+# ── 参数设置（分类/检索）内置默认值：app/params/registry.py 汇总为可调注册表，
+#   运行期以 DB settings 覆盖（classify.* / search.*），无值回退以下内置默认 ──
+RULE_AUTO_DISABLE_RATIO = 0.3      # 低正确率自动停用线（规则正确率阈值）
+RULE_AUTO_DISABLE_MIN_HIT = 10     # 低正确率自动停用最少命中数
+NEW_RULE_THRESHOLD = 0.6           # 新沉淀规则默认匹配阈值
+LABEL_CANDIDATE_LIMIT = 40         # AI 分类 prompt 标签候选上限
+SEARCH_RERANK_TOP_N = 20           # RRF 后进入 CE 精排的前缀条数
+SEARCH_VECTOR_TOP_K = 20           # 向量召回条数
+SEARCH_VECTOR_L2_THRESHOLD = 1.0   # 向量 L2 距离阈值（越小越严）
+SEARCH_RRF_K = 60                  # RRF 融合分母常数
+
 # ── 日志保留（D15）──
 LOG_RETENTION_DAYS = 90        # system_logs 默认保留天数
 LOG_CLEAN_BATCH = 500          # 清理每批删除上限（防长事务）
