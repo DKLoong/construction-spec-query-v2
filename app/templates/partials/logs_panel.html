@@ -1,18 +1,39 @@
 <!-- 日志管理面板（Tab 3）：筛选 + 导出异常 + 手动清理 + 列表 -->
+<style>
+.log-filters { display:flex; gap:0.75rem; flex-wrap:wrap; align-items:flex-end; margin-top:0.5rem; }
+.log-ctl { display:inline-flex; flex-direction:column; gap:0.2rem; font-size:0.75rem; color:var(--pico-muted-color); }
+.log-ctl > input[type=text], .log-ctl > select, .log-ctl > input[type=date] {
+    margin:0; height:2.1rem; width:auto; min-width:0;
+}
+.log-ctl input[name=user] { width:6.5rem; }
+.log-actions { display:inline-flex; gap:0.5rem; align-items:center; height:2.1rem; }
+.log-actions button { height:2.1rem; line-height:1.2; }
+.range-box {
+    display:inline-flex; align-items:center; gap:0.15rem;
+    border:1px solid var(--pico-muted-border-color, #c0c0c0);
+    border-radius:4px; padding:0.05rem 0.25rem; height:2.1rem; box-sizing:border-box;
+}
+.range-box input[type=date] {
+    margin:0; border:none; box-shadow:none; background:transparent;
+    padding:0.15rem 0.1rem; width:7.4rem; height:auto; font-size:0.8rem;
+}
+.range-box .sep { color:var(--pico-muted-color); padding:0 0.1rem; }
+</style>
+
 <div x-data="logsManager()">
     <details>
         <summary>🔍 筛选条件</summary>
-        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end;margin-top:0.5rem">
-            <label>类别
-                <select x-model="category" style="width:auto">
+        <div class="log-filters">
+            <label class="log-ctl">类别
+                <select x-model="category">
                     <option value="">全部</option>
                     {% for c, label in [('import','导入'),('spec','规范'),('rule','规则'),('classify','分类'),('review','复核'),('maintenance','维护'),('auth','登录'),('system','系统')] %}
                     <option value="{{ c }}">{{ label }}</option>
                     {% endfor %}
                 </select>
             </label>
-            <label>级别
-                <select x-model="level" style="width:auto">
+            <label class="log-ctl">级别
+                <select x-model="level">
                     <option value="">全部</option>
                     <option value="INFO">INFO</option>
                     <option value="WARN">WARN</option>
@@ -20,13 +41,29 @@
                     <option value="ERROR,WARN">⚠️ 异常</option>
                 </select>
             </label>
-            <label>操作者 <input x-model="user" type="text" placeholder="admin" style="width:7rem"></label>
-            <label>从 <input x-model="start" type="date" style="width:auto"></label>
-            <label>至 <input x-model="end" type="date" style="width:auto"></label>
-            <label>关键词 <input x-model="keyword" type="text" placeholder="动作/详情/用户" style="width:9rem"></label>
-            <button class="outline" style="font-size:0.8rem" @click="applyFilter()">筛选</button>
-            <button class="outline" style="font-size:0.8rem" @click="resetFilter()">重置</button>
-            <a :href="exportUrl()"><button class="outline" style="font-size:0.8rem">📤 导出异常日志</button></a>
+            <label class="log-ctl">操作者
+                <select x-model="user">
+                    <option value="">全部</option>
+                    <template x-for="o in operators" :key="o">
+                        <option :value="o" x-text="o"></option>
+                    </template>
+                </select>
+            </label>
+            <label class="log-ctl">日期
+                <span class="range-box">
+                    <input x-model="start" type="date" title="开始日期">
+                    <span class="sep">~</span>
+                    <input x-model="end" type="date" title="结束日期">
+                </span>
+            </label>
+            <label class="log-ctl">关键词
+                <input x-model="keyword" type="text" placeholder="动作/详情/用户">
+            </label>
+            <div class="log-actions">
+                <button class="outline" @click="applyFilter()">筛选</button>
+                <button class="outline" @click="resetFilter()">重置</button>
+                <a :href="exportUrl()"><button class="outline">📤 导出异常日志</button></a>
+            </div>
         </div>
     </details>
 
@@ -55,16 +92,24 @@
     </div>
 </div>
 <script>
-// 日志筛选状态与请求（内联组件，与 rules_list 一致的 fetch 约定）；列表容器用
-// htmx 局部刷新，#logs-list 替换后由 htmx.process 接管其内部 hx-get 换页链接。
+// 日志筛选状态与请求（内联组件，与 rules_list 一致的 fetch 约定）。操作者候选项
+// 从 /maintenance/logs/operators 拉取填充下拉；日期范围为两个 date 的紧凑组合。
 function logsManager() {
     return {
         category: '', level: '', user: '', start: '', end: '', keyword: '',
+        operators: [],
+        init() { this.loadOperators(); },
+        async loadOperators() {
+            try {
+                const resp = await fetch('/maintenance/logs/operators');
+                this.operators = await resp.json();
+            } catch (e) { this.operators = []; }
+        },
         params() {
             const p = new URLSearchParams();
             if (this.category) p.set('category', this.category);
             if (this.level) p.set('level', this.level);
-            if (this.user) p.set('user', this.user.trim());
+            if (this.user) p.set('user', this.user);
             if (this.start) p.set('start', this.start);
             if (this.end) p.set('end', this.end);
             if (this.keyword) p.set('keyword', this.keyword.trim());

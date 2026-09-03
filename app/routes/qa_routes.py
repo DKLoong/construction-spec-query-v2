@@ -266,8 +266,13 @@ async def qa_ask(request: Request, body: QaRequest):
         from app.ai.provider_presets import PROVIDERS
         preset = PROVIDERS.get(body.backend or "")
         cli_used = preset["name"] if preset else "自定义"
+        if not trace.backend:
+            trace.backend = cli_used  # 前端显式预设未传时回填实际名，供 QA 日志展示
     else:
         cli_used = backend.command
+        if not trace.backend:
+            # 默认走 CLI（body.backend 为空）：QA 日志回填可读命令名
+            trace.backend = (backend.command or "cli").replace("\\", "/").rsplit("/", 1)[-1]
 
     if not backend.is_available():
         return JSONResponse(

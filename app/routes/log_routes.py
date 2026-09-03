@@ -141,6 +141,17 @@ async def logs_export(request: Request, category: str = "", level: str = "",
     })
 
 
+@router.get("/maintenance/logs/operators")
+async def logs_operators(request: Request):
+    """操作者候选项：system_logs 中出现过的非空 username 去重（供筛选下拉）"""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT username FROM system_logs "
+            "WHERE username IS NOT NULL AND username != '' ORDER BY username"
+        ).fetchall()
+    return [r["username"] for r in rows]
+
+
 @router.get("/maintenance/qa-logs")
 async def qa_logs(request: Request, page: int = 1,
                   page_size: int = PAGE_SIZE_DEFAULT):
