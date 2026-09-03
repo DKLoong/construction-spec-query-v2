@@ -34,23 +34,26 @@
             </template>
         </div>
         <span style="flex:1"></span>
-        <label class="params-ctl">方案
-            <select x-model="currentId" @change="loadProfile()">
-                <template x-for="p in profiles" :key="p.id">
-                    <option :value="p.id" x-text="p.name"></option>
-                </template>
-            </select>
-        </label>
-        <button class="outline" style="font-size:0.8rem" x-show="currentId > 0"
-                @click="openRename()" title="重命名方案">✏️</button>
-        <div class="params-actions">
-            <button class="outline" style="font-size:0.8rem"
-                    :disabled="currentId === 0 || busy" @click="save()">保存</button>
-            <button class="outline" style="font-size:0.8rem"
-                    :disabled="busy" @click="apply()">应用</button>
-            <button class="outline" style="font-size:0.8rem"
-                    :disabled="busy" @click="openSaveAs()">另存为</button>
+        <!-- 右侧整体右对齐：默认方案提示（仅默认时）在方案下拉左侧 + 方案下拉 + 操作按钮 -->
+        <div style="display:inline-flex;align-items:flex-end;gap:0.6rem;flex-wrap:wrap">
             <span class="params-hint" x-show="currentId === 0">默认方案不可修改（另存为副本后编辑）；「应用」=回滚内置默认</span>
+            <label class="params-ctl">方案
+                <select x-model="currentId" @change="loadProfile()">
+                    <template x-for="p in profiles" :key="p.id">
+                        <option :value="p.id" x-text="p.name"></option>
+                    </template>
+                </select>
+            </label>
+            <button class="outline" style="font-size:0.8rem" x-show="currentId > 0"
+                    @click="openRename()" title="重命名方案">✏️</button>
+            <div class="params-actions">
+                <button class="outline" style="font-size:0.8rem"
+                        :disabled="currentId === 0 || busy" @click="save()">保存</button>
+                <button class="outline" style="font-size:0.8rem"
+                        :disabled="busy" @click="apply()">应用</button>
+                <button class="outline" style="font-size:0.8rem"
+                        :disabled="busy" @click="openSaveAs()">另存为</button>
+            </div>
         </div>
     </div>
     <p class="params-msg" x-show="msg" :class="msgErr ? 'err' : 'ok'" x-text="msg"></p>
@@ -111,7 +114,10 @@ function paramsManager() {
             } catch (e) { /* 无标记则默认方案 */ }
             this.loadProfile();
         },
-        current() { return this.profiles.find(p => p.id === this.currentId); },
+        current() {
+            // select 的 value 为字符串，profile.id 为数字 → 统一转字符串比较，避免切换后匹配失败回落默认
+            return this.profiles.find(p => String(p.id) === String(this.currentId));
+        },
         filtered() { return this.meta.filter(m => m.group === this.group); },
         loadProfile() {
             this.errs = {}; this.activeHelp = null;
