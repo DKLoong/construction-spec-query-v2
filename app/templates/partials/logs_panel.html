@@ -1,0 +1,89 @@
+<!-- 日志管理面板（Tab 3）：筛选 + 导出异常 + 手动清理 + 列表 -->
+<div x-data="logsManager()">
+    <details>
+        <summary>🔍 筛选条件</summary>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end;margin-top:0.5rem">
+            <label>类别
+                <select x-model="category" style="width:auto">
+                    <option value="">全部</option>
+                    {% for c, label in [('import','导入'),('spec','规范'),('rule','规则'),('classify','分类'),('review','复核'),('maintenance','维护'),('auth','登录'),('system','系统')] %}
+                    <option value="{{ c }}">{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>级别
+                <select x-model="level" style="width:auto">
+                    <option value="">全部</option>
+                    <option value="INFO">INFO</option>
+                    <option value="WARN">WARN</option>
+                    <option value="ERROR">ERROR</option>
+                    <option value="ERROR,WARN">⚠️ 异常</option>
+                </select>
+            </label>
+            <label>操作者 <input x-model="user" type="text" placeholder="admin" style="width:7rem"></label>
+            <label>从 <input x-model="start" type="date" style="width:auto"></label>
+            <label>至 <input x-model="end" type="date" style="width:auto"></label>
+            <label>关键词 <input x-model="keyword" type="text" placeholder="动作/详情/用户" style="width:9rem"></label>
+            <button class="outline" style="font-size:0.8rem" @click="applyFilter()">筛选</button>
+            <button class="outline" style="font-size:0.8rem" @click="resetFilter()">重置</button>
+            <a :href="exportUrl()"><button class="outline" style="font-size:0.8rem">📤 导出异常日志</button></a>
+        </div>
+    </details>
+
+    <details>
+        <summary>🧹 手动清理</summary>
+        <form style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;margin-top:0.5rem" onsubmit="return false">
+            <label><input type="radio" name="scope" value="older" checked> 90 天前</label>
+            <label><input type="radio" name="scope" value="all"> 全部</label>
+            <label><input type="radio" name="scope" value="category"> 指定分类</label>
+            <select name="category" style="width:auto">
+                {% for c, label in [('import','导入'),('spec','规范'),('rule','规则'),('classify','分类'),('review','复核'),('maintenance','维护'),('auth','登录'),('system','系统')] %}
+                <option value="{{ c }}">{{ label }}</option>
+                {% endfor %}
+            </select>
+            <button class="outline" style="font-size:0.8rem"
+                hx-post="/maintenance/logs/clean" hx-include="closest form"
+                hx-target="#clean-result" hx-swap="innerHTML"
+                hx-confirm="确定执行日志清理？该操作不可恢复。"
+                hx-on::after-request="document.body.dispatchEvent(new CustomEvent('logsRefresh'))">执行清理</button>
+        </form>
+        <div id="clean-result" style="margin-top:0.5rem"></div>
+    </details>
+
+    <div id="logs-list" hx-get="/maintenance/logs" hx-trigger="load, logsRefresh from:body" hx-swap="innerHTML">
+        <p style="color:var(--pico-muted-color);padding:0.5rem 0">加载中…</p>
+    </div>
+</div>
+<script>
+// 日志筛选状态与请求（内联组件，与 rules_list 一致的 fetch 约定）；列表容器用
+// htmx 局部刷新，#logs-list 替换后由 htmx.process 接管其内部 hx-get 换页链接。
+function logsManager() {
+    return {
+        category: '', level: '', user: '', start: '', end: '', keyword: '',
+        params() {
+            const p = new URLSearchParams();
+            if (this.category) p.set('category', this.category);
+            if (this.level) p.set('level', this.level);
+            if (this.user) p.set('user', this.user.trim());
+            if (this.start) p.set('start', this.start);
+            if (this.end) p.set('end', this.end);
+            if (this.keyword) p.set('keyword', this.keyword.trim());
+            return p;
+        },
+        applyFilter() {
+            if (window.htmx) htmx.ajax('GET', '/maintenance/logs?' + this.params().toString(),
+                { target: '#logs-list', swap: 'innerHTML' });
+        },
+        resetFilter() {
+            this.category = ''; this.level = ''; this.user = ''; this.start = '';
+            this.end = ''; this.keyword = '';
+            this.applyFilter();
+        },
+        exportUrl() {
+            const p = this.params();
+            if (!p.get('level')) p.set('level', 'ERROR,WARN'); // 未指定级别默认导出异常
+            return '/maintenance/logs/export?' + p.toString();
+        }
+    };
+}
+</script>

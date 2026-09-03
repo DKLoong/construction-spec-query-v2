@@ -1,0 +1,9 @@
+<!-- QA 请求日志只读面板（Tab 4）：只查 qa_request_logs，不含用户操作审计 -->
+<div>
+    <p style="color:var(--pico-muted-color);font-size:0.85rem">
+        仅展示 QA 问答请求记录（含检索规模/精排/耗时），操作审计见「日志管理」Tab。
+    </p>
+    <div id="qa-logs-list" hx-get="/maintenance/qa-logs" hx-trigger="load, logsRefresh from:body" hx-swap="innerHTML">
+        <p style="color:var(--pico-muted-color);padding:0.5rem 0">加载中…</p>
+    </div>
+</div>

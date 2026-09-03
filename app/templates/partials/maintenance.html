@@ -8,6 +8,8 @@
                 :class="tab==='export' ? 'contrast' : ''" @click="tab='export'">💾 导出备份</button>
         <button class="outline" style="font-size:0.8rem"
                 :class="tab==='logs' ? 'contrast' : ''" @click="tab='logs'">📜 日志管理</button>
+        <button class="outline" style="font-size:0.8rem"
+                :class="tab==='qalogs' ? 'contrast' : ''" @click="tab='qalogs'">📡 QA 日志</button>
     </div>
 
     <!-- Tab 1: 健康检查 -->
@@ -34,9 +36,14 @@
         <div id="export-result" style="margin-top:0.8rem"></div>
     </div>
 
-    <!-- Tab 3: 日志管理（占位，P3 实现） -->
+    <!-- Tab 3: 日志管理 -->
     <div x-show="tab==='logs'">
-        <p style="color:var(--pico-muted-color)">📜 日志管理将在后续版本提供（行为筛选/异常导出）。</p>
+        {% include "partials/logs_panel.html" %}
+    </div>
+
+    <!-- Tab 4: QA 日志（只读） -->
+    <div x-show="tab==='qalogs'">
+        {% include "partials/qa_logs_panel.html" %}
     </div>
 
     <!-- 重建向量索引进度环：后台重建期间覆盖全视口，圆环显示真实进度 + 中央百分比，完成自动消失 -->
