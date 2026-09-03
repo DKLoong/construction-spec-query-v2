@@ -59,6 +59,8 @@ document.addEventListener('alpine:init', () => {
         },
 
         async dispatchSearch() {
+            // 分类树操作 = 用户新查询入口：复位"本次查询已提示CE"标记（与搜索框 search() 对齐）
+            if (typeof resetCeSuggest === 'function') resetCeSuggest();
             try {
                 const params = new URLSearchParams();
                 // 从共享 store 读取筛选维度 + 搜索关键词（与搜索框保持一致）

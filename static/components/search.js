@@ -26,8 +26,8 @@ function showRadar() {
             + '<div class="radar-circle"></div>'
             + '<div class="radar-sweep"></div>'
             + '<div class="radar-text">CE 精排中，请稍候…</div></div>';
-        const center = document.querySelector('.center-panel-v2');
-        if (center) center.appendChild(el);
+        // 挂到 body：fixed 定位基准为视口，不随 .center-panel-v2 滚动/htmx 刷新被冲掉
+        document.body.appendChild(el);
     }
     el.classList.add('show');
 }
@@ -90,6 +90,9 @@ document.addEventListener('alpine:init', () => {
         },
 
         async search() {
+            // 用户发起一次新查询（非翻页）：重置"本次查询已提示过CE"标记，
+            // 使后续对新结果集翻页过半/超3页时能再次提示（Bug1 根因：标记只随整页刷新重置）
+            resetCeSuggest();
             this.loading = true;
             const params = new URLSearchParams();
             const kw = (this.$store.searchState.keyword || '').trim();
@@ -120,11 +123,17 @@ document.addEventListener('alpine:init', () => {
     }));
 });
 
-// 翻页过半建议：兜底提前 + 每会话仅提示一次
+// 翻页过半建议：兜底提前 + 每个查询只提示一次（同一结果集内翻页不重复打扰）
 // 触发阈值 = min(floor(total_pages/2), _SUGGEST_PAGE_CAP)——大页数库（万级条文）
-// 下过半太晚，用绝对页数上限提前提示；_suggestShown 标记保证本会话只弹一次（刷新重置）。
+// 下过半太晚，用绝对页数上限提前提示；_suggestShown 标记同一查询内只弹一次，
+// 用户发起新查询（search()/dispatchSearch()）时经 resetCeSuggest() 复位。
 const _SUGGEST_PAGE_CAP = 3;
 let _suggestShown = false;
+
+// 复位"本次查询已提示CE"标记：供 search.js 与 tree.js 的用户新查询入口调用
+function resetCeSuggest() {
+    _suggestShown = false;
+}
 
 // 全局一次注册（不随每次搜索累积监听）：雷达动画显示/隐藏 + 翻页建议
 document.body.addEventListener('htmx:beforeRequest', (evt) => {
