@@ -526,3 +526,72 @@ def test_apply_ai_results_logs_classify(monkeypatch, tmp_path):
     assert '"total": 2' in rows[0]["detail"]
     assert '"auto_adopted": 1' in rows[0]["detail"]
     assert '"review": 1' in rows[0]["detail"]
+
+
+# ---------- 保留清理（90 天） ----------
+
+def _seed_log(category="spec", action="样例", level="INFO", username="admin", old=False):
+    with get_db() as conn:
+        if old:
+            conn.execute(
+                """INSERT INTO system_logs (category, level, action, username, created_at)
+                   VALUES (?, ?, ?, ?, datetime('now','localtime','-200 days'))""",
+                (category, level, action, username))
+        else:
+            conn.execute(
+                "INSERT INTO system_logs (category, level, action, username) VALUES (?, ?, ?, ?)",
+                (category, level, action, username))
+
+
+def test_cleanup_expired_only_removes_old(monkeypatch, tmp_path):
+    from app.maintenance.log_cleanup import cleanup_expired
+    _setup(monkeypatch, tmp_path)
+    _seed_log(category="spec", action="旧日志", old=True)
+    _seed_log(category="spec", action="新日志", old=False)
+    with get_db() as conn:
+        n = cleanup_expired(conn)
+    assert n == 1
+    assert [r["action"] for r in _logs()] == ["新日志"]
+
+
+def test_manual_clean_category_scope(monkeypatch, tmp_path):
+    from app.maintenance.log_cleanup import manual_clean
+    _setup(monkeypatch, tmp_path)
+    _seed_log(category="spec", action="a")
+    _seed_log(category="rule", action="b")
+    n = manual_clean("category", category="spec")
+    assert n == 1
+    assert len(_logs(category="spec")) == 0
+    assert len(_logs(category="rule")) == 1
+
+
+def test_manual_clean_all_scope(monkeypatch, tmp_path):
+    from app.maintenance.log_cleanup import manual_clean
+    _setup(monkeypatch, tmp_path)
+    _seed_log(category="spec", action="a")
+    _seed_log(category="rule", action="b")
+    n = manual_clean("all")
+    assert n == 2
+    assert len(_logs()) == 0
+
+
+def test_manual_clean_older_scope(monkeypatch, tmp_path):
+    from app.maintenance.log_cleanup import manual_clean
+    _setup(monkeypatch, tmp_path)
+    _seed_log(category="spec", action="旧", old=True)
+    _seed_log(category="rule", action="新", old=False)
+    n = manual_clean("older")
+    assert n == 1
+    assert [r["action"] for r in _logs()] == ["新"]
+
+
+def test_manual_clean_invalid_scope_raises(monkeypatch, tmp_path):
+    from app.maintenance.log_cleanup import manual_clean
+    _setup(monkeypatch, tmp_path)
+    _seed_log(category="spec", action="a")
+    try:
+        manual_clean("nonsense")
+        assert False, "应抛 ValueError"
+    except ValueError:
+        pass
+    assert len(_logs()) == 1  # 非法范围不误删

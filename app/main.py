@@ -64,8 +64,32 @@ def _startup_fts_optimize():
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _startup_log_cleanup():
+    """后台线程执行 90 天日志保留清理并记录系统启动（不阻塞启动）
+
+    清理与启动审计放后台线程：init_db() 完成建表后再执行；先清理过期日志再写
+    「系统启动」审计，保证启动日志本身不会被过期条件误删（它在清理后写入）。
+    """
+    import threading
+
+    def _run():
+        try:
+            from app.database import get_db
+            from app.maintenance.log_cleanup import cleanup_expired
+            from app.logging_util import log_action
+            with get_db() as conn:
+                n = cleanup_expired(conn)
+            log_action("system", "INFO", "启动日志清理", detail=str(n), username="system")
+            log_action("system", "INFO", "系统启动", username="system")
+        except Exception as e:
+            logger.warning("启动日志清理失败: %s", e)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def startup():
     init_db()
+    _startup_log_cleanup()
     _startup_vector_sync()
     _startup_warmup_embedding()
     _startup_fts_optimize()

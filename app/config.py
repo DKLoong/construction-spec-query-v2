@@ -54,6 +54,10 @@ AI_CONFIDENCE_THRESHOLD = 0.7
 BATCH_SIZE = 20
 BATCH_TIMEOUT_SECONDS = 30
 
+# ── 日志保留（D15）──
+LOG_RETENTION_DAYS = 90        # system_logs 默认保留天数
+LOG_CLEAN_BATCH = 500          # 清理每批删除上限（防长事务）
+
 # ── QA 模块配置默认值（DB settings 的 qa.* 键可覆盖；app/qa/config.py 读取）──
 QA_CONFIG_DEFAULTS: dict = {
     # 检索
