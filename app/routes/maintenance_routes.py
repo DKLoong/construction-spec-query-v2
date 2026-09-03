@@ -30,12 +30,13 @@ async def maintenance_page(request: Request):
 
 @router.post("/maintenance/health-check")
 async def health_check_run(request: Request):
-    """运行健康检查，返回结果片段"""
+    """运行健康检查，返回结果片段
+
+    埋点由 run_health_check 内部统一写一条「健康检查」（含完整 result）；
+    不再在此重复记 wrapper 日志（避免同一次运行出现两条同 detail 记录）。
+    """
     from app.maintenance.health_check import run_health_check
-    start = time.time()
     result = run_health_check()
-    log_action("maintenance", "INFO", "运行健康检查",
-               detail=str(result), duration_ms=int((time.time() - start) * 1000))
     return _render_health_result(request, result)
 
 

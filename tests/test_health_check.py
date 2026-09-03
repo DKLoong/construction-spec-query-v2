@@ -97,7 +97,8 @@ def test_fix_issue_empty_content_not_fixable(monkeypatch, tmp_path):
 
 
 def test_vector_missing_table_missing_not_fixable(monkeypatch, tmp_path):
-    """向量表不存在时：vector_missing 不报可修复 N 条，单项修复返回「请重建」"""
+    """向量表不存在时：vector_missing 不报可修复 N 条，severity=rebuild（待重建），
+    单项修复返回「请重建」"""
     monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance_none"))
     _setup_db(monkeypatch, tmp_path)
     from app.maintenance.health_check import run_health_check, fix_issue
@@ -106,7 +107,8 @@ def test_vector_missing_table_missing_not_fixable(monkeypatch, tmp_path):
     vm = checks["vector_missing"]
     assert vm["count"] == 0  # 表不存在按 0 计，不误报「可修复 N 条」
     assert vm["fixable"] is False
-    assert vm["severity"] == "error"
+    assert vm["severity"] == "rebuild"
+    assert vm.get("count_text") == "待重建"
     r = fix_issue("vector_missing")
     assert r["fixed"] is False
     assert "重建" in r["detail"]  # 提示走「重建向量索引」而非「已补齐」
