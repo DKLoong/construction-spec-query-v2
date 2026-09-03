@@ -22,6 +22,9 @@ def test_maintenance_page_has_logs_tabs(auth_client, monkeypatch, tmp_path):
     # 翻页回顶机制挂常驻容器（对照搜索分页 result_list.html 约定），logs-list 可见
     assert 'id="logs-list"' in resp.text and "after-settle" in resp.text
     assert "center-panel-v2" in resp.text
+    # 日志/QA Tab 点击时须触发刷新（logsRefresh），否则切到 Tab 仍显示整页 load 时旧快照
+    assert "tab='logs'; refreshLogs()" in resp.text
+    assert "tab='qalogs'; refreshLogs()" in resp.text
 
 
 def test_maintenance_logs_fragment_lists_rows(auth_client, monkeypatch, tmp_path):

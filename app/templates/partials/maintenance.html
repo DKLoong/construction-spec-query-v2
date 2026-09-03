@@ -1,5 +1,5 @@
 <!-- 维护界面：三 Tab（健康检查 / 导出备份 / 日志管理占位） -->
-<div x-data="{ tab: 'health' }" style="padding:1rem">
+<div x-data="{ tab: 'health', refreshLogs() { document.body.dispatchEvent(new CustomEvent('logsRefresh')); } }" style="padding:1rem">
     <h2>🛠 知识库维护</h2>
     <div style="display:flex;gap:0.5rem;margin:1rem 0;flex-wrap:wrap">
         <button class="outline" style="font-size:0.8rem"
@@ -7,9 +7,11 @@
         <button class="outline" style="font-size:0.8rem"
                 :class="tab==='export' ? 'contrast' : ''" @click="tab='export'">💾 导出备份</button>
         <button class="outline" style="font-size:0.8rem"
-                :class="tab==='logs' ? 'contrast' : ''" @click="tab='logs'">📜 日志管理</button>
+                :class="tab==='logs' ? 'contrast' : ''"
+                @click="tab='logs'; refreshLogs()">📜 日志管理</button>
         <button class="outline" style="font-size:0.8rem"
-                :class="tab==='qalogs' ? 'contrast' : ''" @click="tab='qalogs'">📡 QA 日志</button>
+                :class="tab==='qalogs' ? 'contrast' : ''"
+                @click="tab='qalogs'; refreshLogs()">📡 QA 日志</button>
     </div>
 
     <!-- Tab 1: 健康检查 -->
