@@ -7,11 +7,22 @@
 }
 .left-panel {
     border-right: 1px solid var(--pico-muted-border-color);
-    overflow-y: auto;
+    /* 隐藏整栏滚动：分类树滚动下放到 .tree-container（overflow-y:auto）。
+       避免树展开/折叠改变左栏内容高度时，纵向滚动条出现/消失造成内容宽度
+       回流抖动（Bug4 晃动根因之一） */
+    overflow: hidden;
     padding: 1rem;
     display: flex;
     flex-direction: column;
     background: #faf7f3;
+}
+/* 左栏内容纵向铺满，让 .tree-container 的 flex:1 生效并独立滚动 */
+.left-panel-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
 }
 .center-panel-v2 {
     position: relative;  /* 轻提示/雷达 overlay 的定位基准 */
@@ -255,7 +266,10 @@
 /* ═══════════════════════════════════════════════════════════════
    分类树
    ═══════════════════════════════════════════════════════════════ */
-.tree-container { flex: 1; overflow-y: auto; font-size: 0.9rem; }
+/* flex:1 需父级 .left-panel-content 为纵向 flex 才生效（已补）；min-height:0 允许收缩触发内部滚动。
+   overflow-x:hidden：展开 <details> 时内容瞬时产生 1~3px 水平溢出，若 overflow-x 为 auto 会
+   在底部闪现水平滚动条（Bug4 闪烁根因），此处显式隐藏 */
+.tree-container { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; font-size: 0.9rem; }
 .tree-node { margin-left: 1rem; }
 .tree-label {
     cursor: pointer; padding: 3px 6px; border-radius: 4px;
@@ -289,12 +303,14 @@
 
 /* ── CE 精排雷达扫描动画（搜索结果栏覆盖层，缓解等待焦虑） ── */
 .radar-overlay {
-    position: absolute;
+    /* fixed + 挂到 body：定位基准为视口，不随结果区滚动/htmx 刷新消失（Bug2 根因）
+       z-index 置于检索轻提示(1000)之下，避免遮住 toast */
+    position: fixed;
     inset: 0;
     display: none;
     align-items: center;
     justify-content: center;
-    z-index: 50;
+    z-index: 998;
     background: rgba(255, 255, 255, 0.85);
     backdrop-filter: blur(1px);
 }
