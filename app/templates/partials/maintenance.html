@@ -21,7 +21,8 @@
             🔍 运行健康检查
         </button>
         <div id="health-result" style="margin-top:1rem"
-             hx-post="/maintenance/health-check" hx-trigger="load" hx-swap="innerHTML"></div>
+             hx-post="/maintenance/health-check" hx-trigger="load" hx-swap="innerHTML"
+             hx-vals='{"trigger":"auto"}'></div>
     </div>
 
     <!-- Tab 2: 导出备份 -->

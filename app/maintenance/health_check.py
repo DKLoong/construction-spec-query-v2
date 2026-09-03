@@ -102,8 +102,11 @@ def _count_fts_mismatch() -> int:
         ).fetchone()[0]
 
 
-def run_health_check() -> dict:
-    """执行全部检查，写 system_logs + health_check_snapshots，返回结果 dict"""
+def run_health_check(username: str = "system") -> dict:
+    """执行全部检查，写 system_logs + health_check_snapshots，返回结果 dict
+
+    username 记录触发者：页面自动执行传 'system'；手动触发由路由传当前登录用户名。
+    """
     vector_ids, vstate = _vector_ids_and_state()
     counts = {
         "orphan_parent": _count_orphan_parent(),
@@ -114,7 +117,7 @@ def run_health_check() -> dict:
         "fts_mismatch": _count_fts_mismatch(),
     }
     if vstate == "error":
-        log_action("maintenance", "WARN", "健康检查向量索引读取失败")
+        log_action("maintenance", "WARN", "健康检查向量索引读取失败", username=username)
     checks = []
     for key, label in LABELS.items():
         count = counts[key]
@@ -140,7 +143,8 @@ def run_health_check() -> dict:
     result = {"checks": checks}
     # 持久化：写日志 + 快照（表由 P0 schema 迁移建好）
     import json
-    log_action("maintenance", "INFO", "健康检查", detail=json.dumps(result))
+    log_action("maintenance", "INFO", "健康检查", detail=json.dumps(result),
+               username=username)
     try:
         with get_db() as conn:
             conn.execute(
@@ -152,7 +156,7 @@ def run_health_check() -> dict:
     return result
 
 
-def fix_issue(key: str) -> dict:
+def fix_issue(key: str, username: str = "system") -> dict:
     """单项修复，返回 {key, fixed, detail}"""
     if key == "orphan_parent":
         with get_db() as conn:
@@ -161,7 +165,7 @@ def fix_issue(key: str) -> dict:
                    WHERE parent_clause IS NOT NULL AND NOT EXISTS (
                        SELECT 1 FROM clauses p WHERE p.id = clauses.parent_clause)"""
             ).rowcount
-        log_action("maintenance", "INFO", "修复孤立条文", detail=str(n))
+        log_action("maintenance", "INFO", "修复孤立条文", detail=str(n), username=username)
         return {"key": key, "fixed": n > 0, "detail": f"已置空 {n} 条悬空引用"}
     if key == "empty_content":
         # 仅报告，不自动删（人工决定）
@@ -175,21 +179,22 @@ def fix_issue(key: str) -> dict:
                      AND COALESCE(dim5_location, '') = ''
                      AND COALESCE(dim6_material, '') = ''"""
             ).rowcount
-        log_action("maintenance", "INFO", "重置分类异常", detail=str(n))
+        log_action("maintenance", "INFO", "重置分类异常", detail=str(n), username=username)
         return {"key": key, "fixed": n > 0, "detail": f"已重置 {n} 条进入复核"}
     if key == "vector_orphan":
         from app.search.vector_search import VectorStore
         removed = VectorStore().sync_with_db()
-        log_action("maintenance", "INFO", "清理孤儿向量", detail=str(removed))
+        log_action("maintenance", "INFO", "清理孤儿向量", detail=str(removed), username=username)
         return {"key": key, "fixed": removed > 0, "detail": f"已清理 {removed} 条孤儿向量"}
     if key == "vector_missing":
         from app.search.vector_search import VectorStore
         added = VectorStore().index_missing()
         if added < 0:
             # 向量表不存在/读失败：单项补齐无意义，需全量重建
-            log_action("maintenance", "WARN", "补齐缺失向量失败（向量表不存在）")
+            log_action("maintenance", "WARN", "补齐缺失向量失败（向量表不存在）",
+                       username=username)
             return {"key": key, "fixed": False, "detail": "向量表不存在，请使用「重建向量索引」"}
-        log_action("maintenance", "INFO", "补齐缺失向量", detail=str(added))
+        log_action("maintenance", "INFO", "补齐缺失向量", detail=str(added), username=username)
         return {"key": key, "fixed": added > 0, "detail": f"已补齐 {added} 条向量"}
     if key == "fts_mismatch":
         with get_db() as conn:
@@ -198,14 +203,14 @@ def fix_issue(key: str) -> dict:
                    SELECT c.id, COALESCE(c.search_text, '') FROM clauses c
                    WHERE NOT EXISTS (SELECT 1 FROM clauses_fts f WHERE f.rowid = c.id)"""
             ).rowcount
-        log_action("maintenance", "INFO", "补齐 FTS 索引", detail=str(n))
+        log_action("maintenance", "INFO", "补齐 FTS 索引", detail=str(n), username=username)
         return {"key": key, "fixed": n > 0, "detail": f"已补齐 {n} 条 FTS 索引"}
     return {"key": key, "fixed": False, "detail": f"未知检查项: {key}"}
 
 
-def fix_all() -> list[dict]:
+def fix_all(username: str = "system") -> list[dict]:
     """一键修复全部可修复项"""
     results = []
     for key in LABELS:
-        results.append(fix_issue(key))
+        results.append(fix_issue(key, username=username))
     return results

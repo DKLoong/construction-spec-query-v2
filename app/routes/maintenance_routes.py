@@ -2,7 +2,7 @@
 import logging
 import time
 from pathlib import Path
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from app.database import get_db
 from app.logging_util import log_action
@@ -29,14 +29,16 @@ async def maintenance_page(request: Request):
 
 
 @router.post("/maintenance/health-check")
-async def health_check_run(request: Request):
+async def health_check_run(request: Request, trigger: str = Form("")):
     """运行健康检查，返回结果片段
 
-    埋点由 run_health_check 内部统一写一条「健康检查」（含完整 result）；
-    不再在此重复记 wrapper 日志（避免同一次运行出现两条同 detail 记录）。
+    埋点由 run_health_check 内部统一写一条「健康检查」（含完整 result），此处只补触发者：
+    trigger=auto（#health-result 进入页面 load 自动执行）记 system；
+    手动点按钮不传 trigger → 记当前登录用户。
     """
     from app.maintenance.health_check import run_health_check
-    result = run_health_check()
+    username = "system" if trigger == "auto" else getattr(request.state, "username", "system")
+    result = run_health_check(username=username)
     return _render_health_result(request, result)
 
 
@@ -44,16 +46,18 @@ async def health_check_run(request: Request):
 async def health_fix_one(request: Request, key: str):
     """单项修复后返回更新结果"""
     from app.maintenance.health_check import fix_issue, run_health_check
-    fix_issue(key)
-    return _render_health_result(request, run_health_check())
+    username = getattr(request.state, "username", "system")
+    fix_issue(key, username=username)
+    return _render_health_result(request, run_health_check(username=username))
 
 
 @router.post("/maintenance/fix-all")
 async def health_fix_all(request: Request):
     """一键修复全部可修复项"""
     from app.maintenance.health_check import fix_all, run_health_check
-    fix_all()
-    return _render_health_result(request, run_health_check())
+    username = getattr(request.state, "username", "system")
+    fix_all(username=username)
+    return _render_health_result(request, run_health_check(username=username))
 
 
 # 后台重建进度（task_id -> {status, progress, message}），与导入进度相互独立
