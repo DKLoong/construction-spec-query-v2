@@ -125,6 +125,8 @@ async def search(
         "include_non_clause": include_non_clause,
         "ce_rerank": ce_rerank,
         "status_filter": status_filter,
+        # all=1 浏览全量模式须贯穿分页，否则翻页回退成"空查询提示页"（Bug3 根因）
+        "all": all,
     })
 
 
