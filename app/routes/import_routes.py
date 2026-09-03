@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
 from app.config import UPLOAD_DIR, OUTPUT_DIR, ADAPTIVE_THRESHOLDS
 from app.database import get_db
+from app.logging_util import log_action, json_detail
 from app.parser.md_parser import parse_markdown, is_cover_clause
 from app.parser.ocr_clean import clean_ocr_text
 from app.parser.spec_prefix import (
@@ -85,11 +86,12 @@ async def parse_filename(filename: str = Form("")):
 
 
 @router.post("/import/validate-version")
-async def validate_version(body: dict):
+async def validate_version(request: Request, body: dict):
     """AI 校核规范版本与命名：返回 {status, replaced_by_code, corrected_code, corrected_title, ai_available}
 
     AI 不可用/异常/输出非 JSON → 兜底返回 status=现行、ai_available=False（不抛错）。
     corrected_code 一律再过 normalize_spec_code 兜底（D19 第一级正则）。
+    埋点：AI 成功 INFO、降级兜底 WARN；code 为空不触发校验，不埋。
     """
     from app.ai.prompts import build_version_check_prompt
     from app.ai.cli_client import get_backend
@@ -102,26 +104,39 @@ async def validate_version(body: dict):
     }
     if not code:
         return fallback
+
+    username = getattr(request.state, "username", "")
+    result = fallback
+    ai_available = False
     try:
         backend = get_backend()
-        if not backend.is_available():
-            return fallback
-        import json as _json
-        from app.config import WORKSPACE_DIR
-        prompt = build_version_check_prompt(code, title)
-        resp = await backend.ask(prompt, context="", system_prompt="", work_dir=WORKSPACE_DIR)
-        if not (resp.success and resp.content.strip()):
-            return fallback
-        parsed = _json.loads(resp.content)
-        return {
-            "status": parsed.get("status", "现行") if parsed.get("status") in ("现行", "废止", "修订中") else "现行",
-            "replaced_by_code": (parsed.get("replaced_by_code") or "").strip(),
-            "corrected_code": normalize_spec_code(parsed.get("corrected_code") or code),
-            "corrected_title": (parsed.get("corrected_title") or title).strip(),
-            "ai_available": True,
-        }
+        if backend.is_available():
+            import json as _json
+            from app.config import WORKSPACE_DIR
+            prompt = build_version_check_prompt(code, title)
+            resp = await backend.ask(prompt, context="", system_prompt="", work_dir=WORKSPACE_DIR)
+            if resp.success and resp.content.strip():
+                parsed = _json.loads(resp.content)
+                result = {
+                    "status": parsed.get("status", "现行") if parsed.get("status") in ("现行", "废止", "修订中") else "现行",
+                    "replaced_by_code": (parsed.get("replaced_by_code") or "").strip(),
+                    "corrected_code": normalize_spec_code(parsed.get("corrected_code") or code),
+                    "corrected_title": (parsed.get("corrected_title") or title).strip(),
+                    "ai_available": True,
+                }
+                ai_available = True
     except Exception:
-        return fallback
+        pass
+    if ai_available:
+        log_action("import", "INFO", "版本校验完成",
+                   detail=json_detail({"code": code, "title": title,
+                                       "status": result["status"]}),
+                   username=username)
+    else:
+        log_action("import", "WARN", "版本校验降级(AI不可用)",
+                   detail=json_detail({"code": code, "title": title}),
+                   username=username)
+    return result
 
 
 @router.post("/import/upload")
@@ -146,6 +161,12 @@ async def upload_file(
         ).fetchone()
 
     if existing:
+        log_action("import", "WARN", "导入重复文件",
+                   detail=json_detail({"code": existing["code"],
+                                       "title": existing["title"],
+                                       "created_at": existing["created_at"],
+                                       "file_hash": file_hash}),
+                   username=getattr(request.state, "username", ""))
         return HTMLResponse(
             f"""<div id="import-status" style="color:#c08552;font-weight:bold">
             ⚠️ 该文件已导入过<br>
@@ -170,6 +191,11 @@ async def upload_file(
         _process_import, task_id, str(save_path), title, code, file_hash, force_ocr,
         status, replaced_by_code,
     )
+    log_action("import", "INFO", "提交导入任务",
+               detail=json_detail({"task_id": task_id, "code": code, "title": title,
+                                   "filename": file.filename, "status": status,
+                                   "replaced_by_code": replaced_by_code}),
+               username=getattr(request.state, "username", ""))
     return HTMLResponse(
         f'<div id="import-status" hx-get="/import/progress/{task_id}" hx-trigger="every 2s" hx-swap="outerHTML">处理中...</div>'
     )
@@ -487,6 +513,12 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         conn.execute("UPDATE specifications SET clause_count = ? WHERE id = ?",
                     (len(clauses_data), spec_id))
         conn.commit()
+        # commit 之后再埋点（log_action 自开新连接，事务内调用会 BUSY）
+        log_action("import", "INFO", "导入成功",
+                   detail=json_detail({"spec_id": spec_id, "code": code,
+                                       "clause_count": len(clauses_data),
+                                       "replaced_by_code": replaced_by_code}),
+                   username=progress_store.get(task_id, {}).get("owner", "system"))
 
         progress_store[task_id].update(
             status="done", progress=100,
@@ -499,6 +531,9 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
             except Exception:
                 pass
         progress_store[task_id].update(status="error", progress=0, message=str(e))
+        log_action("import", "ERROR", "导入失败",
+                   detail=json_detail({"task_id": task_id, "code": code, "error": str(e)}),
+                   username=progress_store.get(task_id, {}).get("owner", "system"))
     finally:
         if conn:
             try:
@@ -597,6 +632,9 @@ async def confirm_review(
         _process_import_phase2, task_id, content, title, code, file_path, file_hash,
         status, replaced_by_code,
     )
+    log_action("import", "INFO", "审查确认继续导入",
+               detail=json_detail({"task_id": task_id, "code": code}),
+               username=task.get("owner") or getattr(request.state, "username", ""))
 
     return HTMLResponse(
         f"""<div id="import-status" hx-get="/import/progress/{task_id}" hx-trigger="every 2s" hx-swap="outerHTML">
@@ -632,6 +670,9 @@ async def cancel_review(request: Request, task_id: str):
 
     # 移除内存任务（幂等：不存在也无妨）
     progress_store.pop(task_id, None)
+    log_action("import", "INFO", "取消导入审查",
+               detail=json_detail({"task_id": task_id}),
+               username=username)
 
     # HX-Redirect 让 HTMX 整页跳回主界面
     return HTMLResponse("", headers={"HX-Redirect": "/"})
