@@ -280,6 +280,19 @@ def init_db():
             );
             """
         )
+        # 参数设置方案表（默认方案为虚拟 id=0，不落库）
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS param_profiles (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL UNIQUE,
+                is_system   INTEGER NOT NULL DEFAULT 0,
+                values_json TEXT NOT NULL DEFAULT '{}',
+                created_at  TEXT DEFAULT (datetime('now','localtime')),
+                updated_at  TEXT DEFAULT (datetime('now','localtime'))
+            );
+            """
+        )
         # 预置常用同义词（幂等：依赖 source 唯一索引 + INSERT OR IGNORE）
         conn.execute(
             "INSERT OR IGNORE INTO synonym_map (source, target, is_active) VALUES (?, ?, 1)",

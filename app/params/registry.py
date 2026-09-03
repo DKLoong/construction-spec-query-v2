@@ -172,6 +172,10 @@ def all_param_keys() -> list[str]:
     return [m["key"] for m in PARAM_META]
 
 
+def all_param_keys_set() -> set[str]:
+    return {m["key"] for m in PARAM_META}
+
+
 def keys_by_group(group: str) -> list[str]:
     return [m["key"] for m in PARAM_META if m["group"] == group]
 
