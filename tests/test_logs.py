@@ -418,3 +418,111 @@ def test_quality_batch_logs_rule_info(auth_client, monkeypatch, tmp_path):
     rows = _logs(action="规则质量批量处理", category="rule")
     assert len(rows) == 1 and rows[0]["level"] == "INFO"
     assert '"affected": 1' in rows[0]["detail"]
+
+
+# ---------- review / classify 埋点 ----------
+
+def _seed_review_queue(clause_id, label="钢筋", conf=0.6):
+    """插入一条 status='review' 队列项，返回 queue_id"""
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO classification_queue
+               (clause_id, dimension, keyword_score, ai_label, ai_confidence, status)
+               VALUES (?, 'dim6', 0.0, ?, ?, 'review')""",
+            (clause_id, label, conf))
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def test_confirm_review_logs_review_info(auth_client, monkeypatch, tmp_path):
+    import app.classifier.feedback as fb
+    _setup(monkeypatch, tmp_path)
+    sid, cid = _seed_spec_clause()
+    qid = _seed_review_queue(cid, label="钢筋")
+    monkeypatch.setattr(fb, "process_feedback", lambda *a, **k: None)
+    resp = auth_client.post(f"/review/{qid}/confirm")
+    assert resp.status_code == 200
+    rows = _logs(action="确认分类标签", category="review")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert "钢筋" in rows[0]["detail"]
+
+
+def test_confirm_review_missing_logs_warn(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    resp = auth_client.post("/review/999999/confirm")
+    assert resp.status_code == 200
+    rows = _logs(action="确认失败-队列项不存在", category="review")
+    assert len(rows) == 1 and rows[0]["level"] == "WARN"
+
+
+def test_reject_review_logs_review_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    sid, cid = _seed_spec_clause()
+    qid = _seed_review_queue(cid)
+    resp = auth_client.post(f"/review/{qid}/reject")
+    assert resp.status_code == 200
+    rows = _logs(action="驳回分类标签", category="review")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+
+
+def test_batch_confirm_logs_review_info(auth_client, monkeypatch, tmp_path):
+    import app.classifier.feedback as fb
+    _setup(monkeypatch, tmp_path)
+    sid, cid = _seed_spec_clause()
+    q1, q2 = _seed_review_queue(cid), _seed_review_queue(cid)
+    monkeypatch.setattr(fb, "process_feedback", lambda *a, **k: None)
+    resp = auth_client.post("/review/batch-confirm", json={"queue_ids": [q1, q2]})
+    assert resp.status_code == 200
+    rows = _logs(action="批量确认", category="review")
+    assert len(rows) == 1 and '"count": 2' in rows[0]["detail"]
+
+
+def test_batch_reject_logs_review_info(auth_client, monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    sid, cid = _seed_spec_clause()
+    q1, q2 = _seed_review_queue(cid), _seed_review_queue(cid)
+    resp = auth_client.post("/review/batch-reject", json={"queue_ids": [q1, q2]})
+    assert resp.status_code == 200
+    rows = _logs(action="批量驳回", category="review")
+    assert len(rows) == 1 and '"count": 2' in rows[0]["detail"]
+
+
+def test_run_classifier_logs_classify_info(auth_client, monkeypatch, tmp_path):
+    import app.ai.classifier_ai as ca
+    _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(ca, "process_pending_batches", lambda **k: 3)
+    resp = auth_client.post("/classify/run")
+    assert resp.status_code == 200
+    rows = _logs(action="运行AI分类", category="classify")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert '"count": 3' in rows[0]["detail"]
+
+
+def test_run_classifier_failure_logs_classify_error(auth_client, monkeypatch, tmp_path):
+    import app.ai.classifier_ai as ca
+    _setup(monkeypatch, tmp_path)
+
+    def _boom(**k):
+        raise RuntimeError("classify-boom")
+
+    monkeypatch.setattr(ca, "process_pending_batches", _boom)
+    resp = auth_client.post("/classify/run")
+    assert resp.status_code == 200
+    rows = _logs(action="运行AI分类失败", category="classify")
+    assert len(rows) == 1 and rows[0]["level"] == "ERROR"
+    assert "classify-boom" in rows[0]["detail"]
+
+
+def test_apply_ai_results_logs_classify(monkeypatch, tmp_path):
+    """apply_ai_results 每批记一条 classify/INFO，detail 含 auto/review 计数"""
+    from app.classifier import batch_queue
+    _setup(monkeypatch, tmp_path)
+    results = [
+        {"clause_id": 101, "confidence": 0.85, "label": "钢筋"},
+        {"clause_id": 102, "confidence": 0.50, "label": "混凝土"},
+    ]
+    batch_queue.apply_ai_results("batch_t1", results)
+    rows = _logs(action="AI分类结果入库", category="classify")
+    assert len(rows) == 1 and rows[0]["level"] == "INFO"
+    assert '"total": 2' in rows[0]["detail"]
+    assert '"auto_adopted": 1' in rows[0]["detail"]
+    assert '"review": 1' in rows[0]["detail"]

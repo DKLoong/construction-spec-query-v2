@@ -1,6 +1,7 @@
 import uuid
 from app.config import BATCH_SIZE
 from app.database import get_db
+from app.logging_util import log_action, json_detail
 
 
 def add_to_queue(clause_id: int, dimension: str, keyword_score: float):
@@ -80,6 +81,13 @@ def apply_ai_results(batch_id: str, results: list[dict]):
                             bump_rule(conn, dim, kw, sub_field,
                                       is_confirmed=False, new_rule_active=True,
                                       label=r["label"])
+
+    # 事务已提交，写一条本批汇总（log_action 自开连接，须在 commit 后调用）
+    auto_count = sum(1 for r in results if r["confidence"] >= 0.7)
+    log_action("classify", "INFO", "AI分类结果入库",
+               detail=json_detail({"batch_id": batch_id, "total": len(results),
+                                   "auto_adopted": auto_count,
+                                   "review": len(results) - auto_count}))
 
 
 _DIM_COLUMN = {

@@ -304,8 +304,18 @@ async def confirm_review(request: Request, queue_id: int):
         ).fetchone()
 
     if item:
+        log_action("review", "INFO", "确认分类标签",
+                   detail=json_detail({"queue_id": queue_id,
+                                       "clause_id": item["clause_id"],
+                                       "dimension": item["dimension"],
+                                       "ai_label": item["ai_label"]}),
+                   username=getattr(request.state, "username", ""))
         process_feedback(item["clause_id"], item["dimension"], item["ai_label"],
                          source_conf=item["ai_confidence"] or 0.0)
+    else:
+        log_action("review", "WARN", "确认失败-队列项不存在",
+                   detail=json_detail({"queue_id": queue_id}),
+                   username=getattr(request.state, "username", ""))
 
     # 返回更新后的列表
     from app.main import templates
@@ -320,7 +330,7 @@ async def reject_review(request: Request, queue_id: int):
     """驳回 AI 分类标签"""
     with get_db() as conn:
         item = conn.execute(
-            "SELECT clause_id FROM classification_queue WHERE id = ?", (queue_id,)
+            "SELECT clause_id, dimension FROM classification_queue WHERE id = ?", (queue_id,)
         ).fetchone()
         if item:
             conn.execute(
@@ -330,6 +340,13 @@ async def reject_review(request: Request, queue_id: int):
             conn.execute(
                 "UPDATE clauses SET needs_review = 0 WHERE id = ?", (item["clause_id"],)
             )
+
+    if item:
+        log_action("review", "INFO", "驳回分类标签",
+                   detail=json_detail({"queue_id": queue_id,
+                                       "clause_id": item["clause_id"],
+                                       "dimension": item["dimension"]}),
+                   username=getattr(request.state, "username", ""))
 
     from app.main import templates
     return HTMLResponse(
@@ -356,6 +373,9 @@ async def batch_confirm(request: Request, body: dict):
     for item in rows:
         process_feedback(item["clause_id"], item["dimension"], item["ai_label"],
                          source_conf=item["ai_confidence"] or 0.0)
+    log_action("review", "INFO", "批量确认",
+               detail=json_detail({"count": len(rows)}),
+               username=getattr(request.state, "username", ""))
     return await review_list(request)
 
 
@@ -367,6 +387,7 @@ async def batch_reject(request: Request, body: dict):
     ids = body.get("queue_ids") or []
     if not isinstance(ids, list):
         return _JR({"detail": "queue_ids 须为数组"}, status_code=400)
+    processed = 0
     if ids:
         with get_db() as conn:
             for i in ids:
@@ -379,6 +400,10 @@ async def batch_reject(request: Request, body: dict):
                         (i,),
                     )
                     conn.execute("UPDATE clauses SET needs_review=0 WHERE id=?", (item["clause_id"],))
+                    processed += 1
+    log_action("review", "INFO", "批量驳回",
+               detail=json_detail({"count": processed}),
+               username=getattr(request.state, "username", ""))
     return await review_list(request)
 
 
@@ -394,8 +419,14 @@ async def run_classifier(request: Request):
     try:
         count = process_pending_batches(force=True)
     except Exception as e:
+        log_action("classify", "ERROR", "运行AI分类失败",
+                   detail=json_detail({"error": str(e)}),
+                   username=getattr(request.state, "username", ""))
         return HTMLResponse(f"""<p style="color:red">❌ 分类失败: {e}</p>""")
 
+    log_action("classify", "INFO", "运行AI分类",
+               detail=json_detail({"count": count}),
+               username=getattr(request.state, "username", ""))
     return HTMLResponse(f"""<p style="color:green">✅ AI 分类完成：{count} 条已处理</p>
     <div hx-get="/rules/list" hx-trigger="load" hx-swap="outerHTML"></div>""")
 
