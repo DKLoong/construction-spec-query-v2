@@ -12,6 +12,9 @@
         <button class="outline" style="font-size:0.8rem"
                 :class="tab==='qalogs' ? 'contrast' : ''"
                 @click="tab='qalogs'; refreshLogs()">📡 QA 日志</button>
+        <button class="outline" style="font-size:0.8rem"
+                :class="tab==='params' ? 'contrast' : ''"
+                @click="tab='params'">⚙️ 参数设置</button>
     </div>
 
     <!-- Tab 1: 健康检查 -->
@@ -47,6 +50,11 @@
     <!-- Tab 4: QA 日志（只读） -->
     <div x-show="tab==='qalogs'">
         {% include "partials/qa_logs_panel.html" %}
+    </div>
+
+    <!-- Tab 5: 参数设置（分类/检索/问答可调参数 + 方案管理） -->
+    <div x-show="tab==='params'">
+        {% include "partials/params_panel.html" %}
     </div>
 
     <!-- 重建向量索引进度环：后台重建期间覆盖全视口，圆环显示真实进度 + 中央百分比，完成自动消失 -->

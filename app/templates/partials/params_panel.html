@@ -1,0 +1,210 @@
+<!-- 参数设置面板（Tab 5）：分类/检索/问答可调参数 + 方案管理 -->
+<style>
+.params-toolbar { display:flex; flex-wrap:wrap; align-items:flex-end; gap:0.9rem; margin-bottom:0.6rem; }
+.params-groups { display:inline-flex; gap:0.5rem; align-items:flex-end; }
+.params-groups button { margin:0; }
+.params-ctl { display:inline-flex; flex-direction:column; gap:0.2rem; font-size:0.75rem; color:var(--pico-muted-color); margin:0; }
+.params-ctl select { margin:0; width:auto; }
+.params-actions { display:inline-flex; gap:0.5rem; align-items:flex-end; }
+.params-actions button { margin:0; }
+.params-hint { font-size:0.72rem; color:var(--pico-muted-color); display:inline-flex; align-items:flex-end; padding-bottom:0.15rem; }
+.param-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:0.9rem 1.2rem; }
+.param-cell { min-height:4.6rem; }   /* 预留报错行，避免红字出现抖动 */
+.param-label { display:block; font-size:0.8rem; color:var(--pico-muted-color); margin-bottom:0.2rem; }
+.param-field { position:relative; }
+.param-field input { width:100%; margin:0; }
+.param-pop { position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:50;
+    background:#fffdf8; border:1px solid #ddd0bd; border-radius:6px;
+    box-shadow:0 4px 14px rgba(74,68,84,.14); padding:0.4rem 0.5rem;
+    font-size:0.72rem; color:#5a4a33; line-height:1.35; }
+.param-err { color:#d32f2f; font-size:0.72rem; display:block; margin-top:0.15rem; }
+.params-msg { font-size:0.8rem; }
+.params-msg.ok { color:#1a7a1a; } .params-msg.err { color:#d32f2f; }
+</style>
+
+<div x-data="paramsManager()">
+    <!-- 板块过滤 + 方案区（同行基线对齐） -->
+    <div class="params-toolbar">
+        <div class="params-groups">
+            <template x-for="g in groups" :key="g.id">
+                <button class="outline" style="font-size:0.8rem"
+                        :class="group === g.id ? 'contrast' : ''"
+                        @click="group = g.id"
+                        x-text="g.label"></button>
+            </template>
+        </div>
+        <span style="flex:1"></span>
+        <label class="params-ctl">方案
+            <select x-model="currentId" @change="loadProfile()">
+                <template x-for="p in profiles" :key="p.id">
+                    <option :value="p.id" x-text="p.name"></option>
+                </template>
+            </select>
+        </label>
+        <button class="outline" style="font-size:0.8rem" x-show="currentId > 0"
+                @click="openRename()" title="重命名方案">✏️</button>
+        <div class="params-actions">
+            <button class="outline" style="font-size:0.8rem"
+                    :disabled="currentId === 0 || busy" @click="save()">保存</button>
+            <button class="outline" style="font-size:0.8rem"
+                    :disabled="busy" @click="apply()">应用</button>
+            <button class="outline" style="font-size:0.8rem"
+                    :disabled="busy" @click="openSaveAs()">另存为</button>
+            <span class="params-hint" x-show="currentId === 0">默认方案不可修改（另存为副本后编辑）；「应用」=回滚内置默认</span>
+        </div>
+    </div>
+    <p class="params-msg" x-show="msg" :class="msgErr ? 'err' : 'ok'" x-text="msg"></p>
+
+    <!-- 参数表单（当前板块过滤） -->
+    <div class="param-grid">
+        <template x-for="p in filtered()" :key="p.key">
+            <div class="param-cell">
+                <label class="param-label" x-text="p.label"></label>
+                <div class="param-field">
+                    <input type="text" :id="p.key"
+                           x-model="workspace[p.key]"
+                           :placeholder="p.placeholder"
+                           @focus="focusIn(p.key)"
+                           @blur="blurIn(p.key)"
+                           :aria-invalid="errs[p.key] ? 'true' : null">
+                    <div class="param-pop" x-show="activeHelp === p.key && !errs[p.key]"
+                         x-text="p.help"></div>
+                </div>
+                <small class="param-err" x-show="errs[p.key]">您输入的参数超出可调范围，请重新输入</small>
+            </div>
+        </template>
+    </div>
+
+    <!-- 另存为/重命名共用弹框 -->
+    <div class="dialog-overlay" x-show="dlg.open" style="display:none"
+         x-cloak @click.self="dlg.open = false">
+        <div class="dialog-box">
+            <h4 style="margin-top:0" x-text="dlg.title"></h4>
+            <input type="text" x-model="dlg.name" placeholder="方案名称"
+                   style="width:100%" @keydown.enter="dlgConfirm()">
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:1rem">
+                <button class="outline" @click="dlg.open = false">取消</button>
+                <button @click="dlgConfirm()" x-text="dlg.okText"></button>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+function paramsManager() {
+    return {
+        meta: [], groups: [], profiles: [], workspace: {}, errs: {}, activeHelp: null,
+        group: 'classify', currentId: 0, busy: false, msg: '', msgErr: false,
+        dlg: { open: false, mode: '', name: '', title: '', okText: '确定' },
+        async init() {
+            const [metaRes, profRes] = await Promise.all([
+                fetch('/maintenance/params/meta'), fetch('/maintenance/params/profiles')]);
+            const meta = await metaRes.json();
+            this.meta = meta.params; this.groups = meta.groups;
+            this.profiles = await profRes.json();
+            // 恢复上次应用方案（settings 标记）
+            try {
+                const s = await (await fetch('/settings')).json();
+                const marked = s['params.applied_profile_id'];
+                if (marked && this.profiles.some(p => String(p.id) === String(marked))) {
+                    this.currentId = Number(marked);
+                }
+            } catch (e) { /* 无标记则默认方案 */ }
+            this.loadProfile();
+        },
+        current() { return this.profiles.find(p => p.id === this.currentId); },
+        filtered() { return this.meta.filter(m => m.group === this.group); },
+        loadProfile() {
+            this.errs = {}; this.activeHelp = null;
+            const vals = this.current() ? (this.current().values || {}) : {};
+            const w = {};
+            for (const m of this.meta) {
+                w[m.key] = (vals[m.key] !== undefined && vals[m.key] !== '') ? vals[m.key] : String(m.default);
+            }
+            this.workspace = w;
+            this.msg = '';
+        },
+        focusIn(k) { this.activeHelp = k; },
+        blurIn(k) { this.activeHelp = null; this.validate(k); },
+        validate(k) {
+            const m = this.meta.find(mm => mm.key === k);
+            if (!m || m.type === 'str') { this.errs[k] = false; return; }
+            const raw = (this.workspace[k] || '').trim();
+            if (raw === '') { this.errs[k] = false; return; }
+            const v = m.type === 'int' ? Number(raw) : Number(raw);
+            const ok = Number.isFinite(v) && v >= m.min && v <= m.max;
+            this.errs[k] = !ok;
+        },
+        allValid() {
+            for (const m of this.meta) this.validate(m.key);
+            return !Object.values(this.errs).some(Boolean);
+        },
+        setMsg(text, isErr) { this.msg = text; this.msgErr = !!isErr; },
+        async save() {
+            if (this.currentId === 0) { this.setMsg('默认方案不可修改，请先另存为副本。', true); return; }
+            if (!this.allValid()) { this.setMsg('存在超出可调范围的参数，请修正后再保存。', true); return; }
+            this.busy = true;
+            try {
+                const r = await fetch(`/maintenance/params/profiles/${this.currentId}`,
+                    { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ values: this.workspace }) });
+                if (!r.ok) { this.setMsg(((await r.json()).detail) || '保存失败', true); return; }
+                const updated = await r.json();
+                const idx = this.profiles.findIndex(p => p.id === updated.id);
+                if (idx >= 0) this.profiles[idx] = updated;
+                this.setMsg(`已保存到方案「${updated.name}」（点「应用」使其生效）`, false);
+            } finally { this.busy = false; }
+        },
+        openSaveAs() { this.dlg = { open: true, mode: 'saveas', name: this.nextName(), title: '另存为新方案', okText: '创建' }; },
+        openRename() { const cur = this.current(); this.dlg = { open: true, mode: 'rename', name: cur ? cur.name : '', title: '重命名方案', okText: '重命名' }; },
+        nextName() {
+            let maxN = 0;
+            for (const p of this.profiles) {
+                const m = /^方案(\d+)$/.exec(p.name);
+                if (m) maxN = Math.max(maxN, Number(m[1]));
+            }
+            return `方案${maxN + 1}`;
+        },
+        async dlgConfirm() {
+            const name = (this.dlg.name || '').trim();
+            if (!name) return;
+            if (this.dlg.mode === 'saveas') {
+                if (!this.allValid()) { this.dlg.open = false; this.setMsg('存在超出可调范围的参数，请修正后再另存为。', true); return; }
+                this.busy = true;
+                try {
+                    const r = await fetch('/maintenance/params/profiles',
+                        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ name, values: this.workspace }) });
+                    if (!r.ok) { this.dlg.open = false; this.setMsg(((await r.json()).detail) || '另存失败', true); return; }
+                    const p = await r.json();
+                    this.profiles.push(p);
+                    this.currentId = p.id;
+                    this.loadProfile();
+                    this.dlg.open = false;
+                    this.setMsg(`已创建方案「${p.name}」（点「应用」使其生效）`, false);
+                } finally { this.busy = false; }
+            } else {
+                const r = await fetch(`/maintenance/params/profiles/${this.currentId}`,
+                    { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ name }) });
+                if (!r.ok) { this.setMsg(((await r.json()).detail) || '重命名失败', true); return; }
+                const p = await r.json();
+                const idx = this.profiles.findIndex(x => x.id === p.id);
+                if (idx >= 0) this.profiles[idx] = p;
+                this.dlg.open = false;
+                this.setMsg(`已重命名为「${p.name}」`, false);
+            }
+        },
+        async apply() {
+            this.busy = true;
+            try {
+                const r = await fetch(`/maintenance/params/profiles/${this.currentId}/apply`, { method: 'POST' });
+                if (!r.ok) { this.setMsg(((await r.json()).detail) || '应用失败', true); return; }
+                const body = await r.json();
+                const cur = this.current();
+                this.setMsg(body.applied === 0 ? '已回滚到默认方案（覆盖参数清除，回退内置默认）'
+                                              : `已应用方案「${cur ? cur.name : body.applied}」，当前生效参数已更新`, false);
+            } finally { this.busy = false; }
+        }
+    };
+}
+</script>
