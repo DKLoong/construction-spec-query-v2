@@ -64,8 +64,11 @@ async def health_fix_all(request: Request):
 rebuild_progress: dict = {}
 
 
-def _run_rebuild(task_id: str):
-    """后台线程：清空并全量重建向量索引，逐批更新 rebuild_progress（不阻塞请求处理）"""
+def _run_rebuild(task_id: str, username: str = ""):
+    """后台线程：清空并全量重建向量索引，逐批更新 rebuild_progress（不阻塞请求处理）
+
+    username 记录触发者（启动线程时由路由捕获传入，后台日志也归操作者）。
+    """
     try:
         rebuild_progress[task_id] = {"status": "running", "progress": 0,
                                      "message": "正在清空旧向量索引…"}
@@ -81,7 +84,7 @@ def _run_rebuild(task_id: str):
         if not clauses:
             rebuild_progress[task_id] = {"status": "done", "progress": 100,
                                          "message": "无条文，无需重建"}
-            log_action("maintenance", "INFO", "重建向量索引", detail="0")
+            log_action("maintenance", "INFO", "重建向量索引", detail="0", username=username)
             return
         records = []
         for c in clauses:
@@ -102,11 +105,11 @@ def _run_rebuild(task_id: str):
         VectorStore().batch_index(records, progress_cb=_cb)
         rebuild_progress[task_id] = {"status": "done", "progress": 100,
                                      "message": f"重建完成，共 {total} 条"}
-        log_action("maintenance", "INFO", "重建向量索引", detail=str(total))
+        log_action("maintenance", "INFO", "重建向量索引", detail=str(total), username=username)
     except Exception as e:
         logger.warning("重建向量索引失败: %s", e)
         rebuild_progress[task_id] = {"status": "error", "progress": 0, "message": str(e)}
-        log_action("maintenance", "ERROR", "重建向量索引失败", detail=str(e))
+        log_action("maintenance", "ERROR", "重建向量索引失败", detail=str(e), username=username)
 
 
 @router.post("/maintenance/rebuild-vectors")
@@ -114,8 +117,9 @@ async def rebuild_vectors(request: Request):
     """启动后台全量重建向量索引，立即返回 task_id（前端轮询 rebuild-progress 展示进度）"""
     import threading
     task_id = f"rb{int(time.time() * 1000)}"
+    username = getattr(request.state, "username", "")
     rebuild_progress[task_id] = {"status": "pending", "progress": 0, "message": "正在启动…"}
-    threading.Thread(target=_run_rebuild, args=(task_id,), daemon=True).start()
+    threading.Thread(target=_run_rebuild, args=(task_id, username), daemon=True).start()
     return JSONResponse({"task_id": task_id})
 
 
@@ -151,7 +155,8 @@ async def backup_db(request: Request):
         conn.execute(f"VACUUM INTO '{escaped}'")
     finally:
         conn.close()
-    log_action("maintenance", "INFO", "SQLite 备份", detail=str(target))
+    log_action("maintenance", "INFO", "SQLite 备份", detail=str(target),
+               username=getattr(request.state, "username", ""))
     return HTMLResponse(f"""<p style="color:green;margin-top:0.5rem">✅ 已备份至：<code>{target.name}</code></p>""")
 
 
@@ -162,7 +167,8 @@ async def export_rules(request: Request):
         rows = conn.execute("SELECT * FROM classification_rules ORDER BY dimension, id").fetchall()
     data = [dict(r) for r in rows]
     ts = time.strftime("%Y%m%d_%H%M%S")
-    log_action("maintenance", "INFO", "导出规则", detail=str(len(data)))
+    log_action("maintenance", "INFO", "导出规则", detail=str(len(data)),
+               username=getattr(request.state, "username", ""))
     return JSONResponse(data, headers={
         "Content-Disposition": f'attachment; filename="classification_rules_{ts}.json"'
     })
@@ -185,7 +191,8 @@ async def export_review_queue(request: Request):
         ).fetchall()
     data = [dict(r) for r in rows]
     ts = time.strftime("%Y%m%d_%H%M%S")
-    log_action("maintenance", "INFO", "导出复核队列", detail=str(len(data)))
+    log_action("maintenance", "INFO", "导出复核队列", detail=str(len(data)),
+               username=getattr(request.state, "username", ""))
     return JSONResponse(data, headers={
         "Content-Disposition": f'attachment; filename="review_queue_{ts}.json"'
     })
@@ -196,5 +203,6 @@ async def fts_optimize(request: Request):
     """SQLite FTS5 定期 optimize：合并碎片，提升检索性能"""
     with get_db() as conn:
         conn.execute("INSERT INTO clauses_fts(clauses_fts) VALUES('optimize')")
-    log_action("maintenance", "INFO", "FTS optimize")
+    log_action("maintenance", "INFO", "FTS optimize",
+               username=getattr(request.state, "username", ""))
     return HTMLResponse('<p style="color:green;margin-top:0.5rem">✅ FTS5 optimize 完成</p>')

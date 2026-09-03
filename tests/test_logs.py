@@ -718,6 +718,15 @@ def test_qa_logs_list_readonly(auth_client, monkeypatch, tmp_path):
     assert "bge" in resp.text  # 后端列展示（非空值）
 
 
+def test_fts_optimize_logs_admin(auth_client, monkeypatch, tmp_path):
+    """手动 FTS optimize → maintenance 日志带操作者 admin（曾缺失 username）"""
+    _setup(monkeypatch, tmp_path)
+    resp = auth_client.post("/maintenance/fts-optimize")
+    assert resp.status_code == 200
+    rows = _logs(action="FTS optimize", category="maintenance")
+    assert len(rows) == 1 and rows[0]["username"] == "admin"
+
+
 def test_logs_operators_endpoint(auth_client, monkeypatch, tmp_path):
     """操作者候选项 = system_logs 中非空 username 去重升序"""
     _setup(monkeypatch, tmp_path)

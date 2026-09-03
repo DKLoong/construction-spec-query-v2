@@ -91,3 +91,21 @@ def test_apply_custom_then_default_rollback(auth_client, monkeypatch, tmp_path):
     assert br.status_code == 200 and br.json()["applied"] == 0
     assert _get("classify.batch_size") is None
     assert _get("params.applied_profile_id") is None
+
+
+def test_param_operations_logged_with_username(auth_client, monkeypatch, tmp_path):
+    """参数方案 新建/应用/回滚 均有审计且操作者=admin"""
+    _setup(monkeypatch, tmp_path)
+    auth_client.post("/maintenance/params/profiles",
+                     json={"values": {"classify.batch_size": "25"}}).json()
+    pid = auth_client.get("/maintenance/params/profiles").json()[1]["id"]
+    auth_client.post(f"/maintenance/params/profiles/{pid}/apply")
+    auth_client.post("/maintenance/params/profiles/0/apply")
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT action, username FROM system_logs "
+            "WHERE category = 'maintenance' AND action LIKE '%参数方案%' "
+            "ORDER BY id").fetchall()
+    assert [r["action"] for r in rows] == [
+        "新建参数方案", "应用参数方案", "应用默认参数方案"]
+    assert all(r["username"] == "admin" for r in rows)

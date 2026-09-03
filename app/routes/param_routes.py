@@ -11,6 +11,7 @@ import re
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from app.database import get_db
+from app.logging_util import log_action, json_detail
 from app.params import registry
 
 router = APIRouter()
@@ -95,6 +96,10 @@ async def params_profile_create(request: Request):
         row = conn.execute(
             "SELECT id, name, is_system, values_json FROM param_profiles WHERE id = ?",
             (profile_id,)).fetchone()
+    log_action("maintenance", "INFO", "新建参数方案",
+               detail=json_detail({"profile_id": profile_id, "name": name,
+                                   "keys": sorted(cleaned)}),
+               username=getattr(request.state, "username", ""))
     return _profile_dict(row)
 
 
@@ -130,6 +135,9 @@ async def params_profile_update(request: Request, profile_id: int):
         row = conn.execute(
             "SELECT id, name, is_system, values_json FROM param_profiles WHERE id = ?",
             (profile_id,)).fetchone()
+    log_action("maintenance", "INFO", "保存参数方案",
+               detail=json_detail({"profile_id": profile_id, "name": name}),
+               username=getattr(request.state, "username", ""))
     return _profile_dict(row)
 
 
@@ -146,11 +154,14 @@ async def params_profile_apply(request: Request, profile_id: int):
         registry.clear_param_cache()
         from app.search.hybrid_search import clear_search_cache
         clear_search_cache()
+        log_action("maintenance", "INFO", "应用默认参数方案",
+                   detail=json_detail({"applied": 0}),
+                   username=getattr(request.state, "username", ""))
         return {"status": "ok", "applied": 0}
 
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, values_json FROM param_profiles WHERE id = ?",
+            "SELECT id, name, values_json FROM param_profiles WHERE id = ?",
             (profile_id,)).fetchone()
         if not row:
             return JSONResponse({"detail": "方案不存在"}, status_code=404)
@@ -164,7 +175,11 @@ async def params_profile_apply(request: Request, profile_id: int):
             "INSERT OR REPLACE INTO settings (key, value) "
             "VALUES ('params.applied_profile_id', ?)",
             (str(profile_id),))
+        applied_name = row["name"]
     registry.clear_param_cache()
     from app.search.hybrid_search import clear_search_cache
     clear_search_cache()
+    log_action("maintenance", "INFO", "应用参数方案",
+               detail=json_detail({"applied": profile_id, "name": applied_name}),
+               username=getattr(request.state, "username", ""))
     return {"status": "ok", "applied": profile_id}
