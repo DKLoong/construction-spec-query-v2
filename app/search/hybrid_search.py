@@ -11,12 +11,6 @@ logger = logging.getLogger(__name__)
 # LIKE 搜索取全部结果时的一次性获取上限
 _FETCH_LIMIT = 10000
 
-# CrossEncoder 精排候选上限（暂定常量，后续按实际使用体验调整）：
-# RRF 融合后仅对前 TOP_N 条精排，N 之后保持 RRF 原序拼接。
-# 检索页展示全量结果、不做条数限制，精排只作用于头部以控耗时。
-# 2026-08-26 实测：50 候选精排耗时明显（数秒级），降为 20。
-_RERANK_TOP_N = 20
-
 # 混合搜索结果序列缓存：查询指纹 → (时间戳, 精排后完整序列)。
 # 每次 /search（含翻页）都会走本函数，RRF 融合 + CrossEncoder 精排是秒级
 # 瓶颈；缓存让同查询翻页/往前翻直接从缓存切片，零重算、零精排。
@@ -84,25 +78,29 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
 
         sql_results, _sql_total = search_clauses(sql_query)
 
+        # 检索参数一次读取（DB 覆盖热生效；参数不得进内层循环/每候选池）
+        from app.params.registry import get_param_float, get_param_int
+        vector_top_k = get_param_int("search.vector_top_k")
+        vector_threshold = get_param_float("search.vector_l2_threshold")
+        rerank_top_n = get_param_int("search.rerank_top_n")
+        rrf_k = get_param_int("search.rrf_k")
+
         # ── 2. 向量搜索（语义匹配） ──
         vector_raw = []
         if keyword:
             try:
                 from app.search.vector_search import VectorStore
                 vs = VectorStore()
-                vector_raw = vs.search(keyword, top_k=20)
+                vector_raw = vs.search(keyword, top_k=vector_top_k)
             except (ImportError, OSError, RuntimeError, ValueError) as e:
                 logger.warning("向量搜索不可用，降级为仅 LIKE 搜索: %s", e)
 
         # ── 3. 向量候选过滤（L2 < 阈值，含与 SQL 重叠的，全部参与 RRF） ──
-        # L2 距离阈值（嵌入向量已归一化，BGE 模型 normalize_embeddings=True）：
-        #   L2 < 1.0  → 余弦相似度 > 0.5，视为语义相关
-        #   L2 >= 1.0 → 余弦相似度 ≤ 0.5，视为噪音（正交或相反方向）
-        _VECTOR_THRESHOLD = 1.0
+        # L2 距离阈值可调（默认 1.0 → 余弦相似度 > 0.5 视为语义相关）
         dist_map = {}
         for v in vector_raw:
             dist = v.get("_distance", 0)
-            if dist < _VECTOR_THRESHOLD:
+            if dist < vector_threshold:
                 dist_map[v["clause_id"]] = dist
 
         vector_results = []
@@ -166,14 +164,14 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
 
         # ── 4. RRF 融合去重 ──
         from app.search.rrf import rrf_fusion
-        merged = rrf_fusion(sql_results, vector_results)
+        merged = rrf_fusion(sql_results, vector_results, k=rrf_k)
 
         # ── 4.5 精排前缀（ce_rerank 门控）：对前 TOP_N 过 CrossEncoder 精排 ──
         # 检索页全量分页展示（不做条数限制），精排仅作用于头部候选以控耗时；
         # 无关键词（纯维度筛选/浏览全部）或候选 ≤1 时跳过精排。
         if query.ce_rerank and keyword and len(merged) > 1:
             try:
-                head, tail = merged[:_RERANK_TOP_N], merged[_RERANK_TOP_N:]
+                head, tail = merged[:rerank_top_n], merged[rerank_top_n:]
                 ranked, _ = rerank_candidates(keyword, head)
                 merged = [d for d, _ in ranked] + tail
             except Exception as e:
