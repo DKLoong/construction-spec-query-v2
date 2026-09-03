@@ -207,11 +207,15 @@ function paramsManager() {
             if (!cur) return;
             if (!window.confirm(`确定删除方案「${cur.name}」？该操作不可恢复。`)) return;
             this.busy = true;
+            this.dlg.open = false;   // 兜底复位，避免任何残留对话框遮罩影响后续交互
             try {
                 const r = await fetch(`/maintenance/params/profiles/${cur.id}`, { method: 'DELETE' });
                 if (!r.ok) { this.setMsg(((await r.json()).detail) || '删除失败', true); return; }
-                this.profiles = this.profiles.filter(p => p.id !== cur.id);
+                // 重新拉取权威方案列表并切回默认，避免就地裁数组导致 select/工作区状态失同步
+                const profRes = await fetch('/maintenance/params/profiles');
+                this.profiles = await profRes.json();
                 this.currentId = 0;
+                this.workspace = {};
                 this.loadProfile();
                 this.setMsg(`已删除方案「${cur.name}」（生效参数不受影响，可点「应用」切回）`, false);
             } finally { this.busy = false; }
