@@ -1,0 +1,2 @@
+<p style="margin-top:0.5rem">✅ 成功 {{ ok }} 行 ｜ 跳过重复 {{ skip }} 行 ｜ 失败 {{ fail }} 行</p>
+{% if fails %}<ul style="color:#b00000;font-size:0.8rem;margin:0.3rem 0">{% for f in fails %}<li>{{ f }}</li>{% endfor %}</ul>{% endif %}

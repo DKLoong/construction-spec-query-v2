@@ -1,0 +1,18 @@
+<tr>
+    <td colspan="5">
+        <form hx-post="/lexicon/{{ row.id }}/edit" hx-target="closest tr" hx-swap="outerHTML"
+              hx-on::after-request="if(event.detail.successful) document.body.dispatchEvent(new Event('lexiconUpdated'))">
+            {% if kind == 'confusable' %}
+            <input type="text" name="canonical" value="{{ row.canonical }}" style="width:110px">
+            <input type="text" name="variants" value="{{ row.variants }}" style="width:110px">
+            <input type="text" name="distinguish" value="{{ row.distinguish }}" style="width:260px" required>
+            {% else %}
+            <input type="text" name="canonical" value="{{ row.canonical }}" style="width:150px">
+            <input type="text" name="variants" value="{{ row.variants }}" style="width:220px" required>
+            {% endif %}
+            <button type="submit" class="secondary" style="font-size:0.75rem;padding:0.1rem 0.5rem">保存</button>
+            <button type="button" class="outline" style="font-size:0.75rem;padding:0.1rem 0.5rem"
+                    hx-get="/lexicon/list?kind={{ kind }}&active={{ row.is_active }}" hx-target="#lexicon-table" hx-swap="innerHTML">取消</button>
+        </form>
+    </td>
+</tr>

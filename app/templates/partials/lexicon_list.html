@@ -1,0 +1,16 @@
+{% if not rows %}
+<p style="color:var(--pico-muted-color);font-size:0.85rem">当前类别暂无词条。</p>
+{% else %}
+<div style="overflow-x:auto">
+<table style="font-size:0.85rem">
+    <thead><tr>
+        <th>{{ columns[0] }}</th><th>{{ columns[1] }}</th>
+        {% if kind == 'confusable' %}<th>{{ columns[2] }}</th>{% endif %}
+        <th>状态</th><th>操作</th>
+    </tr></thead>
+    <tbody hx-target="closest tr" hx-swap="outerHTML">
+    {% for row in rows %}{% include "partials/lexicon_row.html" %}{% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}

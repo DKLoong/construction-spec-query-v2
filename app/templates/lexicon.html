@@ -1,0 +1,57 @@
+<!-- 中栏：词库管理（三 Tab：同义词 / 别名 / 易混淆） -->
+<div x-data="{ kind: 'alias' }" style="padding:1rem">
+    <!-- 当前 kind 单一来源：供添加/导入表单 hx-include 与列表自动刷新带参 -->
+    <input type="hidden" id="lexicon-kind-input" name="kind" :value="kind">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">
+        <h2 style="margin:0">📖 词库</h2>
+        <small style="color:var(--pico-muted-color)">同义/别名只扩 FTS 检索；易混淆仅提示不改写（向量不替换原词）</small>
+    </div>
+    <!-- Tab 切换：设 Alpine kind（驱动表单）+ 立即 hx-get 刷新列表 -->
+    <div style="display:flex;gap:0.5rem;margin:0.8rem 0;flex-wrap:wrap">
+        <button class="outline" style="font-size:0.8rem" :class="kind==='synonym'?'contrast':''"
+                @click="kind='synonym'" hx-get="/lexicon/list?kind=synonym" hx-target="#lexicon-table" hx-swap="innerHTML">🔄 同义词</button>
+        <button class="outline" style="font-size:0.8rem" :class="kind==='alias'?'contrast':''"
+                @click="kind='alias'" hx-get="/lexicon/list?kind=alias" hx-target="#lexicon-table" hx-swap="innerHTML">🏷 别名</button>
+        <button class="outline" style="font-size:0.8rem" :class="kind==='confusable'?'contrast':''"
+                @click="kind='confusable'" hx-get="/lexicon/list?kind=confusable" hx-target="#lexicon-table" hx-swap="innerHTML">⚠️ 易混淆术语</button>
+    </div>
+
+    <!-- 新增表单（synonym/alias：代表词+变体；confusable：词A+词B+区分） -->
+    <form x-show="kind!=='confusable'" hx-post="/lexicon/create" hx-target="#create-result"
+          hx-swap="innerHTML" hx-include="#lexicon-kind-input"
+          hx-on::after-request="if(event.detail.successful) this.reset()">
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+            <label style="margin:0;white-space:nowrap"><span x-text="kind==='alias'?'规范词':'代表词'"></span></label>
+            <input type="text" name="canonical" required style="width:150px;margin:0;height:40px">
+            <label style="margin:0;white-space:nowrap">变体/俗称(逗号分隔)</label>
+            <input type="text" name="variants" placeholder="如 砼,混泥土" required style="width:220px;margin:0;height:40px">
+            <button type="submit" class="secondary" style="height:40px;margin:0">➕ 添加</button>
+        </div>
+    </form>
+    <form x-show="kind==='confusable'" hx-post="/lexicon/create" hx-target="#create-result"
+          hx-swap="innerHTML" hx-include="#lexicon-kind-input"
+          hx-on::after-request="if(event.detail.successful) this.reset()">
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+            <label style="margin:0">词A</label><input type="text" name="canonical" required style="width:120px;margin:0;height:40px">
+            <label style="margin:0">词B</label><input type="text" name="variants" required style="width:120px;margin:0;height:40px">
+            <input type="text" name="distinguish" placeholder="区分说明(必填)" required style="width:280px;margin:0;height:40px">
+            <button type="submit" class="secondary" style="height:40px;margin:0">➕ 添加</button>
+        </div>
+    </form>
+    <div id="create-result"></div>
+
+    <!-- CSV 导入（kind 空时按当前 Tab 兜底） -->
+    <div style="margin:0.8rem 0;display:flex;gap:0.5rem;align-items:center">
+        <label style="margin:0;white-space:nowrap">批量导入 CSV：</label>
+        <form hx-post="/lexicon/import" hx-target="#import-result" hx-swap="innerHTML"
+              hx-encoding="multipart/form-data" hx-include="#lexicon-kind-input" style="display:inline">
+            <input type="file" name="file" accept=".csv" required style="font-size:0.8rem">
+            <button type="submit" class="outline" style="font-size:0.8rem;height:32px">上传导入</button>
+        </form>
+    </div>
+    <div id="import-result"></div>
+
+    <!-- 列表：load/增删启禁(lexiconUpdated)后按当前 kind(hidden)自动重拉 -->
+    <div id="lexicon-table" hx-get="/lexicon/list" hx-include="#lexicon-kind-input"
+         hx-trigger="load, lexiconUpdated from:body" style="margin-top:0.6rem"></div>
+</div>

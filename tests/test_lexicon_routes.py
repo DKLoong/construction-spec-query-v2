@@ -1,0 +1,97 @@
+"""词库管理路由测试（承接原同义词路由测试覆盖：页面/auth、CRUD、toggle、
+行内编辑、synonym/alias 同 canonical 并立 400、confusable 多对共存、CSV 导入报告、kind 分支）"""
+import pytest
+
+
+def test_lexicon_page_and_create(auth_client, monkeypatch, tmp_path):
+    from app.database import init_db, DATABASE_PATH
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l.db"))
+    init_db()
+    resp = auth_client.get("/lexicon")
+    assert resp.status_code == 200 and "词库" in resp.text
+    r2 = auth_client.post("/lexicon/create", data={"kind": "alias", "canonical": "水灰比", "variants": "W/C,水胶比", "distinguish": ""})
+    assert r2.status_code == 200 and "已添加" in r2.text
+    r3 = auth_client.post("/lexicon/create", data={"kind": "alias", "canonical": "水灰比", "variants": "W/C"})
+    assert r3.status_code == 400  # 同 kind canonical 并立 → 拒绝
+    # confusable 互含子串拒绝
+    r4 = auth_client.post("/lexicon/create", data={"kind": "confusable", "canonical": "沉降", "variants": "差异沉降", "distinguish": "范围不同"})
+    assert r4.status_code == 400
+    assert "子串" in r4.text
+
+
+def test_lexicon_toggle_edit_delete_and_filter(auth_client, monkeypatch, tmp_path):
+    from app.database import init_db, get_db, DATABASE_PATH
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l2.db"))
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('alias','坍落度','塌落度')")
+        lid = cur.lastrowid
+    assert auth_client.post(f"/lexicon/{lid}/toggle").status_code == 200
+    auth_client.post(f"/lexicon/{lid}/edit", data={"canonical": "坍落度", "variants": "塌落度,落度"})
+    with get_db() as conn:
+        row = conn.execute("SELECT is_active, variants FROM lexicon_entries WHERE id=?", (lid,)).fetchone()
+        assert row["is_active"] == 0 and "落度" in row["variants"]
+    assert auth_client.delete(f"/lexicon/{lid}").status_code == 200
+
+
+def test_lexicon_csv_import(auth_client, monkeypatch, tmp_path):
+    from app.database import init_db, get_db, DATABASE_PATH
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l3.db"))
+    init_db()
+    csv_text = ("kind,canonical,variants,distinguish,note\n"
+                "alias,防水卷材,卷材,,seed\n"
+                "confusable,圈梁,构造柱,竖向构件不同,\n"
+                "alias,坍落度,塌落度,,dup\n"
+                "alias,坍落度,塌落度,,dup\n"
+                ",,bad,,extra\n")
+    resp = auth_client.post("/lexicon/import",
+                            files={"file": ("seed.csv", csv_text.encode("utf-8"), "text/csv")})
+    assert resp.status_code == 200
+    body = resp.text
+    assert "成功" in body and "跳过" in body and "失败" in body
+
+
+def test_lexicon_requires_auth(client):
+    """未登录不能访问词库管理页"""
+    resp = client.get("/lexicon", follow_redirects=False)
+    assert resp.status_code == 302
+
+
+def test_lexicon_list_returns_html(auth_client, monkeypatch, tmp_path):
+    """词库列表返回 HTML 片段（含预置 alias 种子）"""
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l_list.db"))
+    from app.database import init_db
+    init_db()
+    resp = auth_client.get("/lexicon/list?kind=alias")
+    assert resp.status_code == 200
+    assert "混凝土" in resp.text
+    assert "砼" in resp.text
+
+
+def test_lexicon_confusable_multi_pairs_coexist(auth_client, monkeypatch, tmp_path):
+    """confusable 同 canonical 多对可共存（A↔B、A↔C 不触发 synonym/alias 组唯一约束）"""
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l_conf.db"))
+    from app.database import init_db
+    init_db()
+    r1 = auth_client.post("/lexicon/create", data={
+        "kind": "confusable", "canonical": "圈梁", "variants": "构造柱", "distinguish": "竖向构件不同"})
+    assert r1.status_code == 200
+    r2 = auth_client.post("/lexicon/create", data={
+        "kind": "confusable", "canonical": "圈梁", "variants": "地梁", "distinguish": "位置不同"})
+    assert r2.status_code == 200
+
+
+def test_lexicon_create_invalid_kind(auth_client, monkeypatch, tmp_path):
+    """kind 非法 → 400（kind 分支校验）"""
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l_kind.db"))
+    from app.database import init_db
+    init_db()
+    resp = auth_client.post("/lexicon/create", data={"kind": "bogus", "canonical": "X", "variants": "Y"})
+    assert resp.status_code == 400
+    assert "不合法" in resp.text

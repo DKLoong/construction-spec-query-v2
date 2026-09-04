@@ -1,0 +1,16 @@
+<tr>
+    <td>{{ row.canonical }}</td>
+    <td>{{ row.variants }}</td>
+    {% if kind == 'confusable' %}<td>{{ row.distinguish }}</td>{% endif %}
+    <td>{{ '启用' if row.is_active else '禁用' }}</td>
+    <td style="white-space:nowrap">
+        <button class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem"
+                hx-get="/lexicon/{{ row.id }}/edit" hx-target="closest tr" hx-swap="outerHTML">编辑</button>
+        <button class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem"
+                hx-post="/lexicon/{{ row.id }}/toggle"
+                hx-on::after-request="document.body.dispatchEvent(new Event('lexiconUpdated'))">{{ '禁用' if row.is_active else '启用' }}</button>
+        <button class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem;color:#b00000"
+                hx-delete="/lexicon/{{ row.id }}"
+                hx-confirm="确定删除该词条？">删除</button>
+    </td>
+</tr>
