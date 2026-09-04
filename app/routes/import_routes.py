@@ -14,6 +14,7 @@ from app.parser.spec_prefix import (
 )
 from app.ocr.pdf_extract import extract_text, is_scanned
 from app.classifier.rule_engine import classify_clause, should_use_ai
+from app.classifier.batch_queue import try_enqueue
 from app.search.vector_search import VectorStore
 from app.search.embed_text import build_embed_text
 from app.routes.spec_routes import SPEC_STATUS_ALLOWED
@@ -435,11 +436,9 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
             for dim in ["dim4", "dim5", "dim6"]:
                 rule_id = best_rule_ids.get(dim)
                 if should_use_ai(dim, scores, adaptive_thresholds):
-                    conn.execute(
-                        "INSERT INTO classification_queue (clause_id, dimension, keyword_score) VALUES (?, ?, ?)",
-                        (clause_id, dim, scores[dim]),
-                    )
-                    # 规则匹配到但得分不足 → 仅记录命中
+                    # 入列自检：已删除条文/废止规范/非条文不入队；同(clause,dim)防重
+                    try_enqueue(conn, clause_id, dim, scores[dim])
+                    # 规则匹配到但得分不足 → 仅记录命中（统计语义与旧实现一致）
                     if rule_id:
                         conn.execute(
                             "UPDATE classification_rules SET hit_count = hit_count + 1 WHERE id = ?",

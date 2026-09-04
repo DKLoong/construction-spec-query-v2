@@ -3,12 +3,43 @@ from app.database import get_db
 from app.logging_util import log_action, json_detail
 
 
-def add_to_queue(clause_id: int, dimension: str, keyword_score: float):
+def try_enqueue(conn, clause_id: int, dimension: str, keyword_score: float) -> bool:
+    """入列自检守卫（#4，调用方须持有写连接）
+
+    - 条文已删除(不存在) / 其规范为「废止」/ 非条文(clause_is_non=1) → 不入 AI；
+    - 同 (clause_id, dimension) 已存在任意队列记录(含终态 auto_adopted/review/rejected)
+      → 不入，防队列重复膨胀。spec 批量重跑路径先 DELETE 旧队列项再重入，不受影响。
+    """
+    clause = conn.execute(
+        """SELECT c.clause_is_non, s.status
+           FROM clauses c JOIN specifications s ON c.spec_id = s.id
+           WHERE c.id = ?""",
+        (clause_id,),
+    ).fetchone()
+    if not clause:
+        return False
+    if clause["clause_is_non"]:
+        return False
+    if clause["status"] == "废止":
+        return False
+    dup = conn.execute(
+        """SELECT 1 FROM classification_queue
+           WHERE clause_id = ? AND dimension = ? LIMIT 1""",
+        (clause_id, dimension),
+    ).fetchone()
+    if dup:
+        return False
+    conn.execute(
+        "INSERT INTO classification_queue (clause_id, dimension, keyword_score) VALUES (?, ?, ?)",
+        (clause_id, dimension, keyword_score),
+    )
+    return True
+
+
+def add_to_queue(clause_id: int, dimension: str, keyword_score: float) -> bool:
+    """自建连接调用 try_enqueue，返回是否真正入列"""
     with get_db() as conn:
-        conn.execute(
-            "INSERT INTO classification_queue (clause_id, dimension, keyword_score) VALUES (?, ?, ?)",
-            (clause_id, dimension, keyword_score),
-        )
+        return try_enqueue(conn, clause_id, dimension, keyword_score)
 
 
 def get_pending_batch(dimension: str, force: bool = False) -> list[dict]:
@@ -152,3 +183,33 @@ def _dim_to_column(dim: str) -> str:
         "dim5": "dim5_location",
         "dim6": "dim6_material",
     }.get(dim, dim)
+
+
+def get_pending_stats() -> dict:
+    """待处理队列统计（#3b 口径：pending 行数 / 涉及条文数 / 按维度细分）
+
+    queue 是「条文 × 维度」粒度（一条条文最多 dim4/5/6 各一行），故 rows ≥ clauses；
+    展示时两者并报避免误读「pending 行数 > 条文数=有重复」。
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) AS n FROM classification_queue WHERE status = 'pending'"
+        ).fetchone()["n"] or 0
+        clauses = conn.execute(
+            "SELECT COUNT(DISTINCT clause_id) AS n FROM classification_queue "
+            "WHERE status = 'pending'"
+        ).fetchone()["n"] or 0
+        by_rows = conn.execute(
+            "SELECT dimension AS d, COUNT(*) AS n FROM classification_queue "
+            "WHERE status = 'pending' GROUP BY dimension"
+        ).fetchall()
+        by_clauses = conn.execute(
+            "SELECT dimension AS d, COUNT(DISTINCT clause_id) AS n FROM classification_queue "
+            "WHERE status = 'pending' GROUP BY dimension"
+        ).fetchall()
+    by_dim: dict[str, dict] = {}
+    for r in by_rows:
+        by_dim.setdefault(r["d"], {})["rows"] = r["n"]
+    for r in by_clauses:
+        by_dim.setdefault(r["d"], {})["clauses"] = r["n"]
+    return {"rows": rows, "clauses": clauses, "by_dim": by_dim}

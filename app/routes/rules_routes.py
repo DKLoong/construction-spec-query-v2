@@ -411,13 +411,30 @@ async def batch_reject(request: Request, body: dict):
 # AI 分类运行
 # ═══════════════════════════════════════════
 
+def _pending_stats_html(stats: dict) -> str:
+    """待处理统计展示片段（#3b）：行数=条文×维度项，另报涉及条文数避免口径误读"""
+    rows = stats["rows"]
+    clauses = stats["clauses"]
+    by_dim = stats.get("by_dim", {})
+    if rows == 0:
+        return '<span style="color:var(--pico-muted-color);font-size:0.85rem">✔ 无待处理条文</span>'
+    detail = " · ".join(
+        f"{d} {v['rows']} 项" for d, v in sorted(by_dim.items())
+    )
+    return (
+        '<span title="按条文×维度计（一条条文最多 dim4/5/6 各一项）：' + detail + '" '
+        'style="color:var(--pico-muted-color);font-size:0.85rem;cursor:help">'
+        f'⏳ 待处理 <b>{clauses} 条文</b> / {rows} 项</span>'
+    )
+
+
 @router.post("/classify/run")
 async def run_classifier(request: Request):
-    """手动触发 AI 批量分类（force 模式，不限满 20 条）"""
+    """手动触发 AI 批量分类（drain 模式：每维按 batch_size 分批直到待处理清空）"""
     from app.ai.classifier_ai import process_pending_batches
 
     try:
-        count = process_pending_batches(force=True)
+        count = process_pending_batches(force=True, drain=True)
     except Exception as e:
         log_action("classify", "ERROR", "运行AI分类失败",
                    detail=json_detail({"error": str(e)}),
@@ -429,6 +446,13 @@ async def run_classifier(request: Request):
                username=getattr(request.state, "username", ""))
     return HTMLResponse(f"""<p style="color:green">✅ AI 分类完成：{count} 条已处理</p>
     <div hx-get="/rules/list" hx-trigger="load" hx-swap="outerHTML"></div>""")
+
+
+@router.get("/classify/pending-stats")
+async def classify_pending_stats(request: Request):
+    """待处理统计展示片段（#3b）"""
+    from app.classifier.batch_queue import get_pending_stats
+    return HTMLResponse(_pending_stats_html(get_pending_stats()))
 
 
 # ═══════════════════════════════════════════
