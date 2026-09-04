@@ -7,6 +7,31 @@ function lexiconPickFile(input) {
     document.getElementById('lexicon-file-name').value =
         (input.files && input.files.length) ? input.files[0].name : '';
 }
+// 导入进度：点上传导入后按钮平滑向右填充并禁用，请求结束归零恢复
+function lexiconImportStart() {
+    var b = document.getElementById('lexicon-import-btn');
+    if (!b || b.disabled) return;
+    b.disabled = true;
+    b.setAttribute('data-importing', '1');
+    var f = document.getElementById('lexicon-import-fill');
+    f.style.transition = 'width .1s linear';
+    f.style.width = '12%';
+    requestAnimationFrame(function () {
+        requestAnimationFrame(function () { f.style.width = '88%'; });
+    });
+}
+document.addEventListener('htmx:afterRequest', function () {
+    var b = document.getElementById('lexicon-import-btn');
+    if (!b || b.getAttribute('data-importing') !== '1') return;
+    var f = document.getElementById('lexicon-import-fill');
+    f.style.width = '100%';
+    setTimeout(function () {
+        f.style.transition = 'none';
+        f.style.width = '0%';
+        b.removeAttribute('data-importing');
+        b.disabled = false;
+    }, 260);
+});
 </script>
 <div x-data="{ kind: 'alias' }" style="padding:1rem">
     <!-- 当前 kind 单一来源：供添加/导入表单 hx-include 与列表自动刷新带参 -->
@@ -69,8 +94,13 @@ function lexiconPickFile(input) {
                 style="height:34px;width:96px;margin:0;flex:none;padding:0;white-space:nowrap;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center">选择文件</button>
         <input type="text" id="lexicon-file-name" readonly placeholder="未选择文件"
                style="flex:1;min-width:140px;height:34px;margin:0;box-sizing:border-box">
-        <button type="submit" form="lexicon-import-form" class="outline"
-                style="height:34px;width:96px;margin:0;flex:none;padding:0;white-space:nowrap;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center">上传导入</button>
+        <button type="submit" form="lexicon-import-form" id="lexicon-import-btn" class="outline"
+                onclick="setTimeout(lexiconImportStart, 0)"
+                style="position:relative;height:34px;width:96px;margin:0;flex:none;padding:0;white-space:nowrap;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;overflow:hidden">
+            <span id="lexicon-import-fill"
+                  style="position:absolute;left:0;top:0;bottom:0;width:0%;background:linear-gradient(90deg,rgba(13,110,253,.18),rgba(13,110,253,.35))"></span>
+            <span style="position:relative">上传导入</span>
+        </button>
         <a href="/lexicon/template.csv" class="outline"
            style="height:34px;width:96px;margin:0;flex:none;padding:0;white-space:nowrap;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;text-decoration:none">下载模板</a>
         <form id="lexicon-import-form" hx-post="/lexicon/import" hx-target="#import-result" hx-swap="innerHTML"

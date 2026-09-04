@@ -213,10 +213,33 @@ def test_lexicon_write_paths_refresh_updated_at(auth_client, monkeypatch, tmp_pa
 
 
 def test_lexicon_template_download(auth_client):
-    """下载模板返回 CSV 表头 + few-shot 三类示例行"""
+    """下载模板：UTF-8 BOM + 中文表头 + few-shot 三类中文类型行"""
     resp = auth_client.get("/lexicon/template.csv")
     assert resp.status_code == 200
     assert "text/csv" in resp.headers.get("content-type", "")
-    assert resp.text.startswith("kind,canonical,variants,distinguish,note")
-    for kw in ("synonym", "alias", "confusable", "坍落度", "圈梁", "构造柱"):
-        assert kw in resp.text
+    assert resp.content.startswith(b"\xef\xbb\xbf")  # BOM：Excel 打开不乱码
+    text = resp.content.decode("utf-8-sig")
+    assert text.startswith("类型,主词,关联词,区分说明,备注")
+    for kw in ("同义词", "别名", "易混淆术语", "坍落度", "圈梁", "构造柱"):
+        assert kw in text
+
+
+def test_lexicon_csv_import_chinese_headers(auth_client, monkeypatch, tmp_path):
+    """中文表头 + 中文类型列可正常导入（主词/关联词/区分说明/备注 语义映射）"""
+    from app.database import init_db, get_db, DATABASE_PATH
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "zh.db"))
+    init_db()
+    csv_text = (
+        "类型,主词,关联词,区分说明,备注\n"
+        "别名,养护龄期,养护期,,中文别名\n"
+        "易混淆术语,灌注桩,沉管桩,两种成桩工艺不同（沉管振动沉桩 vs 灌注成孔）,中文易混淆\n"
+    )
+    resp = auth_client.post("/lexicon/import",
+                            files={"file": ("seed.csv", csv_text.encode("utf-8"), "text/csv")})
+    assert resp.status_code == 200 and "成功" in resp.text
+    with get_db() as conn:
+        rows = {(r["kind"], r["canonical"]): r["variants"] for r in conn.execute(
+            "SELECT kind, canonical, variants FROM lexicon_entries")}
+    assert ("alias", "养护龄期") in rows and rows[("alias", "养护龄期")] == "养护期"
+    assert ("confusable", "灌注桩") in rows

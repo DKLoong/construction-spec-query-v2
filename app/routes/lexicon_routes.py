@@ -29,15 +29,46 @@ KIND_COLUMNS = {
     "confusable": ("词 A", "词 B", "区分说明"),
 }
 
-# 词库 CSV 导入模板（few-shot：每类给示例行；字段内含中文逗号安全，勿用 ASCII 逗号分隔）
+# ── CSV 表头中英兼容（导入与模板共用）────────────────────────────
+# 列名归一：任一别名命中即取该列；类型列额外支持中文值 → 英文 kind。
+_CSV_HEADER_ALIASES = {
+    "kind": ("kind", "类型"),
+    "canonical": ("canonical", "主词", "词条", "代表词", "规范词", "术语", "词A"),
+    "variants": ("variants", "关联词", "变体", "变体词", "俗称", "等价词", "词B"),
+    "distinguish": ("distinguish", "区分说明"),
+    "note": ("note", "备注"),
+}
+_CSV_KIND_ZH = {"同义词": "synonym", "别名": "alias", "易混淆术语": "confusable"}
+
+
+def _csv_val(row: dict, key: str) -> str:
+    """按中英别名取 CSV 行某列值（首个非空别名命中）。"""
+    for alias in _CSV_HEADER_ALIASES[key]:
+        v = row.get(alias)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
+def _csv_kind(row: dict, tab_kind: str) -> str:
+    """CSV 类型列取值：中文映射为英文 kind；空则回退当前 Tab kind（英文）。"""
+    raw = _csv_val(row, "kind")
+    if not raw:
+        return tab_kind
+    return _CSV_KIND_ZH.get(raw, raw)
+
+# 词库 CSV 导入模板（few-shot：每类给示例行；UTF-8 BOM 供 Excel 正确识别中文）。
+# 表头中文，语义由「类型」列决定：主词/关联词 在 同义词=代表词/等价词，
+# 别名=规范词/俗称，易混淆=词A/词B。字段内含中文逗号安全，勿用 ASCII 逗号分隔。
 LEXICON_TEMPLATE_CSV = (
-    "kind,canonical,variants,distinguish,note\r\n"
-    "synonym,坍落度,塌落度,,示例：同一试验的两种写法视为等价（同义）\r\n"
-    "alias,混凝土,砼,,示例：工地俗称映射到规范词（别名）\r\n"
-    "confusable,圈梁,构造柱,"
+    "类型,主词,关联词,区分说明,备注\r\n"
+    "同义词,坍落度,塌落度,,同一试验的两种写法视为同义；二者可互相替换\r\n"
+    "别名,混凝土,砼,,工地俗称映射到规范词；检索/规则会把它归一到规范词\r\n"
+    "易混淆术语,圈梁,构造柱,"
     "圈梁为沿墙高横向布置的水平约束构件；构造柱为墙端与交角处的竖向约束构件；二者同属抗震构造措施"
-    ",示例：易混淆须写明区分（confusable）\r\n"
+    ",易混淆必须写明区分说明；不会做检索改写\r\n"
 )
+LEXICON_TEMPLATE_CSV = "﻿" + LEXICON_TEMPLATE_CSV  # BOM：Excel 以 UTF-8 打开不乱码
 
 
 @router.get("/lexicon")
@@ -185,9 +216,9 @@ async def import_lexicon(request: Request, file: UploadFile = File(...),
     seen = set()
     with get_db() as conn:
         for line_no, rec in enumerate(reader, start=2):
-            k = (rec.get("kind") or "").strip() or kind
-            data, err = validate_row(k, rec.get("canonical", ""), rec.get("variants", ""),
-                                     rec.get("distinguish", ""))
+            k = _csv_kind(rec, kind)  # 类型列支持中文/英文/空(按当前 Tab)
+            data, err = validate_row(k, _csv_val(rec, "canonical"), _csv_val(rec, "variants"),
+                                     _csv_val(rec, "distinguish"))
             if err:
                 fail += 1
                 fails.append(f"第{line_no}行: {err}")
@@ -216,7 +247,7 @@ async def import_lexicon(request: Request, file: UploadFile = File(...),
                 "INSERT OR IGNORE INTO lexicon_entries(kind,canonical,variants,distinguish,note,updated_at)"
                 " VALUES (?,?,?,?,?,datetime('now','localtime'))",
                 (data["kind"], data["canonical"], data["variants"], data["distinguish"],
-                 (rec.get("note") or "").strip() or "CSV 导入"))
+                 _csv_val(rec, "note") or "CSV 导入"))
             if cur.rowcount == 0:
                 skip += 1
             else:
