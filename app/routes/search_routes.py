@@ -87,6 +87,7 @@ async def search(
             "page": 1,
             "page_size": 20,
             "keyword": "",
+            "confusable_hits": [],
             "dim1_hierarchy": [], "dim1_industry": [],
             "dim1_nature": [],
             "dim2_stage": [],
@@ -102,6 +103,13 @@ async def search(
 
     results, total = hybrid_search(sq)
 
+    # 易混淆术语命中：检测对象恒为用户原文 keyword（仅提示，不做检索改写）
+    confusable_hits = []
+    if keyword:
+        from app.lexicon import store, confusable
+        confusable_hits = confusable.detect_confusable(
+            keyword, store.load_confusable_pairs())
+
     # 为每条结果生成安全摘要（保证 LaTeX 公式闭合），供列表前端渲染
     for r in results:
         r["summary"] = _safe_summary(r.get("content", ""), 200)
@@ -115,6 +123,7 @@ async def search(
         "page": page,
         "page_size": effective_page_size,
         "keyword": keyword,
+        "confusable_hits": confusable_hits,
         "dim1_hierarchy": dim1_hierarchy, "dim1_industry": dim1_industry,
         "dim1_nature": dim1_nature,
         "dim2_stage": dim2_stage,

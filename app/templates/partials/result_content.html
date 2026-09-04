@@ -1,4 +1,12 @@
 <!-- 搜索结果内容（无外层 #search-results 包装，供 HTMX 翻页使用） -->
+{% if confusable_hits %}
+<div style="margin-bottom:0.6rem;padding:0.5rem 0.7rem;border:1px solid #e0a800;border-radius:6px;background:#fff8e1;color:#5a3d00;font-size:0.85rem">
+    <strong>⚠️ 术语区分提示：</strong>
+    {% for h in confusable_hits %}
+    <div style="margin-top:0.2rem">{{ h.a }} 与 {{ h.b }}：{{ h.distinguish }}</div>
+    {% endfor %}
+</div>
+{% endif %}
 {% if results %}
     <p>共找到 {{ total }} 条结果</p>
     {% for r in results %}

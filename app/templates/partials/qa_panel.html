@@ -27,6 +27,18 @@
             <div class="qa-msg" :class="msg.role === 'user' ? 'qa-user' : 'qa-bot'">
                 <template x-if="msg.role === 'bot'">
                     <div>
+                        <!-- 易混淆术语提示（x-text 渲染，杜绝 HTML 注入）；仅提示、不改写答案 -->
+                        <template x-if="msg.confusable && msg.confusable.length">
+                            <div style="margin-bottom:0.4rem;padding:0.4rem 0.6rem;border:1px solid #e0a800;border-radius:6px;background:#fff8e1;font-size:0.78rem">
+                                <strong>⚠️ 术语区分提示</strong>
+                                <template x-for="h in msg.confusable" :key="h.a + '|' + h.b">
+                                    <div style="margin-top:0.15rem">
+                                        <strong x-text="h.a"></strong> 与 <strong x-text="h.b"></strong>：
+                                        <span x-text="h.distinguish"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
                         <div x-html="renderMarkdown(msg.content, msg.sources)"></div>
                         <!-- 底部统一参考条文区（兜底：正文复杂引用未能转链接的，这里都可点击） -->
                         <template x-if="msg.sources && msg.sources.length">

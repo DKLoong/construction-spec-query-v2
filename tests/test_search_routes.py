@@ -198,3 +198,34 @@ def test_clause_detail_requires_auth(client):
     """未登录不能访问条文详情"""
     resp = client.get("/clause/1", follow_redirects=False)
     assert resp.status_code == 302
+
+
+# ── 易混淆术语命中（confusable 双词同现 → 检索结果顶部区分提示） ──
+
+def test_search_page_renders_confusable_hint(auth_client, monkeypatch, tmp_path):
+    """关键词同现 confusable 双词（箍筋×钢筋）时，结果顶部渲染术语区分提示
+
+    注意：init_db 预置 confusable(箍筋, 钢筋) 种子行，且 lexicon_entries 有
+    (kind, canonical, variants) 唯一索引；此处用 UPDATE 改 distinguish 以便断言，
+    避免同键二次 INSERT 触发唯一约束（与 test_database 幂等测试同一约定）。
+    """
+    from urllib.parse import quote
+    from app.database import init_db, get_db
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "s.db"))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("UPDATE lexicon_entries SET distinguish='子类区分' "
+                     "WHERE kind='confusable' AND canonical='箍筋' AND variants='钢筋'")
+        conn.execute("INSERT INTO specifications(code,title) VALUES ('JGJ 107-2016','接头')")
+        sid = conn.execute("SELECT id FROM specifications").fetchone()["id"]
+        conn.execute("INSERT INTO clauses(spec_id,clause_no,title,content,search_text)"
+                     " VALUES (?,?,?,?,?)", (sid, "3", "", "钢筋接头", "钢筋 接头 3"))
+    from app.lexicon import store
+    store.invalidate_lexicon_caches()
+    # 箍筋钢筋：同现 canonical「箍筋」与 variant「钢筋」→ 触发 confusable 命中
+    resp = auth_client.get("/search?keyword=" + quote("箍筋钢筋"))
+    assert resp.status_code == 200
+    assert "术语区分提示" in resp.text
+    assert "子类区分" in resp.text

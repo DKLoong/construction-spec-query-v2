@@ -549,3 +549,54 @@ def test_qa_trace_log_emitted(auth_client, monkeypatch, tmp_path, caplog):
     assert '"rerank_used": "none"' in trace_lines[0]
     assert '"high_count"' in trace_lines[0]
     assert '"context_tokens"' in trace_lines[0]
+
+
+# ═══════════════════════════════════════════
+# 易混淆术语命中（confusable_hits）
+# ═══════════════════════════════════════════
+
+def test_qa_confusable_hits_returned(auth_client, monkeypatch, tmp_path):
+    """问题同现 confusable 双词（箍筋×钢筋）时 QAResponse 返回 confusable_hits
+
+    命中对象恒为「用户问题原文」，仅提示、不做任何改写。后端 get_backend 与
+    hybrid_search 均 mock：qa_ask 内部 `from app.ai.cli_client import get_backend`
+    在调用期取值，故需 patch 该模块属性（patch qr.get_backend 无效）；
+    hybrid_search 整体替换为空结果，避免真实 LanceDB / embedding。
+
+    init_db 已预置 confusable(箍筋, 钢筋) 种子行（唯一键约束），测试用 UPDATE
+    改 distinguish 供断言。
+    """
+    from app.database import init_db, get_db
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "q.db"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("UPDATE lexicon_entries SET distinguish='子类区分' "
+                     "WHERE kind='confusable' AND canonical='箍筋' AND variants='钢筋'")
+    from app.lexicon import store
+    store.invalidate_lexicon_caches()
+
+    import app.ai.cli_client as cc
+
+    class _FakeBackend:
+        command = "fake"
+
+        def is_available(self):
+            return True
+
+        async def ask(self, prompt, context="", system_prompt="", work_dir=None):
+            return type("R", (), {"success": True, "content": "ok", "error": ""})()
+
+    monkeypatch.setattr(cc, "get_backend", lambda b: _FakeBackend())
+    monkeypatch.setattr("app.search.hybrid_search.hybrid_search", lambda sq: ([], 0))
+
+    resp = auth_client.post(
+        "/qa/ask", json={"question": "箍筋与钢筋有什么区别", "mode": "rag"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["confusable_hits"]
+    assert data["confusable_hits"][0]["distinguish"] == "子类区分"
+    # 命中项给出 a/b 双词（前端据此渲染「A 与 B：区分说明」）
+    assert data["confusable_hits"][0]["a"] == "箍筋"
+    assert data["confusable_hits"][0]["b"] == "钢筋"

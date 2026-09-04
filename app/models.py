@@ -229,3 +229,5 @@ class QAResponse(BaseModel):
     answer: str
     sources: list[dict] = []
     cli_used: Optional[str] = None
+    # 易混淆术语命中（用户问题原文同现 term_a/term_b）；仅提示，不做任何改写
+    confusable_hits: list[dict] = []

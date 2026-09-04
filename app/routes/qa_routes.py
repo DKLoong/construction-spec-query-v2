@@ -305,7 +305,15 @@ async def qa_ask(request: Request, body: QaRequest):
     # 来源引用：只取实际进入上下文的条文（保证引用与上下文一致）
     sources = _extract_sources([it.clause for it, _ in picked])
 
+    # 易混淆术语命中：检测对象恒为用户问题原文（仅提示，不做任何改写）
+    confusable_hits = []
+    if question:
+        from app.lexicon import store, confusable
+        confusable_hits = confusable.detect_confusable(
+            question, store.load_confusable_pairs())
+
     # 埋点
     _emit_trace(trace)
 
-    return QAResponse(answer=answer, sources=sources, cli_used=cli_used)
+    return QAResponse(answer=answer, sources=sources, cli_used=cli_used,
+                      confusable_hits=confusable_hits)

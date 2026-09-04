@@ -39,6 +39,7 @@ document.addEventListener('alpine:init', () => {
                     role: 'bot',
                     content: data.answer || '(AI 未返回回答)',
                     sources: data.sources || [],
+                    confusable: data.confusable_hits || [],
                 });
             } catch (e) {
                 this.messages.push({ role: 'bot', content: '请求失败，请稍后重试' });
