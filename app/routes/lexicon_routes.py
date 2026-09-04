@@ -3,7 +3,7 @@ import csv
 import io
 
 from fastapi import APIRouter, Request, Form, UploadFile, File
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from app.database import get_db
 from app.lexicon.store import invalidate_lexicon_caches
 from app.lexicon.validation import validate_row
@@ -29,6 +29,16 @@ KIND_COLUMNS = {
     "confusable": ("词 A", "词 B", "区分说明"),
 }
 
+# 词库 CSV 导入模板（few-shot：每类给示例行；字段内含中文逗号安全，勿用 ASCII 逗号分隔）
+LEXICON_TEMPLATE_CSV = (
+    "kind,canonical,variants,distinguish,note\r\n"
+    "synonym,坍落度,塌落度,,示例：同一试验的两种写法视为等价（同义）\r\n"
+    "alias,混凝土,砼,,示例：工地俗称映射到规范词（别名）\r\n"
+    "confusable,圈梁,构造柱,"
+    "圈梁为沿墙高横向布置的水平约束构件；构造柱为墙端与交角处的竖向约束构件；二者同属抗震构造措施"
+    ",示例：易混淆须写明区分（confusable）\r\n"
+)
+
 
 @router.get("/lexicon")
 async def lexicon_page(request: Request):
@@ -37,6 +47,15 @@ async def lexicon_page(request: Request):
         "left_content": "partials/tree_panel.html",
         "center_content": "lexicon.html",
     })
+
+
+@router.get("/lexicon/template.csv")
+async def lexicon_template_download():
+    """下载词库 CSV 导入模板（few-shot 示例，供 WebUI「下载模板」键）"""
+    return Response(
+        content=LEXICON_TEMPLATE_CSV,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="lexicon_template.csv"'})
 
 
 @router.get("/lexicon/list")

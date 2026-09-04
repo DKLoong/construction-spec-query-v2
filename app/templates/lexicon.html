@@ -1,4 +1,13 @@
 <!-- 中栏：词库管理（三 Tab：同义词 / 别名 / 易混淆） -->
+<script>
+function lexiconDistCount(textarea, spanId) {
+    document.getElementById(spanId).textContent = textarea.value.length;
+}
+function lexiconPickFile(input) {
+    document.getElementById('lexicon-file-name').value =
+        (input.files && input.files.length) ? input.files[0].name : '';
+}
+</script>
 <div x-data="{ kind: 'alias' }" style="padding:1rem">
     <!-- 当前 kind 单一来源：供添加/导入表单 hx-include 与列表自动刷新带参 -->
     <input type="hidden" id="lexicon-kind-input" name="kind" :value="kind">
@@ -16,37 +25,56 @@
                 @click="kind='confusable'" hx-get="/lexicon/list?kind=confusable" hx-target="#lexicon-table" hx-swap="innerHTML">⚠️ 易混淆术语</button>
     </div>
 
-    <!-- 新增表单（synonym/alias：代表词+变体；confusable：词A+词B+区分） -->
+    <!-- 新增表单（synonym/alias：代表词+变体，单行右对齐添加键） -->
     <form x-show="kind!=='confusable'" hx-post="/lexicon/create" hx-target="#create-result"
           hx-swap="innerHTML" hx-include="#lexicon-kind-input"
           hx-on::after-request="if(event.detail.successful) this.reset()">
-        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-            <label style="margin:0;white-space:nowrap"><span x-text="kind==='alias'?'规范词':'代表词'"></span></label>
-            <input type="text" name="canonical" required style="width:150px;margin:0;height:40px">
-            <label style="margin:0;white-space:nowrap">变体/俗称(逗号分隔)</label>
-            <input type="text" name="variants" placeholder="如 砼,混泥土" required style="width:220px;margin:0;height:40px">
-            <button type="submit" class="secondary" style="height:40px;margin:0">➕ 添加</button>
+        <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:nowrap">
+            <label style="margin:0;white-space:nowrap;flex:none"><span x-text="kind==='alias'?'规范词':'代表词'"></span></label>
+            <input type="text" name="canonical" required style="width:150px;height:38px;margin:0;flex:none;box-sizing:border-box">
+            <label style="margin:0;white-space:nowrap;flex:none">变体/俗称(逗号分隔)</label>
+            <input type="text" name="variants" placeholder="如 砼,混泥土" required style="width:220px;height:38px;margin:0;flex:none;box-sizing:border-box">
+            <button type="submit" class="secondary" style="height:38px;margin:0 0 0 auto;flex:none;white-space:nowrap;padding:0 0.9rem">添加</button>
         </div>
     </form>
+    <!-- 新增表单（confusable：词A + 词B + 区分说明 textarea≤50字 + 右对齐添加键） -->
     <form x-show="kind==='confusable'" hx-post="/lexicon/create" hx-target="#create-result"
           hx-swap="innerHTML" hx-include="#lexicon-kind-input"
-          hx-on::after-request="if(event.detail.successful) this.reset()">
-        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-            <label style="margin:0">词A</label><input type="text" name="canonical" required style="width:120px;margin:0;height:40px">
-            <label style="margin:0">词B</label><input type="text" name="variants" required style="width:120px;margin:0;height:40px">
-            <input type="text" name="distinguish" placeholder="区分说明(必填)" required style="width:280px;margin:0;height:40px">
-            <button type="submit" class="secondary" style="height:40px;margin:0">➕ 添加</button>
+          hx-on::after-request="if(event.detail.successful){ this.reset(); document.getElementById('lexicon-add-dist-count').textContent='0'; }">
+        <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:nowrap">
+            <label style="margin:0;white-space:nowrap;flex:none">词A</label>
+            <input type="text" name="canonical" required style="width:110px;height:38px;margin:0;flex:none;box-sizing:border-box">
+            <label style="margin:0;white-space:nowrap;flex:none">词B</label>
+            <input type="text" name="variants" required style="width:110px;height:38px;margin:0;flex:none;box-sizing:border-box">
+            <div style="display:flex;flex-direction:column;gap:2px;flex:none">
+                <textarea name="distinguish" id="lexicon-add-distinguish" rows="2" maxlength="50" required
+                          placeholder="区分说明（必填，≤50 字）"
+                          oninput="lexiconDistCount(this, 'lexicon-add-dist-count')"
+                          style="width:300px;height:52px;margin:0;box-sizing:border-box;font-size:0.8rem;line-height:1.3;resize:vertical;overflow:auto"></textarea>
+                <div style="align-self:flex-end;font-size:0.7rem;color:var(--pico-muted-color);line-height:1">
+                    <span id="lexicon-add-dist-count">0</span>/50
+                </div>
+            </div>
+            <button type="submit" class="secondary" style="height:52px;margin:0 0 0 auto;flex:none;white-space:nowrap;padding:0 0.9rem">添加</button>
         </div>
     </form>
     <div id="create-result"></div>
 
-    <!-- CSV 导入（kind 空时按当前 Tab 兜底） -->
-    <div style="margin:0.8rem 0;display:flex;gap:0.5rem;align-items:center">
-        <label style="margin:0;white-space:nowrap">批量导入 CSV：</label>
-        <form hx-post="/lexicon/import" hx-target="#import-result" hx-swap="innerHTML"
-              hx-encoding="multipart/form-data" hx-include="#lexicon-kind-input" style="display:inline">
-            <input type="file" name="file" accept=".csv" required style="font-size:0.8rem">
-            <button type="submit" class="outline" style="font-size:0.8rem;height:32px">上传导入</button>
+    <!-- CSV 导入 + 下载模板（同一行；kind 空时按当前 Tab 兜底） -->
+    <div style="margin:0.8rem 0;display:flex;align-items:center;gap:0.5rem;flex-wrap:nowrap">
+        <label style="margin:0;white-space:nowrap;flex:none">批量导入 CSV：</label>
+        <button type="button" class="outline" onclick="document.getElementById('lexicon-file').click()"
+                style="height:34px;width:96px;margin:0;flex:none;white-space:nowrap;box-sizing:border-box">选择文件</button>
+        <input type="text" id="lexicon-file-name" readonly placeholder="未选择文件"
+               style="flex:1;min-width:140px;height:34px;margin:0;box-sizing:border-box">
+        <button type="submit" form="lexicon-import-form" class="outline"
+                style="height:34px;width:96px;margin:0;flex:none;white-space:nowrap;box-sizing:border-box">上传导入</button>
+        <a href="/lexicon/template.csv" class="outline"
+           style="height:34px;width:96px;margin:0;flex:none;white-space:nowrap;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;text-decoration:none">下载模板</a>
+        <form id="lexicon-import-form" hx-post="/lexicon/import" hx-target="#import-result" hx-swap="innerHTML"
+              hx-encoding="multipart/form-data" hx-include="#lexicon-kind-input" style="display:none">
+            <input type="file" id="lexicon-file" name="file" accept=".csv"
+                   onchange="lexiconPickFile(this)">
         </form>
     </div>
     <div id="import-result"></div>

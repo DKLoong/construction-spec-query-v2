@@ -210,3 +210,13 @@ def test_lexicon_write_paths_refresh_updated_at(auth_client, monkeypatch, tmp_pa
         for lid in (lid1, lid2):
             row = conn.execute("SELECT updated_at FROM lexicon_entries WHERE id=?", (lid,)).fetchone()
             assert row["updated_at"] != OLD
+
+
+def test_lexicon_template_download(auth_client):
+    """下载模板返回 CSV 表头 + few-shot 三类示例行"""
+    resp = auth_client.get("/lexicon/template.csv")
+    assert resp.status_code == 200
+    assert "text/csv" in resp.headers.get("content-type", "")
+    assert resp.text.startswith("kind,canonical,variants,distinguish,note")
+    for kw in ("synonym", "alias", "confusable", "坍落度", "圈梁", "构造柱"):
+        assert kw in resp.text
