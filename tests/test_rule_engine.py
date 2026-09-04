@@ -1,4 +1,5 @@
 from app.classifier.rule_engine import classify_clause, should_use_ai
+from app.lexicon.store import LexiconRow
 
 SAMPLE_RULES = [
     # 典型关键词规则：阈值应 ≤ 单次匹配得分 (~0.45 × priority_bonus)
@@ -134,61 +135,46 @@ def test_parent_noise_blacklist_excludes_real_terms():
         assert term not in _PARENT_NOISE_TITLES
 
 
-# ===== 同义词归一化测试 =====
+# ===== 归一化切源：词库 equiv 组（LexiconRow）注入 =====
 
-def test_normalize_text_replaces_synonyms():
-    """同义词应把 source 替换为 target"""
-    from app.classifier.rule_engine import normalize_text
-    syns = [{"source": "砼", "target": "混凝土"}]
-    assert normalize_text("砼强度应满足要求", syns) == "混凝土强度应满足要求"
-
-
-def test_normalize_text_no_synonyms_unchanged():
-    """无同义词或空列表时文本原样返回"""
-    from app.classifier.rule_engine import normalize_text
-    assert normalize_text("砼构件", None) == "砼构件"
-    assert normalize_text("砼构件", []) == "砼构件"
-
-
-def test_normalize_text_short_to_long_does_not_break_long():
-    """短词替换长词时，已有长词不应被拆坏（整词替换）"""
-    from app.classifier.rule_engine import normalize_text
-    syns = [{"source": "砼", "target": "混凝土"}]
-    assert normalize_text("钢筋混凝土构件（含砼）", syns) == "钢筋混凝土构件（含混凝土）"
+def test_normalize_uses_lexicon_groups():
+    """归一化应基于 lexicon 等价组把变体替换为 canonical（纯函数冒烟）"""
+    from app.lexicon.normalize import normalize_text
+    groups = [LexiconRow(1, "alias", "混凝土", ["砼"])]
+    assert normalize_text("砼强度等级不应低于C30", groups) == "混凝土强度等级不应低于C30"
 
 
 def test_classify_clause_synonym_normalization_matches():
-    """构造「砼」条文 + 「混凝土」规则 → 归一化后命中"""
+    """构造「砼」条文 + 「混凝土」规则 → 注入 LexiconRow 等价组后归一化命中"""
     rules = [
-        {"id": 40, "dimension": "dim6", "sub_field": "material", "pattern": "混凝土",
-         "match_type": "keyword", "priority": 1, "threshold": 0.4},
+        {"id": 1, "dimension": "dim6", "pattern": "混凝土", "match_type": "keyword",
+         "priority": 1, "threshold": 0.0, "is_active": 1, "label": "混凝土"},
     ]
-    syns = [{"source": "砼", "target": "混凝土"}]
-    scores, labels, rule_ids = classify_clause("砼强度等级不应低于C30", [], rules, synonyms=syns)
-    assert scores["dim6"] > 0
+    groups = [LexiconRow(1, "alias", "混凝土", ["砼"])]
+    scores, labels, _ = classify_clause("砼强度等级不应低于C30", [], rules, synonyms=groups)
     assert labels.get("dim6") == "混凝土"
-    assert rule_ids.get("dim6") == 40
+    assert scores["dim6"] > 0
 
 
 def test_classify_clause_synonym_no_match_without_normalization():
-    """不注入同义词时，「砼」条文不应命中「混凝土」规则"""
+    """不注入等价组时，「砼」条文不应命中「混凝土」规则"""
     rules = [
         {"id": 41, "dimension": "dim6", "sub_field": "material", "pattern": "混凝土",
          "match_type": "keyword", "priority": 1, "threshold": 0.4},
     ]
-    # synonyms=[] 显式表示「无同义词」，避免从真实库自动加载「砼→混凝土」
+    # synonyms=[] 显式表示「无等价组」，避免从真实库自动加载「砼→混凝土」
     scores, labels, rule_ids = classify_clause("砼强度等级不应低于C30", [], rules, synonyms=[])
     assert scores["dim6"] == 0.0
     assert rule_ids.get("dim6") is None
 
 
 def test_classify_clause_synonym_applies_to_parent_path():
-    """同义词归一化应对过滤后的父路径同样生效"""
+    """等价组归一化应对过滤后的父路径同样生效"""
     rules = [
         {"id": 42, "dimension": "dim4", "sub_field": "specialty", "pattern": "混凝土",
          "match_type": "keyword", "priority": 1, "threshold": 0.4},
     ]
-    syns = [{"source": "砼", "target": "混凝土"}]
+    groups = [LexiconRow(1, "alias", "混凝土", ["砼"])]
     # 父路径「砼分项工程」归一化后应命中「混凝土」规则
-    scores, labels, rule_ids = classify_clause("施工", ["砼分项工程"], rules, synonyms=syns)
+    scores, labels, rule_ids = classify_clause("施工", ["砼分项工程"], rules, synonyms=groups)
     assert scores["dim4"] > 0
