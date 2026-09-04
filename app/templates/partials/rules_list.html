@@ -1,11 +1,11 @@
 <!-- 中栏：规则列表 -->
 <div x-data="rulesManager()" style="padding:1rem">
-    <div style="display:flex;justify-content:space-between;align-items:center">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:30px">
         <h2 style="margin:0">📋 分类规则管理</h2>
         <button @click="window.dispatchEvent(new CustomEvent('open-settings', {detail: {tab: 'ai'}}))" class="outline secondary" style="font-size:0.75rem;padding:0.2rem 0.5rem">⚙️ 设置</button>
     </div>
 
-    <!-- 维度筛选 -->
+    <!-- 维度筛选（标题行下加 30px 间距，保持标题与筛选标签的协调性） -->
     <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
         <button class="outline" :class="{ contrast: filterDim === '' }"
                 @click="filterDim = ''; loadRules()">全部</button>
@@ -21,12 +21,16 @@
     </div>
 
     <!-- 操作按钮行 -->
-    <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+    <div style="margin-bottom:1rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
         <button @click="showForm = !showForm" class="secondary">➕ 新建规则</button>
         <button hx-post="/classify/run" hx-target="#classify-result" class="secondary"
                 style="background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:white">
             🤖 运行 AI 分类
         </button>
+        <!-- 待处理统计（#3b）：行数=条文×维度项；load + 每次运行AI后经 classifyStatsRefresh 刷新 -->
+        <span id="classify-pending" style="line-height:1"
+              hx-get="/classify/pending-stats" hx-trigger="load, classifyStatsRefresh from:body"
+              hx-swap="innerHTML" aria-live="polite"></span>
     </div>
     <div id="classify-result"></div>
 
@@ -274,6 +278,10 @@ document.addEventListener('alpine:init', () => {
 // - 报表批量动作 /rules/quality/batch → 刷新下方规则列表（质量报表由批量按钮 hx-target 自刷，避免循环）
 document.body.addEventListener('htmx:afterSettle', function (evt) {
     var path = (evt.detail && evt.detail.requestConfig && evt.detail.requestConfig.path) || '';
+    // 运行AI分类完成后刷新按钮旁的待处理计数
+    if (path === '/classify/run') {
+        document.body.dispatchEvent(new CustomEvent('classifyStatsRefresh'));
+    }
     if (path.indexOf('/rules') !== 0) return;
     if (path.indexOf('/rules/quality/batch') === 0) {
         document.body.dispatchEvent(new CustomEvent('rulesListRefresh'));
