@@ -27,8 +27,10 @@ def _cache_key(query: SearchQuery) -> tuple:
     **必须函数内延迟导入**：顶层 `from app.database import DATABASE_PATH`
     是值绑定，monkeypatch 换库后读不到最新值，会导致跨库缓存污染。
     ce_rerank 影响结果序列，纳入 key（开关不串）。
+    lexicon_expand 影响 SQL FTS 召回，纳入 key（开关切换不命中对方缓存）。
     """
     from app.database import DATABASE_PATH
+    from app.params.registry import get_param_int
     return (
         DATABASE_PATH,
         query.keyword,
@@ -41,6 +43,7 @@ def _cache_key(query: SearchQuery) -> tuple:
         tuple(query.dim5_location or ()),
         tuple(query.dim6_material or ()),
         query.include_non_clause, query.ce_rerank,
+        bool(get_param_int("search.lexicon_expand")),
         tuple(query.status_filter),
     )
 
@@ -88,6 +91,7 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
         # ── 2. 向量搜索（语义匹配） ──
         vector_raw = []
         if keyword:
+            # 边界：向量输入用 keyword 原文，不做词库改写（spec 边界 1；测试锁定）
             try:
                 from app.search.vector_search import VectorStore
                 vs = VectorStore()

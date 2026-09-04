@@ -64,6 +64,7 @@ SEARCH_RERANK_TOP_N = 20           # RRF 后进入 CE 精排的前缀条数
 SEARCH_VECTOR_TOP_K = 20           # 向量召回条数
 SEARCH_VECTOR_L2_THRESHOLD = 1.0   # 向量 L2 距离阈值（越小越严）
 SEARCH_RRF_K = 60                  # RRF 融合分母常数
+SEARCH_LEXICON_EXPAND = 1          # 词库同义/别名检索扩展开关（1 开 / 0 关）
 
 # ── 日志保留（D15）──
 LOG_RETENTION_DAYS = 90        # system_logs 默认保留天数

@@ -17,6 +17,7 @@ from app.config import (
     RULE_AUTO_DISABLE_RATIO, RULE_AUTO_DISABLE_MIN_HIT,
     NEW_RULE_THRESHOLD, LABEL_CANDIDATE_LIMIT,
     SEARCH_RERANK_TOP_N, SEARCH_VECTOR_TOP_K, SEARCH_VECTOR_L2_THRESHOLD, SEARCH_RRF_K,
+    SEARCH_LEXICON_EXPAND,
     QA_CONFIG_DEFAULTS,
 )
 
@@ -107,6 +108,10 @@ def _build_meta():
         "search.rrf_k", "search", "RRF 融合常数", float(SEARCH_RRF_K),
         1, 200, "1~200",
         "倒数排名融合的分母常数；越大越偏向高排名项、弱化低排名项。", dtype="int"))
+    meta.append(_num(
+        "search.lexicon_expand", "search", "词库检索扩展", float(SEARCH_LEXICON_EXPAND),
+        0, 1, "0~1",
+        "1=检索把词库同义/别名等价词纳入 FTS（扩召回）；0=退回纯原词。规则归一化与易混淆提示不受影响。", dtype="int"))
     # ---- qa（键与 app/qa/config.py 一致：全键 = qa.<子键>）----
     meta.append(_num(
         "qa.retrieve.candidate_pool", "qa", "候选池大小",

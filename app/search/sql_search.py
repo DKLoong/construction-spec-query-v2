@@ -10,6 +10,15 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
     多词 AND 无结果时降级 OR 召回（任一 token 命中），避免严格匹配查空。
     无关键词（纯维度筛选/浏览全部）路径不变。返回签名不变 → RRF/hybrid/QA 零改动。
     """
+    def _match_for(keyword: str, join: str = "AND") -> str:
+        """keyword → FTS MATCH 串。开关关/无词条时委托原 build_match_query（退化护栏）。"""
+        if not keyword:
+            return ""
+        from app.params.registry import get_param_int
+        from app.lexicon import store, expand
+        groups = store.load_equivalent_groups() if get_param_int("search.lexicon_expand") else []
+        return expand.build_expanded_match(keyword, groups, join)
+
     with get_db() as conn:
         def _build(match_expr: str) -> tuple[list, list, str]:
             """按指定 MATCH 表达式构建检索条件（keyword 为空时 match_expr=''）"""
@@ -50,9 +59,8 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
                 params.extend(query.status_filter)
             return conditions, params, joins
 
-        # keyword → FTS5 MATCH 查询串（jieba 切词，token 间 AND）
-        from app.search.tokenize import build_match_query
-        match = build_match_query(query.keyword) if query.keyword else ""
+        # keyword → FTS5 MATCH 查询串（jieba 切词，token 间 AND；词库扩展开关见 _match_for）
+        match = _match_for(query.keyword)
 
         conditions, params, joins = _build(match)
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
@@ -69,7 +77,7 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
 
         # OR 兜底：多词 AND 无结果 → 任一 token 命中即召回（解决「I级接头强度」查空）
         if total == 0 and query.keyword and match:
-            or_match = build_match_query(query.keyword, "OR")
+            or_match = _match_for(query.keyword, "OR")
             if or_match != match:
                 conditions, params, joins = _build(or_match)
                 where = "WHERE " + " AND ".join(conditions) if conditions else ""
