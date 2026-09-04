@@ -38,8 +38,20 @@ def test_no_group_delegates_to_original():
     assert build_expanded_match(kw, []) == orig(kw)
 
 
-def test_join_or_and_quote_escape():
-    out = build_expanded_match('抗"震"砼', [LexiconRow(1, "alias", "混凝土", ["砼"])], "OR")
-    assert '"砼"' in out  # 词条词参与；引号转义沿用原版 quote
-    out2 = build_expanded_match("砼", G, "AND")
-    assert out2.startswith("(") and out2.endswith(")")
+def test_join_with_top_level_connector():
+    # join_with 决定顶层连接符；用无标点输入验证，避免被 tokenize 的 \W+ 过滤干扰。
+    # 引号转义 _quote 仅在「词本身含引号」时触发；jieba seg/词表词不含引号，故不设可测断言。
+    out = build_expanded_match("砼 强度", G, "OR")
+    assert ' OR ' in out and ' AND ' not in out
+    out2 = build_expanded_match("砼 强度", G, "AND")
+    assert ' AND ' in out2
+    out3 = build_expanded_match("砼", G, "AND")
+    assert out3.startswith("(") and out3.endswith(")")
+
+
+def test_empty_canonical_never_enters_term_table():
+    # 空 canonical 若进 term 表会 startswith('') 恒真 + i+=0 死循环；store._row_from
+    # 对 canonical 原样透传无空值守卫，T8 validation 落地前可能为空串 → 必须滤空。
+    from app.lexicon.expand import _terms_by_len
+    g = [LexiconRow(1, "alias", "", ["砼"])]
+    assert _terms_by_len(g) == [(0, "砼")]

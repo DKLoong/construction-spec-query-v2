@@ -16,7 +16,8 @@ def _terms_by_len(groups: list[LexiconRow]) -> list[tuple[int, str]]:
     items: dict[str, int] = {}
     for gi, g in enumerate(groups):
         for w in [g.canonical, *g.variants]:
-            items.setdefault(w, gi)
+            if w:  # 空词不入表：startswith("") 恒真会让 _items 死循环（store 对 canonical 无空值守卫）
+                items.setdefault(w, gi)
     return [(gi, w) for w, gi in sorted(items.items(), key=lambda kv: len(kv[0]), reverse=True)]
 
 
