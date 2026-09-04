@@ -228,6 +228,12 @@ def _migrate_search_text(conn):
             )
 
 
+# 词库：confusable「箍筋 × 钢筋」的防歧义说明（预置种子与旧 synonym_map 迁移共用同一文案）
+_CONFUSABLE_GUJIN_DISTINGUISH = (
+    "箍筋是钢筋加工成型的构造钢筋（子类），用于约束核心混凝土，不等同于全部钢筋"
+)
+
+
 def _migrate_legacy_synonyms(conn):
     """幂等迁移：把旧 synonym_map 行拷贝进 lexicon（不 DROP，DDL 删除见收尾单元）。
 
@@ -235,6 +241,11 @@ def _migrate_legacy_synonyms(conn):
       - source='箍筋' and target='钢筋' → confusable(箍筋 × 钢筋)
       - 其余行 → alias(canonical=target, variants=该 target 全部 source 逗号合并)
     仅当 synonym_map 表存在时执行（新库无此表 → 直接跳过）。
+
+    alias 合并幂等：已存在 (kind='alias', canonical=target) 行时，只把缺失的 source
+    并入该行 variants（UPDATE，不改 is_active），**不产生同 canonical 第二行**（否则
+    后续词库一致性命中判为冲突，检索扩展/规则归一化会静默失效）；不存在才 INSERT，
+    新行 is_active 取该 target 源行任一激活（不硬编码激活已停用词条）。
     """
     tbl = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='synonym_map'"
@@ -244,28 +255,45 @@ def _migrate_legacy_synonyms(conn):
     rows = conn.execute(
         "SELECT source, target, is_active FROM synonym_map ORDER BY id"
     ).fetchall()
-    # 聚合：按 target 分组 source（保留顺序、去重）
+    # 聚合：按 target 分组 source（保留顺序、去重）；any_active 记录该 target 是否有激活源行
     by_target: dict[str, list[str]] = {}
+    any_active: dict[str, bool] = {}
     for r in rows:
         if r["source"] == "箍筋" and r["target"] == "钢筋":
             conn.execute(
                 "INSERT OR IGNORE INTO lexicon_entries(kind,canonical,variants,distinguish,note,is_active) "
-                "VALUES ('confusable','箍筋','钢筋',"
-                "'箍筋是钢筋加工成型的构造钢筋（子类），用于约束核心混凝土，不等同于全部钢筋',"
-                "'由旧 synonym_map 迁移',?)",
-                (r["is_active"],))
+                "VALUES ('confusable','箍筋','钢筋',?,?,?)",
+                (_CONFUSABLE_GUJIN_DISTINGUISH, "由旧 synonym_map 迁移", r["is_active"]))
             continue
-        by_target.setdefault(r["target"], [])
-        if r["source"] not in by_target[r["target"]]:
-            by_target[r["target"]].append(r["source"])
+        cur = by_target.setdefault(r["target"], [])
+        if r["source"] not in cur:
+            cur.append(r["source"])
+        if r["is_active"]:
+            any_active[r["target"]] = True
     for target, sources in by_target.items():
         if not sources:
             continue
-        conn.execute(
-            "INSERT OR IGNORE INTO lexicon_entries(kind,canonical,variants,note,is_active) "
-            "VALUES ('alias',?,?,?,?)",
-            (target, ",".join(sources), "由旧 synonym_map 迁移",
-             1 if sources else 1))
+        existing = conn.execute(
+            "SELECT id, variants FROM lexicon_entries "
+            "WHERE kind='alias' AND canonical=? ORDER BY id LIMIT 1",
+            (target,),
+        ).fetchone()
+        if existing:
+            # 已存在 alias 行：并入缺失 source，保留原 is_active / note
+            cur_variants = [v for v in (existing["variants"] or "").split(",") if v.strip()]
+            missing = [s for s in sources if s not in set(cur_variants)]
+            if missing:
+                conn.execute(
+                    "UPDATE lexicon_entries SET variants = ?, "
+                    "updated_at = datetime('now','localtime') WHERE id = ?",
+                    (",".join(cur_variants + missing), existing["id"]),
+                )
+        else:
+            conn.execute(
+                "INSERT INTO lexicon_entries(kind,canonical,variants,note,is_active) "
+                "VALUES ('alias',?,?,?,?)",
+                (target, ",".join(sources), "由旧 synonym_map 迁移",
+                 1 if any_active.get(target) else 0))
 
 
 def init_db():
@@ -354,9 +382,8 @@ def init_db():
             "VALUES ('alias','混凝土','砼','预置种子',1)")
         conn.execute(
             "INSERT OR IGNORE INTO lexicon_entries(kind,canonical,variants,distinguish,note,is_active) "
-            "VALUES ('confusable','箍筋','钢筋',"
-            "'箍筋是钢筋加工成型的构造钢筋（子类），用于约束核心混凝土，不等同于全部钢筋',"
-            "'预置种子',1)")
+            "VALUES ('confusable','箍筋','钢筋',?,?,1)",
+            (_CONFUSABLE_GUJIN_DISTINGUISH, "预置种子"))
         _migrate_legacy_synonyms(conn)
         # 预置常用同义词（保留至 Task 8 收尾删表；synonym_routes 与旧检索归一化仍消费 synonym_map）
         conn.execute(

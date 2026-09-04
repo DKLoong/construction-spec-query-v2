@@ -269,19 +269,38 @@ def test_lexicon_table_and_seed(monkeypatch, tmp_path):
 
 
 def test_migrate_legacy_synonyms_copies_not_drops(monkeypatch, tmp_path):
-    """旧库升级：synonym_map 4 行拷贝为 3 条 alias（混凝土合并砼/混泥土、I 收 1）+ 1 confusable；synonym_map 仍存在"""
+    """旧库升级：synonym_map 4 行迁入 lexicon —— alias 按 canonical 合并为单行（不产生第二行）、
+    confusable 同键幂等、synonym_map 未 DROP；停用源行不硬编码激活"""
     from app.database import init_db, get_db, DATABASE_PATH
     monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "old.db"))
     init_db()
-    with get_db() as conn:  # 模拟老库 4 行
-        conn.execute("INSERT INTO synonym_map(source,target) VALUES ('混泥土','混凝土'),('1','I')")
-    init_db()  # 二次 init 触发迁移（synonym_map 存在 → 拷贝）
+    with get_db() as conn:  # 模拟老库 4 行：预置种子 2 行 + 测试 2 行（'1→I' 停用）
+        conn.execute(
+            "INSERT INTO synonym_map(source,target,is_active) VALUES "
+            "('混泥土','混凝土',1),('1','I',0)")
+    init_db()  # 二次 init 触发迁移（synonym_map 存在 → 拷贝/合并）
     with get_db() as conn:
-        lex = {(r["kind"], r["canonical"]): r["variants"]
-               for r in conn.execute(
-                   "SELECT kind, canonical, variants FROM lexicon_entries")}
-        assert lex[("alias", "混凝土")] == "砼,混泥土" or "砼" in lex[("alias", "混凝土")] or "混泥土" in lex[("alias", "混凝土")]
-        assert "I" in [k[1] for k in lex if k[0] == "alias"]
-        assert ("confusable", "箍筋") in lex
+        rows = conn.execute(
+            "SELECT kind, canonical, variants, distinguish, is_active "
+            "FROM lexicon_entries ORDER BY id"
+        ).fetchall()
+        # 同 canonical 不得产生第二行：alias 混凝土 合并 砼 + 混泥土 进同一行
+        alias_concrete = [r for r in rows
+                          if r["kind"] == "alias" and r["canonical"] == "混凝土"]
+        assert len(alias_concrete) == 1, "alias canonical=混凝土 应只存在一行"
+        assert "砼" in alias_concrete[0]["variants"]
+        assert "混泥土" in alias_concrete[0]["variants"]
+        assert alias_concrete[0]["is_active"] == 1  # 并入已有激活种子行，不改状态
+        # 老库新增 target → 新 INSERT；源行全停用 → 不得硬编码激活
+        alias_i = [r for r in rows if r["kind"] == "alias" and r["canonical"] == "I"]
+        assert len(alias_i) == 1
+        assert alias_i[0]["variants"] == "1"
+        assert alias_i[0]["is_active"] == 0
+        # confusable 箍筋×钢筋（种子同键 → INSERT OR IGNORE 去重，不产生第二行）
+        conf = [r for r in rows
+                if r["kind"] == "confusable" and r["canonical"] == "箍筋" and r["variants"] == "钢筋"]
+        assert len(conf) == 1
+        assert "子类" in conf[0]["distinguish"]
+        # synonym_map 未 DROP，行数保持 4
         n = conn.execute("SELECT COUNT(*) c FROM synonym_map").fetchone()["c"]
         assert n == 4  # 未 DROP
