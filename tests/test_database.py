@@ -76,35 +76,6 @@ def test_clauses_table_has_clause_is_non_column(monkeypatch, tmp_path):
         assert row["clause_is_non"] == 0
 
 
-def test_synonym_map_table_exists(monkeypatch, tmp_path):
-    """init_db 应创建 synonym_map 表"""
-    db_path = tmp_path / "test_syn_table.db"
-    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
-    init_db()
-    with get_db() as conn:
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ).fetchall()
-        names = [t["name"] for t in tables]
-        assert "synonym_map" in names
-
-
-def test_synonym_map_seed_idempotent(monkeypatch, tmp_path):
-    """init_db 预置常用同义词且幂等（重复初始化不产生重复行）"""
-    db_path = tmp_path / "test_syn_seed.db"
-    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
-    init_db()
-    init_db()  # 再次初始化，验证幂等
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT source, target, is_active FROM synonym_map ORDER BY id"
-        ).fetchall()
-        assert len(rows) == 2
-        sources = {r["source"] for r in rows}
-        assert sources == {"砼", "箍筋"}
-        assert all(r["is_active"] == 1 for r in rows)
-
-
 # ═══════════════════════════════════════════
 # FTS5 + jieba 预分词 Schema（search_text 列 / 独立表 / 触发器同步 / 旧库迁移）
 # ═══════════════════════════════════════════
@@ -268,17 +239,28 @@ def test_lexicon_table_and_seed(monkeypatch, tmp_path):
         assert "子类" in d[("confusable", "箍筋")]["distinguish"]
 
 
-def test_migrate_legacy_synonyms_copies_not_drops(monkeypatch, tmp_path):
-    """旧库升级：synonym_map 4 行迁入 lexicon —— alias 按 canonical 合并为单行（不产生第二行）、
-    confusable 同键幂等、synonym_map 未 DROP；停用源行不硬编码激活"""
-    from app.database import init_db, get_db, DATABASE_PATH
-    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "old.db"))
-    init_db()
-    with get_db() as conn:  # 模拟老库 4 行：预置种子 2 行 + 测试 2 行（'1→I' 停用）
-        conn.execute(
-            "INSERT INTO synonym_map(source,target,is_active) VALUES "
-            "('混泥土','混凝土',1),('1','I',0)")
-    init_db()  # 二次 init 触发迁移（synonym_map 存在 → 拷贝/合并）
+def test_migrate_legacy_synonyms_copies_then_drops(monkeypatch, tmp_path):
+    """旧库升级：synonym_map 4 行迁入 lexicon 后 DROP —— alias 按 canonical 合并为单行（不产生第二行）、
+    confusable 同键幂等、synonym_map 被删；停用源行不硬编码激活；二次 init_db 幂等不再迁移"""
+    from app.database import init_db, get_db
+    db_path = tmp_path / "old.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    # 模拟老库：Task 8 后 SCHEMA_SQL 不再建 synonym_map，手动建旧表 + 4 行旧数据
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE synonym_map (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            source      TEXT NOT NULL,
+            target      TEXT NOT NULL,
+            is_active   INTEGER DEFAULT 1,
+            created_at  TEXT DEFAULT (datetime('now','localtime'))
+        );
+        CREATE UNIQUE INDEX idx_synonym_map_source ON synonym_map(source);
+        INSERT INTO synonym_map (source, target, is_active) VALUES
+            ('砼','混凝土',1),('箍筋','钢筋',1),('混泥土','混凝土',1),('1','I',0);
+    """)
+    conn.close()
+    init_db()  # 迁移：synonym_map 存在 → 拷贝/合并 + DROP
     with get_db() as conn:
         rows = conn.execute(
             "SELECT kind, canonical, variants, distinguish, is_active "
@@ -290,7 +272,6 @@ def test_migrate_legacy_synonyms_copies_not_drops(monkeypatch, tmp_path):
         assert len(alias_concrete) == 1, "alias canonical=混凝土 应只存在一行"
         assert "砼" in alias_concrete[0]["variants"]
         assert "混泥土" in alias_concrete[0]["variants"]
-        assert alias_concrete[0]["is_active"] == 1  # 并入已有激活种子行，不改状态
         # 老库新增 target → 新 INSERT；源行全停用 → 不得硬编码激活
         alias_i = [r for r in rows if r["kind"] == "alias" and r["canonical"] == "I"]
         assert len(alias_i) == 1
@@ -301,6 +282,14 @@ def test_migrate_legacy_synonyms_copies_not_drops(monkeypatch, tmp_path):
                 if r["kind"] == "confusable" and r["canonical"] == "箍筋" and r["variants"] == "钢筋"]
         assert len(conf) == 1
         assert "子类" in conf[0]["distinguish"]
-        # synonym_map 未 DROP，行数保持 4
-        n = conn.execute("SELECT COUNT(*) c FROM synonym_map").fetchone()["c"]
-        assert n == 4  # 未 DROP
+        # synonym_map 已 DROP
+        tbl = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='synonym_map'"
+        ).fetchone()
+        assert tbl is None
+    init_db()  # 二次 init：无 synonym_map → 不再迁移，幂等
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM lexicon_entries WHERE kind='alias' AND canonical='混凝土'"
+        ).fetchone()["c"]
+        assert n == 1

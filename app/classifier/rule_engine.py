@@ -36,12 +36,6 @@ def _match_score(text: str, rule: dict) -> float:
         return min(1.0, 0.3 + count * 0.15) * (1 + 0.1 * priority)
 
 
-def clear_synonym_cache() -> None:
-    """过渡兼容：旧同义词管理页调用点。Task 8 移除 synonym_routes 后删除本别名。"""
-    from app.lexicon.store import invalidate_lexicon_caches
-    invalidate_lexicon_caches()
-
-
 def classify_clause(clause_text: str, parent_path: list[str],
                     active_rules: list[dict],
                     synonyms: list[LexiconRow] | None = None

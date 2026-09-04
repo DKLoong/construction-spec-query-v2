@@ -93,17 +93,6 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS synonym_map (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    source      TEXT NOT NULL,     -- 原词（待替换）
-    target      TEXT NOT NULL,     -- 目标词（规范用词）
-    is_active   INTEGER DEFAULT 1,
-    created_at  TEXT DEFAULT (datetime('now','localtime'))
-);
-
--- source 唯一索引：保证预置同义词 INSERT OR IGNORE 的幂等性
-CREATE UNIQUE INDEX IF NOT EXISTS idx_synonym_map_source ON synonym_map(source);
-
 CREATE TABLE IF NOT EXISTS qa_request_logs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     question        TEXT,
@@ -232,6 +221,28 @@ def _migrate_search_text(conn):
 _CONFUSABLE_GUJIN_DISTINGUISH = (
     "箍筋是钢筋加工成型的构造钢筋（子类），用于约束核心混凝土，不等同于全部钢筋"
 )
+
+
+def _seed_alias_if_absent(conn, canonical: str, variant: str) -> None:
+    """幂等预置 alias 种子：canonical 已存在则并入缺失 variant，否则 INSERT。
+
+    唯一索引为 (kind, canonical, variants) 全行键；迁移可能已把用户旧词并入 variants
+    （如「砼,混泥土」），此时直接 INSERT 单变体「砼」会因 variants 不同产生同 canonical
+    第二行（破坏词库一致性），故按 canonical 合并而非裸 INSERT OR IGNORE。
+    """
+    existing = conn.execute(
+        "SELECT id, variants FROM lexicon_entries WHERE kind='alias' AND canonical=? "
+        "ORDER BY id LIMIT 1", (canonical,)).fetchone()
+    if existing:
+        cur_variants = [v for v in (existing["variants"] or "").split(",") if v.strip()]
+        if variant not in cur_variants:
+            conn.execute(
+                "UPDATE lexicon_entries SET variants=?, updated_at=datetime('now','localtime') "
+                "WHERE id=?", (",".join(cur_variants + [variant]), existing["id"]))
+    else:
+        conn.execute(
+            "INSERT OR IGNORE INTO lexicon_entries(kind,canonical,variants,note,is_active) "
+            "VALUES ('alias',?,?,'预置种子',1)", (canonical, variant))
 
 
 def _migrate_legacy_synonyms(conn):
@@ -376,21 +387,14 @@ def init_db():
             """
         )
         # ── 词库子系统 ─────────────────────────────────────────────
-        # 预置种子（幂等：全行唯一键 + INSERT OR IGNORE；本库无 synonym_map 时也建演示对）
-        conn.execute(
-            "INSERT OR IGNORE INTO lexicon_entries(kind,canonical,variants,note,is_active) "
-            "VALUES ('alias','混凝土','砼','预置种子',1)")
+        # 预置种子（幂等）：confusable 全行唯一键 INSERT OR IGNORE；alias 按 canonical 合并，
+        # 避免迁移把用户旧词并入 variants 后（如「砼,混泥土」）再 INSERT「砼」产生重复行
         conn.execute(
             "INSERT OR IGNORE INTO lexicon_entries(kind,canonical,variants,distinguish,note,is_active) "
             "VALUES ('confusable','箍筋','钢筋',?,?,1)",
             (_CONFUSABLE_GUJIN_DISTINGUISH, "预置种子"))
+        _seed_alias_if_absent(conn, "混凝土", "砼")
         _migrate_legacy_synonyms(conn)
-        # 预置常用同义词（保留至 Task 8 收尾删表；synonym_routes 与旧检索归一化仍消费 synonym_map）
-        conn.execute(
-            "INSERT OR IGNORE INTO synonym_map (source, target, is_active) VALUES (?, ?, 1)",
-            ("砼", "混凝土"),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO synonym_map (source, target, is_active) VALUES (?, ?, 1)",
-            ("箍筋", "钢筋"),
-        )
+        # Task 8 收尾：迁移完成后幂等删除旧 synonym_map（老库先迁后删，新库无表无操作）
+        conn.execute("DROP TABLE IF EXISTS synonym_map")
+        conn.execute("DROP INDEX IF EXISTS idx_synonym_map_source")
