@@ -19,7 +19,7 @@
     </td>
     {% endif %}
     <td style="text-align:center;vertical-align:middle">{{ '启用' if row.is_active else '禁用' }}</td>
-    <td style="text-align:center;vertical-align:middle;white-space:nowrap">
+    <td style="text-align:left;vertical-align:middle;white-space:nowrap">
         <form id="lexicon-edit-form-{{ row.id }}" style="margin:0;display:inline-flex;gap:0.3rem"
               hx-post="/lexicon/{{ row.id }}/edit" hx-target="closest tr" hx-swap="outerHTML"
               hx-on::after-request="if(event.detail.successful) document.body.dispatchEvent(new Event('lexiconUpdated'))">
