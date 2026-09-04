@@ -238,6 +238,7 @@ def test_lexicon_csv_import_chinese_headers(auth_client, monkeypatch, tmp_path):
     resp = auth_client.post("/lexicon/import",
                             files={"file": ("seed.csv", csv_text.encode("utf-8"), "text/csv")})
     assert resp.status_code == 200 and "成功" in resp.text
+    assert resp.headers.get("HX-Trigger") == "lexiconUpdated"  # 导入后列表须刷新
     with get_db() as conn:
         rows = {(r["kind"], r["canonical"]): r["variants"] for r in conn.execute(
             "SELECT kind, canonical, variants FROM lexicon_entries")}

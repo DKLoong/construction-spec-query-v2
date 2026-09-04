@@ -254,5 +254,7 @@ async def import_lexicon(request: Request, file: UploadFile = File(...),
                 ok += 1
     invalidate_lexicon_caches()
     from app.main import templates
+    # 触发列表刷新：与增删启禁一致，导入也可能新增/合并词条，需重拉当前 kind 列表
     return templates.TemplateResponse(request, "partials/lexicon_import_result.html",
-                                      {"ok": ok, "skip": skip, "fail": fail, "fails": fails})
+                                      {"ok": ok, "skip": skip, "fail": fail, "fails": fails},
+                                      headers={"HX-Trigger": "lexiconUpdated"})
