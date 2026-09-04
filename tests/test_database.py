@@ -248,3 +248,40 @@ def test_init_db_fts_backfill_idempotent(monkeypatch, tmp_path):
             "SELECT search_text FROM clauses WHERE clause_no='1.0.1'"
         ).fetchone()
         assert row["search_text"] and "钢筋" in row["search_text"], "backfill 应生成非空 search_text"
+
+
+def test_lexicon_table_and_seed(monkeypatch, tmp_path):
+    """init_db 建 lexicon 表 + 预置 alias 混凝土/砼、confusable 箍筋×钢筋"""
+    from app.database import init_db, get_db, DATABASE_PATH
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "t.db"))
+    init_db()
+    with get_db() as conn:
+        names = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "lexicon_entries" in names
+        rows = conn.execute(
+            "SELECT kind, canonical, variants, distinguish FROM lexicon_entries ORDER BY id"
+        ).fetchall()
+        d = {(r["kind"], r["canonical"]): dict(r) for r in rows}
+        assert d[("alias", "混凝土")]["variants"] == "砼"
+        assert d[("confusable", "箍筋")]["variants"] == "钢筋"
+        assert "子类" in d[("confusable", "箍筋")]["distinguish"]
+
+
+def test_migrate_legacy_synonyms_copies_not_drops(monkeypatch, tmp_path):
+    """旧库升级：synonym_map 4 行拷贝为 3 条 alias（混凝土合并砼/混泥土、I 收 1）+ 1 confusable；synonym_map 仍存在"""
+    from app.database import init_db, get_db, DATABASE_PATH
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "old.db"))
+    init_db()
+    with get_db() as conn:  # 模拟老库 4 行
+        conn.execute("INSERT INTO synonym_map(source,target) VALUES ('混泥土','混凝土'),('1','I')")
+    init_db()  # 二次 init 触发迁移（synonym_map 存在 → 拷贝）
+    with get_db() as conn:
+        lex = {(r["kind"], r["canonical"]): r["variants"]
+               for r in conn.execute(
+                   "SELECT kind, canonical, variants FROM lexicon_entries")}
+        assert lex[("alias", "混凝土")] == "砼,混泥土" or "砼" in lex[("alias", "混凝土")] or "混泥土" in lex[("alias", "混凝土")]
+        assert "I" in [k[1] for k in lex if k[0] == "alias"]
+        assert ("confusable", "箍筋") in lex
+        n = conn.execute("SELECT COUNT(*) c FROM synonym_map").fetchone()["c"]
+        assert n == 4  # 未 DROP
