@@ -95,3 +95,41 @@ def test_lexicon_create_invalid_kind(auth_client, monkeypatch, tmp_path):
     resp = auth_client.post("/lexicon/create", data={"kind": "bogus", "canonical": "X", "variants": "Y"})
     assert resp.status_code == 400
     assert "不合法" in resp.text
+
+
+def test_lexicon_edit_returns_single_row(auth_client, monkeypatch, tmp_path):
+    """行内编辑保存返回单行 partial（非整表），与 closest tr outerHTML 契约匹配"""
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l_edit.db"))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('alias','水灰比','W/C')")
+        lid = cur.lastrowid
+    resp = auth_client.post(f"/lexicon/{lid}/edit", data={"canonical": "水灰比", "variants": "W/C,水胶比"})
+    assert resp.status_code == 200
+    body = resp.text
+    assert "<tr" in body and "水胶比" in body
+    assert "<thead>" not in body and "<table" not in body  # 单行 partial，非整表
+    with get_db() as conn:
+        row = conn.execute("SELECT variants FROM lexicon_entries WHERE id=?", (lid,)).fetchone()
+        assert row["variants"] == "W/C,水胶比"
+
+
+def test_lexicon_edit_confusable_returns_distinguish_column(auth_client, monkeypatch, tmp_path):
+    """confusable 行内编辑返回行含区分说明列（lexicon_row.html 按 kind 渲染第三列）"""
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l_editc.db"))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO lexicon_entries(kind,canonical,variants,distinguish) "
+            "VALUES ('confusable','圈梁','构造柱','竖向不同')")
+        lid = cur.lastrowid
+    resp = auth_client.post(f"/lexicon/{lid}/edit", data={
+        "canonical": "圈梁", "variants": "构造柱", "distinguish": "竖向构件不同"})
+    assert resp.status_code == 200
+    body = resp.text
+    assert "竖向构件不同" in body
+    assert "<thead>" not in body

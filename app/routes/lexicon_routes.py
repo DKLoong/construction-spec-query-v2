@@ -119,8 +119,17 @@ async def edit_lexicon(request: Request, lid: int, canonical: str = Form(""),
     with get_db() as conn:
         conn.execute("UPDATE lexicon_entries SET canonical=?, variants=?, distinguish=? WHERE id=?",
                      (data["canonical"], data["variants"], data["distinguish"], lid))
+        updated = conn.execute("SELECT * FROM lexicon_entries WHERE id=?", (lid,)).fetchone()
+    if updated is None:
+        return HTMLResponse("", status_code=404)
     invalidate_lexicon_caches()
-    return await lexicon_list(request, kind=row["kind"])
+    # 返回单行 partial（非整表）：与 lexicon_edit_row.html 保存按钮
+    # hx-target="closest tr" hx-swap="outerHTML" 契约匹配，closest tr 被替换为合法新 <tr>；
+    # confusable 行的区分说明列由 lexicon_row.html 按 kind=='confusable' 渲染。
+    from app.main import templates
+    return templates.TemplateResponse(request, "partials/lexicon_row.html", {
+        "row": dict(updated), "kind": updated["kind"],
+        "columns": KIND_COLUMNS.get(updated["kind"], KIND_COLUMNS["alias"])})
 
 
 @router.delete("/lexicon/{lid}")
