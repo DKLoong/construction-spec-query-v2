@@ -57,15 +57,18 @@ CREATE TABLE IF NOT EXISTS lexicon_entries (
     created_at   TEXT DEFAULT (datetime('now','localtime')),
     updated_at   TEXT DEFAULT (datetime('now','localtime'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_lexicon_kind_canonical
-    ON lexicon_entries(kind, canonical);
+-- 幂等键 = (kind, canonical, variants) 全行：confusable 的 canonical（词 A）可对应多个变体（词 B/C）各占一行，
+-- CSV/预置依赖此键 + INSERT OR IGNORE 做全行判重，不会把 A↔C 误当 A↔B 的重复静默丢弃。
+-- synonym/alias 的「同 canonical 组唯一」由应用层校验（同组语义应并入 variants 而非新增行），不落在本索引。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lexicon_kind_canonical_variants
+    ON lexicon_entries(kind, canonical, variants);
 ```
 
 建模规则：
 
-- **synonym / alias**：`variants` 逗号分隔，支持 N 词等价组。alias 的 canonical 即规范词，variants 即俗称/异体字/简写。UI 与注释用对应文案区分。
-- **confusable 一行一对**：`canonical`=词 A、`variants` 恰一个词 B、`distinguish` 必填描述 A 与 B 的区分。同一 A 与多个词混淆就拆多行——保证 `distinguish` 语义无歧义，命中检测整行取出。
-- **行级校验**（路由与 CSV 导入共用，写成公共函数）：kind 必为三者之一；canonical 非空；synonym/alias 的 variants 非空且不含 canonical 自身（拒绝自反）；confusable 的 distinguish 非空、variants 恰一个词且 ≠ canonical。空 variants 等价于没有组，直接拒绝。
+- **synonym / alias**：`variants` 逗号分隔，支持 N 词等价组。alias 的 canonical 即规范词，variants 即俗称/异体字/简写。UI 与注释用对应文案区分。**组唯一是应用层约束**：新增/编辑时若同 `(kind, canonical)` 已存在，返回 400「该代表词已有词条，请在其变体列补充」，不允许并立两个同 canonical 的组。
+- **confusable 一行一对**：`canonical`=词 A、`variants` 恰一个词 B、`distinguish` 必填描述 A 与 B 的区分。同一 A 与多个词混淆就拆多行（同 canonical 多行靠含 variants 的全行幂等键共存）——保证 `distinguish` 语义无歧义，命中检测整行取出。
+- **行级校验**（路由与 CSV 导入共用，写成公共函数）：kind 必为三者之一；canonical 非空；synonym/alias 的 variants 非空且不含 canonical 自身（拒绝自反）；confusable 的 distinguish 非空、variants 恰一个词且 ≠ canonical；**canonical 与任一 variant 不得互为子串**（防 substring 命中自误报——如 A=沉降、B=差异沉降 这种包含型混淆对，detect 会把 A 恒命中于 B 语境）。空 variants 等价于没有组，直接拒绝。
 
 ### 与现有表的取舍
 
@@ -92,7 +95,8 @@ app/lexicon/
 - 访问器（均只取 `is_active=1`）：
   - `load_equivalent_groups() -> list[LexiconRow]`：kind ∈ EQUIV_KINDS，供 expand / normalize。
   - `load_confusable_pairs() -> list[LexiconRow]`：kind = confusable，供命中检测。
-  - `load_all() -> list[LexiconRow]`：全部 active（词库管理 UI 自身不走缓存而直查 DB，见「八」）。
+  - （管理 UI 不经此模块缓存，`/lexicon/list?kind=&active=` 路由直查 DB，以实时展示启用/禁用。）
+- **加载期词表一致性校验**（`load_equivalent_groups` 每次真实读取时执行，异常时回退空列表并记日志，不阻断消费）：构建 equiv 词 → 组映射，若**同一词同时属于多个 equiv 组**（如某词既作 A 组 canonical 又作 B 组 variants），判定库内词条冲突，本条加载作废并记录冲突词——扩展与归一化依赖「一词语义唯一」的确定性，冲突需由 WebUI 修复后才恢复正常消费。
 - `invalidate_lexicon_caches()`：清本模块缓存 + 延迟导入调用 `hybrid_search.clear_search_cache()`（词库增删改/启禁后必须调用，保证检索结果序列不残留旧词条产物）。本函数是**唯一的缓存失效出口**，词库路由 CRUD 一律调它。
 
 ### 5.2 `expand.py` —— 检索查询扩展（核心）
@@ -114,7 +118,7 @@ build_expanded_match(keyword: str, groups: list[LexiconRow],
    - 命中某词条词 → 候选集 = 该组 canonical + 全部 variants（OR 组）。
    - 未命中普通 token → 候选集 = `[token]`。
 4. 组内候选词 `OR` 连接、项间按 `join_with` 连接，拼成 FTS5 MATCH 串；词与连接符的引号转义规则复用 `tokenize.build_match_query` 的既有实现（每个词 `"…"` 包裹 + 内部引号翻倍），整条返回；keyword 无任何有效词返回空串（与现 `build_match_query` 语义一致，调用方据空串走纯 SQL 分支）。
-5. **退化约束**：groups 为空或开关关闭时，输出必须与现 `build_match_query(keyword, join_with)` 逐字节一致——保证旧检索行为与既有 `test_tokenize`/`test_hybrid_search` 用例不回归。
+5. **退化约束**：groups 为空或开关关闭时，**直接委托现 `build_match_query(keyword, join_with)` 返回**（一行保证逐字节一致，而非重写切词再凑等价）——保证旧检索行为与既有 `test_tokenize`/`test_hybrid_search` 用例不回归。
 
 示例：输入「砼强度等级」，命中 alias 组 `混凝土={砼}` → `("混凝土" OR "砼") AND "强度" AND "等级"`（后两个为 jieba 切出的普通词，token 间保持 AND 连接，与原 `build_match_query` 的多词语义一致）。
 
@@ -138,21 +142,67 @@ detect_confusable(text: str, pairs: list[LexiconRow]) -> list[dict]
 
 - 对每组 confusable：`canonical in text` **且** 存在某 `v in variants` 且 `v in text` → 产出 `{a: canonical, b: v, distinguish}`。
 - 命中对象恒为**用户原词文本**（检索页 keyword、QA 的 question），绝不用扩展后文本。
+- **命中语义校准（外部评审确认）**：本检测针对「原问句中同现并列两个易混淆概念、用户需要区分」的真实场景（如「钢筋和箍筋有何不同」）。**不做「单用歧义」推断**——用户只问 A 时不提示「你可能意指 B」：那需要词库为每词标注默认义，触发面广、误报风险高（用户问规范词也被弹「你是不是想问别的」），且在本项目词库零/低种子下上线即空转。真实词条积累后再评估是否扩展该语义。配合的行级校验（互含子串拒绝，§四）保证不会在长词语境（如「差异沉降」恒含「沉降」）下自误报。
 - text 为短文本，O(组数 × 词长) 量级安全；检测不到返回空列表。
+
+### 5.5 核心数据流（检索扩展 / 词库失效链）
+
+```
+检索扩展路径（FTS5；向量链路不进扩展，embedding 输入恒为 keyword 原文）
+  用户关键词
+    │  sql_search keyword→MATCH 薄包装：读 param search.lexicon_expand
+    ▼
+  开？ ──是──► store.load_equivalent_groups()（TTL 缓存；加载期词表一致性校验）
+    │否/空     │ groups=[] 直接委托现 build_match_query（退化护栏）
+    ▼          ▼
+  expand.build_expanded_match(keyword, groups)
+    词条感知切词：长词优先命中组词 / 未命中片段回退 jieba tokenize
+      ├─ 命中组词  → 项 = (canonical OR v1 OR v2 …)     组内 OR
+      └─ 普通词    → 项 = (单词)
+    ▼
+  FTS5 MATCH 串（项间 AND；AND 无结果降级 OR，两者同一扩展产物）
+    ▼
+  索引 search_text = jieba(条文) 原样命中 → 召回含组内任一词的条文
+     ⚠️ 仅此方向（query 端把俗词扩出规范词）100% 可保证：
+        规范词在 jieba 索引侧必是稳定 token
+        反向「输入规范词召回含俗词的条文」依赖俗词在条文里被 jieba 切成独立 token，
+        由探针测试实证，失败则该方向本期不承诺（见 §十一风险）
+
+词库写路径（缓存失效链）
+  /lexicon CRUD · toggle · CSV 导入
+    └─► store.invalidate_lexicon_caches()
+           ├─ 清 lexicon store TTL 缓存（expand/normalize/detect 下次读最新）
+           └─ 延迟调 hybrid_search.clear_search_cache()（检索结果序列不留旧扩展产物）
+         ├─ 触发 HX-Trigger lexiconUpdated（当前 kind 列表刷新）
+```
 
 ## 六、迁移与旧链路删除
 
 ### 6.1 `database.py` 变更
 
-- `SCHEMA_SQL`：删 `synonym_map` 建表块 + 其唯一索引；加 `lexicon_entries` 建表块 + `idx_lexicon_kind_canonical`。
-- `init_db`：保留结构——`executescript(SCHEMA_SQL)` 对新老库同源建 lexicon 表；在 `_migrate_search_text` 与触发器之后追加**幂等删除**：
-  `DROP TABLE IF EXISTS synonym_map; DROP INDEX IF EXISTS idx_synonym_map_source;`
-  （置于预置种子之前；已存在库升级时此处把旧表清掉。）
-- 预置种子改为直写 lexicon（幂等依赖 `(kind, canonical)` 唯一索引 + `INSERT OR IGNORE`）：
-  - 仅预置一条 `('alias', '混凝土', '砼', '', '', 1)`（由原「砼→混凝土」迁来）。其余词条留待 WebUI/CSV 在使用过程中补充——种子只进语义干净的词条。
-- **「箍筋→钢筋」按用户决定不迁移、不落库**（语义为子类非同义，直接丢弃）。
+- `SCHEMA_SQL`：删 `synonym_map` 建表块 + 其唯一索引；加 `lexicon_entries` 建表块 + `idx_lexicon_kind_canonical_variants`。
+- `init_db` 结构（顺序敏感）：`executescript(SCHEMA_SQL)`（老库同源补建 lexicon 表）→ `_migrate_search_text` → 触发器 → **`_migrate_legacy_synonyms(conn)`** → 预置种子 → 原有后续迁移。
 
-> 说明：之所以不用数据迁移脚本来搬运，是因为 `synonym_map` 现仅两条预置种子、无用户数据；DROP 的幂等位置保证老开发库升级即平滑，无需人工干预。
+**真实库数据核查（外部评审纠偏）**：`data/spec_query.db` 的 `synonym_map` 实测 4 行——`箍筋→钢筋`、`砼→混凝土`（预置），`混泥土→混凝土`、`1→I`（**用户自加**）。此前「无用户数据、直接 DROP」是假前提，会丢用户真实词条。故删除旧表前必须一次性迁移：
+
+```
+_migrate_legacy_synonyms(conn)  —— 幂等：仅当 synonym_map 表存在时执行
+  读全部 (source, target, is_active)
+  └─ 分类写入 lexicon_entries（INSERT OR IGNORE，全行幂等键防重复）：
+       source='箍筋' and target='钢筋'
+         → confusable(canonical='箍筋', variants='钢筋',
+                      distinguish='箍筋是钢筋加工成型的构造钢筋（子类），'
+                                  '用于约束核心混凝土，不等同于全部钢筋',
+                      note='由旧 synonym_map 迁移')
+       其余行 → alias(canonical=target, variants=该 target 的全部 source 逗号合并)
+                （如 target='混凝土' 合并 {砼, 混泥土} → alias('混凝土','砼,混泥土')）
+  迁移完成后 DROP TABLE synonym_map（唯一索引随表删除，不再保留任何 source→target 结构）
+```
+
+- 迁移只跑一次（`synonym_map` 表删除后条件不再成立），不存在半迁移态。
+- **预置种子**（`INSERT OR IGNORE`，依赖全行幂等键）：`alias(混凝土, {砼})` + **confusable 演示对 `箍筋 × 钢筋`**（与迁移产物同构，保证新库也有一条 confusable 演示，避免模块零种子空转）。其余词条留待 WebUI/CSV 在使用过程中补充。
+
+> 说明：迁移逻辑内聚在 `init_db`，已部署库下次启动即平滑升级；用户自加词条（混泥土、1）全部保留。
 
 ### 6.2 收尾删除单元（一个 Task 内删净）
 
@@ -234,35 +284,45 @@ detect_confusable(text: str, pairs: list[LexiconRow]) -> list[dict]
 
 - `tests/test_lexicon_expand.py`：
   - OOV 俗词「塌落度」经词条感知切词命中组、展开 OR（不依赖 jieba 能否切出）；
-  - 规范词输入展开含俗称；多词组展开；普通词退化与 `build_match_query` 逐字节一致；
-  - AND / OR（join_with）两种连接；空 variants 组不入；特殊字符/引号转义；无命中返回空串语义同原版；
-  - **groups=[] 时输出 == 原 build_match_query**（回归护栏）。
+  - 规范词输入展开含俗称；多词组展开；特殊字符/引号转义；无命中返回空串语义同原版；
+  - **非空主路径规范形显式断言**：`("混凝土" OR "砼") AND "强度"` 逐字匹配（组内 OR 加括号，护栏覆盖括号错位回归，不只依赖空组退化）；
+  - **互为前缀的多组词切分边界**：词库同时含 `混凝土` 与 `混凝土结构`（分属不同组），query=「混凝土结构施工」→ 长词优先命中 `混凝土结构` 组、不重复展开 `混凝土` 组；
+  - AND / OR（join_with）两种连接、降级路径同一扩展产物；
+  - **开关关 / groups=[] → 输出与现 `build_match_query` 逐字节一致**（回归护栏）。
 - `tests/test_lexicon_normalize.py`：variants→canonical；canonical 不被反向替换；长词优先不破坏长词；confusable 不参与；禁用组数据不入。
-- `tests/test_lexicon_confusable.py`：双命中产出、仅命中一个不产出、多组、空文本、distinguish 透传、启停。
-- `tests/test_lexicon_store.py`：TTL/换库隔离；启禁过滤；变体拆分；异常回退空。
+- `tests/test_lexicon_confusable.py`：双命中产出、仅命中一个不产出、多组、空文本、distinguish 透传、启停；**互含子串词对被行级校验拒绝**（A=沉降、B=差异沉降 无法入库）。
+- `tests/test_lexicon_store.py`：TTL/换库隔离；启禁过滤；变体拆分；异常回退空；**词表一致性校验**（同一词分属两个 equiv 组 → 加载作废 + 记录冲突词）。
+- `tests/test_lexicon_validation.py`（路由/CSV 共用行级校验）：kind 枚举、自反拒绝、互含子串拒绝、confusable distinguish 必填、confusable variants 单元素。
 
 ### 链路（临时库）
 
-- `tests/test_hybrid_search.py` / `tests/test_search.py` 补：录入条文含「混凝土」、建 alias 组 `混凝土={砼}`，输入「砼」能召回该条文；输入「混凝土」也召回含「砼」条文（双向）；
+- `tests/test_hybrid_search.py` / `tests/test_search.py` 补：
+  - **探针测试（先行）**：录入一条含俗词（如「砼」）的条文，断言 `build_search_text` 的 jieba 产物中俗词是否为独立 token——实证反向召回可行性，据此确定是否承诺该方向（见 §5.5）；
+  - 主方向断言：录入含「混凝土」条文 + alias `混凝土={砼}`，输入「砼」召回该条文（query 端扩出规范词命中）；
+  - 反向（若探针通过）：输入「混凝土」也召回含「砼」条文；
   - 开关=0 时输入「砼」不扩展（行为与原版一致）；
   - **向量输入原文不变**：mock 或断言传给 `vector` 的关键词与原始 keyword 逐字节相同；
   - 词库增删后 `clear_search_cache` 生效（旧缓存不强留）。
-- `tests/test_search_routes.py`：检索结果页 confusable 命中渲染提示条、未命中不渲染。
+- `tests/test_search_routes.py`：keyword 命中 confusable 渲染提示条、未命中不渲染、**零召回空态 keyword 命中仍渲染**（T-gap-3）。
 - `tests/test_qa_routes.py`：`question` 含 confusable 双词 → `confusable_hits` 非空且内容正确；单词 → 空。
-- `tests/test_database.py`：lexicon 表建表 + 种子幂等；synonym_map 建表断言移除。
-- `tests/test_lexicon_routes.py`（承接原 `test_synonym_routes`）：页面 200 / 需认证；CRUD、toggle、行内编辑、重复 canonical 幂等/报错、CSV 导入合法/非法/幂等报告、kind 字段分支校验。
+- `tests/test_database.py`：lexicon 表建表 + 种子幂等（alias 混凝土/砼、confusable 箍筋×钢筋）；**`_migrate_legacy_synonyms` 迁移用例**：预置 4 行 synonym_map → 3 条 alias（混凝土合并 {砼,混泥土}、I={1}）+ 1 条 confusable（箍筋×钢筋）→ synonym_map 被删；二次 init_db 幂等不再迁移。
+- `tests/test_lexicon_routes.py`（承接原 `test_synonym_routes`）：页面 200 / 需认证；CRUD、toggle、行内编辑；**synonym/alias 同 canonical 并立 → 400**（组唯一为应用层约束）；confusable 同 canonical 多行（A↔B、A↔C）共存；CSV 导入合法/非法/幂等报告 + **空文件 / 无表头 / UTF-8 BOM 首行不 500 且报错（T-gap-2）**；kind 字段分支校验。
 - `tests/test_rule_engine.py`：注入结构改 lexicon 组后，现有归一化/匹配/父路径用例语义不变且绿。
+
+### 前端验证（→Playwright 手动项，收尾执行）
+
+- `qa.js` bot 消息 confusable 警示块渲染、`x-text` 无注入——项目无 JS 单测框架，以本地启动 + Playwright（或手动）验证一次并截图留档（T-gap-4），不静默无覆盖。
 
 ### 收尾验收
 
-- `grep -ri synonym_map app/ tests/ scripts/` 零命中；全量 `pytest` 绿。
+- `grep -ri synonym_map app/ tests/ scripts/` 零命中；全量 `pytest` 绿；前端提示项按上节人工过一遍。
 
 ## 十一、风险与缓解
 
 | 风险 | 缓解 |
 | --- | --- |
 | 检索扩展引入噪声召回（同义/别名词过宽） | 语义只放真等价词（箍筋类子类词不落 synonym）；全局开关可关；组词校验拒自反；QA 侧有阈值过滤兜底 |
-| 查询端切词与索引 jieba 分词不一致导致漏召回 | 未命中片段退 jieba 原文切分 + 退化约束保一致性；OOV 由词条感知切词兜住 |
+| 查询端切词与索引 jieba 分词不一致导致漏召回 | 未命中片段退 jieba 原文切分 + 退化约束保一致性；**主方向（输入俗词→扩出规范词）由词条感知切词在 query 端保证**；反向（规范词→含俗词条文）依赖索引侧俗词被 jieba 切成独立 token——以探针实证为准，失败则该方向本期不承诺（如实写入 §5.5，避免上线误判为失效） |
 | `normalize_text` 短俗词误伤 | 沿用长词优先 + replace 局限注释；用具体术语单测锁定 |
 | 词库变更后检索/规则读到旧数据 | 统一 `invalidate_lexicon_caches()` 唯一出口 + TTL 双保险 |
 | 旧库升级后残留 synonym_map | `init_db` 幂等 `DROP TABLE IF EXISTS` |
