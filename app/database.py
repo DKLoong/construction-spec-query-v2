@@ -246,7 +246,7 @@ def _seed_alias_if_absent(conn, canonical: str, variant: str) -> None:
 
 
 def _migrate_legacy_synonyms(conn):
-    """幂等迁移：把旧 synonym_map 行拷贝进 lexicon（不 DROP，DDL 删除见收尾单元）。
+    """幂等迁移：把旧 synonym_map 行拷贝进 lexicon（拷贝后由 init_db 紧随 DROP）。
 
     分类规则：
       - source='箍筋' and target='钢筋' → confusable(箍筋 × 钢筋)

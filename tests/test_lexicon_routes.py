@@ -133,3 +133,80 @@ def test_lexicon_edit_confusable_returns_distinguish_column(auth_client, monkeyp
     body = resp.text
     assert "竖向构件不同" in body
     assert "<thead>" not in body
+
+
+# ═══════════════════════════════════════════
+# final-review fix：CSV 导入组唯一合并 / 编码兜底 / 404 / updated_at
+# ═══════════════════════════════════════════
+
+def test_lexicon_csv_import_merges_equiv_variants(auth_client, monkeypatch, tmp_path):
+    """CSV 两行同 (alias,混凝土) → 合并 variants 为一行，不破坏组唯一（Important #1）
+
+    覆盖：import 对 kind in EQUIV_KINDS 的行按 canonical 补集合并（不改 is_active），
+    store.load_equivalent_groups() 不因同 canonical 第二行冲突而返回空。
+    """
+    from app.database import init_db, get_db
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l_merge.db"))
+    init_db()
+    csv_text = ("kind,canonical,variants,distinguish,note\n"
+                "alias,混凝土,砼,,\n"
+                "alias,混凝土,混泥土,,\n")
+    resp = auth_client.post("/lexicon/import",
+                            files={"file": ("merge.csv", csv_text.encode("utf-8"), "text/csv")})
+    assert resp.status_code == 200
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT variants FROM lexicon_entries WHERE kind='alias' AND canonical='混凝土'"
+        ).fetchall()
+        assert len(rows) == 1, "同 (kind,canonical) 必须合并为单行"
+        assert "砼" in rows[0]["variants"] and "混泥土" in rows[0]["variants"]
+    from app.lexicon import store
+    store.invalidate_lexicon_caches()
+    groups = store.load_equivalent_groups()
+    assert groups, "合并后词表一致性校验通过，load_equivalent_groups 不得因冲突返回空"
+    concrete = [g for g in groups if g.kind == "alias" and g.canonical == "混凝土"]
+    assert concrete and "砼" in concrete[0].variants and "混泥土" in concrete[0].variants
+
+
+def test_lexicon_import_invalid_encoding_returns_400(auth_client, monkeypatch, tmp_path):
+    """CSV 非 UTF-8 解码失败 → 400（#5）"""
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l_enc.db"))
+    from app.database import init_db
+    init_db()
+    resp = auth_client.post("/lexicon/import",
+                            files={"file": ("bad.csv", b"\xff\xfe\xfd", "text/csv")})
+    assert resp.status_code == 400
+    assert "UTF-8" in resp.text
+
+
+def test_lexicon_delete_missing_returns_404(auth_client, monkeypatch, tmp_path):
+    """删除不存在的 id → 404（#6，与 toggle/edit 一致）"""
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l_del.db"))
+    from app.database import init_db
+    init_db()
+    assert auth_client.delete("/lexicon/999999").status_code == 404
+
+
+def test_lexicon_write_paths_refresh_updated_at(auth_client, monkeypatch, tmp_path):
+    """toggle/edit 写路径刷新 updated_at（#9）"""
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l_ts.db"))
+    from app.database import init_db, get_db
+    init_db()
+    OLD = "2000-01-01 00:00:00"
+    with get_db() as conn:
+        c1 = conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants,updated_at) "
+                          "VALUES ('alias','坍落度','塌落度',?)", (OLD,))
+        lid1 = c1.lastrowid
+        c2 = conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants,updated_at) "
+                          "VALUES ('alias','水灰比','W/C',?)", (OLD,))
+        lid2 = c2.lastrowid
+    auth_client.post(f"/lexicon/{lid1}/toggle")
+    auth_client.post(f"/lexicon/{lid2}/edit", data={"canonical": "水灰比", "variants": "W/C,水胶比"})
+    with get_db() as conn:
+        for lid in (lid1, lid2):
+            row = conn.execute("SELECT updated_at FROM lexicon_entries WHERE id=?", (lid,)).fetchone()
+            assert row["updated_at"] != OLD
