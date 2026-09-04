@@ -88,6 +88,6 @@ async with async_playwright() as p:
   git clone --single-branch --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack
   cd ~/.claude/skills/gstack && ./setup
   ```
-- **Web 浏览**统一走 gstack 的 `/browse`，不要用 `mcp__claude-in-chrome__*` 工具。
+- **工具分工**：常规浏览/QA 走 gstack `/browse`（用户自行调用，勿强制）；性能分析（Performance Trace / Lighthouse / 内存）用 `mcp__chrome-devtools__*` 工具。
 - Windows 下 bun 位于 `D:\bun-windows-x64\bun.exe`（该目录仅有 bun.exe、无 bunx shim；需 `bun x` 时自行包装）。
 - 装好后 `/gstack-upgrade` 可随时升级；`./setup` 重跑可刷新技能文件。
