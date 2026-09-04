@@ -76,3 +76,18 @@ async with async_playwright() as p:
 3. **启动**：`D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload`（后台）
 4. **复验唯一监听**：启动后 `netstat :8000 LISTENING` 应**恰好 1 个**，且 wmic 确认该 PID 命令行是 uvicorn
 5. **改静态文件/模板后**：浏览器必须 `Ctrl+F5` 强刷；`base.html` 里 `<script src="...?v=N">` 的版本号 `N` 必须**递增**，否则浏览器缓存旧 js 不失效（改 `qa.js`/`md-render.js` 等必查）
+
+---
+
+## 四、gstack（团队建议，可选）
+
+> 本仓的 AI 协作工作建议使用 gstack 技能套件（/qa、/review、/ship、/browse、/investigate 等）。**非强制**：未安装时按常规流程工作即可。
+
+- **安装（需开发者自己本机全局装一次）**：
+  ```bash
+  git clone --single-branch --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack
+  cd ~/.claude/skills/gstack && ./setup
+  ```
+- **Web 浏览**统一走 gstack 的 `/browse`，不要用 `mcp__claude-in-chrome__*` 工具。
+- Windows 下 bun 位于 `D:\bun-windows-x64\bun.exe`（该目录仅有 bun.exe、无 bunx shim；需 `bun x` 时自行包装）。
+- 装好后 `/gstack-upgrade` 可随时升级；`./setup` 重跑可刷新技能文件。
