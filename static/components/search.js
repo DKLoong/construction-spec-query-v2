@@ -145,8 +145,19 @@ document.body.addEventListener('htmx:beforeRequest', (evt) => {
         }
     } catch (e) { /* Alpine 未初始化时忽略 */ }
 });
-document.body.addEventListener('htmx:afterSettle', () => {
+document.body.addEventListener('htmx:afterSettle', (evt) => {
     hideRadar();
+    // 检索结果就绪即回顶。htmx 的 afterSettle 只在「swap 目标」上触发：#search-results
+    // 的 hx-on 回顶仅覆盖翻页(目标=#search-results)，而搜索框换词/分类树筛选走
+    // search()/dispatchSearch()，swap 目标是 .center-panel-v2，事件不下传子节点 → 需在此
+    // 按请求路径统一回顶，保证每次更换关键词/筛选后滚动条回到顶部。
+    try {
+        const path = (evt.detail && evt.detail.requestConfig && evt.detail.requestConfig.path) || '';
+        if (path.startsWith('/search')) {
+            const panel = document.querySelector('.center-panel-v2');
+            if (panel) panel.scrollTop = 0;
+        }
+    } catch (e) { /* 无面板/未就绪时忽略 */ }
     // 翻页建议：未开 CE 且翻页超过「过半 与 最多3页 取小值」→ 提示开启 CE（展示 4s）
     try {
         const res = document.querySelector('#search-results');
