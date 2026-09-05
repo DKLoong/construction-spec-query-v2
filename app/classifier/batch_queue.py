@@ -141,41 +141,46 @@ _DIM_SUB_FIELD = {
 
 
 def collect_label_candidates(dimension: str, limit: int | None = None) -> list[str]:
-    """收集某维度已有标签候选，供 AI 分类 prompt 约束标签口径
+    """收集某维度 AI 分类候选标签，供 prompt 约束标签口径。
 
-    来源合并：
-    - classification_rules 中该维度激活规则的 pattern（按 priority/hit_count 降序）
-    - clauses 表中该维度已填写的值（拆逗号分隔的多标签）
-    结果去重保序，优先规则关键词（更稳定）。
+    主源 = termdict 权威词典（每权威 label 展开 label→canonical→aliases 词面，
+    label 必先）；词典无词（空/不可用）才回退 clauses 现值兜底。
+    不再以 classification_rules.pattern 作候选（避免碎片/HTML 残留污染候选）。
     """
     if limit is None:
         from app.params.registry import get_param_int
         limit = get_param_int("classify.label_candidate_limit")
-    col = _DIM_COLUMN.get(dimension)
     candidates: list[str] = []
     seen: set[str] = set()
 
-    with get_db() as conn:
-        rules = conn.execute(
-            """SELECT pattern FROM classification_rules
-               WHERE dimension = ? AND is_active = 1
-               ORDER BY priority DESC, hit_count DESC""",
-            (dimension,),
-        ).fetchall()
-        vals = []
-        if col:
+    def _push(v: str):
+        v = (v or "").strip()
+        if v and v not in seen:
+            seen.add(v)
+            candidates.append(v)
+
+    from app.termdict import DIMS, load_active_entries
+    if dimension in DIMS:
+        for row in load_active_entries(dimension):
+            _push(row.label)          # 权威 label 必在候选且优先
+            _push(row.canonical)
+            for a in row.aliases:
+                _push(a)
+
+    if candidates:
+        return candidates[:limit]
+
+    # 词典空/不可用 → 现值兜底（含逗号分隔多标签拆分，保持旧行为）
+    col = _DIM_COLUMN.get(dimension)
+    if col:
+        with get_db() as conn:
             vals = conn.execute(
                 f"SELECT DISTINCT {col} FROM clauses "
                 f"WHERE {col} IS NOT NULL AND {col} != ''"
             ).fetchall()
-
-    for rows in (rules, vals):
-        for r in rows:
+        for r in vals:
             for part in str(r[0]).split(","):
-                v = part.strip()
-                if v and v not in seen:
-                    seen.add(v)
-                    candidates.append(v)
+                _push(part)
     return candidates[:limit]
 
 
