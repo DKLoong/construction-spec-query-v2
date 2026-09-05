@@ -267,3 +267,42 @@ def test_confirm_new_label_high_conf_active_with_nonempty_dict(monkeypatch, tmp_
     assert r["is_active"] == 1       # upsert 先入典使闸门③放行，高置信新规则不误压
     assert r["confirmed"] == 1
     assert r["label"] == "混凝土"
+
+
+def test_confirm_sink_failure_logs_error_does_not_raise(monkeypatch, tmp_path):
+    """闸门④兜底：事务② bump_rule 抛异常 → 不向调用方抛、写 ERROR 日志、入典与打标已落库。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO term_labels (dimension,label,canonical,source)"
+            " VALUES ('dim6','钢筋','钢筋','manual')")
+        conn.execute("INSERT INTO specifications (code,title) VALUES ('GB1','规范')")
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id,clause_no,content) VALUES (?, '1.1', '含 混凝土 的条文内容')",
+            (sid,))
+        cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO classification_queue (clause_id,dimension,keyword_score,status)"
+            " VALUES (?, 'dim6', 0.2, 'review')", (cid,))
+    invalidate_term_cache()
+
+    import app.classifier.rule_sink as rs
+
+    def boom(*a, **k):
+        raise RuntimeError("bump boom")
+
+    monkeypatch.setattr(rs, "bump_rule", boom)
+
+    from app.classifier.feedback import process_feedback
+    process_feedback(cid, "dim6", "混凝土", source_conf=0.95)  # 不得向调用方抛异常
+
+    with get_db() as conn:
+        t = conn.execute(
+            "SELECT label, source FROM term_labels WHERE dimension='dim6' AND label='混凝土'").fetchone()
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+        log = conn.execute(
+            "SELECT level, action FROM system_logs WHERE action='人工确认规则沉淀失败'").fetchone()
+    assert t is not None and t["label"] == "混凝土" and t["source"] == "review"
+    assert q["status"] == "done"
+    assert log is not None and log["level"] == "ERROR"
