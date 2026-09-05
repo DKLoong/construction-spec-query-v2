@@ -516,6 +516,21 @@ def test_apply_ai_results_logs_classify(monkeypatch, tmp_path):
     """apply_ai_results 每批记一条 classify/INFO，detail 含 auto/review 计数"""
     from app.classifier import batch_queue
     _setup(monkeypatch, tmp_path)
+    # 闸门②按「真实采纳数」计数：需先造入批队列行（dim 取队列），无队列行一律 review
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB 1', '规范')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (id, spec_id, clause_no, content) VALUES (101, ?, '5.1', '钢筋条文')",
+            (spec_id,))
+        conn.execute(
+            "INSERT INTO clauses (id, spec_id, clause_no, content) VALUES (102, ?, '6.1', '混凝土条文')",
+            (spec_id,))
+        for cid in (101, 102):
+            batch_queue.try_enqueue(conn, cid, "dim6", 0.0)
+            conn.execute(
+                "UPDATE classification_queue SET batch_id='batch_t1', status='ai_processing' "
+                "WHERE clause_id=? AND dimension=?", (cid, "dim6"))
     results = [
         {"clause_id": 101, "confidence": 0.85, "label": "钢筋"},
         {"clause_id": 102, "confidence": 0.50, "label": "混凝土"},

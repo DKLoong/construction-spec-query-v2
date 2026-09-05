@@ -1,6 +1,7 @@
 import uuid
 from app.database import get_db
 from app.logging_util import log_action, json_detail
+from app.termdict import is_valid_label
 
 
 def try_enqueue(conn, clause_id: int, dimension: str, keyword_score: float) -> bool:
@@ -80,9 +81,20 @@ def get_pending_batch(dimension: str, force: bool = False) -> list[dict]:
 def apply_ai_results(batch_id: str, results: list[dict]):
     from app.params.registry import get_param_float
     conf_threshold = get_param_float("classify.ai_confidence_threshold")
+    auto_count = 0
     with get_db() as conn:
         for r in results:
-            status = "auto_adopted" if r["confidence"] >= conf_threshold else "review"
+            q_row = conn.execute(
+                "SELECT dimension FROM classification_queue WHERE clause_id = ? AND batch_id = ?",
+                (r["clause_id"], batch_id)).fetchone()
+            dim = q_row["dimension"] if q_row else ""
+            # 闸门②：即使置信达标，label ∉ 权威词典也降级 review（人工背书扩字典）
+            adopted = (r["confidence"] >= conf_threshold
+                       and bool(dim)
+                       and is_valid_label(dim, r["label"] or ""))
+            status = "auto_adopted" if adopted else "review"
+            if status == "auto_adopted":
+                auto_count += 1
             conn.execute(
                 """UPDATE classification_queue
                    SET ai_label = ?, ai_confidence = ?, status = ?
@@ -90,34 +102,24 @@ def apply_ai_results(batch_id: str, results: list[dict]):
                 (r["label"], r["confidence"], status, batch_id, r["clause_id"]),
             )
             if status == "auto_adopted":
-                q_row = conn.execute(
-                    "SELECT dimension FROM classification_queue WHERE clause_id = ? AND batch_id = ?",
-                    (r["clause_id"], batch_id),
+                col = _dim_to_column(dim)
+                conn.execute(
+                    f"UPDATE clauses SET {col} = ?, ai_classified = 1 WHERE id = ?",
+                    (r["label"], r["clause_id"]),
+                )
+                # 半监督闭环：auto_adopted 也沉淀规则（confirmed 不累加）
+                from app.classifier.feedback import extract_keywords
+                from app.classifier.rule_sink import bump_rule
+                content_row = conn.execute(
+                    "SELECT content FROM clauses WHERE id = ?", (r["clause_id"],)
                 ).fetchone()
-                if q_row:
-                    dim = q_row["dimension"]
-                    col = _dim_to_column(dim)
-                    conn.execute(
-                        f"UPDATE clauses SET {col} = ?, ai_classified = 1 WHERE id = ?",
-                        (r["label"], r["clause_id"]),
-                    )
-                    # 半监督闭环：auto_adopted 也沉淀规则（新规则直接启用；confirmed 不累加，
-                    # 避免 AI 未经人工确认虚增正确率）
-                    from app.classifier.feedback import extract_keywords
-                    from app.classifier.rule_sink import bump_rule
-                    content_row = conn.execute(
-                        "SELECT content FROM clauses WHERE id = ?", (r["clause_id"],)
-                    ).fetchone()
-                    if content_row:
-                        sub_field = _DIM_SUB_FIELD.get(dim, "")
-                        for kw in extract_keywords(content_row["content"] or "", top_n=3):
-                            # label=AI 采纳的分类标签：匹配词 kw 只负责命中，赋值写 label
-                            bump_rule(conn, dim, kw, sub_field,
-                                      is_confirmed=False, new_rule_active=True,
-                                      label=r["label"])
-
-    # 事务已提交，写一条本批汇总（log_action 自开连接，须在 commit 后调用）
-    auto_count = sum(1 for r in results if r["confidence"] >= conf_threshold)
+                if content_row:
+                    sub_field = _DIM_SUB_FIELD.get(dim, "")
+                    for kw in extract_keywords(content_row["content"] or "", top_n=3):
+                        # label=AI 采纳的分类标签：匹配词 kw 只负责命中，赋值写 label
+                        bump_rule(conn, dim, kw, sub_field,
+                                  is_confirmed=False, new_rule_active=True,
+                                  label=r["label"])
     log_action("classify", "INFO", "AI分类结果入库",
                detail=json_detail({"batch_id": batch_id, "total": len(results),
                                    "auto_adopted": auto_count,
