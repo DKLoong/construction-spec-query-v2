@@ -5,6 +5,7 @@ bump_rule 统一维护 classification_rules 的 hit_count/confirmed，并按「�
 自动启停/新规则阈值均从参数注册表读 DB 覆盖（rule_sink / rules_routes 报表共用同一来源）。
 """
 from app.params.registry import get_param_float, get_param_int
+from app.termdict import is_valid_label
 
 
 def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
@@ -58,6 +59,11 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
                     (row["id"],),
                 )
     else:
+        # 闸门③：label 非空但非权威 → 新规则强制停用（碎片不自动启用）；
+        # 人工确认路径(label 先入词典,Task6)不受影响。dim2/3/1 恒放行。
+        active = 1 if new_rule_active else 0
+        if label and not is_valid_label(dimension, label):
+            active = 0
         conn.execute(
             """INSERT INTO classification_rules
                (dimension, sub_field, pattern, match_type, priority, threshold,
@@ -67,6 +73,6 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
              new_threshold,
              1,  # 本次 bump 即该规则首次命中
              1 if is_confirmed else 0,  # 人工确认来源首次即记 confirmed
-             1 if new_rule_active else 0,
+             active,
              label),
         )

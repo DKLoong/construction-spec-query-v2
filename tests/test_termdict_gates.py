@@ -133,3 +133,42 @@ def test_rule_hit_valid_label_writes_column(monkeypatch, tmp_path):
         rule = conn.execute("SELECT confirmed FROM classification_rules LIMIT 1").fetchone()
     assert clause["dim4_specialty"] == "结构"
     assert rule["confirmed"] == 1
+
+
+# ═══════════════════════════════════════════
+# 闸门③：规则沉淀白名单（rule_sink.bump_rule 新建规则分支）
+# ═══════════════════════════════════════════
+
+def test_bump_invalid_label_new_rule_forced_inactive(monkeypatch, tmp_path):
+    # 修正 brief：须先入一条权威行使词典非空（空词典属 §5.1 放行过渡，另行覆盖），
+    # 'style' 才是真正的 ∉ 词典碎片 —— 与同文件闸门①/② invalid 用例同 fixture 口径。
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO term_labels (dimension,label,canonical,source) VALUES ('dim6','钢筋','钢筋','manual')")
+    invalidate_term_cache()
+    from app.classifier.rule_sink import bump_rule
+    with get_db() as conn:
+        bump_rule(conn, "dim6", "检验", "material",
+                  is_confirmed=False, new_rule_active=True, label="style")
+    with get_db() as conn:
+        r = conn.execute("SELECT is_active, confirmed, label FROM classification_rules").fetchone()
+    assert r["is_active"] == 0
+    assert r["label"] == "style"
+    assert r["confirmed"] == 0
+
+
+def test_bump_valid_label_respects_active_flag(monkeypatch, tmp_path):
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO term_labels (dimension,label,canonical,source) VALUES ('dim6','钢筋','钢筋','manual')")
+    from app.termdict import invalidate_term_cache
+    invalidate_term_cache()
+    from app.classifier.rule_sink import bump_rule
+    with get_db() as conn:
+        bump_rule(conn, "dim6", "接头", "material",
+                  is_confirmed=False, new_rule_active=True, label="钢筋")
+    with get_db() as conn:
+        r = conn.execute("SELECT is_active FROM classification_rules").fetchone()
+    assert r["is_active"] == 1
