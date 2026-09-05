@@ -269,6 +269,43 @@ def test_confirm_new_label_high_conf_active_with_nonempty_dict(monkeypatch, tmp_
     assert r["label"] == "混凝土"
 
 
+def test_confirm_word_owned_by_other_label_skips_upsert_logs_warn(monkeypatch, tmp_path):
+    """闸门④/I1：确认「词面已被同维其它 active label 占用」的新 label → 跳过入典、
+    写 WARN 日志、仍写 clauses 列并继续 bump（新规则经闸门③停用），不翻转词典放行模式。
+
+    若照常 upsert，会制造「钢丝」同维双归属（金属 + 钢丝）→ store 一致性校验翻转词典
+    「放行」模式、收口静默失效。修复后 term_labels 仍仅「金属」一行，无冲突。
+    """
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        # 词典：dim6 权威行 label='金属'，canonical='钢丝'（词面「钢丝」已被占用）
+        conn.execute(
+            "INSERT INTO term_labels (dimension,label,canonical,source)"
+            " VALUES ('dim6','金属','钢丝','manual')")
+        conn.execute("INSERT INTO specifications (code,title) VALUES ('GB1','规范')")
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id,clause_no,content)"
+            " VALUES (?, '1.1', '含 钢丝 的条文内容')", (sid,))
+        cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO classification_queue (clause_id,dimension,keyword_score,status)"
+            " VALUES (?, 'dim6', 0.2, 'review')", (cid,))
+    invalidate_term_cache()
+    from app.classifier.feedback import process_feedback
+    process_feedback(cid, "dim6", "钢丝", source_conf=0.95)  # 不得抛异常
+    with get_db() as conn:
+        labels = [r["label"] for r in conn.execute(
+            "SELECT label FROM term_labels WHERE dimension='dim6' ORDER BY id").fetchall()]
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        log = conn.execute(
+            "SELECT level, category, action FROM system_logs "
+            "WHERE category='review' AND level='WARN'").fetchone()
+    assert labels == ["金属"]            # 未新增 '钢丝' 权威行（未制造跨 label 冲突）
+    assert c["dim6_material"] == "钢丝"  # clauses 列照常写入
+    assert log is not None and log["action"] == "人工确认词面归属冲突，跳过入典"
+
+
 def test_confirm_sink_failure_logs_error_does_not_raise(monkeypatch, tmp_path):
     """闸门④兜底：事务② bump_rule 抛异常 → 不向调用方抛、写 ERROR 日志、入典与打标已落库。"""
     _db(monkeypatch, tmp_path)

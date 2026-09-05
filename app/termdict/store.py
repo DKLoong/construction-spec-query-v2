@@ -189,6 +189,29 @@ def upsert_term_label(conn, dimension: str, label: str, canonical: str = "",
     return cur.lastrowid
 
 
+def word_conflict_owner(conn, dimension: str, label: str,
+                        words: list[str]) -> tuple[str, str] | None:
+    """任一词已属于同维其它 active label → 返回 (word, owner_label)；否则 None。
+
+    与 _check_word_unique 同口径（active 空间、label != self），供人工确认写路径与
+    路由新建/编辑共用：词面归属冲突须在 upsert 前拦截，避免制造同维词面双归属而
+    翻转词典「放行」模式、使收口静默失效。
+    """
+    own: dict[str, str] = {}
+    rows = conn.execute(
+        "SELECT label, canonical, aliases FROM term_labels "
+        "WHERE dimension = ? AND is_active = 1 AND label != ?",
+        (dimension, label)).fetchall()
+    for r in rows:
+        for w in [r["canonical"],
+                  *[a for a in (r["aliases"] or "").split(",") if a.strip()]]:
+            own.setdefault(w, r["label"])
+    for w in words:
+        if w in own:
+            return (w, own[w])
+    return None
+
+
 def invalidate_term_cache() -> None:
     """清词典缓存（唯一失效出口）。词典与检索/词库缓存解耦，不联动清它们。"""
     global _cache, _cache_ts, _cache_path, _trusted, word_conflict

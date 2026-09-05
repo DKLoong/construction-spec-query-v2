@@ -38,11 +38,17 @@ def process_feedback(clause_id: int, dimension: str, confirmed_label: str,
     规则沉淀失败仅记 ERROR 日志、不重抛（人工打标已落库，失败仅影响后续自动命中）。
     """
     from app.termdict import upsert_term_label, invalidate_term_cache, DIMS
+    from app.termdict.store import word_conflict_owner
 
     # 事务①：先读条文内容（无则提前返回，不入典不 bump），再写列 + 确认标签入典。
     # 必须先行提交并失效缓存：闸门③ is_valid_label 走独立连接读 term_labels，只能看到
     # 已提交行；同事务内未提交的 upsert 对其不可见 → 非空词典下高置信新词会被误压为
     # is_active=0（Task5 评审 I1）。
+    # I1-Important：upsert 前先做跨 label 词面归属检查——确认「词面已被同维其它 active
+    # label 占用」的新 label 若照常 upsert，会制造同维词面双归属 → store 一致性校验翻转
+    # 词典「放行」模式、收口静默失效。故冲突时跳过入典，仅记 WARN（事务提交后再写日志，
+    # 避免在未提交事务内自开第二连接写 system_logs 卡写锁）。
+    conflict_owner = None
     with get_db() as conn:
         row = conn.execute("SELECT content FROM clauses WHERE id = ?", (clause_id,)).fetchone()
         if not row:
@@ -58,9 +64,22 @@ def process_feedback(clause_id: int, dimension: str, confirmed_label: str,
             (confirmed_label, clause_id),
         )
         if dimension in DIMS:
-            upsert_term_label(conn, dimension, confirmed_label,
-                              canonical=confirmed_label, source="review")
+            owner = word_conflict_owner(conn, dimension, confirmed_label,
+                                        [confirmed_label])
+            if owner:
+                conflict_owner = owner
+            else:
+                upsert_term_label(conn, dimension, confirmed_label,
+                                  canonical=confirmed_label, source="review")
     invalidate_term_cache()
+
+    if conflict_owner:
+        log_action("review", "WARN", "人工确认词面归属冲突，跳过入典",
+                   detail=json_detail({
+                       "clause_id": clause_id, "dimension": dimension,
+                       "label": confirmed_label, "word": conflict_owner[0],
+                       "owner_label": conflict_owner[1],
+                   }))
 
     # 事务②：提取关键词逐个沉淀规则（label 已入典提交，闸门③放行）。整体 try/except
     # 兜底：沉淀失败不重抛——人工打标已落库，规则丢失仅影响后续自动命中。log_action

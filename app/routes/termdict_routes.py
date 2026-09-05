@@ -22,20 +22,12 @@ SOURCE_TEXT = {"seed": "种子", "migrate": "迁移", "review": "人工确认", 
 
 
 def _owner_conflict(conn, dimension: str, label: str, words: list[str]):
-    """任一词已属于同维其它 active label → 返回 (word, owner_label)；否则 None。"""
-    own: dict[str, str] = {}
-    rows = conn.execute(
-        "SELECT label, canonical, aliases FROM term_labels "
-        "WHERE dimension = ? AND is_active = 1 AND label != ?",
-        (dimension, label)).fetchall()
-    for r in rows:
-        for w in [r["canonical"],
-                  *[a for a in (r["aliases"] or "").split(",") if a.strip()]]:
-            own.setdefault(w, r["label"])
-    for w in words:
-        if w in own:
-            return (w, own[w])
-    return None
+    """任一词已属于同维其它 active label → 返回 (word, owner_label)；否则 None。
+
+    复用 store.word_conflict_owner（active 空间、label != self），与人工确认写路径
+    （feedback.process_feedback）归属判定同一实现，避免两处口径漂移。
+    """
+    return termdict_store.word_conflict_owner(conn, dimension, label, words)
 
 
 @router.get("/termdict")
@@ -78,8 +70,12 @@ async def termdict_create(request: Request, dimension: str = Form("dim6"),
                 f'<p style="color:red">❌ 词面「{owner[0]}」已属于同维度权威标签「{owner[1]}」，请勿重复归属</p>',
                 status_code=400)
         exists = conn.execute(
-            "SELECT 1 FROM term_labels WHERE dimension = ? AND label = ?",
+            "SELECT is_active FROM term_labels WHERE dimension = ? AND label = ?",
             (data["dimension"], data["label"])).fetchone()
+        if exists and not exists["is_active"]:
+            return HTMLResponse(
+                '<p style="color:red">❌ 该权威标签已停用，请先启用后再补充词面</p>',
+                status_code=400)
         upsert_term_label(conn, data["dimension"], data["label"],
                           canonical=data["canonical"], aliases=data["aliases"],
                           source="manual", note=data["note"])

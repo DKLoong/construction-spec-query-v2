@@ -35,6 +35,18 @@ def test_create_existing_label_merges_word(auth_client):
     assert n == 1 and "悬索" in a
 
 
+def test_create_inactive_label_returns_hint_not_merged(auth_client):
+    with get_db() as conn:
+        _pre(conn)
+        conn.execute("UPDATE term_labels SET is_active = 0 WHERE label='钢索'")
+    resp = auth_client.post("/termdict/create", data={
+        "dimension": "dim6", "label": "钢索", "canonical": "悬索", "aliases": "", "note": ""})
+    assert resp.status_code == 400 and "已停用" in resp.text
+    with get_db() as conn:
+        r = conn.execute("SELECT is_active, aliases FROM term_labels WHERE label='钢索'").fetchone()
+    assert r["is_active"] == 0 and "悬索" not in (r["aliases"] or "")
+
+
 def test_create_word_owned_by_other_label_rejected(auth_client):
     with get_db() as conn:
         _pre(conn)                       # 钢索 已归属 dim6「钢索」
