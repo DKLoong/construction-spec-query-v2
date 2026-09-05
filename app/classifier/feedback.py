@@ -31,7 +31,14 @@ def process_feedback(clause_id: int, dimension: str, confirmed_label: str,
     """人工确认反馈：写回分类后，对提取关键词逐个沉淀规则（复用 rule_sink.bump_rule）。
 
     source_conf 为 AI 置信度；≥ RULE_AUTO_ENABLE_CONF 时新规则初始启用。
+    闸门④：确认标签（含词典外新词）先 upsert 入典（source=review）并提交、失效缓存，
+    再 bump 规则——此刻 label ∈ 词典被闸门③放行（非空词典下高置信新词不误压）。
     """
+    from app.termdict import upsert_term_label, invalidate_term_cache, DIMS
+
+    # 事务①：写列 + 确认标签入典。必须先行提交并失效缓存：闸门③ is_valid_label 走
+    # 独立连接读 term_labels，只能看到已提交行；同事务内未提交的 upsert 对其不可见 →
+    # 非空词典下高置信新词会被误压为 is_active=0（Task5 评审 I1）。
     with get_db() as conn:
         conn.execute(
             "UPDATE classification_queue SET status = 'done' WHERE clause_id = ? AND dimension = ?",
@@ -42,6 +49,13 @@ def process_feedback(clause_id: int, dimension: str, confirmed_label: str,
             f"UPDATE clauses SET {col} = ?, ai_classified = 1, needs_review = 0 WHERE id = ?",
             (confirmed_label, clause_id),
         )
+        if dimension in DIMS:
+            upsert_term_label(conn, dimension, confirmed_label,
+                              canonical=confirmed_label, source="review")
+    invalidate_term_cache()
+
+    # 事务②：提取关键词逐个沉淀规则（label 已入典提交，闸门③放行）
+    with get_db() as conn:
         row = conn.execute("SELECT content FROM clauses WHERE id = ?", (clause_id,)).fetchone()
         if not row:
             return

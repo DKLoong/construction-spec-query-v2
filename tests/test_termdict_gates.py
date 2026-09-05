@@ -172,3 +172,98 @@ def test_bump_valid_label_respects_active_flag(monkeypatch, tmp_path):
     with get_db() as conn:
         r = conn.execute("SELECT is_active FROM classification_rules").fetchone()
     assert r["is_active"] == 1
+
+
+# ═══════════════════════════════════════════
+# 闸门④：人工确认双写入典（feedback.process_feedback）
+# ═══════════════════════════════════════════
+
+def test_confirm_new_label_upserts_term_and_sinks_rule(monkeypatch, tmp_path):
+    """词典外新词确认 → 先 upsert 入典(source=review)再沉淀规则（空词典放行路径）。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code,title) VALUES ('GB1','规范')")
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id,clause_no,content) VALUES (?, '1.1', '含 钢筋 的条文内容')",
+            (sid,))
+        cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO classification_queue (clause_id,dimension,keyword_score,status)"
+            " VALUES (?, 'dim6', 0.2, 'review')", (cid,))
+    from app.classifier.feedback import process_feedback
+    process_feedback(cid, "dim6", "钢筋", source_conf=0.95)
+    with get_db() as conn:
+        t = conn.execute("SELECT label, canonical, source FROM term_labels").fetchone()
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        r = conn.execute(
+            "SELECT is_active, confirmed, label FROM classification_rules "
+            "WHERE pattern='钢筋'").fetchone()
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+    assert (t["label"], t["canonical"], t["source"]) == ("钢筋", "钢筋", "review")
+    assert c["dim6_material"] == "钢筋"
+    assert q["status"] == "done"
+    assert r["is_active"] == 1       # conf≥0.9 → 新规则启用
+    assert r["confirmed"] == 1
+    assert r["label"] == "钢筋"
+
+
+def test_confirm_existing_term_keeps_single_row(monkeypatch, tmp_path):
+    """词典已存在同 label 行 → upsert 合并词面，不产生重复行。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO term_labels (dimension,label,canonical,source)"
+            " VALUES ('dim6','钢筋','螺纹钢','manual')")
+        conn.execute("INSERT INTO specifications (code,title) VALUES ('GB1','规范')")
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("INSERT INTO clauses (spec_id,clause_no,content) VALUES (?, '1.1', '钢筋 接头')", (sid,))
+        cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO classification_queue (clause_id,dimension,keyword_score,status)"
+            " VALUES (?, 'dim6', 0.2, 'review')", (cid,))
+    invalidate_term_cache()
+    from app.classifier.feedback import process_feedback
+    process_feedback(cid, "dim6", "钢筋", source_conf=0.95)
+    with get_db() as conn:
+        n = conn.execute("SELECT COUNT(*) n FROM term_labels WHERE dimension='dim6' AND label='钢筋'").fetchone()["n"]
+    assert n == 1
+
+
+def test_confirm_new_label_high_conf_active_with_nonempty_dict(monkeypatch, tmp_path):
+    """闸门④/I1：非空词典下人工确认高置信新词 → upsert 先入典 → 闸门③不误压 → is_active=1。
+
+    与 test_confirm_new_label_upserts_term_and_sinks_rule 的区别：词典非空（先有 dim6 权威行
+    '钢筋'，不含待确认新词 '混凝土'）。若 upsert 未在 bump 前提交，闸门③的 is_valid_label
+    走独立连接读不到未提交行 → '混凝土' ∉ 词典 → 误压 is_active=0。
+    """
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        # 非空词典：已有 dim6 权威行，但不含待确认的新词 '混凝土'
+        conn.execute(
+            "INSERT INTO term_labels (dimension,label,canonical,source)"
+            " VALUES ('dim6','钢筋','钢筋','manual')")
+        conn.execute("INSERT INTO specifications (code,title) VALUES ('GB1','规范')")
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id,clause_no,content) VALUES (?, '1.1', '含 混凝土 的条文内容')",
+            (sid,))
+        cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO classification_queue (clause_id,dimension,keyword_score,status)"
+            " VALUES (?, 'dim6', 0.2, 'review')", (cid,))
+    invalidate_term_cache()
+    from app.classifier.feedback import process_feedback
+    process_feedback(cid, "dim6", "混凝土", source_conf=0.95)
+    with get_db() as conn:
+        t = conn.execute(
+            "SELECT label, canonical, source FROM term_labels "
+            "WHERE dimension='dim6' AND label='混凝土'").fetchone()
+        r = conn.execute(
+            "SELECT is_active, confirmed, label FROM classification_rules "
+            "WHERE pattern='混凝土'").fetchone()
+    assert t is not None and (t["label"], t["canonical"], t["source"]) == ("混凝土", "混凝土", "review")
+    assert r is not None
+    assert r["is_active"] == 1       # upsert 先入典使闸门③放行，高置信新规则不误压
+    assert r["confirmed"] == 1
+    assert r["label"] == "混凝土"
