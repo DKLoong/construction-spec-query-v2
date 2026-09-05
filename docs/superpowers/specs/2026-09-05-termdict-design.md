@@ -82,7 +82,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_term_labels_dim_label ON term_labels(dimen
 - **label 是行键**：一行 = 一个权威标签 + 它的代表词面（canonical）与可选同义词面（aliases）。白名单 = `SELECT DISTINCT label FROM term_labels WHERE dimension=? AND is_active=1`。
 - **一个 `(dim, label)` 只有一个 canonical**：若人工确认新词时 canonical 词面已存在于同一 `(dim, label)` 的 aliases（或反之），**归入 aliases 合并而非另起行**；只有当 `(dim, label)` 不存在才新增行。语义统一仿词库「组唯一是应用层约束」。
 - **跨维度同词允许**：`钢筋` 可同时在 dim4→结构、dim6→钢筋 两条（各自是不同 label 的 canonical/alias），一致性校验只在维度内比较。
-- **word 面子串防护**：同维度内不同 label 的 canonical/aliases 不得互为子串（防 keyword 匹配自误报，仿词库 validation 已有规则）。不同 label 共享词面但非子串（如 `混凝土` 与 `钢筋混凝土`）允许。
+- **跨 label 子串词面允许**：同维不同 label 的 canonical/aliases 互为子串时**不拒绝**（如 `混凝土` 与 `钢筋混凝土` 同维并存是合理的材料层级，keyword 匹配由最高分规则胜出，非歧义）。子串拒收**仅限本行内** canonical 与 aliases 互为子串（防自命中干扰，仿词库 validation 已有规则）。跨行唯一性约束只守「同维词面 → 恰一个 label」。
 
 ### 与 lexicon 的边界
 
