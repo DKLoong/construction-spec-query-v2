@@ -23,4 +23,18 @@
 - **Context**：2026-09-04 会话决策：与词库检索/问答增强是**两套数据与消费链**（数据模型 term↔标签多对多、消费方是 classification_rules / AI classify，与 lexicon 异源），故不并入词库 spec，另开 brainstorm → spec → 计划。词库的 canonical 可作其词源来源，注意复用而非重建。
 - **入口候选**：先调研现有 rule feedback loop（`extract_keywords` 从 QA/条文提词→规则）与 AI classify prompt 的标签清单，据此设计 term 与维度标签的粒度。
 - **Blocked by**：无硬依赖；建议在词库子系统实施完成后排期（避免两条大链并行）。
+- **Status（2026-09-05）**：✅ 已完成 → termdict 落地（spec/plan `docs/superpowers/2026-09-05-termdict*`；11 commits `2b24aaf..b95447a`，679 passed）。收口（标签白名单 + 四处闸门 + 迁移打底）见 T4 遗留 minors。
+
+## T4 — termdict 收口遗留 minors（deferred，2026-09-05 整仓评审后登记）
+
+> 来源：termdict SDD 各 Task 评审 defer 项汇总。全部「可 defer」，无 merge 阻塞；择机一次 fix wave 处理。
+
+- **What / 触发清单**：
+  1. 测试脆弱：`tests/test_termdict_gates.py` 闸门①「有效 label 落列」用例规则得分恰落 dim4 AI 阈值边界（config `ADAPTIVE_THRESHOLDS["dim4"]=0.6`；上调即翻车）——触发 = 改该阈值时；修 = 测试规则 threshold 调低或条文得分拉高离开边界。
+  2. 编辑保存双触发：`termdict_edit_row.html` 保存走「服务端 HX-Trigger + form hx-on::after-request 手动 dispatch」双路 → 每次保存两次 `GET /termdict/list`（幂等冗余）。
+  3. 测试覆盖缺口：routes「编辑改词面跨 label 拒绝」无用例、400 未断言 DB 未落行、无 HX-Trigger 头断言；`collect_label_candidates`「词典不可用→现值兜底」未直达（store 层已覆盖冲突态）；`test_termdict_migrate.py` 未断言 `source=='migrate'`。
+  4. 小代码债：`store.py` `_is_trusted(rows)` 死 helper、`_row_from` canonical 未 strip（写入侧已 strip 无脏数据）、宽捕获可 `logger.exception`；`migrate_term_dict.py` `skipped_conflict` 死计数（单线程恒 0）+ except 只 print 丢堆栈；`upsert_term_label` 无直接单测（Task6/9 间接覆盖）；`termdict_routes.SOURCE_TEXT` 死值 `seed`（无产出路径）；`valid_labels()` 无生产消费方（Task7 改用 load_active_entries）。
+  5. `tests/test_logs.py`「无 queue 行→review」收紧点无直接回归用例（test_logs 已适配，可补一条队列外 result 的显式断言）。
+- **Why**：评审时多数属过设计防御/死码/文案，逐项修性价比低，故 defer；2/3 项影响维护者心智与回归健壮性。
+- **Context**：spec `2026-09-05-termdict-design.md` §五/§十二；各 Task review 文件已随 SDD workspace 清理，本条目为唯一留存出处。
 
