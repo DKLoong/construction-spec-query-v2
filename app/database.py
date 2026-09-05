@@ -128,6 +128,23 @@ CREATE TABLE IF NOT EXISTS lexicon_entries (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lexicon_kind_canonical_variants
     ON lexicon_entries(kind, canonical, variants);
+
+CREATE TABLE IF NOT EXISTS term_labels (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    dimension  TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    canonical  TEXT NOT NULL,
+    aliases    TEXT NOT NULL DEFAULT '',
+    source     TEXT NOT NULL DEFAULT 'manual',
+    note       TEXT NOT NULL DEFAULT '',
+    is_active  INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+-- 权威行键 = (dimension, label)：label 是该维度的合法目标值。
+-- 词面唯一(同维→恰一 label)由应用层一致性校验（store._check_word_unique），不落 DB 约束。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_term_labels_dim_label
+    ON term_labels(dimension, label);
 """
 
 TRIGGERS_SQL = """
