@@ -1,0 +1,32 @@
+{% if conflict %}
+<div style="margin:0.5rem 0;padding:0.4rem 0.6rem;border-radius:4px;background:#fdecea;color:#b3261e;font-size:0.8rem">
+    ⚠️ 词面冲突：{{ dim_labels.get(conflict[0], conflict[0]) }} 维度中「<b>{{ conflict[1] }}</b>」被多个权威标签引用，词典暂不可用（规则/AI 命中将放行）。请修正词面归属后刷新。
+</div>
+{% endif %}
+<table>
+    <thead>
+        <tr><th>权威标签</th><th>代表词</th><th>同义词面</th>
+            <th style="text-align:center">来源</th><th>备注</th>
+            <th style="text-align:center">启用</th><th style="text-align:left">操作</th></tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+        <tr id="tr-{{ r.id }}" style="vertical-align:middle">
+            <td><b>{{ r.label }}</b></td><td>{{ r.canonical }}</td><td>{{ r.aliases }}</td>
+            <td style="text-align:center">{{ source_text.get(r.source, r.source) }}</td>
+            <td>{{ r.note }}</td>
+            <td style="text-align:center">{{ '✅' if r.is_active else '⛔' }}</td>
+            <td style="text-align:left;white-space:nowrap">
+                <button class="outline" style="height:30px;min-width:0;width:auto;padding:0 0.5rem;margin:0 0.2rem 0 0;font-size:0.78rem"
+                        hx-get="/termdict/{{ r.id }}/edit" hx-target="closest tr" hx-swap="outerHTML">编辑</button>
+                <button class="outline" style="height:30px;min-width:0;width:auto;padding:0 0.5rem;margin:0 0.2rem 0 0;font-size:0.78rem"
+                        hx-post="/termdict/{{ r.id }}/toggle">{{ '禁用' if r.is_active else '启用' }}</button>
+                <button class="outline" style="height:30px;min-width:0;width:auto;padding:0 0.5rem;margin:0;font-size:0.78rem;color:#b3261e"
+                        hx-delete="/termdict/{{ r.id }}">删除</button>
+            </td>
+        </tr>
+    {% else %}
+        <tr><td colspan="7" style="text-align:center;color:var(--pico-muted-color)">该维度暂无权威标签——先在顶部新增，或对审核项执行「确认」自动入典（来源=人工确认）</td></tr>
+    {% endfor %}
+    </tbody>
+</table>

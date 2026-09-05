@@ -4,7 +4,7 @@
 详见 docs/superpowers/specs/2026-09-05-termdict-design.md。
 """
 from app.termdict.store import (  # noqa: F401
-    DIMS, TermRow, word_conflict,
+    DIMS, TermRow,
     is_valid_label, valid_labels, load_active_entries,
     upsert_term_label, invalidate_term_cache,
 )

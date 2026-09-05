@@ -150,6 +150,9 @@ app.include_router(settings_router)
 from app.routes.lexicon_routes import router as lexicon_router
 app.include_router(lexicon_router)
 
+from app.routes.termdict_routes import router as termdict_router
+app.include_router(termdict_router)
+
 from app.routes.maintenance_routes import router as maintenance_router
 app.include_router(maintenance_router)
 
