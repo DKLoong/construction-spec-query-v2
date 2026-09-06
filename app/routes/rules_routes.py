@@ -4,6 +4,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from app.database import get_db
 from app.models import ClassificationRuleCreate
 from app.logging_util import log_action, json_detail
+from app.classifier import rule_pending
 
 router = APIRouter()
 
@@ -405,6 +406,116 @@ async def batch_reject(request: Request, body: dict):
                detail=json_detail({"count": processed}),
                username=getattr(request.state, "username", ""))
     return await review_list(request)
+
+
+# ═══════════════════════════════════════════
+# 词面校核（Tab2） & 黑名单管理（Tab3）
+# ═══════════════════════════════════════════
+
+# 维度 → 规则子字段（人工批准写回 confirmed 规则时填充 sub_field，与 rule_sink 语义一致）
+_DIM_SUB_FIELD = {"dim4": "specialty", "dim5": "location", "dim6": "material"}
+
+
+@router.get("/review/word-pending")
+async def review_word_pending(request: Request, dimension: str = ""):
+    """词面校核聚合（Tab2 数据源，供 Task5 UI 接）"""
+    from app.main import templates
+    groups = rule_pending.pending_groups(dimension or None)
+    return templates.TemplateResponse(request, "partials/review_word_panel.html", {
+        "groups": groups, "dimension": dimension, "dim_labels": dim_labels})
+
+
+@router.post("/review/word-pending/decide")
+async def review_word_decide(request: Request, body: dict):
+    """词面校核反义批量裁决（键级，修订 F1/F2/F4）。
+
+    approve → 勾选键先回填（写列+queue review→done）再置 approved，并 bump confirmed 规则；
+    reject  → 勾选键置 rejected（不写列、queue 滞留）；同组未勾键转 approved 同样回填+bump
+              （F2：任一动作后最终 approved 键都回填）。
+    """
+    from fastapi.responses import JSONResponse as _JR
+    from app.classifier.rule_sink import bump_rule
+
+    ids = body.get("ids") or []
+    action = body.get("action")
+    if action not in ("approve", "reject") or not isinstance(ids, list) or not ids:
+        return _JR({"detail": "ids/action 不合法"}, status_code=400)
+
+    with get_db() as conn:
+        ph = ','.join('?' * len(ids))
+        key_rows = conn.execute(
+            f"SELECT DISTINCT dimension, pattern, label FROM rule_pending WHERE id IN ({ph})",
+            ids).fetchall()
+        selected_keys = {(r["dimension"], r["pattern"], r["label"]) for r in key_rows}
+        groups = {(d, p) for d, p, _ in selected_keys}
+
+        # 组内全部 pending 键（decide_scope 反义分配的作用域）
+        pending_keys: set = set()
+        for d, p in groups:
+            for r in conn.execute(
+                "SELECT DISTINCT label FROM rule_pending "
+                "WHERE dimension=? AND pattern=? AND status='pending'",
+                (d, p)).fetchall():
+                pending_keys.add((d, p, r["label"]))
+
+        # 最终转 approved 的键（approve→勾选 pending 键；reject→未勾选 pending 键）
+        approved_keys = (pending_keys & selected_keys) if action == "approve" \
+            else (pending_keys - selected_keys)
+
+        # 先回填（此时键仍 pending，backfill_and_close 按 status='pending' 取来源条文）
+        for d, p, l in sorted(approved_keys):
+            rule_pending.backfill_and_close(conn, d, p, l)
+        stats = rule_pending.decide_scope(conn, ids, action, expand=True)
+        # F4：人工批准写回 confirmed 规则（幂等：已有规则仅 hit/confirmed 递增）
+        for d, p, l in sorted(approved_keys):
+            bump_rule(conn, d, p, _DIM_SUB_FIELD.get(d, ""),
+                      is_confirmed=True, new_rule_active=True, label=l)
+
+    log_action("review", "INFO", f"词面{'批准' if action == 'approve' else '驳回'}",
+               detail=json_detail({"ids": ids, **stats}),
+               username=getattr(request.state, "username", ""))
+    return HTMLResponse("", headers={"HX-Trigger": "reviewWordPending, reviewBlacklist"})
+
+
+@router.get("/review/blacklist")
+async def review_blacklist(request: Request):
+    """黑名单管理（Tab3 数据源，供 Task5 UI 接）"""
+    from app.main import templates
+    rows = rule_pending.blacklist_rows()
+    return templates.TemplateResponse(request, "partials/review_blacklist.html",
+                                      {"rows": rows, "dim_labels": dim_labels})
+
+
+@router.post("/review/blacklist/{pid}/restore")
+async def review_blacklist_restore(request: Request, pid: int):
+    """黑名单档1：该 rejected 键全部行 → pending（恢复待审）"""
+    with get_db() as conn:
+        ids = rule_pending._key_all_pending_ids(conn, pid, "rejected")
+        n = rule_pending.set_status(conn, ids, "pending") if ids else 0
+    log_action("review", "INFO", "黑名单恢复待审",
+               detail=json_detail({"pid": pid, "ids": ids, "n": n}),
+               username=getattr(request.state, "username", ""))
+    return HTMLResponse("", headers={"HX-Trigger": "reviewWordPending, reviewBlacklist"})
+
+
+@router.post("/review/blacklist/{pid}/approve")
+async def review_blacklist_approve(request: Request, pid: int):
+    """黑名单档2：该 rejected 键来源条文回填（写列+queue done）后置 approved，并 bump confirmed"""
+    from app.classifier.rule_sink import bump_rule
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT dimension, pattern, label FROM rule_pending WHERE id=?", (pid,)).fetchone()
+        n = 0
+        if row:
+            rule_pending.backfill_rejected_clauses(conn, row["dimension"], row["pattern"], row["label"])
+            ids = rule_pending._key_all_pending_ids(conn, pid, "rejected")
+            n = rule_pending.set_status(conn, ids, "approved") if ids else 0
+            bump_rule(conn, row["dimension"], row["pattern"], _DIM_SUB_FIELD.get(row["dimension"], ""),
+                      is_confirmed=True, new_rule_active=True, label=row["label"])
+    log_action("review", "INFO", "黑名单批准",
+               detail=json_detail({"pid": pid, "n": n}),
+               username=getattr(request.state, "username", ""))
+    return HTMLResponse("", headers={"HX-Trigger": "reviewWordPending, reviewBlacklist"})
 
 
 # ═══════════════════════════════════════════
