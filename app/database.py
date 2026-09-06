@@ -128,6 +128,26 @@ CREATE TABLE IF NOT EXISTS lexicon_entries (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lexicon_kind_canonical_variants
     ON lexicon_entries(kind, canonical, variants);
+
+CREATE TABLE IF NOT EXISTS rule_pending (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    dimension     TEXT NOT NULL,
+    pattern       TEXT NOT NULL,
+    label         TEXT NOT NULL,
+    clause_id     INTEGER NOT NULL,
+    ai_confidence REAL,
+    batch_id      TEXT,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    created_at    TEXT DEFAULT (datetime('now','localtime')),
+    updated_at    TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_rule_pending_key
+    ON rule_pending(dimension, pattern, label, status);
+CREATE INDEX IF NOT EXISTS idx_rule_pending_status ON rule_pending(status);
+-- 裁决单元 = (dimension, pattern, label, clause_id) 四元组：同 (词,标签,条文) 只一行，
+-- 幂等插入由 UNIQUE 兜底（并发下捕获 IntegrityError，不依赖 SELECT+INSERT 防并发）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_pending_uniq
+    ON rule_pending(dimension, pattern, label, clause_id);
 """
 
 TRIGGERS_SQL = """
