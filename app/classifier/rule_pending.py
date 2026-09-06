@@ -1,11 +1,11 @@
 """AI 沉淀规则「首审 + 黑名单」核心层。
 
 裁决单元 = (clause_id, dimension, pattern, label) 四元组（rule_pending 一行）。
-免审键 = (dimension, pattern, label)：
-  approved  = rule_pending.status='approved'（pending 侧裁决优先）
+免审键 = (dimension, pattern, label)（优先级 rejected > approved，rejected 为最新人工决定）：
+  rejected  = 同键任一 rule_pending 行 status='rejected'（黑名单，覆盖规则侧与 approved）
+  approved  = 同键任一 rule_pending 行 status='approved'
              或 分类规则同 (dimension, pattern) 满足 confirmed>0 且 is_active=1
              且 (label IS NULL OR label=?)（规则侧背书；历史 NULL label 也算）
-  rejected  = rule_pending.status='rejected'（黑名单，覆盖规则侧）
   其余      = 首次 → 待人工。
 
 写路径（裁决/确认/驳回/恢复）必须经本模块函数，禁止散落 SQL。
@@ -31,21 +31,23 @@ def _dim_column(dim: str) -> str:
 
 
 def key_state(conn, dimension: str, pattern: str, label: str) -> str:
-    """组合免审状态：pending 侧 approved > pending 侧 rejected > 规则侧 approved > none。
+    """组合免审状态：pending 侧 rejected > pending 侧 approved > 规则侧 approved > none。
 
+    rejected 为最新人工决定（黑名单）：同键任一 rejected 行即 rejected（可经黑名单
+    restore/approve 恢复待审/批准）；否则任一 approved 行即 approved。
     规则侧 approved（F3/F8）：同 (dimension, pattern)、confirmed>0、is_active=1、
     且 (label IS NULL OR label=?) 即背书——被自动停用的历史确认规则不算背书。
     """
     if conn.execute(
         "SELECT 1 FROM rule_pending WHERE dimension=? AND pattern=? AND label=? "
-        "AND status='approved' LIMIT 1",
-        (dimension, pattern, label)).fetchone():
-        return "approved"
-    if conn.execute(
-        "SELECT 1 FROM rule_pending WHERE dimension=? AND pattern=? AND label=? "
         "AND status='rejected' LIMIT 1",
         (dimension, pattern, label)).fetchone():
         return "rejected"
+    if conn.execute(
+        "SELECT 1 FROM rule_pending WHERE dimension=? AND pattern=? AND label=? "
+        "AND status='approved' LIMIT 1",
+        (dimension, pattern, label)).fetchone():
+        return "approved"
     if conn.execute(
         "SELECT 1 FROM classification_rules WHERE dimension=? AND pattern=? "
         "AND confirmed > 0 AND is_active = 1 AND (label IS NULL OR label = ?) LIMIT 1",

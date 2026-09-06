@@ -72,6 +72,40 @@ def test_key_state_rejected_priority_over_rule(monkeypatch, tmp_path):
         assert rp.key_state(conn, "dim6", "试验", "钢筋") == "rejected"
 
 
+def test_key_state_rejected_over_approved_mixed(monkeypatch, tmp_path):
+    """同键跨条文混态：一行 approved + 一行 rejected → rejected（驳回为最新人工决定）。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        c1 = _seed_clause(conn, "GB1")
+        c2 = _seed_clause(conn, "GB2")
+        rp.insert_pending(conn, c1, "dim6", "钢筋", "钢筋", 0.9, "b1")
+        rp.insert_pending(conn, c2, "dim6", "钢筋", "钢筋", 0.8, "b2")
+        ids = rp.pending_ids(conn, "dim6", "钢筋", "钢筋")
+        rp.set_status(conn, [ids[0]], "approved")
+        rp.set_status(conn, [ids[1]], "rejected")
+        assert rp.key_state(conn, "dim6", "钢筋", "钢筋") == "rejected"
+
+
+def test_key_state_approved_only(monkeypatch, tmp_path):
+    """同键仅 approved 行 → approved。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        cid = _seed_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "b1")
+        rp.set_status(conn, rp.pending_ids(conn, "dim6", "钢筋", "钢筋"), "approved")
+        assert rp.key_state(conn, "dim6", "钢筋", "钢筋") == "approved"
+
+
+def test_key_state_rejected_only(monkeypatch, tmp_path):
+    """同键仅 rejected 行 → rejected。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        cid = _seed_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "b1")
+        rp.set_status(conn, rp.pending_ids(conn, "dim6", "钢筋", "钢筋"), "rejected")
+        assert rp.key_state(conn, "dim6", "钢筋", "钢筋") == "rejected"
+
+
 # ── insert_pending 幂等 + UNIQUE ───────────────────────────────
 
 def test_insert_pending_idempotent(monkeypatch, tmp_path):

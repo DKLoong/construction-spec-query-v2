@@ -585,6 +585,10 @@ async def review_clause_decide(request: Request, clause_id: int, body: dict):
             return _JR({"detail": "勾选须同维度"}, status_code=400)
         dimension = next(iter(dims))
         scope = rule_pending.clause_pending_ids(conn, clause_id, dimension)
+        # 一致性校验：提交 ids 须全部属于该条文该维 pending 作用域（防跨条文 id 使
+        # checked 空 → approve 误全驳 / reject 误全批）
+        if not set(ids) <= set(scope):
+            return _JR({"detail": "勾选 id 不属于该条文待审作用域"}, status_code=400)
         checked = set(ids) & set(scope)
         if action == "approve":
             approved_ids = sorted(checked)
@@ -668,7 +672,7 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
             if new_label and str(new_label).strip():
                 col = _DIM_COLUMN[dimension]
                 conn.execute(
-                    f"UPDATE clauses SET {col}=?, ai_classified=1 WHERE id=?",
+                    f"UPDATE clauses SET {col}=?, ai_classified=1, needs_review=0 WHERE id=?",
                     (str(new_label).strip(), clause_id))
                 conn.execute(
                     "UPDATE classification_queue SET status='done' "
