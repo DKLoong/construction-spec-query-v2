@@ -1,7 +1,6 @@
 from app.ai.classifier_ai import process_pending_batches
 from app.database import init_db, get_db
 from app.classifier.batch_queue import add_to_queue
-from app.termdict import invalidate_term_cache
 
 
 def setup_data(conn):
@@ -55,13 +54,12 @@ def test_process_pending_batches_passes_candidate_labels(monkeypatch, tmp_path):
     init_db()
     with get_db() as conn:
         setup_data(conn)
-        # 候选主源=权威词典：seed active 权威 label 供 process_pending_batches 收集
         conn.execute(
-            "INSERT INTO term_labels (dimension,label,canonical,source) "
-            "VALUES ('dim6','钢筋','钢筋','manual')"
+            """INSERT INTO classification_rules
+               (dimension, sub_field, pattern, match_type, priority, threshold, is_active)
+               VALUES ('dim6', 'material', '钢筋', 'keyword', 1, 0.6, 1)"""
         )
         clause_ids = [r["id"] for r in conn.execute("SELECT id FROM clauses LIMIT 20")]
-    invalidate_term_cache()
     for cid in clause_ids:
         add_to_queue(cid, "dim6", 0.35)
 

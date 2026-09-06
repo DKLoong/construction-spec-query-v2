@@ -3,7 +3,6 @@ from app.classifier.batch_queue import (
 )
 from app.classifier.feedback import extract_keywords, process_feedback
 from app.database import init_db, get_db
-from app.termdict import invalidate_term_cache
 
 
 def setup_sample_data(conn):
@@ -63,38 +62,32 @@ def test_get_pending_batch_includes_spec_context(monkeypatch, tmp_path):
     assert first.get("spec_title") == "测试规范"
 
 
-def test_collect_label_candidates_dict_priority_over_legacy_values(monkeypatch, tmp_path):
-    """标签候选 = 权威词典展开（label→canonical→aliases）；词典非空不并入规则 pattern/旧值"""
+def test_collect_label_candidates_merges_rules_and_values(monkeypatch, tmp_path):
+    """标签候选 = 规则 pattern ∪ 库内已有维度值，去重保序"""
     db_path = tmp_path / "test.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
     init_db()
     with get_db() as conn:
         setup_sample_data(conn)
-        # 词典权威行（dim6 材料）
+        # 插入两条 dim6 规则
         conn.executemany(
-            """INSERT INTO term_labels (dimension,label,canonical,aliases,source)
-               VALUES (?, ?, ?, ?, 'manual')""",
-            [
-                ("dim6", "钢筋", "钢筋", "螺纹钢筋"),
-                ("dim6", "混凝土", "混凝土", ""),
-            ],
-        )
-        # 规则 pattern 与条文历史旧值（碎片来源）不应混入候选
-        conn.execute(
             """INSERT INTO classification_rules
                (dimension, sub_field, pattern, match_type, priority, threshold, is_active)
-               VALUES ('dim6', 'material', '砌体', 'keyword', 1, 0.6, 1)"""
+               VALUES (?, ?, ?, 'keyword', ?, ?, 1)""",
+            [
+                ("dim6", "material", "钢筋", 2, 0.6),
+                ("dim6", "material", "混凝土", 1, 0.6),
+            ],
         )
+        # 已有条文维度值（含逗号分隔多标签）
         conn.execute(
-            "UPDATE clauses SET dim6_material = '砌体' WHERE id = "
+            "UPDATE clauses SET dim6_material = '钢筋,砌体' WHERE id = "
             "(SELECT id FROM clauses LIMIT 1)"
         )
-    invalidate_term_cache()
     labels = collect_label_candidates("dim6")
-    assert labels[0] == "钢筋"  # 词典 label 必在且优先
+    assert labels[0] == "钢筋"  # 规则 priority 高者在前
     assert "混凝土" in labels
-    assert "螺纹钢筋" in labels  # canonical/aliases 词面供 AI 匹配条文
-    assert "砌体" not in labels  # 词典非空 → 规则 pattern/历史值不进入候选
+    assert "砌体" in labels  # 库内值补充
     assert len(labels) == len(set(labels))  # 去重
 
 

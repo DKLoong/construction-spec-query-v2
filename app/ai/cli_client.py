@@ -51,7 +51,7 @@ def build_classify_prompt(clauses: list[dict], dimension: str,
         clauses: 待分类批次（get_pending_batch 返回，含 clause_id/content，
                  可选 spec_code/spec_title/clause_no）
         dimension: dim4 / dim5 / dim6
-        candidate_labels: 权威词典展开（label/canonical/词面），词典空回退库内已有值
+        candidate_labels: 该维度已有标签（规则 pattern + 库内已有值去重）
     """
     dim_label = _DIM_LABELS.get(dimension, dimension)
 

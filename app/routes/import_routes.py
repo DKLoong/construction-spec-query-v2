@@ -15,7 +15,6 @@ from app.parser.spec_prefix import (
 from app.ocr.pdf_extract import extract_text, is_scanned
 from app.classifier.rule_engine import classify_clause, should_use_ai
 from app.classifier.batch_queue import try_enqueue
-from app.termdict import is_valid_label
 from app.search.vector_search import VectorStore
 from app.search.embed_text import build_embed_text
 from app.routes.spec_routes import SPEC_STATUS_ALLOWED
@@ -418,10 +417,9 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         embedding_records = []
         for cd in clauses_data:
             scores, best_labels, best_rule_ids = classify_clause(cd["content"], cd.get("parent_path", []), rules)
-            # 闸门①：仅权威 label 落列；命中但 label ∉ 词典 → 该维转 review（人工背书）
-            dim4_val = best_labels.get("dim4", "") if is_valid_label("dim4", best_labels.get("dim4", "")) else ""
-            dim5_val = best_labels.get("dim5", "") if is_valid_label("dim5", best_labels.get("dim5", "")) else ""
-            dim6_val = best_labels.get("dim6", "") if is_valid_label("dim6", best_labels.get("dim6", "")) else ""
+            dim4_val = best_labels.get("dim4", "")
+            dim5_val = best_labels.get("dim5", "")
+            dim6_val = best_labels.get("dim6", "")
 
             from app.search.tokenize import build_search_text
             conn.execute(
@@ -437,11 +435,6 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
             for dim in ["dim4", "dim5", "dim6"]:
                 rule_id = best_rule_ids.get(dim)
-                raw_label = best_labels.get(dim, "")
-                # 规则命中但 label 非权威 → 不写列/不累统计，改入 review 人工背书
-                if rule_id and raw_label and not is_valid_label(dim, raw_label):
-                    try_enqueue(conn, clause_id, dim, scores[dim])
-                    continue
                 if should_use_ai(dim, scores, adaptive_thresholds):
                     # 入列自检：已删除条文/废止规范/非条文不入队；同(clause,dim)防重
                     try_enqueue(conn, clause_id, dim, scores[dim])

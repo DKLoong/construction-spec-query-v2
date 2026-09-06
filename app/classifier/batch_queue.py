@@ -1,7 +1,6 @@
 import uuid
 from app.database import get_db
 from app.logging_util import log_action, json_detail
-from app.termdict import is_valid_label
 
 
 def try_enqueue(conn, clause_id: int, dimension: str, keyword_score: float) -> bool:
@@ -81,20 +80,9 @@ def get_pending_batch(dimension: str, force: bool = False) -> list[dict]:
 def apply_ai_results(batch_id: str, results: list[dict]):
     from app.params.registry import get_param_float
     conf_threshold = get_param_float("classify.ai_confidence_threshold")
-    auto_count = 0
     with get_db() as conn:
         for r in results:
-            q_row = conn.execute(
-                "SELECT dimension FROM classification_queue WHERE clause_id = ? AND batch_id = ?",
-                (r["clause_id"], batch_id)).fetchone()
-            dim = q_row["dimension"] if q_row else ""
-            # 闸门②：即使置信达标，label ∉ 权威词典也降级 review（人工背书扩字典）
-            adopted = (r["confidence"] >= conf_threshold
-                       and bool(dim)
-                       and is_valid_label(dim, r["label"] or ""))
-            status = "auto_adopted" if adopted else "review"
-            if status == "auto_adopted":
-                auto_count += 1
+            status = "auto_adopted" if r["confidence"] >= conf_threshold else "review"
             conn.execute(
                 """UPDATE classification_queue
                    SET ai_label = ?, ai_confidence = ?, status = ?
@@ -102,24 +90,34 @@ def apply_ai_results(batch_id: str, results: list[dict]):
                 (r["label"], r["confidence"], status, batch_id, r["clause_id"]),
             )
             if status == "auto_adopted":
-                col = _dim_to_column(dim)
-                conn.execute(
-                    f"UPDATE clauses SET {col} = ?, ai_classified = 1 WHERE id = ?",
-                    (r["label"], r["clause_id"]),
-                )
-                # 半监督闭环：auto_adopted 也沉淀规则（confirmed 不累加）
-                from app.classifier.feedback import extract_keywords
-                from app.classifier.rule_sink import bump_rule
-                content_row = conn.execute(
-                    "SELECT content FROM clauses WHERE id = ?", (r["clause_id"],)
+                q_row = conn.execute(
+                    "SELECT dimension FROM classification_queue WHERE clause_id = ? AND batch_id = ?",
+                    (r["clause_id"], batch_id),
                 ).fetchone()
-                if content_row:
-                    sub_field = _DIM_SUB_FIELD.get(dim, "")
-                    for kw in extract_keywords(content_row["content"] or "", top_n=3):
-                        # label=AI 采纳的分类标签：匹配词 kw 只负责命中，赋值写 label
-                        bump_rule(conn, dim, kw, sub_field,
-                                  is_confirmed=False, new_rule_active=True,
-                                  label=r["label"])
+                if q_row:
+                    dim = q_row["dimension"]
+                    col = _dim_to_column(dim)
+                    conn.execute(
+                        f"UPDATE clauses SET {col} = ?, ai_classified = 1 WHERE id = ?",
+                        (r["label"], r["clause_id"]),
+                    )
+                    # 半监督闭环：auto_adopted 也沉淀规则（新规则直接启用；confirmed 不累加，
+                    # 避免 AI 未经人工确认虚增正确率）
+                    from app.classifier.feedback import extract_keywords
+                    from app.classifier.rule_sink import bump_rule
+                    content_row = conn.execute(
+                        "SELECT content FROM clauses WHERE id = ?", (r["clause_id"],)
+                    ).fetchone()
+                    if content_row:
+                        sub_field = _DIM_SUB_FIELD.get(dim, "")
+                        for kw in extract_keywords(content_row["content"] or "", top_n=3):
+                            # label=AI 采纳的分类标签：匹配词 kw 只负责命中，赋值写 label
+                            bump_rule(conn, dim, kw, sub_field,
+                                      is_confirmed=False, new_rule_active=True,
+                                      label=r["label"])
+
+    # 事务已提交，写一条本批汇总（log_action 自开连接，须在 commit 后调用）
+    auto_count = sum(1 for r in results if r["confidence"] >= conf_threshold)
     log_action("classify", "INFO", "AI分类结果入库",
                detail=json_detail({"batch_id": batch_id, "total": len(results),
                                    "auto_adopted": auto_count,
@@ -141,46 +139,41 @@ _DIM_SUB_FIELD = {
 
 
 def collect_label_candidates(dimension: str, limit: int | None = None) -> list[str]:
-    """收集某维度 AI 分类候选标签，供 prompt 约束标签口径。
+    """收集某维度已有标签候选，供 AI 分类 prompt 约束标签口径
 
-    主源 = termdict 权威词典（每权威 label 展开 label→canonical→aliases 词面，
-    label 必先）；词典无词（空/不可用）才回退 clauses 现值兜底。
-    不再以 classification_rules.pattern 作候选（避免碎片/HTML 残留污染候选）。
+    来源合并：
+    - classification_rules 中该维度激活规则的 pattern（按 priority/hit_count 降序）
+    - clauses 表中该维度已填写的值（拆逗号分隔的多标签）
+    结果去重保序，优先规则关键词（更稳定）。
     """
     if limit is None:
         from app.params.registry import get_param_int
         limit = get_param_int("classify.label_candidate_limit")
+    col = _DIM_COLUMN.get(dimension)
     candidates: list[str] = []
     seen: set[str] = set()
 
-    def _push(v: str):
-        v = (v or "").strip()
-        if v and v not in seen:
-            seen.add(v)
-            candidates.append(v)
-
-    from app.termdict import DIMS, load_active_entries
-    if dimension in DIMS:
-        for row in load_active_entries(dimension):
-            _push(row.label)          # 权威 label 必在候选且优先
-            _push(row.canonical)
-            for a in row.aliases:
-                _push(a)
-
-    if candidates:
-        return candidates[:limit]
-
-    # 词典空/不可用 → 现值兜底（含逗号分隔多标签拆分，保持旧行为）
-    col = _DIM_COLUMN.get(dimension)
-    if col:
-        with get_db() as conn:
+    with get_db() as conn:
+        rules = conn.execute(
+            """SELECT pattern FROM classification_rules
+               WHERE dimension = ? AND is_active = 1
+               ORDER BY priority DESC, hit_count DESC""",
+            (dimension,),
+        ).fetchall()
+        vals = []
+        if col:
             vals = conn.execute(
                 f"SELECT DISTINCT {col} FROM clauses "
                 f"WHERE {col} IS NOT NULL AND {col} != ''"
             ).fetchall()
-        for r in vals:
+
+    for rows in (rules, vals):
+        for r in rows:
             for part in str(r[0]).split(","):
-                _push(part)
+                v = part.strip()
+                if v and v not in seen:
+                    seen.add(v)
+                    candidates.append(v)
     return candidates[:limit]
 
 
