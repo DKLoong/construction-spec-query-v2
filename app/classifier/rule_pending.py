@@ -114,6 +114,22 @@ def _set_status_by_keys(conn, keys, status: str) -> int:
     return n
 
 
+def resolve_keys(conn, ids: list[int]) -> list[tuple[str, str, str]]:
+    """勾选 id 集 → 去重的 (dimension, pattern, label) 键（仅 pending 行）。
+
+    键级裁决/回填的共享不变量：非 pending 行 id 不纳入作用域（不扩展组、不参与反义
+    分配），与 decide_scope 键级语义一致。
+    """
+    if not ids:
+        return []
+    ph = ','.join('?' * len(ids))
+    rows = conn.execute(
+        f"SELECT DISTINCT dimension, pattern, label FROM rule_pending "
+        f"WHERE id IN ({ph}) AND status='pending'",
+        ids).fetchall()
+    return [(r["dimension"], r["pattern"], r["label"]) for r in rows]
+
+
 def decide_scope(conn, ids: list[int], action: str = "approve", expand: bool = True) -> dict:
     """反义批量（键级，修订 F1/F2）：勾选 id 集展开为其 (dimension, pattern, label) 键。
 
@@ -127,12 +143,8 @@ def decide_scope(conn, ids: list[int], action: str = "approve", expand: bool = T
     """
     if not ids:
         return {"approved": 0, "rejected": 0}
-    ph = ','.join('?' * len(ids))
-    key_rows = conn.execute(
-        f"SELECT DISTINCT dimension, pattern, label FROM rule_pending WHERE id IN ({ph})",
-        ids).fetchall()
-    selected_keys = {(r["dimension"], r["pattern"], r["label"]) for r in key_rows}
-    groups = {(r["dimension"], r["pattern"]) for r in key_rows}
+    selected_keys = set(resolve_keys(conn, ids))
+    groups = {(d, p) for d, p, _ in selected_keys}
 
     approved_keys: set = set()
     rejected_keys: set = set()

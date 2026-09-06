@@ -442,11 +442,7 @@ async def review_word_decide(request: Request, body: dict):
         return _JR({"detail": "ids/action 不合法"}, status_code=400)
 
     with get_db() as conn:
-        ph = ','.join('?' * len(ids))
-        key_rows = conn.execute(
-            f"SELECT DISTINCT dimension, pattern, label FROM rule_pending WHERE id IN ({ph})",
-            ids).fetchall()
-        selected_keys = {(r["dimension"], r["pattern"], r["label"]) for r in key_rows}
+        selected_keys = set(rule_pending.resolve_keys(conn, ids))
         groups = {(d, p) for d, p, _ in selected_keys}
 
         # 组内全部 pending 键（decide_scope 反义分配的作用域）
