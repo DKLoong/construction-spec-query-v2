@@ -943,3 +943,59 @@ def test_word_pending_get_renders_rule_level(auth_client):
     assert resp.status_code == 200
     assert "style" in resp.text   # 规则级词面出现在聚合列表
     assert "样式" in resp.text
+
+
+# ── 审核红点计数（Tab1 条文组 + Tab2 词面组）─────────────────────
+
+def test_pending_counts_zero_when_empty(auth_client):
+    """无待审时红点计数为 0。"""
+    resp = auth_client.get("/review/pending-count")
+    assert resp.status_code == 200
+    assert resp.json() == {"clause": 0, "word": 0}
+
+
+def test_pending_counts_clause_and_word_groups(auth_client):
+    """pending 行按 (clause,dim) 聚合计条文组、按 (dim,pattern) 聚合计词面组。"""
+    with get_db() as conn:
+        c1 = _seed_spec_clause(conn)
+        c2 = _seed_spec_clause(conn)
+        # 同一 (clause1, dim6) 两个词 → 条文组只 +1，词面组 +2
+        rp.insert_pending(conn, c1, "dim6", "钢筋", "钢筋", 0.9, "b")
+        rp.insert_pending(conn, c1, "dim6", "试验", "钢筋", 0.8, "b")
+        # 跨条文同词同 dim → 条文组 +1（clause2），词面组不新增
+        rp.insert_pending(conn, c2, "dim6", "钢筋", "钢筋", 0.9, "b")
+        # 新维度新词面 → 两方向都 +1
+        rp.insert_pending(conn, c2, "dim5", "梁", "梁", 0.7, "b")
+    resp = auth_client.get("/review/pending-count")
+    j = resp.json()
+    assert j["clause"] == 3      # (c1,dim6) (c2,dim6) (c2,dim5)
+    assert j["word"] == 3        # (dim6,钢筋) (dim6,试验) (dim5,梁)
+
+
+def test_pending_counts_rejected_needs_relabel(auth_client):
+    """候选全 reject 且 queue 仍 review 的条文计入 clause（Tab1 重标待办）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        pid = rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "b")
+        rp.set_status(conn, [pid], "rejected")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute(
+            "UPDATE classification_queue SET status='review' WHERE clause_id=?", (cid,))
+    resp = auth_client.get("/review/pending-count")
+    j = resp.json()
+    assert j["clause"] == 1
+    assert j["word"] == 0        # 无 pending 词面
+
+
+def test_pending_counts_lowconf_fallback(auth_client):
+    """低置信 queue review 且无 pending/rejected 关联 → 计入 clause（Tab1 兜底）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute(
+            "UPDATE classification_queue SET status='review', ai_label='钢筋', "
+            "ai_confidence=0.5 WHERE clause_id=?", (cid,))
+    resp = auth_client.get("/review/pending-count")
+    j = resp.json()
+    assert j["clause"] == 1
+    assert j["word"] == 0

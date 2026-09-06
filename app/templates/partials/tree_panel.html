@@ -100,8 +100,10 @@
         <a href="/rules" style="text-decoration:none">
             <button class="outline" style="width:100%;font-size:0.8rem">📋 规则</button>
         </a>
-        <a href="/review" style="text-decoration:none">
+        <a href="/review" style="text-decoration:none;position:relative;display:block">
             <button class="outline" style="width:100%;font-size:0.8rem">📝 审核</button>
+            <span id="review-pending-badge" style="display:none;position:absolute;top:-7px;right:-5px;min-width:16px;height:16px;border-radius:50%;background:#d93025;color:#fff;font-size:10px;line-height:16px;text-align:center;padding:0 3px;box-sizing:border-box;font-weight:600"
+                  title="有待审核项"></span>
         </a>
         <a href="/lexicon" style="text-decoration:none">
             <button class="outline" style="width:100%;font-size:0.8rem">📖 词库</button>
@@ -142,4 +144,33 @@
             </details>
         </template>
     </div>
+    <script>
+    /* 审核宫格红点：有待审核项（条文待审+词面校核）时点亮，计数省略 99+ */
+    (function () {
+        var badge = document.getElementById('review-pending-badge');
+        if (!badge) return;
+        var pending = false;
+        function refresh() {
+            fetch('/review/pending-count', { headers: { 'Accept': 'application/json' } })
+                .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+                .then(function (d) {
+                    var n = (d.clause || 0) + (d.word || 0);
+                    pending = n > 0;
+                    if (pending) {
+                        badge.style.display = 'inline-block';
+                        badge.textContent = n > 99 ? '99+' : String(n);
+                        badge.title = '条文待审 ' + (d.clause || 0) + ' · 词面校核 ' + (d.word || 0);
+                    } else {
+                        badge.style.display = 'none';
+                    }
+                })
+                .catch(function () { /* 忽略瞬时错误，下次轮询重试 */ });
+        }
+        refresh();
+        ['reviewClausePending', 'reviewWordPending', 'reviewBlacklist'].forEach(function (ev) {
+            document.addEventListener(ev, refresh);
+        });
+        setInterval(refresh, 30000);
+    })();
+    </script>
 </div>

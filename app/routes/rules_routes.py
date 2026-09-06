@@ -290,6 +290,13 @@ async def review_page(request: Request):
     })
 
 
+@router.get("/review/pending-count")
+async def review_pending_count():
+    """宫格「审核」红点数据源：待审条文组 + 词面组计数（Tab1+Tab2）。"""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(rule_pending.pending_counts())
+
+
 @router.get("/review/list")
 async def review_list(request: Request):
     """待审核项列表"""
