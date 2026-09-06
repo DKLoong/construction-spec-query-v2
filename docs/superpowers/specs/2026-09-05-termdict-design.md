@@ -1,9 +1,11 @@
 # 术语 / 分类权威词典设计（termdict）
 
 日期：2026-09-05
-状态：待评审
+状态：❌ 已否决并回滚（2026-09-06）
 关联系统：施工规范智能查询平台 V2（FastAPI + HTMX + SQLite FTS5 + LanceDB）
 上游：TODOS T3（承接 [[2026-09-04-lexicon-module-design]] 词库子系统之后的另立项）
+
+> 实现已 `git revert`（86ca38c）。否决原因（用户裁定）：碎片污染改在源头治理（AI 自动沉淀规则首次必进审核、驳回进黑名单不再沉淀），不建权威标签词典；术语库主攻 jieba userdict。本 spec 仅留档。碎片治理方案见后继 spec/plan。
 
 ## 一、背景与目标
 

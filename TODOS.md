@@ -23,9 +23,11 @@
 - **Context**：2026-09-04 会话决策：与词库检索/问答增强是**两套数据与消费链**（数据模型 term↔标签多对多、消费方是 classification_rules / AI classify，与 lexicon 异源），故不并入词库 spec，另开 brainstorm → spec → 计划。词库的 canonical 可作其词源来源，注意复用而非重建。
 - **入口候选**：先调研现有 rule feedback loop（`extract_keywords` 从 QA/条文提词→规则）与 AI classify prompt 的标签清单，据此设计 term 与维度标签的粒度。
 - **Blocked by**：无硬依赖；建议在词库子系统实施完成后排期（避免两条大链并行）。
-- **Status（2026-09-05）**：✅ 已完成 → termdict 落地（spec/plan `docs/superpowers/2026-09-05-termdict*`；11 commits `2b24aaf..b95447a`，679 passed）。收口（标签白名单 + 四处闸门 + 迁移打底）见 T4 遗留 minors。
+- **Status（2026-09-06）**：❌ **已否决并回滚**。termdict 实现（11 commits `2b24aaf..b95447a`）已 `git revert`（`86ca38c`）。否决原因：碎片污染应在**源头**（auto_adopt 沉淀动作加首审门槛 + 驳回进黑名单）治理，而非在结果端建权威标签词典；且 termdict 同义词与 [[2026-09-04-lexicon-subsystem|lexicon]] 重合易乱套。spec/plan 文档保留供参考（含上述判定），但不再实施。
 
 ## T4 — termdict 收口遗留 minors（deferred，2026-09-05 整仓评审后登记）
+
+> ⚠️ **2026-09-06 作废**：termdict 已整体回滚（见 T3 Status），本条遗留随之失效，不再处理。
 
 > 来源：termdict SDD 各 Task 评审 defer 项汇总。全部「可 defer」，无 merge 阻塞；择机一次 fix wave 处理。
 
