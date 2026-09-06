@@ -516,9 +516,19 @@ def test_apply_ai_results_logs_classify(monkeypatch, tmp_path):
     """apply_ai_results 每批记一条 classify/INFO，detail 含 auto/review 计数"""
     from app.classifier import batch_queue
     _setup(monkeypatch, tmp_path)
+    with get_db() as conn:
+        # 造真实 auto 场景：背书词（confirmed 规则）+ 入队，另一条低置信 → review
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB1', 'x')")
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("INSERT INTO clauses (spec_id, clause_no, content) VALUES (?, '1.1', '含钢筋')", (sid,))
+        cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("INSERT INTO classification_rules (dimension, pattern, label, threshold, confirmed, is_active) "
+                     "VALUES ('dim6', '钢筋', '钢筋', 0.6, 1, 1)")
+        conn.execute("INSERT INTO classification_queue (clause_id, dimension, batch_id, status) "
+                     "VALUES (?, 'dim6', 'batch_t1', 'ai_processing')", (cid,))
     results = [
-        {"clause_id": 101, "confidence": 0.85, "label": "钢筋"},
-        {"clause_id": 102, "confidence": 0.50, "label": "混凝土"},
+        {"clause_id": cid, "confidence": 0.85, "label": "钢筋"},
+        {"clause_id": 999, "confidence": 0.50, "label": "混凝土"},
     ]
     batch_queue.apply_ai_results("batch_t1", results)
     rows = _logs(action="AI分类结果入库", category="classify")

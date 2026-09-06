@@ -105,6 +105,12 @@ def test_apply_ai_results(monkeypatch, tmp_path):
     init_db()
     with get_db() as conn:
         spec_id = setup_sample_data(conn)
+        # 预置同键 confirmed 规则：裁决流需 ≥1 已背书词才 auto（保留「auto 仍可用」意图）
+        conn.execute(
+            """INSERT INTO classification_rules
+               (dimension, pattern, label, threshold, confirmed, is_active)
+               VALUES ('dim6', '混凝土', '混凝土材料', 0.6, 1, 1)"""
+        )
         clause_ids = [r["id"] for r in conn.execute("SELECT id FROM clauses LIMIT 20")]
     for cid in clause_ids:
         add_to_queue(cid, "dim6", 0.35)

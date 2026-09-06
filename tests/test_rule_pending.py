@@ -4,6 +4,7 @@ import pytest
 
 from app.database import init_db, get_db
 from app.classifier import rule_pending as rp
+from app.classifier import batch_queue as bq
 
 
 def _db(monkeypatch, tmp_path):
@@ -238,3 +239,91 @@ def test_key_all_pending_ids(monkeypatch, tmp_path):
         ids = rp._key_all_pending_ids(conn, a, "rejected")
         assert sorted(ids) == sorted([a, b])
         assert rp._key_all_pending_ids(conn, a, "pending") == []
+
+
+# ── apply_ai_results 裁决流（Task 2）────────────────────────────
+
+def _seed_spec_clause(conn):
+    conn.execute("INSERT INTO specifications (code, title) VALUES ('GB1', 'x')")
+    sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("INSERT INTO clauses (spec_id, clause_no, content) "
+                 "VALUES (?, '1.1', '含 钢筋 与 试验 的条文内容')", (sid,))
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def _run_batch(monkeypatch, tmp_path, conf=0.9):
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET batch_id='bX', status='ai_processing' "
+                     "WHERE clause_id=?", (cid,))
+    bq.apply_ai_results("bX", [{"clause_id": cid, "label": "钢筋", "confidence": conf}])
+    return cid
+
+
+def test_first_time_word_goes_pending_not_auto(monkeypatch, tmp_path):
+    """内容词首次（无规则 confirmed 无 pending approved）→ 该条 review 不写列，词入 pending。"""
+    cid = _run_batch(monkeypatch, tmp_path)
+    with get_db() as conn:
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        p = conn.execute("SELECT COUNT(*) n FROM rule_pending WHERE status='pending'").fetchone()["n"]
+    assert q["status"] == "review"
+    assert (c["dim6_material"] or "") == ""
+    assert p >= 1
+
+
+def test_endorsed_word_autos_and_writes(monkeypatch, tmp_path):
+    """同键规则 confirmed≥1 → auto_adopted 写列；首次词（试验）仍入池。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        conn.execute("INSERT INTO classification_rules (dimension,pattern,label,threshold,confirmed,is_active)"
+                     " VALUES ('dim6','钢筋','钢筋',0.6,1,1)")
+        cid = _seed_spec_clause(conn)
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET batch_id='bY', status='ai_processing' WHERE clause_id=?", (cid,))
+    bq.apply_ai_results("bY", [{"clause_id": cid, "label": "钢筋", "confidence": 0.9}])
+    with get_db() as conn:
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        p = conn.execute("SELECT pattern FROM rule_pending WHERE status='pending'").fetchall()
+    assert q["status"] == "auto_adopted"
+    assert c["dim6_material"] == "钢筋"
+    assert any(r["pattern"] != "钢筋" for r in p)  # 试验 入池，钢筋 已背书不插
+
+
+def test_rejected_word_skipped_no_write(monkeypatch, tmp_path):
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "z")
+        rp.set_status(conn, rp.pending_ids(conn, "dim6", "钢筋", "钢筋"), "rejected")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET batch_id='bZ', status='ai_processing' WHERE clause_id=?", (cid,))
+    bq.apply_ai_results("bZ", [{"clause_id": cid, "label": "钢筋", "confidence": 0.9}])
+    with get_db() as conn:
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+    assert q["status"] == "review"
+    assert (c["dim6_material"] or "") == ""
+
+
+def test_no_keywords_high_conf_autos_write_only(monkeypatch, tmp_path):
+    """条文无提词（extract 空）但 conf 高 → 允许 auto 写列、不沉淀词（无词无夹带）。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code,title) VALUES ('GB1','x')")
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("INSERT INTO clauses (spec_id,clause_no,content) VALUES (?, '1.1', '一')", (sid,))
+        cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET batch_id='bP', status='ai_processing' WHERE clause_id=?", (cid,))
+    bq.apply_ai_results("bP", [{"clause_id": cid, "label": "钢筋", "confidence": 0.9}])
+    with get_db() as conn:
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        p = conn.execute("SELECT COUNT(*) n FROM rule_pending").fetchone()["n"]
+    assert q["status"] == "auto_adopted"
+    assert c["dim6_material"] == "钢筋"
+    assert p == 0
