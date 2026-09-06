@@ -40,3 +40,11 @@
 - **Why**：评审时多数属过设计防御/死码/文案，逐项修性价比低，故 defer；2/3 项影响维护者心智与回归健壮性。
 - **Context**：spec `2026-09-05-termdict-design.md` §五/§十二；各 Task review 文件已随 SDD workspace 清理，本条目为唯一留存出处。
 
+## T5 — jieba userdict 术语库（原 T3 用户初衷，另立项）
+
+- **What**：建一份工程术语表灌入 jieba（`jieba.add_word`/词典），使 `extract_keywords`（提词→规则 pattern）、规则 keyword 匹配、`build_search_text`/FTS 索引三处对术语一致切分（如「钢筋机械连接」「屈服强度」不被切碎）。必要时随索引 OOV（[[lexicon-subsystem]] T1）联动。
+- **Why**：2026-09-05 用户澄清 T3 的真实初衷是「术语→切词更准」，而非 termdict 标签收口（已回滚）。是 rule-pending 之外的正交能力。
+- **Context**：词库 lexicon canonical/aliases、日后 rule_pending 未决词可作为术语词源候选；先做「词源→jieba 词典」最小闭环，再评估对 `extract_keywords`/检索的收益。
+- **Blocked by**：无硬依赖；建议 rule-pending 落地并跑通后再开 brainstorm。
+- **Status（2026-09-06）**：由 /plan-eng-review 扫出并登记。
+
