@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS rule_pending (
     dimension     TEXT NOT NULL,
     pattern       TEXT NOT NULL,
     label         TEXT NOT NULL,
-    clause_id     INTEGER NOT NULL,
+    clause_id     INTEGER,            -- 可空：规则级 pending（存量碎片无来源条文）为 NULL
     ai_confidence REAL,
     batch_id      TEXT,
     status        TEXT NOT NULL DEFAULT 'pending',
@@ -148,6 +148,9 @@ CREATE INDEX IF NOT EXISTS idx_rule_pending_status ON rule_pending(status);
 -- 幂等插入由 UNIQUE 兜底（并发下捕获 IntegrityError，不依赖 SELECT+INSERT 防并发）
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_pending_uniq
     ON rule_pending(dimension, pattern, label, clause_id);
+-- 规则级 pending（clause_id IS NULL）同键唯一：存量碎片无来源条文，仅 pending 态互斥
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_pending_rule_key
+    ON rule_pending(dimension, pattern, label) WHERE clause_id IS NULL AND status='pending';
 """
 
 TRIGGERS_SQL = """
@@ -327,9 +330,63 @@ def _migrate_legacy_synonyms(conn):
                  1 if any_active.get(target) else 0))
 
 
+# rule_pending 全部列（重建拷贝用，顺序与 DDL 一致）
+_RULE_PENDING_COLS = (
+    "id", "dimension", "pattern", "label", "clause_id",
+    "ai_confidence", "batch_id", "status", "created_at", "updated_at",
+)
+
+
+def _migrate_rule_pending_clause_nullable(conn):
+    """rule_pending.clause_id NOT NULL → 可空重建（规则级 pending 无来源条文为 NULL）。
+
+    SQLite 不能 ALTER 列可空性，故：PRAGMA table_info 检测 notnull → DROP 旧索引名
+    → RENAME 旧表 → 按新 DDL 重建 → 拷贝全部列 → DROP 旧表 → 重建四索引。
+    幂等：clause_id 已可空（notnull=0）直接跳过。
+    """
+    cols = conn.execute("PRAGMA table_info(rule_pending)").fetchall()
+    clause = next((c for c in cols if c["name"] == "clause_id"), None)
+    if clause is None or clause["notnull"] == 0:
+        return
+    # RENAME 会把索引 tbl_name 一并指向新表名（索引名不变），故先 DROP 旧索引名，
+    # 否则重建新表后 CREATE INDEX IF NOT EXISTS 会因旧名仍被占用而 no-op 挂到旧表。
+    for idx in ("idx_rule_pending_key", "idx_rule_pending_status",
+                "idx_rule_pending_uniq", "idx_rule_pending_rule_key"):
+        conn.execute(f"DROP INDEX IF EXISTS {idx}")
+    conn.execute("ALTER TABLE rule_pending RENAME TO rule_pending_old")
+    conn.execute("""
+        CREATE TABLE rule_pending (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            dimension     TEXT NOT NULL,
+            pattern       TEXT NOT NULL,
+            label         TEXT NOT NULL,
+            clause_id     INTEGER,
+            ai_confidence REAL,
+            batch_id      TEXT,
+            status        TEXT NOT NULL DEFAULT 'pending',
+            created_at    TEXT DEFAULT (datetime('now','localtime')),
+            updated_at    TEXT DEFAULT (datetime('now','localtime'))
+        )
+    """)
+    col_list = ", ".join(_RULE_PENDING_COLS)
+    conn.execute(
+        f"INSERT INTO rule_pending ({col_list}) SELECT {col_list} FROM rule_pending_old")
+    conn.execute("DROP TABLE rule_pending_old")
+    conn.execute("CREATE INDEX idx_rule_pending_key "
+                 "ON rule_pending(dimension, pattern, label, status)")
+    conn.execute("CREATE INDEX idx_rule_pending_status ON rule_pending(status)")
+    conn.execute("CREATE UNIQUE INDEX idx_rule_pending_uniq "
+                 "ON rule_pending(dimension, pattern, label, clause_id)")
+    conn.execute("CREATE UNIQUE INDEX idx_rule_pending_rule_key "
+                 "ON rule_pending(dimension, pattern, label) "
+                 "WHERE clause_id IS NULL AND status='pending'")
+
+
 def init_db():
     with get_db() as conn:
         conn.executescript(SCHEMA_SQL)
+        # 迁移：rule_pending.clause_id 可空（规则级 pending）——旧库 NOT NULL 需重建
+        _migrate_rule_pending_clause_nullable(conn)
         # FTS5 + jieba 迁移必须在建触发器之前（触发器引用 search_text 列）
         _migrate_search_text(conn)
         conn.executescript(TRIGGERS_SQL)

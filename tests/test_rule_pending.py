@@ -781,3 +781,165 @@ def test_reject_keeps_clause_in_tab1_marked(auth_client):
     assert "词已驳回" in resp.text
     assert "含 钢筋 与 试验 的条文内容" in resp.text   # 仍在 Tab1 主表
     assert "输入新标签" in resp.text                    # 行内编辑可用
+
+
+# ── 规则级 pending（clause_id 可空）─────────────────────────────
+
+def test_init_db_rule_pending_clause_nullable(monkeypatch, tmp_path):
+    """新库 rule_pending.clause_id 可空（notnull=0），且规则级 partial 唯一索引存在。"""
+    from app.database import init_db, get_db
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "t.db"))
+    init_db()
+    with get_db() as conn:
+        cols = conn.execute("PRAGMA table_info(rule_pending)").fetchall()
+        clause = next(c for c in cols if c["name"] == "clause_id")
+        assert clause["notnull"] == 0
+        idx = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_rule_pending_rule_key'").fetchone()
+        assert idx is not None
+
+
+def test_init_db_migrates_rule_pending_clause_nullable(monkeypatch, tmp_path):
+    """旧库 clause_id NOT NULL → init_db 重建为可空，且数据保留 + 新 partial 索引建好。"""
+    from app.database import init_db, get_db
+    db_path = tmp_path / "old.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE rule_pending (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, dimension TEXT NOT NULL,
+            pattern TEXT NOT NULL, label TEXT NOT NULL, clause_id INTEGER NOT NULL,
+            ai_confidence REAL, batch_id TEXT, status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime')));
+        CREATE INDEX idx_rule_pending_key ON rule_pending(dimension, pattern, label, status);
+        CREATE INDEX idx_rule_pending_status ON rule_pending(status);
+        CREATE UNIQUE INDEX idx_rule_pending_uniq ON rule_pending(dimension, pattern, label, clause_id);
+        INSERT INTO rule_pending (dimension, pattern, label, clause_id, status)
+            VALUES ('dim6', '钢筋', '钢筋', 7, 'pending');
+    """)
+    conn.close()
+    init_db()  # 触发 NOT NULL → 可空重建
+    with get_db() as conn:
+        cols = conn.execute("PRAGMA table_info(rule_pending)").fetchall()
+        clause = next(c for c in cols if c["name"] == "clause_id")
+        assert clause["notnull"] == 0
+        row = conn.execute(
+            "SELECT clause_id, dimension, pattern, label FROM rule_pending").fetchone()
+        assert row["clause_id"] == 7
+        assert row["pattern"] == "钢筋"
+        idx = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_rule_pending_rule_key'").fetchone()
+        assert idx is not None
+
+
+def test_insert_pending_rule_level_idempotent(monkeypatch, tmp_path):
+    """规则级（clause_id=None）同键二次 None；与条文级行共存。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        a = rp.insert_pending(conn, None, "dim6", "检验", "钢筋", 0.9, "b1")
+        b = rp.insert_pending(conn, None, "dim6", "检验", "钢筋", 0.8, "b1")
+        assert a is not None
+        assert b is None
+        cid = _seed_clause(conn, "GB1")
+        c = rp.insert_pending(conn, cid, "dim6", "检验", "钢筋", 0.7, "b2")
+        assert c is not None and c != a
+        row = conn.execute(
+            "SELECT clause_id FROM rule_pending WHERE id=?", (a,)).fetchone()
+        assert row["clause_id"] is None
+
+
+def test_backfill_skips_rule_level(monkeypatch, tmp_path):
+    """规则级 pending（clause_id NULL）不写列、不清 queue。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        cid = _seed_clause(conn)
+        rp.insert_pending(conn, None, "dim6", "钢筋", "钢筋", 0.9, "b1")
+        conn.execute(
+            "INSERT INTO classification_queue (clause_id, dimension, status) "
+            "VALUES (?, 'dim6', 'review')", (cid,))
+        n = rp.backfill_and_close(conn, "dim6", "钢筋", "钢筋")
+        assert n == 0  # 规则级无来源条文
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+    assert (c["dim6_material"] or "") == ""   # 不写列
+    assert q["status"] == "review"            # 不清 queue
+
+
+def test_decide_reject_deactivates_fragment(auth_client):
+    """词面 reject → 关联 confirmed=0 碎片规则 is_active=0（同 pattern 同 label）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        _seed_rule(conn, "dim6", "钢筋", "钢筋", confirmed=0, is_active=1)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bA")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute(
+            "UPDATE classification_queue SET batch_id='bA', status='review', "
+            "ai_label='钢筋', ai_confidence=0.9 WHERE clause_id=?", (cid,))
+        gid = conn.execute("SELECT id FROM rule_pending WHERE label='钢筋'").fetchone()["id"]
+    resp = auth_client.post("/review/word-pending/decide",
+                            json={"ids": [gid], "action": "reject"})
+    assert resp.status_code == 200
+    with get_db() as conn:
+        st = conn.execute("SELECT status FROM rule_pending WHERE id=?", (gid,)).fetchone()["status"]
+        rule = conn.execute(
+            "SELECT confirmed, is_active FROM classification_rules "
+            "WHERE dimension='dim6' AND pattern='钢筋' AND label='钢筋'").fetchone()
+    assert st == "rejected"
+    assert rule["confirmed"] == 0
+    assert rule["is_active"] == 0
+
+
+def test_decide_approve_revives_fragment(auth_client):
+    """词面 approve → 存量停用碎片规则复活 is_active=1 且 confirmed≥1。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        _seed_rule(conn, "dim6", "钢筋", "钢筋", confirmed=0, is_active=0)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bA")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute(
+            "UPDATE classification_queue SET batch_id='bA', status='review', "
+            "ai_label='钢筋', ai_confidence=0.9 WHERE clause_id=?", (cid,))
+        gid = conn.execute("SELECT id FROM rule_pending WHERE label='钢筋'").fetchone()["id"]
+    resp = auth_client.post("/review/word-pending/decide",
+                            json={"ids": [gid], "action": "approve"})
+    assert resp.status_code == 200
+    with get_db() as conn:
+        rule = conn.execute(
+            "SELECT confirmed, is_active FROM classification_rules "
+            "WHERE dimension='dim6' AND pattern='钢筋' AND label='钢筋'").fetchone()
+    assert rule["confirmed"] >= 1
+    assert rule["is_active"] == 1
+
+
+def test_inline_removed_deactivates_fragment(auth_client):
+    """inline 删除预填标签 → 关联 confirmed=0 碎片规则 is_active=0。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        _seed_rule(conn, "dim6", "钢筋", "钢筋", confirmed=0, is_active=1)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
+        pid = rp.clause_pending_ids(conn, cid, "dim6")[0]
+    resp = auth_client.post(f"/review/clause-pending/{cid}/inline-edit",
+                            json={"label_ids": [], "removed_label_ids": [pid],
+                                  "new_label": None})
+    assert resp.status_code == 200
+    with get_db() as conn:
+        st = conn.execute("SELECT status FROM rule_pending WHERE id=?", (pid,)).fetchone()["status"]
+        rule = conn.execute(
+            "SELECT confirmed, is_active FROM classification_rules "
+            "WHERE dimension='dim6' AND pattern='钢筋' AND label='钢筋'").fetchone()
+    assert st == "rejected"
+    assert rule["confirmed"] == 0
+    assert rule["is_active"] == 0
+
+
+def test_word_pending_get_renders_rule_level(auth_client):
+    """词面校核 GET 能渲染规则级 pending（无来源条文，clause_count 0）。"""
+    with get_db() as conn:
+        rp.insert_pending(conn, None, "dim6", "style", "样式", 0.8, "frag")
+    resp = auth_client.get("/review/word-pending")
+    assert resp.status_code == 200
+    assert "style" in resp.text   # 规则级词面出现在聚合列表
+    assert "样式" in resp.text

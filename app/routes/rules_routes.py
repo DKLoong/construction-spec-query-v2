@@ -418,9 +418,6 @@ async def batch_reject(request: Request, body: dict):
 # 词面校核（Tab2） & 黑名单管理（Tab3）
 # ═══════════════════════════════════════════
 
-# 维度 → 规则子字段（人工批准写回 confirmed 规则时填充 sub_field，与 rule_sink 语义一致）
-_DIM_SUB_FIELD = {"dim4": "specialty", "dim5": "location", "dim6": "material"}
-
 
 @router.get("/review/word-pending")
 async def review_word_pending(request: Request, dimension: str = ""):
@@ -440,7 +437,6 @@ async def review_word_decide(request: Request, body: dict):
               （F2：任一动作后最终 approved 键都回填）。
     """
     from fastapi.responses import JSONResponse as _JR
-    from app.classifier.rule_sink import bump_rule
 
     ids = body.get("ids") or []
     action = body.get("action")
@@ -470,8 +466,10 @@ async def review_word_decide(request: Request, body: dict):
         stats = rule_pending.decide_scope(conn, ids, action, expand=True)
         # F4：人工批准写回 confirmed 规则（幂等：已有规则仅 hit/confirmed 递增）
         for d, p, l in sorted(approved_keys):
-            bump_rule(conn, d, p, _DIM_SUB_FIELD.get(d, ""),
-                      is_confirmed=True, new_rule_active=True, label=l)
+            rule_pending.approve_rule(conn, d, p, l)
+        # 被驳回键（含 approve 反义未勾选键）联动停用未确认碎片规则（防驳了仍命中）
+        for d, p, l in sorted(pending_keys - approved_keys):
+            rule_pending.deactivate_fragment(conn, d, p, l)
 
     log_action("review", "INFO", f"词面{'批准' if action == 'approve' else '驳回'}",
                detail=json_detail({"ids": ids, **stats}),
@@ -511,7 +509,6 @@ async def review_blacklist_restore(request: Request, pid: int):
 @router.post("/review/blacklist/{pid}/approve")
 async def review_blacklist_approve(request: Request, pid: int):
     """黑名单档2：该 rejected 键来源条文回填（写列+queue done）后置 approved，并 bump confirmed"""
-    from app.classifier.rule_sink import bump_rule
     with get_db() as conn:
         row = conn.execute(
             "SELECT dimension, pattern, label FROM rule_pending WHERE id=?", (pid,)).fetchone()
@@ -520,8 +517,7 @@ async def review_blacklist_approve(request: Request, pid: int):
             rule_pending.backfill_rejected_clauses(conn, row["dimension"], row["pattern"], row["label"])
             ids = rule_pending._key_all_pending_ids(conn, pid, "rejected")
             n = rule_pending.set_status(conn, ids, "approved") if ids else 0
-            bump_rule(conn, row["dimension"], row["pattern"], _DIM_SUB_FIELD.get(row["dimension"], ""),
-                      is_confirmed=True, new_rule_active=True, label=row["label"])
+            rule_pending.approve_rule(conn, row["dimension"], row["pattern"], row["label"])
     log_action("review", "INFO", "黑名单批准",
                detail=json_detail({"pid": pid, "n": n}),
                username=getattr(request.state, "username", ""))
@@ -568,7 +564,6 @@ async def review_clause_decide(request: Request, clause_id: int, body: dict):
     reject  → 勾选置 rejected（不写列、queue 滞留）；未勾置 approved + 回填 + bump。
     """
     from fastapi.responses import JSONResponse as _JR
-    from app.classifier.rule_sink import bump_rule
 
     ids = body.get("ids") or []
     action = body.get("action")
@@ -598,13 +593,15 @@ async def review_clause_decide(request: Request, clause_id: int, body: dict):
             approved_ids = [i for i in scope if i not in checked]
 
         approved_keys = rule_pending.resolve_keys(conn, approved_ids)
+        rejected_keys = rule_pending.resolve_keys(conn, rejected_ids)
         for d, p, l in sorted(approved_keys):
             rule_pending.backfill_and_close(conn, d, p, l)
         rule_pending.set_status(conn, approved_ids, "approved")
         rule_pending.set_status(conn, rejected_ids, "rejected")
         for d, p, l in sorted(approved_keys):
-            bump_rule(conn, d, p, _DIM_SUB_FIELD.get(d, ""),
-                      is_confirmed=True, new_rule_active=True, label=l)
+            rule_pending.approve_rule(conn, d, p, l)
+        for d, p, l in sorted(rejected_keys):
+            rule_pending.deactivate_fragment(conn, d, p, l)
 
     log_action("review", "INFO", f"条文{'批准' if action == 'approve' else '驳回'}",
                detail=json_detail({"clause_id": clause_id, "ids": ids, "action": action}),
@@ -621,7 +618,6 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
     保留项→approve（回填+bump）；new_label 非空→只写分类列（不沉淀规则）。
     """
     from fastapi.responses import JSONResponse as _JR
-    from app.classifier.rule_sink import bump_rule
 
     label_ids = body.get("label_ids") or []
     removed_label_ids = body.get("removed_label_ids") or []
@@ -660,15 +656,17 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
             rem = [i for i in removed_label_ids if i in pending_set]
             keep = [i for i in label_ids if i in pending_set]
             if rem:
+                rem_keys = rule_pending.resolve_keys(conn, rem)
                 rule_pending.set_status(conn, rem, "rejected")
+                for d, p, l in sorted(rem_keys):
+                    rule_pending.deactivate_fragment(conn, d, p, l)
             if keep:
                 approved_keys = rule_pending.resolve_keys(conn, keep)
                 for d, p, l in sorted(approved_keys):
                     rule_pending.backfill_and_close(conn, d, p, l)
                 rule_pending.set_status(conn, keep, "approved")
                 for d, p, l in sorted(approved_keys):
-                    bump_rule(conn, d, p, _DIM_SUB_FIELD.get(d, ""),
-                              is_confirmed=True, new_rule_active=True, label=l)
+                    rule_pending.approve_rule(conn, d, p, l)
             if new_label and str(new_label).strip():
                 col = _DIM_COLUMN[dimension]
                 conn.execute(

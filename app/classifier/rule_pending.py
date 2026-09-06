@@ -23,6 +23,9 @@ import sqlite3
 
 KEY_DIMS = ("dim4", "dim5", "dim6")
 
+# 维度 → 规则子字段（人工批准写回 confirmed 规则时填充 sub_field，与 rule_sink 语义一致）
+_DIM_SUB_FIELD = {"dim4": "specialty", "dim5": "location", "dim6": "material"}
+
 
 def _dim_column(dim: str) -> str:
     """维度 → clauses 分类列名（写列/回填用）。"""
@@ -56,13 +59,22 @@ def key_state(conn, dimension: str, pattern: str, label: str) -> str:
     return "none"
 
 
-def insert_pending(conn, clause_id: int, dimension: str, pattern: str, label: str,
+def insert_pending(conn, clause_id: int | None, dimension: str, pattern: str, label: str,
                    confidence: float | None = None, batch_id: str = "") -> int | None:
-    """AI 首次提案词 → pending 行。同 (clause_id, dimension, pattern, label) 已有任一
-    状态行则不重插（返回 None）；并发下由 UNIQUE(dimension, pattern, label, clause_id)
-    兜底，捕获 IntegrityError 返回 None。
+    """AI 首次提案词 → pending 行。
+
+    clause_id None（规则级，存量碎片无来源条文）：同 (dimension, pattern, label) 且
+    clause_id IS NULL 任一状态行已存在则不重插，并发由 UNIQUE partial 索引兜底。
+    clause_id 非 None（条文级）：同 (clause_id, dimension, pattern, label) 任一状态
+    行已存在则不重插，并发由 UNIQUE(dimension, pattern, label, clause_id) 兜底。
+    两分支均捕获 IntegrityError 返回 None。
     """
-    if conn.execute(
+    if clause_id is None:
+        if conn.execute(
+            "SELECT 1 FROM rule_pending WHERE dimension=? AND pattern=? AND label=? "
+            "AND clause_id IS NULL LIMIT 1", (dimension, pattern, label)).fetchone():
+            return None
+    elif conn.execute(
         "SELECT 1 FROM rule_pending WHERE clause_id=? AND dimension=? AND pattern=? "
         "AND label=? LIMIT 1", (clause_id, dimension, pattern, label)).fetchone():
         return None
@@ -308,7 +320,8 @@ def _backfill_by_status(conn, dimension: str, pattern: str, label: str,
     col = _dim_column(dimension)
     rows = conn.execute(
         "SELECT DISTINCT clause_id FROM rule_pending "
-        "WHERE dimension=? AND pattern=? AND label=? AND status=?",
+        "WHERE dimension=? AND pattern=? AND label=? AND status=? "
+        "AND clause_id IS NOT NULL",
         (dimension, pattern, label, status)).fetchall()
     cids = [r["clause_id"] for r in rows]
     if cids:
@@ -331,3 +344,36 @@ def backfill_and_close(conn, dimension: str, pattern: str, label: str) -> int:
 def backfill_rejected_clauses(conn, dimension: str, pattern: str, label: str) -> int:
     """黑名单批准（档2）：该键 rejected 来源条文写列 + queue(review)→done。"""
     return _backfill_by_status(conn, dimension, pattern, label, "rejected")
+
+
+def deactivate_fragment(conn, dimension: str, pattern: str, label: str) -> int:
+    """驳回词面联动停用未确认碎片规则（confirmed=0 且启用中），防驳了仍命中打标。
+
+    仅停用 confirmed=0 的碎片（未人工背书）；confirmed>0 的已确认规则不受驳回影响。
+    label 容忍 NULL（旧规则/规则页手工建），(label IS NULL OR label=?) 与 key_state 一致。
+    """
+    cur = conn.execute(
+        "UPDATE classification_rules SET is_active=0, "
+        "updated_at=datetime('now','localtime') "
+        "WHERE dimension=? AND pattern=? AND confirmed=0 AND is_active=1 "
+        "AND (label IS NULL OR label=?)",
+        (dimension, pattern, label))
+    return cur.rowcount
+
+
+def approve_rule(conn, dimension: str, pattern: str, label: str) -> None:
+    """人工批准：bump confirmed 规则（与路由同参，含 sub_field 回填）+ 复活存量停用碎片。
+
+    先 bump（新规则 confirmed=1 / 已有规则 confirmed+1）；再把同 (dimension, pattern)
+    的存量停用规则（confirmed>0 且 is_active=0，label 容忍 NULL）复活为启用，
+    使人工批准令被停用的 confirmed 碎片重新生效。
+    """
+    from app.classifier.rule_sink import bump_rule
+    bump_rule(conn, dimension, pattern, _DIM_SUB_FIELD.get(dimension, ""),
+              is_confirmed=True, new_rule_active=True, label=label)
+    conn.execute(
+        "UPDATE classification_rules SET is_active=1, "
+        "updated_at=datetime('now','localtime') "
+        "WHERE dimension=? AND pattern=? AND confirmed>0 AND is_active=0 "
+        "AND (label IS NULL OR label=?)",
+        (dimension, pattern, label))
