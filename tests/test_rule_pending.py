@@ -574,6 +574,18 @@ def test_tab1_inline_new_label_writes_col_only(auth_client):
     assert n_rules == 0
 
 
+def test_tab1_inline_edit_rejects_invalid_dimension(auth_client):
+    """inline-edit 外部输入非法 dimension → 400（白名单校验，防 SQL 注入/非法列）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
+    resp = auth_client.post(f"/review/clause-pending/{cid}/inline-edit",
+                            json={"label_ids": [], "removed_label_ids": [],
+                                  "new_label": "混凝土",
+                                  "dimension": "dim6; DROP TABLE clauses"})
+    assert resp.status_code == 400
+
+
 def test_tab1_inline_cancel_noop(auth_client):
     """取消（仅读请求/不提交）不改变任何 pending/queue/列状态。"""
     with get_db() as conn:

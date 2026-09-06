@@ -484,12 +484,13 @@ async def review_blacklist(request: Request):
     from app.main import templates
     rows = rule_pending.blacklist_rows()
     with get_db() as conn:
+        # 单条聚合取各 rejected 键代表 id（MIN(id)），避免逐行查询（N+1）
+        reps = conn.execute(
+            "SELECT dimension, pattern, label, MIN(id) AS rep_id FROM rule_pending "
+            "WHERE status='rejected' GROUP BY dimension, pattern, label").fetchall()
+        rep_map = {(r["dimension"], r["pattern"], r["label"]): r["rep_id"] for r in reps}
         for r in rows:
-            rep = conn.execute(
-                "SELECT id FROM rule_pending WHERE dimension=? AND pattern=? AND label=? "
-                "AND status='rejected' ORDER BY id LIMIT 1",
-                (r["dimension"], r["pattern"], r["label"])).fetchone()
-            r["id"] = rep["id"] if rep else None
+            r["id"] = rep_map.get((r["dimension"], r["pattern"], r["label"]))
     return templates.TemplateResponse(request, "partials/review_blacklist.html",
                                       {"rows": rows, "dim_labels": dim_labels})
 
@@ -541,12 +542,15 @@ async def review_clause_pending(request: Request, dimension: str = ""):
     from app.main import templates
     groups = rule_pending.pending_clause_groups(dimension or None)
     with get_db() as conn:
+        # 单条聚合取全部 rejected 标签，按 (clause_id, dimension) 分组，避免逐条文查询（N+1）
+        rej_rows = conn.execute(
+            "SELECT clause_id, dimension, label FROM rule_pending "
+            "WHERE status='rejected'").fetchall()
+        rej_map: dict[tuple[int, str], list[str]] = {}
+        for r in rej_rows:
+            rej_map.setdefault((r["clause_id"], r["dimension"]), []).append(r["label"])
         for g in groups:
-            rej = conn.execute(
-                "SELECT label FROM rule_pending WHERE clause_id=? AND dimension=? "
-                "AND status='rejected'",
-                (g["clause_id"], g["dimension"])).fetchall()
-            g["rejected_labels"] = [r["label"] for r in rej]
+            g["rejected_labels"] = rej_map.get((g["clause_id"], g["dimension"]), [])
         items = _fetch_review_items(conn)
     return templates.TemplateResponse(request, "partials/review_clause_panel.html", {
         "groups": groups, "items": items, "dimension": dimension, "dim_labels": dim_labels,
@@ -574,6 +578,8 @@ async def review_clause_decide(request: Request, clause_id: int, body: dict):
             f"WHERE id IN ({','.join('?' * len(ids))}) AND status='pending'", ids).fetchall()}
         if not dims:
             return _JR({"detail": "无有效 pending 勾选"}, status_code=400)
+        if len(dims) != 1:
+            return _JR({"detail": "勾选须同维度"}, status_code=400)
         dimension = next(iter(dims))
         scope = rule_pending.clause_pending_ids(conn, clause_id, dimension)
         checked = set(ids) & set(scope)
@@ -618,29 +624,37 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
         return _JR({"detail": "label_ids/removed_label_ids 须为数组"}, status_code=400)
 
     with get_db() as conn:
+        all_ids = list(label_ids) + list(removed_label_ids)
         if not dimension:
-            all_ids = list(label_ids) + list(removed_label_ids)
             if all_ids:
-                d_rows = conn.execute(
-                    f"SELECT DISTINCT dimension FROM rule_pending "
-                    f"WHERE id IN ({','.join('?' * len(all_ids))})", all_ids).fetchall()
-                dimension = d_rows[0]["dimension"] if d_rows else None
+                d_row = conn.execute(
+                    f"SELECT dimension FROM rule_pending "
+                    f"WHERE id IN ({','.join('?' * len(all_ids))}) "
+                    f"ORDER BY id DESC LIMIT 1", all_ids).fetchone()
+                dimension = d_row["dimension"] if d_row else None
             if not dimension:
                 dr = conn.execute(
-                    "SELECT DISTINCT dimension FROM rule_pending WHERE clause_id=? LIMIT 1",
+                    "SELECT dimension FROM rule_pending WHERE clause_id=? "
+                    "ORDER BY id DESC LIMIT 1",
                     (clause_id,)).fetchone()
                 dimension = dr["dimension"] if dr else None
 
+        # I1：外部输入 dimension 白名单校验（拼列名前先校验，防 SQL 注入/非法列）
+        if dimension and dimension not in _DIM_COLUMN:
+            return _JR({"detail": "dimension 不合法"}, status_code=400)
+
         if dimension:
-            if removed_label_ids:
-                rem = [i for i in removed_label_ids if conn.execute(
-                    "SELECT 1 FROM rule_pending WHERE id=? AND status='pending'",
-                    (i,)).fetchone()]
+            # I2：单条查询取全部 pending id，避免循环内逐行查询（N+1）
+            pending_set = set()
+            if all_ids:
+                pending_set = set(r["id"] for r in conn.execute(
+                    f"SELECT id FROM rule_pending WHERE id IN ({','.join('?' * len(all_ids))}) "
+                    f"AND status='pending'", all_ids).fetchall())
+            rem = [i for i in removed_label_ids if i in pending_set]
+            keep = [i for i in label_ids if i in pending_set]
+            if rem:
                 rule_pending.set_status(conn, rem, "rejected")
-            if label_ids:
-                keep = [i for i in label_ids if conn.execute(
-                    "SELECT 1 FROM rule_pending WHERE id=? AND status='pending'",
-                    (i,)).fetchone()]
+            if keep:
                 approved_keys = rule_pending.resolve_keys(conn, keep)
                 for d, p, l in sorted(approved_keys):
                     rule_pending.backfill_and_close(conn, d, p, l)
@@ -648,8 +662,8 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
                 for d, p, l in sorted(approved_keys):
                     bump_rule(conn, d, p, _DIM_SUB_FIELD.get(d, ""),
                               is_confirmed=True, new_rule_active=True, label=l)
-            if new_label and str(new_label).strip() and dimension:
-                col = _DIM_COLUMN.get(dimension, dimension)
+            if new_label and str(new_label).strip():
+                col = _DIM_COLUMN[dimension]
                 conn.execute(
                     f"UPDATE clauses SET {col}=?, ai_classified=1 WHERE id=?",
                     (str(new_label).strip(), clause_id))
