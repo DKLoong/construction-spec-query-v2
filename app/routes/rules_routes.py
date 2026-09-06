@@ -253,9 +253,10 @@ async def update_rule(
 # ═══════════════════════════════════════════
 
 def _fetch_review_items(conn) -> list[dict]:
-    """查询待审核队列兜底项（status='review' 且无 pending 候选词），Tab1 兜底块与
-    /review/list 共用。有 pending 词的条文在 Tab1 主表（pending_clause_groups）展示，
-    不在此兜底块重复出现；每条附 extract_keywords 候选词供确认勾选背书。"""
+    """查询待审核队列兜底项（status='review' 且无 pending 候选词、无 rejected 标签），
+    Tab1 兜底块与 /review/list 共用。有 pending 词的条文在 Tab1 主表（pending_clause_groups）、
+    候选全 reject 的条文在主表「词已驳回」行（rejected_clause_groups）展示，均不在此兜底块
+    重复出现；每条附 extract_keywords 候选词供确认勾选背书。"""
     from app.classifier.feedback import extract_keywords
     rows = conn.execute(
         """SELECT q.id as queue_id, q.clause_id, q.dimension, q.keyword_score,
@@ -269,7 +270,7 @@ def _fetch_review_items(conn) -> list[dict]:
              AND NOT EXISTS (
                  SELECT 1 FROM rule_pending rp
                  WHERE rp.clause_id = q.clause_id AND rp.dimension = q.dimension
-                   AND rp.status = 'pending'
+                   AND rp.status IN ('pending', 'rejected')
              )
            ORDER BY q.created_at DESC LIMIT 50"""
     ).fetchall()
@@ -538,7 +539,7 @@ _DIM_COLUMN = {"dim4": "dim4_specialty", "dim5": "dim5_location",
 
 @router.get("/review/clause-pending")
 async def review_clause_pending(request: Request, dimension: str = ""):
-    """Tab1 条文待审：pending_clause_groups（条文多标签）+ 低置信 queue 兜底项。"""
+    """Tab1 条文待审：pending_clause_groups（条文多标签）+ 全标签已驳条文（D1）+ 低置信 queue 兜底。"""
     from app.main import templates
     groups = rule_pending.pending_clause_groups(dimension or None)
     with get_db() as conn:
@@ -552,6 +553,8 @@ async def review_clause_pending(request: Request, dimension: str = ""):
         for g in groups:
             g["rejected_labels"] = rej_map.get((g["clause_id"], g["dimension"]), [])
         items = _fetch_review_items(conn)
+    # D1：候选全 reject（无 pending）的条文并入主表（带「词已驳回」标记 + 行内编辑），不进兜底块
+    groups += rule_pending.rejected_clause_groups(dimension or None)
     return templates.TemplateResponse(request, "partials/review_clause_panel.html", {
         "groups": groups, "items": items, "dimension": dimension, "dim_labels": dim_labels,
     })

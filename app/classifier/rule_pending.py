@@ -232,6 +232,49 @@ def pending_clause_groups(dimension: str | None = None) -> list[dict]:
     return groups
 
 
+def rejected_clause_groups(dimension: str | None = None) -> list[dict]:
+    """Tab1 全标签已驳条文视图：候选全 reject（无 pending）且 queue 仍 review 的条文。
+
+    D1：驳回后条文仍在 Tab1 主表带「词已驳回」标记 + 行内编辑可用（不并入低置信兜底）。
+    返回结构与 pending_clause_groups 一致（candidates 恒空），rejected_labels 携带被驳标签。
+    """
+    from app.database import get_db
+    sql = (
+        "SELECT rp.dimension, rp.clause_id, s.code AS spec_code, c.clause_no, c.content "
+        "FROM rule_pending rp "
+        "JOIN clauses c ON c.id = rp.clause_id "
+        "JOIN specifications s ON s.id = c.spec_id "
+        "WHERE rp.status = 'rejected' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM rule_pending p2 WHERE p2.clause_id = rp.clause_id "
+        "    AND p2.dimension = rp.dimension AND p2.status = 'pending') "
+        "AND EXISTS ("
+        "  SELECT 1 FROM classification_queue q WHERE q.clause_id = rp.clause_id "
+        "    AND q.dimension = rp.dimension AND q.status = 'review')"
+    )
+    args = []
+    if dimension:
+        sql += " AND rp.dimension = ?"
+        args.append(dimension)
+    sql += " GROUP BY rp.dimension, rp.clause_id ORDER BY rp.dimension, c.clause_no"
+    with get_db() as conn:
+        rows = conn.execute(sql, args).fetchall()
+        groups = []
+        for r in rows:
+            rej = conn.execute(
+                "SELECT label FROM rule_pending WHERE clause_id=? AND dimension=? "
+                "AND status='rejected' ORDER BY id",
+                (r["clause_id"], r["dimension"])).fetchall()
+            groups.append({
+                "dimension": r["dimension"], "clause_id": r["clause_id"],
+                "spec_code": r["spec_code"], "clause_no": r["clause_no"],
+                "content": r["content"],
+                "candidates": [],
+                "rejected_labels": [x["label"] for x in rej],
+            })
+    return groups
+
+
 def blacklist_rows() -> list[dict]:
     """Tab3 黑名单：status='rejected' 按键聚合（词面/标签/条文数/最近驳回）。"""
     from app.database import get_db

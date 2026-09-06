@@ -51,18 +51,21 @@ def test_ai_confidence_threshold_override(monkeypatch, tmp_path):
     from app.classifier.batch_queue import apply_ai_results
     _setup(monkeypatch, tmp_path)
     with get_db() as conn:
-        _seed_clause_queue(conn, 2)
+        cids = _seed_clause_queue(conn, 2)
+        # 无提词条文（单字内容 → extract_keywords 空）走纯打标特例：仅由置信阈值裁决
+        # （Task2 后首次词转 review，需无背书词路径才能单独验证阈值参数的 auto/review 边界）
+        conn.execute("UPDATE clauses SET content='一' WHERE id IN (?, ?)", cids)
         conn.execute("UPDATE classification_queue SET batch_id = 'BX', status = 'ai_processing'")
     _set("classify.ai_confidence_threshold", 0.9)
     apply_ai_results("BX", [
-        {"clause_id": 1, "confidence": 0.95, "label": "钢筋"},
-        {"clause_id": 2, "confidence": 0.85, "label": "混凝土"},
+        {"clause_id": cids[0], "confidence": 0.95, "label": "钢筋"},
+        {"clause_id": cids[1], "confidence": 0.85, "label": "混凝土"},
     ])
     with get_db() as conn:
         statuses = dict(conn.execute(
             "SELECT clause_id, status FROM classification_queue WHERE batch_id='BX'").fetchall())
-    assert statuses[1] == "auto_adopted"  # 0.95 ≥ 0.9
-    assert statuses[2] == "review"        # 0.85 < 0.9
+    assert statuses[cids[0]] == "auto_adopted"  # 0.95 ≥ 0.9
+    assert statuses[cids[1]] == "review"        # 0.85 < 0.9
 
 
 def test_bump_rule_auto_enable_uses_db_min_hit(monkeypatch, tmp_path):
