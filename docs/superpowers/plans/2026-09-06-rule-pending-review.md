@@ -21,8 +21,8 @@
 7. SQL 参数化；测试临时库 `monkeypatch DATABASE_PATH + init_db`；改 Python 后按 CLAUDE.md §三重启 dev。
 8. 现状已回滚（HEAD=ceb3f59）：无 termdict 代码，判定以规则 confirmed 与 rule_pending 为准。
 9. **Tab1 数据源 = `rule_pending` 按条文(clause)聚合**：同条文的多个候选标签（各自 pending 行）并排展示 + 反义批量 checkbox（D4）。`classification_queue` 降级为状态/终态引用 + 「无 pending 词的低置信条文」兜底源，不扩展多 label。
-10. **驳回后 queue 处置（评审 D1）+ 新标签显式沉淀（评审 F7）**：驳回某组合后其来源条文**滞留 Tab1**，标注「词已驳回，请为条文输入新标签」；行内「编辑」展开该条文分类输入框（复用规范管理页 clause 分类编辑控件），预填「未驳回的候选标签」——删除某项=该标签驳回，保留=approved；**输入全新标签=写列（纯打标，分类树按列值生效），默认不沉淀规则**；表单内提供显式「沉淀为新规则」复选 + 匹配词选择（默认取该条文 pending 未决词最高 conf，可改；无 pending 词不提供该词时不允许勾沉淀）——勾选才沉淀该单规则。取消=不落任何改动。分类树/检索按列生效的事实依据：分类树与筛选由分类列 DISTINCT 生成，与是否建规则无关。
-11. 词/规则沉淀入口收敛：规则沉淀只来自 ① Tab 批量/行内 approve 的候选组合 ② 行内「新标签」自动沉淀 ③ 规则页人工建规则；任何路径都不再对未选词隐式沉淀。
+10. **驳回后 queue 处置（评审 D1）+ 新标签纯打标（评审 F7 用户裁决）**：驳回某组合后其来源条文**滞留 Tab1**，标注「词已驳回，请为条文输入新标签」；行内「编辑」展开该条文分类输入框（复用规范管理页 clause 分类编辑控件），预填「未驳回的候选标签」——删除某项=该标签驳回，保留=approved；**输入全新标签=只写列（纯打标），不做任何自动/显式规则沉淀**。依据（用户确认）：纯打标在分类树/检索按分类列即生效，无需规则承载；如需该 (词,标签) 成为规则，走既有 approved 通道（词面/Tab 对该标签 approve，或规则页手动建）。取消=不落任何改动。
+11. 词/规则沉淀入口收敛：规则沉淀只来自 ① Tab 批量/行内 approve 的候选组合 ② 规则页人工建规则（+ AI auto 对已背书组合的命中递增）；**inline 新标签不沉淀**。任何路径都不再对未选词隐式沉淀。
 
 ## Outside Voice 评审修订（2026-09-06，codex 独立意见 F1–F6，覆盖上方 Task1/4/5 相抵触字句）
 
@@ -849,14 +849,14 @@ git commit -m "feat: 词面校核/黑名单端点（批准回填+联动队列、
 - **行内「编辑」**（Global Constraint 10）：点击把该行候选标签区变成可编辑 chips + 新标签输入框 + 保存/取消。预填 = 该条文未驳回候选标签；保存语义：
   - 删除某预填标签 → 该 `(pattern,label)` 组合 reject（其 pending 行置 rejected）；
   - 保留的标签 → approve（等效行批量确认这些标签）；
-  - 新增非空且非既有标签值 → 写该维分类列该新值 + 自动沉淀新规则（pattern=该条文 pending 未决词中 `ai_confidence` 最高的一条；无 pending 词取内容 `extract_keywords top1`），规则 `is_confirmed=True, new_rule_active=True`；
+  - 新增非空且非既有标签值 → 只写该维分类列该新值（**纯打标，不沉淀规则**；沉淀走 approved 通道）；
   - 取消 → 不改任何状态。
   - 复用规范管理页 clause 分类编辑的表单/控件外观（three-column dim 编辑样式），后端走 review 路由新端点（不串 spec_routes）。
 - Tab2 `#word-pending-list`（词面聚合 `pending_groups`）、Tab3 `#blacklist-list`（`blacklist_rows`）同原计划；事件 `reviewWordPending/reviewBlacklist`。
 - 端点增补（rules_routes）：
   - `GET /review/clause-pending` → Tab1 clause 面板 partial
   - `POST /review/clause-pending/{clause_id}/decide` body `{ids, action}`（行批量；作用域=clause_pending_ids）
-  - `POST /review/clause-pending/{clause_id}/inline-edit` body `{label_ids: [...], removed_label_ids: [...], new_label: str|None, new_pattern: str|None}`（保存语义如上；实现可用更细粒度 body，行为须等价于本契约）
+  - `POST /review/clause-pending/{clause_id}/inline-edit` body `{label_ids: [...], removed_label_ids: [...], new_label: str|None}`（保存语义如上；`new_label` 仅写列不沉淀；实现可用更细粒度 body，行为须等价于本契约）
   - 原 `confirm_review` 保留 patterns 兼容（兜底视图用）；`reviewWord/Blacklist` 端点沿用 Task4。
 
 - [ ] **Step 1: 追加失败测试**（Tab1 条文多标签 + inline）
@@ -885,8 +885,8 @@ def test_tab1_clause_multi_label_approve_partial(monkeypatch, tmp_path, auth_cli
     assert q["status"] == "done"
 
 
-def test_tab1_inline_new_label_sinks_rule(monkeypatch, tmp_path, auth_client):
-    """驳回后 inline 编辑输入新标签 → 写列 + 自动沉淀一条新规则。"""
+def test_tab1_inline_new_label_writes_col_only(monkeypatch, tmp_path, auth_client):
+    """驳回后 inline 编辑输入新标签 → 只写列（纯打标），不沉淀任何规则（评审 F7 用户裁决）。"""
     with get_db() as conn:
         cid = _seed_spec_clause(conn)               # content 含 钢筋
         rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
@@ -894,14 +894,13 @@ def test_tab1_inline_new_label_sinks_rule(monkeypatch, tmp_path, auth_client):
         rp.set_status(conn, [pid], "rejected")      # 已驳 → 留在 Tab1
     resp = auth_client.post("/review/clause-pending/1/inline-edit",
                             json={"label_ids": [], "removed_label_ids": [],
-                                  "new_label": "混凝土", "new_pattern": None})
+                                  "new_label": "混凝土"})
     assert resp.status_code == 200
     with get_db() as conn:
         c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
-        r = conn.execute("SELECT pattern,label,is_active,confirmed FROM classification_rules").fetchone()
+        n_rules = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
     assert c["dim6_material"] == "混凝土"
-    assert (r["pattern"], r["label"], r["confirmed"]) == ("钢筋", "混凝土", 1)
-    assert r["is_active"] == 1
+    assert n_rules == 0     # 纯打标不沉淀
 ```
 
 - [ ] **Step 2: 运行确认失败**
@@ -922,7 +921,7 @@ git add app/routes/rules_routes.py app/templates/partials/review_tabs.html \
         app/templates/partials/review_clause_panel.html \
         app/templates/partials/review_word_panel.html app/templates/partials/review_blacklist.html \
         app/classifier/rule_pending.py app/templates/partials/review_list.html tests/test_rule_pending.py
-git commit -m "feat: /review 三 Tab + Tab1 条文多标签（inline 编辑删=驳/新标签沉淀、queue 兜底）"
+git commit -m "feat: /review 三 Tab + Tab1 条文多标签（inline 编辑删=驳/新标签纯打标、queue 兜底）"
 ```
 
 ---
