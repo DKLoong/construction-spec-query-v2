@@ -28,6 +28,14 @@
 | D9 | 存量 `confirmed=0` 碎片规则不动（沿用 `cleanup_rule_pollution` 清理）；机制只面向未来提案。 |
 | D10 | 规则页手动建/编辑规则不受 rule_pending 约束（人始终可显式绕过，物理不锁死）。 |
 
+> **2026-09-06 /plan-eng-review 修订（取代 D4/D5/D6 部分表述）**：
+> - **Tab1 数据源 = `rule_pending` 按条文聚合**（同条文多候选标签并排，各 pending 行），`classification_queue` 降为状态/终态 + 「无 pending 词的低置信条文」兜底源（D8 中「条文待审」主源相应调整）。
+> - **单条文多标签交互**：checkbox 默认全勾 + 反义批量不变，但作用对象是「标签」（非词）；「确认」=勾选 approved/未勾 rejected，「驳回」反向。
+> - **驳回后条文滞留 Tab1**，标注「词已驳回，请为条文输入新标签」；行内「编辑」预填未驳回标签，删除=该标签驳回、保留=approved、新增标签=写列+自动沉淀一条新规则（pattern 取该条文未决词最高 conf 或内容 top1）。编辑/保存复用规范管理页 clause 分类编辑外观；取消无副作用。
+> - **词/规则沉淀出口收敛**（D6 语义扩展）：任何路径不对未选标签/词隐式沉淀；新标签自动沉淀仅单规则。
+
+> 本修订已并入实施计划 `docs/superpowers/plans/2026-09-06-rule-pending-review.md`（Global Constraint 9-11 与 Task 5）。
+
 ### 非目标（本期不做）
 
 - termdict 式的权威标签收口 / label 白名单校验（已否决）。

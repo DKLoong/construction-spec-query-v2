@@ -17,9 +17,20 @@
 3. 条文人工确认（process_feedback）只写列 + 仅对勾选词 approved 背书（废除 top3 全 bump）；patterns 空 = 纯打标。
 4. 反义批量：`approve` → 勾选 approved、同作用域未勾 rejected；`reject` → 勾选 rejected、同作用域未勾 approved。UI 按钮下明示反向语义小字。
 5. 黑名单管理两档：rejected→pending（恢复待审）、rejected→approved（批准）。无物理删除入口。
-6. 词面批准/驳回后：批准回填该组合全部 pending 来源条文的分类列 + 联动清 Tab1（queue 该条文该维 review→done）；驳回不写列。
+6. 词面批准/驳回后：批准回填该组合全部 pending 来源条文的分类列 + 联动清 queue（该条文该维 review→done）；驳回不写列。
 7. SQL 参数化；测试临时库 `monkeypatch DATABASE_PATH + init_db`；改 Python 后按 CLAUDE.md §三重启 dev。
 8. 现状已回滚（HEAD=ceb3f59）：无 termdict 代码，判定以规则 confirmed 与 rule_pending 为准。
+9. **Tab1 数据源 = `rule_pending` 按条文(clause)聚合**：同条文的多个候选标签（各自 pending 行）并排展示 + 反义批量 checkbox（D4）。`classification_queue` 降级为状态/终态引用 + 「无 pending 词的低置信条文」兜底源，不扩展多 label。
+10. **驳回后 queue 处置（评审 D1）+ 新标签显式沉淀（评审 F7）**：驳回某组合后其来源条文**滞留 Tab1**，标注「词已驳回，请为条文输入新标签」；行内「编辑」展开该条文分类输入框（复用规范管理页 clause 分类编辑控件），预填「未驳回的候选标签」——删除某项=该标签驳回，保留=approved；**输入全新标签=写列（纯打标，分类树按列值生效），默认不沉淀规则**；表单内提供显式「沉淀为新规则」复选 + 匹配词选择（默认取该条文 pending 未决词最高 conf，可改；无 pending 词不提供该词时不允许勾沉淀）——勾选才沉淀该单规则。取消=不落任何改动。分类树/检索按列生效的事实依据：分类树与筛选由分类列 DISTINCT 生成，与是否建规则无关。
+11. 词/规则沉淀入口收敛：规则沉淀只来自 ① Tab 批量/行内 approve 的候选组合 ② 行内「新标签」自动沉淀 ③ 规则页人工建规则；任何路径都不再对未选词隐式沉淀。
+
+## Outside Voice 评审修订（2026-09-06，codex 独立意见 F1–F6，覆盖上方 Task1/4/5 相抵触字句）
+
+- **F1 / F2 — 裁决按「键」而非 rowid；approved 键最终都回填**：`decide_scope` 改为**键级作用域**——勾选 id 展开为它们的 `(dimension, pattern, label)` 键集合；approve：全部这些键的 pending 行（跨条文）置 approved，同 pattern 组内其它键置 rejected；reject 反向（勾选键 rejected，其余键 approved）。**任一动作后**，对「最终转为 approved 的键」统一执行 `backfill_and_close`（写列 + 其 queue review→done）+ `bump_rule(is_confirmed=True, new_rule_active=True, label=键.label)`（人工信号写回 confirmed，F4）。reject 清场不回填（只对键置 rejected）。Task1 的 `decide_scope`/`_key_all_pending_ids` 与本 Constraint 冲突处，以此为准；Task5/6 相应测试改键级断言。
+- **F3 / F8 — approved 规则判定 = confirmed>0 且 is_active=1 且容忍 label 旧值**：`key_state` 判 `classification_rules` 侧 approved 改为：同 `(dimension, pattern)`、`confirmed>0`、`is_active=1`、且 `(rule.label IS NULL OR rule.label = ?)` 的行即 approved（旧/规则页手工建规则 label 为 NULL 也算背书；**被自动停用的历史确认规则不算背书**，AI 再提回首次待审）。同一 pattern 多 label 无法在规则表分行的限制沿用 bump_rule 现行「按 (dim,pattern) 取首行、写/回填其 label」语义并加注释。
+- **F4 — 批准即 bump**：所有转 approved 的人工路径（词面 approve、Tab 行/批量 approve、黑名单 approve、inline 保留标签）统一触发该键 `bump_rule(is_confirmed=True)`（F1/F2 修订已含）；幂等（已存在 confirmed 规则时仅 hit/确认路径语义，见 bump 既有实现）。
+- **F5 — 修正两处自相矛盾测试**：① `insert_pending` 同 `(clause,key)` 二次必 None——「第二行不同批 pending」断言改为「不同 clause 两行」；② Tab1 批准前把 queue 状态置 `review`（与真实首次流一致）再断言 `done`。
+- **F6 — 并发幂等落库**：`rule_pending` 加 `UNIQUE(dimension, pattern, label, clause_id)`（见下建表修订），`insert_pending` 捕获 `IntegrityError` 返回 None；不依赖 SELECT+INSERT 防并发。
 
 ---
 
@@ -54,7 +65,9 @@
   - `set_status(conn, ids: list[int], status: str) -> int`
   - `decide_scope(conn, ids: list[int], action: str) -> dict`：action=`approve|reject`；作用域由 ids 取整批「该词面该分组」去重为集合 S（实现：ids 行各自 (dimension,pattern) 扩张为同组全 pending id 集），勾选=ids 交集，未勾=S−ids；approve→勾选 approved/未勾 rejected，reject 反向；返回 `{"approved": n, "rejected": m}`。**注意**：若调用方已给「完整作用域 id 集」，本函数不再扩张（见各调用点说明，参数 `expand=True` 控制）。
   - `pending_groups(dimension: str|None) -> list[dict]`：`status='pending'` 按 `(dimension, pattern)` 聚合 → `{dimension, pattern, labels:[{id,label,confidence,n_clauses}], clause_count, avg_conf}`，供 Tab2。
+  - `pending_clause_groups(dimension: str|None) -> list[dict]`：`status='pending'` 按 `(dimension, clause_id)` 聚合，join clauses/specifications 带条文文本 → 每条文 `{dimension, clause_id, spec_code, clause_no, content, candidates:[{id,pattern,label,confidence}]}`，供 **Tab1 条文多标签视图**（queue 兜底的低置信项由路由另取并合成）。
   - `blacklist_rows() -> list[dict]`：`status='rejected'` 行（词面/标签/clause 数/最近驳回），供 Tab3。
+  - `clause_pending_ids(conn, clause_id, dimension) -> list[int]`：某条文该维全部 pending 行 id（Tab1 行内编辑/行内确认的作用域）。
   - `backfill_and_close(conn, dimension, pattern, label) -> int`：该键全部 pending 来源条文写列 + 其 queue(review) 置 done（见 Task4，本函数同文件实现，Task1 先实现写列与 close 两段）
   - `KEY_DIMS = ("dim4", "dim5", "dim6")`
 
@@ -160,6 +173,8 @@ CREATE TABLE IF NOT EXISTS rule_pending (
 CREATE INDEX IF NOT EXISTS idx_rule_pending_key
     ON rule_pending(dimension, pattern, label, status);
 CREATE INDEX IF NOT EXISTS idx_rule_pending_status ON rule_pending(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_pending_uniq
+    ON rule_pending(dimension, pattern, label, clause_id);
 ```
 
 - [ ] **Step 4: 实现** `app/classifier/rule_pending.py`
@@ -497,7 +512,7 @@ def apply_ai_results(batch_id: str, results: list[dict]):
                                    "review": len(results) - auto_count}))
 ```
 
-> 说明：词重复提时 `extract_keywords` 跑两次略冗余——实现时可把第一次提取的 `(kw, key_state)` 列表留用（避免二次 extract/二次 key_state）。推荐把 kws 判定结果保存在循环变量，bump 段复用。
+> **评审 D5 采纳（单遍收集）**：实现须**单遍** `extract_keywords(content, top_n=3)`，并逐词一次 `key_state` 得 `decisions: list[tuple[kw, state]]`（approved/rejected/首次），判定段与沉淀段**共用** `decisions`，禁止二次 extract 或重复 key_state。上述代码块按此精神改写为单遍实现。
 
 - [ ] **Step 4: 回归适配既有测试**
 
@@ -820,62 +835,94 @@ git commit -m "feat: 词面校核/黑名单端点（批准回填+联动队列、
 
 ---
 
-### Task 5: `/review` 三 Tab UI + Tab1 勾选词接线
+### Task 5: `/review` 三 Tab UI + Tab1 条文多标签（评审 D1/D4/D2 对齐版）
 
 **Files:**
-- Create: `app/templates/partials/review_word_panel.html`、`review_blacklist.html`
-- Modify: `app/templates/partials/review_list.html`（Tab1 行候选词 checkbox + 单/批量确认带勾选词）、`app/routes/rules_routes.py`（review_page 渲染三 Tab 容器；confirm_review/batch_confirm 接收 patterns）、`app/templates/partials/review_list.html`
+- Create: `app/templates/partials/review_tabs.html`、`review_clause_panel.html`（Tab1）、`review_word_panel.html`（Tab2）、`review_blacklist.html`（Tab3）
+- Modify: `app/routes/rules_routes.py`（review_page 三 Tab 容器；Tab1 列表聚合端点 + 行内编辑/批量端点；confirm/batch 接收 patterns 兼容兜底）、`app/templates/partials/review_list.html`（Queue 兜底视图，供「无 pending 词的低置信条文」，复用原 review 逻辑）
 - Test: `tests/test_rule_pending.py`（UI 接线 + auth 冒烟）
 
 **Interfaces:**
-- `review_page`：center_content 改为新 partial `partials/review_tabs.html`（本 Task 内联进 review_page 模板传参或新文件）——三 Tab 按钮 + 三个容器：Tab1 `#review-list`（原 fetch 逻辑保留）、Tab2 `#word-pending-list`、Tab3 `#blacklist-list`；Tab2/3 各自 `hx-get` 对应端点，`hx-trigger="load, reviewWordPending from:body / reviewBlacklist from:body"`。
-- Tab1 行确认：每行渲染该 queue 的候选词（`_clauses_kw_from`）为 `<label><input type=checkbox class=kw-{qid} name=pattern value={kw} checked>`；单条确认按钮 `hx-post="/review/{qid}/confirm"` + `hx-include="closest tr .kw-{qid}"`；服务端 `confirm_review` 加 `patterns: list[str] = Form(default=[])`。
-- 批量确认：`reviewBatch('confirm')` 现在为每个勾选 queue 收集其行内 `.kw-{qid}` 勾选 → JSON `{queue_ids, patterns_by_id:{qid:[kw]}}`；`batch_confirm` 加 `patterns_by_id`（dict[str, list[str]]，缺省则纯打标）。确认按钮下方明示反向小字：「未勾选的候选词将自动驳回（不进规则库）」；驳回即原语义。
-- 词面面板行：`(词面, 标签勾选框组，默认全勾)` + 行内双按钮「✅ 确认所选」「❌ 驳回所选」→ 分别 POST decide action；按钮小字反向提示。
+- `review_page`：center_content = `partials/review_tabs.html`——三 Tab 按钮 + 三容器。Alpine `tab` 切换 + 各容器 `x-show`；进入时各自 `hx-get` 拉取。
+- **Tab1 数据源 = `pending_clause_groups()`**（Global Constraint 9）：每行 = 一条条文 + 该维候选标签 chips（各含 pattern 源、默认全勾的 checkbox）+ 来源信息；行尾按钮「批量确认」「批量驳回」「编辑」。另把「有 queue review 但无 pending 词」的低置信条文（`review_list.html` 渲染）并排同一容器，标注「低置信（无候选词）」。
+  - 行批量：作用域 = `clause_pending_ids(clause,dim)`，反义批量（D4），文案「未勾选标签将自动驳回/通过」；approve 前先对该行 approved 标签键 `backfill_and_close`（写列+清 queue review）。
+- **行内「编辑」**（Global Constraint 10）：点击把该行候选标签区变成可编辑 chips + 新标签输入框 + 保存/取消。预填 = 该条文未驳回候选标签；保存语义：
+  - 删除某预填标签 → 该 `(pattern,label)` 组合 reject（其 pending 行置 rejected）；
+  - 保留的标签 → approve（等效行批量确认这些标签）；
+  - 新增非空且非既有标签值 → 写该维分类列该新值 + 自动沉淀新规则（pattern=该条文 pending 未决词中 `ai_confidence` 最高的一条；无 pending 词取内容 `extract_keywords top1`），规则 `is_confirmed=True, new_rule_active=True`；
+  - 取消 → 不改任何状态。
+  - 复用规范管理页 clause 分类编辑的表单/控件外观（three-column dim 编辑样式），后端走 review 路由新端点（不串 spec_routes）。
+- Tab2 `#word-pending-list`（词面聚合 `pending_groups`）、Tab3 `#blacklist-list`（`blacklist_rows`）同原计划；事件 `reviewWordPending/reviewBlacklist`。
+- 端点增补（rules_routes）：
+  - `GET /review/clause-pending` → Tab1 clause 面板 partial
+  - `POST /review/clause-pending/{clause_id}/decide` body `{ids, action}`（行批量；作用域=clause_pending_ids）
+  - `POST /review/clause-pending/{clause_id}/inline-edit` body `{label_ids: [...], removed_label_ids: [...], new_label: str|None, new_pattern: str|None}`（保存语义如上；实现可用更细粒度 body，行为须等价于本契约）
+  - 原 `confirm_review` 保留 patterns 兼容（兜底视图用）；`reviewWord/Blacklist` 端点沿用 Task4。
 
-- [ ] **Step 1: 追加失败测试**（UI 接线端到端）
+- [ ] **Step 1: 追加失败测试**（Tab1 条文多标签 + inline）
 
 ```python
-def test_tab1_confirm_with_checked_patterns(monkeypatch, tmp_path, auth_client):
-    """勾选词才沉淀：只勾 钢筋 → 规则表仅 钢筋。"""
-    from app.routes import rules_routes as rr
+def test_tab1_clause_multi_label_approve_partial(monkeypatch, tmp_path, auth_client):
+    """同条文两候选标签：只勾 A → A approved+写列+queue done，B rejected 不写列。"""
     with get_db() as conn:
-        cid = _seed_spec_clause(conn)          # content 含 钢筋/试验
-        conn.execute("INSERT INTO classification_queue (clause_id,dimension,keyword_score,status,"
-                     "ai_label,ai_confidence) VALUES (?, 'dim6', 0.2, 'review','钢筋',0.5)", (cid,))
-        qid = conn.execute("SELECT id FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()["id"]
-    resp = auth_client.post(f"/review/{qid}/confirm", data={"pattern": ["钢筋"]})
+        cid = _seed_spec_clause(conn)
+        for lab in ("钢筋", "混凝土"):
+            rp.insert_pending(conn, cid, "dim6", "钢筋", lab, 0.9, "bT")
+            bq.try_enqueue(conn, cid, "dim6", 0.0) or None
+        ids = rp.clause_pending_ids(conn, cid, "dim6")
+    # 作用域=ids；只保留 label=钢筋 的行作勾选
+    keep = [i for i in ids if _pending_label(i) == "钢筋"]
+    resp = auth_client.post("/review/clause-pending/1/decide",
+                            json={"ids": keep, "action": "approve"})
     assert resp.status_code == 200
     with get_db() as conn:
-        pats = [r["pattern"] for r in conn.execute("SELECT DISTINCT pattern FROM classification_rules").fetchall()]
-    assert pats == ["钢筋"]
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        st = {r["label"]: r["status"] for r in conn.execute(
+            "SELECT label,status FROM rule_pending WHERE clause_id=?", (cid,)).fetchall()}
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+    assert c["dim6_material"] == "钢筋"
+    assert st["钢筋"] == "approved" and st["混凝土"] == "rejected"
+    assert q["status"] == "done"
+
+
+def test_tab1_inline_new_label_sinks_rule(monkeypatch, tmp_path, auth_client):
+    """驳回后 inline 编辑输入新标签 → 写列 + 自动沉淀一条新规则。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)               # content 含 钢筋
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
+        pid = rp.clause_pending_ids(conn, cid, "dim6")[0]
+        rp.set_status(conn, [pid], "rejected")      # 已驳 → 留在 Tab1
+    resp = auth_client.post("/review/clause-pending/1/inline-edit",
+                            json={"label_ids": [], "removed_label_ids": [],
+                                  "new_label": "混凝土", "new_pattern": None})
+    assert resp.status_code == 200
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        r = conn.execute("SELECT pattern,label,is_active,confirmed FROM classification_rules").fetchone()
+    assert c["dim6_material"] == "混凝土"
+    assert (r["pattern"], r["label"], r["confirmed"]) == ("钢筋", "混凝土", 1)
+    assert r["is_active"] == 1
 ```
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k tab1 -v`
-Expected: FAIL（confirm 无 patterns 参数/不校验）
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "tab1 or inline" -v`
+Expected: FAIL（端点 404 / clause_pending_ids 不存在）
 
-- [ ] **Step 3: 实现路由 patterns 参数 + review_page 三 Tab**
-
-`rules_routes.py`：
-- `confirm_review` 与 `batch_confirm` 加 `patterns`（单条 Form；批量 body dict `patterns_by_id`），透传 `process_feedback(..., patterns=...)`。
-- `review_page` 渲染 `partials/review_tabs.html` context 带 items/三容器。
-
-模板见实现者产出（结构要点：Tab1 沿用 review_list.html 全文但行确认区加候选词 checkbox；Tab2/3 如上节；三容器切换用 Alpine `x-data="{tab:'clause'}"` 与按钮 `@click` 切换 + 各容器 `x-show`，首次进入各容器 `hx-trigger=load` 拉取）。`reviewBatch` JS 在 review_list.html 内更新为携带 `patterns_by_id`。
-
+- [ ] **Step 3: 实现**（`rules_routes.py` 端点 + `pending_clause_groups/clause_pending_ids` helpers（Task1 已列接口，此 Task 补实现）+ review_tabs/review_clause_panel 模板 + Alpine tab 切换 + reviewBatch 语义迁移到 clause 面板；原 `review_list.html` 保留为「无 pending 词低置信」兜底区块）。`clause_id` 参数用 path int；测试中 `_pending_label` 小工具按需定义于测试文件顶部。
 - [ ] **Step 4: 运行确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py tests/test_review_batch.py tests/test_rules_routes.py -q`
-Expected: PASS（含既有 confirm 无 patterns → 纯打标不沉淀路径，适配 test_review_batch 中断言）
+Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/routes/rules_routes.py app/templates/partials/review_list.html \
+git add app/routes/rules_routes.py app/templates/partials/review_tabs.html \
+        app/templates/partials/review_clause_panel.html \
         app/templates/partials/review_word_panel.html app/templates/partials/review_blacklist.html \
-        app/templates/partials/review_tabs.html tests/test_rule_pending.py
-git commit -m "feat: /review 三 Tab + Tab1 勾选词接线（反义批量文案明示、词面/黑名单面板）"
+        app/classifier/rule_pending.py app/templates/partials/review_list.html tests/test_rule_pending.py
+git commit -m "feat: /review 三 Tab + Tab1 条文多标签（inline 编辑删=驳/新标签沉淀、queue 兜底）"
 ```
 
 ---
@@ -908,6 +955,14 @@ def test_word_approve_then_clause_queue_already_done_idempotent(monkeypatch, tmp
 ```
 
 （校验词面批准幂等：写列 UPDATE 重复无副作用、queue done 幂等、后续新 pending 行仍可各自批准。）
+
+> **评审 Tests 补测清单（追加 `tests/test_rule_pending.py`）**：
+> 1. `test_lowconf_clause_without_pending_still_in_tab1` — 低置信、无 pending 词的 queue review 条文仍出现在 Tab1（queue 兜底），且 confirm 走纯打标（patterns 空）后列写入、无规则沉淀（回归既有低置信确认路径不破）。
+> 2. `test_inline_cancel_noop` — inline-edit cancel（或仅读请求）不改变任何 pending/queue/列状态。
+> 3. `test_clause_decide_idempotent` — 同 clause 同作用域重复 approve：第二次无新副作用（approved 键重复 backfill/queue done 幂等，pending 计数不变）。
+> 4. `test_pending_clause_groups_joins_text` — `pending_clause_groups` 返回含 spec_code/clause_no/content 且按维度过滤正确。
+> 5. `test_tab2_approve_then_tab1_gone` — Tab2 词面批准某组合后，Tab1 对应条文（该组合来源）消失（queue done + 回填）。
+> 6. `test_reject_keeps_clause_in_tab1_marked` — 驳回后条文仍在 Tab1 且带「词已驳回」标记字段（D1）。
 
 - [ ] **Step 2: 全量回归 + 修复**
 
@@ -942,4 +997,21 @@ git commit -m "test: 词面批准幂等/双入口一致性 + 全量回归收敛"
 **2. Inline Execution**——当前会话内 executing-plans 分批执行 + 检查点
 
 选哪种？
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | ISSUES — all adjudicated | 8 findings (F1–F8), 6 mechanical ratified + 2 preference settled |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | Arch-1(驳回queue处置→inline编辑)、D1 模型对齐、D2 沉淀词、D4/D5、Code Quality 1(单遍提取)、Test 补 6 例 |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **CROSS-MODEL:** Eng review 与 codex 在核心机制一致；codex 补充了批准粒度(rowid→key)、reject 未勾回填、label NULL/停用规则背书、人工信号写回 confirmed、并发 UNIQUE、行内新标签夹带等 6+2 点，全部并入 plan（Global Constraint 9–11 与 Outside Voice 修订节）。
+- **VERDICT:** ENG + OUTSIDE VOICE CLEARED — 计划已按评审修订（Task1/4/5 语义与建表、Task5 三 Tab inline、测试补 6）。可进入实现（Subagent-Driven 或 Inline）。
+
+NO UNRESOLVED DECISIONS
 
