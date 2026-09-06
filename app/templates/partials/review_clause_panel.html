@@ -22,7 +22,7 @@
                 <div id="candidates-{{ g.clause_id }}-{{ g.dimension }}"
                      style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;margin-bottom:0.4rem">
                     {% for c in g.candidates %}
-                    <label style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.75rem;background:var(--pico-secondary-background);padding:0.15rem 0.4rem;border-radius:12px;border:1px solid var(--pico-muted-border-color, #ddd)">
+                    <label style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.75rem">
                         <input type="checkbox" class="cand-check" value="{{ c.id }}" checked
                                style="width:0.8rem;height:0.8rem">
                         <span class="dim-tag">{{ c.label }}</span>
@@ -50,7 +50,7 @@
                      style="display:flex;gap:0.3rem;flex-wrap:wrap;margin-bottom:0.4rem">
                     {% for c in g.candidates %}
                     <span class="edit-chip" data-id="{{ c.id }}" data-key="{{ g.clause_id }}:{{ g.dimension }}"
-                          style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.75rem;background:var(--pico-secondary-background);padding:0.15rem 0.4rem;border-radius:12px">
+                          style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.75rem;border:1px dashed var(--pico-muted-border-color, #ccc);padding:0.15rem 0.4rem;border-radius:12px">
                         {{ c.label }}
                         <button type="button" onclick="removeEditChip(this)"
                                 style="background:none;border:none;color:#c44;cursor:pointer;padding:0;line-height:1" aria-label="删除">×</button>
