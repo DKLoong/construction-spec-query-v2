@@ -197,7 +197,8 @@ def test_confirm_review_triggers_feedback(auth_client, monkeypatch, tmp_path):
         )
         queue_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-    resp = auth_client.post(f"/review/{queue_id}/confirm")
+    resp = auth_client.post(f"/review/{queue_id}/confirm",
+                            json={"patterns": ["钢筋"]})
     assert resp.status_code == 200
 
     with get_db() as conn:

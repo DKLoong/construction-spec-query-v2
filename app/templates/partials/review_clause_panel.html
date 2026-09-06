@@ -1,0 +1,149 @@
+<!-- Tab1 条文待审：pending_clause_groups（条文多标签）+ 低置信 queue 兜底 -->
+<div>
+    {% if groups %}
+    <div class="clause-groups">
+        {% for g in groups %}
+        <div id="clause-row-{{ g.clause_id }}-{{ g.dimension }}"
+             style="border:1px solid var(--pico-muted-border-color, #ddd);border-radius:6px;padding:0.6rem;margin-bottom:0.6rem">
+            <div style="display:flex;gap:0.5rem;align-items:baseline;flex-wrap:wrap">
+                <small style="color:var(--pico-muted-color)">{{ g.spec_code }}</small>
+                <code>{{ g.clause_no }}</code>
+                <small>{{ dim_labels.get(g.dimension, g.dimension) }}</small>
+            </div>
+            <div style="margin:0.3rem 0;font-size:0.85rem" title="{{ g.content }}">{{ g.content[:80] }}{% if g.content|length > 80 %}...{% endif %}</div>
+
+            {% if g.rejected_labels %}
+            <div style="color:#c44;font-size:0.75rem;margin-bottom:0.3rem">
+                ⚠️ 词已驳回（{{ g.rejected_labels|join('、') }}），请为条文输入新标签
+            </div>
+            {% endif %}
+
+            <div id="view-{{ g.clause_id }}-{{ g.dimension }}">
+                <div id="candidates-{{ g.clause_id }}-{{ g.dimension }}"
+                     style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;margin-bottom:0.4rem">
+                    {% for c in g.candidates %}
+                    <label style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.75rem;background:var(--pico-secondary-background);padding:0.15rem 0.4rem;border-radius:12px;border:1px solid var(--pico-muted-border-color, #ddd)">
+                        <input type="checkbox" class="cand-check" value="{{ c.id }}" checked
+                               style="width:0.8rem;height:0.8rem">
+                        <span class="dim-tag">{{ c.label }}</span>
+                        <small style="color:var(--pico-muted-color)">源:{{ c.pattern }}</small>
+                    </label>
+                    {% endfor %}
+                </div>
+                <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap">
+                    <button type="button"
+                            style="font-size:0.75rem;padding:0.2rem 0.5rem;background:green;border-color:green;color:white"
+                            onclick="clauseDecide('{{ g.clause_id }}', '{{ g.dimension }}', 'approve')">✅ 批量确认</button>
+                    <button type="button" class="outline secondary"
+                            style="font-size:0.75rem;padding:0.2rem 0.5rem"
+                            onclick="clauseDecide('{{ g.clause_id }}', '{{ g.dimension }}', 'reject')">❌ 批量驳回</button>
+                    <button type="button" class="outline"
+                            style="font-size:0.75rem;padding:0.2rem 0.5rem"
+                            onclick="toggleClauseEdit('{{ g.clause_id }}', '{{ g.dimension }}')">✏️ 编辑</button>
+                    <small style="color:var(--pico-muted-color);font-size:0.7rem">未勾选标签将自动驳回/通过</small>
+                </div>
+            </div>
+
+            <div id="edit-{{ g.clause_id }}-{{ g.dimension }}" style="display:none;margin-top:0.5rem;padding-top:0.5rem;border-top:1px dashed var(--pico-muted-border-color, #ddd)">
+                <div style="font-size:0.75rem;color:var(--pico-muted-color);margin-bottom:0.3rem">可删候选标签（点 × 删除=驳回；保留=批准）：</div>
+                <div id="edit-chips-{{ g.clause_id }}-{{ g.dimension }}"
+                     style="display:flex;gap:0.3rem;flex-wrap:wrap;margin-bottom:0.4rem">
+                    {% for c in g.candidates %}
+                    <span class="edit-chip" data-id="{{ c.id }}" data-key="{{ g.clause_id }}:{{ g.dimension }}"
+                          style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.75rem;background:var(--pico-secondary-background);padding:0.15rem 0.4rem;border-radius:12px">
+                        {{ c.label }}
+                        <button type="button" onclick="removeEditChip(this)"
+                                style="background:none;border:none;color:#c44;cursor:pointer;padding:0;line-height:1" aria-label="删除">×</button>
+                    </span>
+                    {% endfor %}
+                </div>
+                <div style="display:flex;gap:0.4rem;align-items:center">
+                    <input type="text" id="new-label-{{ g.clause_id }}-{{ g.dimension }}"
+                           placeholder="输入新标签（只写分类列，不沉淀规则）"
+                           style="font-size:0.75rem;padding:0.3rem 0.4rem;flex:1;box-sizing:border-box">
+                    <button type="button"
+                            style="font-size:0.75rem;padding:0.3rem 0.6rem;background:green;border-color:green;color:white"
+                            onclick="saveClauseEdit('{{ g.clause_id }}', '{{ g.dimension }}')">💾 保存</button>
+                    <button type="button" class="outline" style="font-size:0.75rem;padding:0.3rem 0.6rem"
+                            onclick="cancelClauseEdit('{{ g.clause_id }}', '{{ g.dimension }}')">取消</button>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if items %}
+    <div style="margin-top:0.75rem">
+        <div style="font-size:0.8rem;color:var(--pico-muted-color);margin-bottom:0.4rem">低置信（无候选词）：</div>
+        {% include "partials/review_list.html" %}
+    </div>
+    {% endif %}
+
+    {% if not groups and not items %}
+    <p style="color:var(--pico-muted-color);text-align:center;padding:2rem">🎉 暂无待审核项</p>
+    {% endif %}
+</div>
+
+<script>
+function refreshReviewPanels() {
+    document.body.dispatchEvent(new CustomEvent('reviewClausePending'));
+    document.body.dispatchEvent(new CustomEvent('reviewWordPending'));
+    document.body.dispatchEvent(new CustomEvent('reviewBlacklist'));
+}
+
+var removedChipIds = {};
+
+function clauseDecide(clauseId, dimension, action) {
+    var checked = Array.from(document.querySelectorAll('#candidates-' + clauseId + '-' + dimension + ' .cand-check:checked'))
+        .map(function (c) { return parseInt(c.value, 10); });
+    if (!checked.length) { alert('请至少勾选一个标签'); return; }
+    var verb = action === 'approve' ? '确认' : '驳回';
+    var anti = action === 'approve' ? '驳回' : '通过';
+    if (!confirm(verb + '所选标签？未勾选标签将自动' + anti + '。')) return;
+    fetch('/review/clause-pending/' + clauseId + '/decide', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ ids: checked, action: action }),
+    }).then(function (resp) {
+        if (resp.ok) refreshReviewPanels();
+        else resp.text().then(function (t) { alert('操作失败：' + t); });
+    }).catch(function (e) { alert('操作失败：' + e.message); });
+}
+
+function toggleClauseEdit(clauseId, dimension) {
+    var view = document.getElementById('view-' + clauseId + '-' + dimension);
+    var edit = document.getElementById('edit-' + clauseId + '-' + dimension);
+    if (view) view.style.display = 'none';
+    if (edit) edit.style.display = 'block';
+}
+
+function cancelClauseEdit(clauseId, dimension) {
+    // 取消：仅重拉面板（读请求，无后端状态变更），恢复初始 chips
+    refreshReviewPanels();
+}
+
+function removeEditChip(btn) {
+    var chip = btn.parentElement;
+    var key = chip.getAttribute('data-key');
+    var id = parseInt(chip.getAttribute('data-id'), 10);
+    if (!removedChipIds[key]) removedChipIds[key] = [];
+    removedChipIds[key].push(id);
+    chip.remove();
+}
+
+function saveClauseEdit(clauseId, dimension) {
+    var key = clauseId + ':' + dimension;
+    var chipContainer = document.getElementById('edit-chips-' + clauseId + '-' + dimension);
+    var labelIds = Array.from(chipContainer.querySelectorAll('.edit-chip'))
+        .map(function (chip) { return parseInt(chip.getAttribute('data-id'), 10); });
+    var removedIds = removedChipIds[key] || [];
+    var newLabel = document.getElementById('new-label-' + clauseId + '-' + dimension).value.trim();
+    fetch('/review/clause-pending/' + clauseId + '/inline-edit', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ label_ids: labelIds, removed_label_ids: removedIds, new_label: newLabel || null, dimension: dimension }),
+    }).then(function (resp) {
+        if (resp.ok) refreshReviewPanels();
+        else resp.text().then(function (t) { alert('保存失败：' + t); });
+    }).catch(function (e) { alert('保存失败：' + e.message); });
+}
+</script>

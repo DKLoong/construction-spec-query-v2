@@ -1,0 +1,69 @@
+<!-- Tab2 词面校核：pending_groups 按 (dimension, pattern) 聚合 -->
+<div>
+    {% if groups %}
+    <table class="striped" style="font-size:0.85rem">
+        <thead>
+            <tr>
+                <th>维度</th>
+                <th>词面</th>
+                <th>候选标签</th>
+                <th>条文数</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for g in groups %}
+        <tr id="word-group-{{ loop.index }}">
+            <td><small>{{ dim_labels.get(g.dimension, g.dimension) }}</small></td>
+            <td><code>{{ g.pattern }}</code></td>
+            <td>
+                {% for lab in g.labels %}
+                <label style="display:inline-flex;align-items:center;gap:0.2rem;font-size:0.7rem;margin-right:0.4rem">
+                    <input type="checkbox" class="word-check" value="{{ lab.id }}" checked
+                           style="width:0.8rem;height:0.8rem">
+                    <span class="dim-tag">{{ lab.label }}</span>
+                    <small style="color:var(--pico-muted-color)">×{{ lab.n }}</small>
+                </label>
+                {% endfor %}
+            </td>
+            <td><small>{{ g.clause_count }}</small></td>
+            <td>
+                <div style="display:flex;gap:0.25rem">
+                    <button type="button"
+                            style="font-size:0.75rem;padding:0.15rem 0.4rem;background:green;border-color:green;color:white"
+                            onclick="wordDecide('word-group-{{ loop.index }}', 'approve')">✅ 批准</button>
+                    <button type="button" class="secondary"
+                            style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                            onclick="wordDecide('word-group-{{ loop.index }}', 'reject')">❌ 驳回</button>
+                </div>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <script>
+    function wordDecide(rowId, action) {
+        var ids = Array.from(document.querySelectorAll('#' + rowId + ' .word-check:checked'))
+            .map(function (c) { return parseInt(c.value, 10); });
+        if (!ids.length) { alert('请至少勾选一个标签'); return; }
+        var verb = action === 'approve' ? '批准' : '驳回';
+        var anti = action === 'approve' ? '驳回' : '通过';
+        if (!confirm(verb + '所选标签？未勾选标签将自动' + anti + '。')) return;
+        fetch('/review/word-pending/decide', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ ids: ids, action: action }),
+        }).then(function (resp) {
+            if (resp.ok) {
+                document.body.dispatchEvent(new CustomEvent('reviewWordPending'));
+                document.body.dispatchEvent(new CustomEvent('reviewBlacklist'));
+                document.body.dispatchEvent(new CustomEvent('reviewClausePending'));
+            } else {
+                resp.text().then(function (t) { alert('操作失败：' + t); });
+            }
+        }).catch(function (e) { alert('操作失败：' + e.message); });
+    }
+    </script>
+    {% else %}
+    <p style="color:var(--pico-muted-color);text-align:center;padding:2rem">🎉 暂无待校核词面</p>
+    {% endif %}
+</div>

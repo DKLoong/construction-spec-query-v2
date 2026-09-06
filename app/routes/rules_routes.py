@@ -253,7 +253,10 @@ async def update_rule(
 # ═══════════════════════════════════════════
 
 def _fetch_review_items(conn) -> list[dict]:
-    """查询待审核队列项（status='review'），审核页与 /review/list 共用"""
+    """查询待审核队列兜底项（status='review' 且无 pending 候选词），Tab1 兜底块与
+    /review/list 共用。有 pending 词的条文在 Tab1 主表（pending_clause_groups）展示，
+    不在此兜底块重复出现；每条附 extract_keywords 候选词供确认勾选背书。"""
+    from app.classifier.feedback import extract_keywords
     rows = conn.execute(
         """SELECT q.id as queue_id, q.clause_id, q.dimension, q.keyword_score,
                   q.ai_label, q.ai_confidence, q.status,
@@ -263,21 +266,26 @@ def _fetch_review_items(conn) -> list[dict]:
            JOIN clauses c ON q.clause_id = c.id
            JOIN specifications s ON c.spec_id = s.id
            WHERE q.status = 'review'
+             AND NOT EXISTS (
+                 SELECT 1 FROM rule_pending rp
+                 WHERE rp.clause_id = q.clause_id AND rp.dimension = q.dimension
+                   AND rp.status = 'pending'
+             )
            ORDER BY q.created_at DESC LIMIT 50"""
     ).fetchall()
-    return [dict(r) for r in rows]
+    items = [dict(r) for r in rows]
+    for it in items:
+        it["keywords"] = extract_keywords(it["content"] or "", top_n=3)
+    return items
 
 
 @router.get("/review")
 async def review_page(request: Request):
-    """审核队列页（初始渲染需带 items，否则 review_list.html 恒显示空态）"""
+    """审核页（三 Tab：条文待审 / 词面校核 / 黑名单；各 Tab 由 hx-get 懒加载）"""
     from app.main import templates
-    with get_db() as conn:
-        items = _fetch_review_items(conn)
     return templates.TemplateResponse(request, "base.html", {
         "left_content": "partials/tree_panel.html",
-        "center_content": "partials/review_list.html",
-        "items": items,
+        "center_content": "partials/review_tabs.html",
     })
 
 
@@ -293,9 +301,11 @@ async def review_list(request: Request):
 
 
 @router.post("/review/{queue_id}/confirm")
-async def confirm_review(request: Request, queue_id: int):
-    """确认 AI 分类标签 — 触发反馈闭环"""
+async def confirm_review(request: Request, queue_id: int, body: dict | None = None):
+    """确认 AI 分类标签 — 触发反馈闭环（body.patterns=勾选词；None/空→纯打标不沉淀）"""
     from app.classifier.feedback import process_feedback
+
+    patterns = (body or {}).get("patterns") if body else None
 
     with get_db() as conn:
         item = conn.execute(
@@ -312,18 +322,14 @@ async def confirm_review(request: Request, queue_id: int):
                                        "ai_label": item["ai_label"]}),
                    username=getattr(request.state, "username", ""))
         process_feedback(item["clause_id"], item["dimension"], item["ai_label"],
-                         source_conf=item["ai_confidence"] or 0.0)
+                         source_conf=item["ai_confidence"] or 0.0,
+                         patterns=patterns)
     else:
         log_action("review", "WARN", "确认失败-队列项不存在",
                    detail=json_detail({"queue_id": queue_id}),
                    username=getattr(request.state, "username", ""))
 
-    # 返回更新后的列表
-    from app.main import templates
-    return HTMLResponse(
-        """<div hx-get="/review/list" hx-trigger="load" hx-swap="outerHTML"></div>
-        <p style="color:green">✅ 已确认并提取关键词</p>"""
-    )
+    return HTMLResponse("", headers={"HX-Trigger": "reviewClausePending"})
 
 
 @router.post("/review/{queue_id}/reject")
@@ -349,20 +355,17 @@ async def reject_review(request: Request, queue_id: int):
                                        "dimension": item["dimension"]}),
                    username=getattr(request.state, "username", ""))
 
-    from app.main import templates
-    return HTMLResponse(
-        """<div hx-get="/review/list" hx-trigger="load" hx-swap="outerHTML"></div>
-        <p style="color:orange">⚠️ 已驳回</p>"""
-    )
+    return HTMLResponse("", headers={"HX-Trigger": "reviewClausePending"})
 
 
 @router.post("/review/batch-confirm")
 async def batch_confirm(request: Request, body: dict):
-    """批量确认复核项（逐条走 process_feedback 反馈闭环）"""
+    """批量确认复核项（逐条走 process_feedback 反馈闭环；patterns=勾选词，None→纯打标）"""
     from app.classifier.feedback import process_feedback
     from fastapi.responses import JSONResponse as _JR
 
     ids = body.get("queue_ids") or []
+    patterns = body.get("patterns")
     if not isinstance(ids, list):
         return _JR({"detail": "queue_ids 须为数组"}, status_code=400)
     with get_db() as conn:
@@ -372,8 +375,10 @@ async def batch_confirm(request: Request, body: dict):
             ids,
         ).fetchall()
     for item in rows:
-        process_feedback(item["clause_id"], item["dimension"], item["ai_label"],
-                         source_conf=item["ai_confidence"] or 0.0)
+        kwargs = {"source_conf": item["ai_confidence"] or 0.0}
+        if patterns is not None:
+            kwargs["patterns"] = patterns
+        process_feedback(item["clause_id"], item["dimension"], item["ai_label"], **kwargs)
     log_action("review", "INFO", "批量确认",
                detail=json_detail({"count": len(rows)}),
                username=getattr(request.state, "username", ""))
@@ -475,9 +480,16 @@ async def review_word_decide(request: Request, body: dict):
 
 @router.get("/review/blacklist")
 async def review_blacklist(request: Request):
-    """黑名单管理（Tab3 数据源，供 Task5 UI 接）"""
+    """黑名单管理（Tab3 数据源，供 Task5 UI 接）；每行附代表 pid 供 restore/approve 端点"""
     from app.main import templates
     rows = rule_pending.blacklist_rows()
+    with get_db() as conn:
+        for r in rows:
+            rep = conn.execute(
+                "SELECT id FROM rule_pending WHERE dimension=? AND pattern=? AND label=? "
+                "AND status='rejected' ORDER BY id LIMIT 1",
+                (r["dimension"], r["pattern"], r["label"])).fetchone()
+            r["id"] = rep["id"] if rep else None
     return templates.TemplateResponse(request, "partials/review_blacklist.html",
                                       {"rows": rows, "dim_labels": dim_labels})
 
@@ -512,6 +524,146 @@ async def review_blacklist_approve(request: Request, pid: int):
                detail=json_detail({"pid": pid, "n": n}),
                username=getattr(request.state, "username", ""))
     return HTMLResponse("", headers={"HX-Trigger": "reviewWordPending, reviewBlacklist"})
+
+
+# ═══════════════════════════════════════════
+# Tab1 条文待审（条文多标签 + 行内编辑）
+# ═══════════════════════════════════════════
+
+# 维度 → clauses 分类列（inline 新标签纯打标写列用）
+_DIM_COLUMN = {"dim4": "dim4_specialty", "dim5": "dim5_location",
+               "dim6": "dim6_material"}
+
+
+@router.get("/review/clause-pending")
+async def review_clause_pending(request: Request, dimension: str = ""):
+    """Tab1 条文待审：pending_clause_groups（条文多标签）+ 低置信 queue 兜底项。"""
+    from app.main import templates
+    groups = rule_pending.pending_clause_groups(dimension or None)
+    with get_db() as conn:
+        for g in groups:
+            rej = conn.execute(
+                "SELECT label FROM rule_pending WHERE clause_id=? AND dimension=? "
+                "AND status='rejected'",
+                (g["clause_id"], g["dimension"])).fetchall()
+            g["rejected_labels"] = [r["label"] for r in rej]
+        items = _fetch_review_items(conn)
+    return templates.TemplateResponse(request, "partials/review_clause_panel.html", {
+        "groups": groups, "items": items, "dimension": dimension, "dim_labels": dim_labels,
+    })
+
+
+@router.post("/review/clause-pending/{clause_id}/decide")
+async def review_clause_decide(request: Request, clause_id: int, body: dict):
+    """Tab1 行批量（条文级反义，D4）：作用域=clause_pending_ids(clause_id, dim)。
+
+    approve → 勾选标签键回填（写列+queue done）后置 approved + bump；未勾置 rejected；
+    reject  → 勾选置 rejected（不写列、queue 滞留）；未勾置 approved + 回填 + bump。
+    """
+    from fastapi.responses import JSONResponse as _JR
+    from app.classifier.rule_sink import bump_rule
+
+    ids = body.get("ids") or []
+    action = body.get("action")
+    if action not in ("approve", "reject") or not isinstance(ids, list) or not ids:
+        return _JR({"detail": "ids/action 不合法"}, status_code=400)
+
+    with get_db() as conn:
+        dims = {r["dimension"] for r in conn.execute(
+            f"SELECT DISTINCT dimension FROM rule_pending "
+            f"WHERE id IN ({','.join('?' * len(ids))}) AND status='pending'", ids).fetchall()}
+        if not dims:
+            return _JR({"detail": "无有效 pending 勾选"}, status_code=400)
+        dimension = next(iter(dims))
+        scope = rule_pending.clause_pending_ids(conn, clause_id, dimension)
+        checked = set(ids) & set(scope)
+        if action == "approve":
+            approved_ids = sorted(checked)
+            rejected_ids = [i for i in scope if i not in checked]
+        else:
+            rejected_ids = sorted(checked)
+            approved_ids = [i for i in scope if i not in checked]
+
+        approved_keys = rule_pending.resolve_keys(conn, approved_ids)
+        for d, p, l in sorted(approved_keys):
+            rule_pending.backfill_and_close(conn, d, p, l)
+        rule_pending.set_status(conn, approved_ids, "approved")
+        rule_pending.set_status(conn, rejected_ids, "rejected")
+        for d, p, l in sorted(approved_keys):
+            bump_rule(conn, d, p, _DIM_SUB_FIELD.get(d, ""),
+                      is_confirmed=True, new_rule_active=True, label=l)
+
+    log_action("review", "INFO", f"条文{'批准' if action == 'approve' else '驳回'}",
+               detail=json_detail({"clause_id": clause_id, "ids": ids, "action": action}),
+               username=getattr(request.state, "username", ""))
+    return HTMLResponse("", headers={"HX-Trigger": "reviewClausePending, reviewWordPending, reviewBlacklist"})
+
+
+@router.post("/review/clause-pending/{clause_id}/inline-edit")
+async def review_clause_inline_edit(request: Request, clause_id: int, body: dict):
+    """Tab1 行内编辑（GC10/F7）：删标签=驳（reject）、保留=approve、新标签=只写列纯打标。
+
+    body: {label_ids:[保留 pending id], removed_label_ids:[删除 pending id],
+           new_label: str|None, dimension: str|None}。删除项→该 (pattern,label) reject；
+    保留项→approve（回填+bump）；new_label 非空→只写分类列（不沉淀规则）。
+    """
+    from fastapi.responses import JSONResponse as _JR
+    from app.classifier.rule_sink import bump_rule
+
+    label_ids = body.get("label_ids") or []
+    removed_label_ids = body.get("removed_label_ids") or []
+    new_label = body.get("new_label")
+    dimension = body.get("dimension")
+    if not isinstance(label_ids, list) or not isinstance(removed_label_ids, list):
+        return _JR({"detail": "label_ids/removed_label_ids 须为数组"}, status_code=400)
+
+    with get_db() as conn:
+        if not dimension:
+            all_ids = list(label_ids) + list(removed_label_ids)
+            if all_ids:
+                d_rows = conn.execute(
+                    f"SELECT DISTINCT dimension FROM rule_pending "
+                    f"WHERE id IN ({','.join('?' * len(all_ids))})", all_ids).fetchall()
+                dimension = d_rows[0]["dimension"] if d_rows else None
+            if not dimension:
+                dr = conn.execute(
+                    "SELECT DISTINCT dimension FROM rule_pending WHERE clause_id=? LIMIT 1",
+                    (clause_id,)).fetchone()
+                dimension = dr["dimension"] if dr else None
+
+        if dimension:
+            if removed_label_ids:
+                rem = [i for i in removed_label_ids if conn.execute(
+                    "SELECT 1 FROM rule_pending WHERE id=? AND status='pending'",
+                    (i,)).fetchone()]
+                rule_pending.set_status(conn, rem, "rejected")
+            if label_ids:
+                keep = [i for i in label_ids if conn.execute(
+                    "SELECT 1 FROM rule_pending WHERE id=? AND status='pending'",
+                    (i,)).fetchone()]
+                approved_keys = rule_pending.resolve_keys(conn, keep)
+                for d, p, l in sorted(approved_keys):
+                    rule_pending.backfill_and_close(conn, d, p, l)
+                rule_pending.set_status(conn, keep, "approved")
+                for d, p, l in sorted(approved_keys):
+                    bump_rule(conn, d, p, _DIM_SUB_FIELD.get(d, ""),
+                              is_confirmed=True, new_rule_active=True, label=l)
+            if new_label and str(new_label).strip() and dimension:
+                col = _DIM_COLUMN.get(dimension, dimension)
+                conn.execute(
+                    f"UPDATE clauses SET {col}=?, ai_classified=1 WHERE id=?",
+                    (str(new_label).strip(), clause_id))
+                conn.execute(
+                    "UPDATE classification_queue SET status='done' "
+                    "WHERE clause_id=? AND dimension=? AND status='review'",
+                    (clause_id, dimension))
+
+    log_action("review", "INFO", "条文行内编辑",
+               detail=json_detail({"clause_id": clause_id, "dimension": dimension,
+                                   "new_label": new_label, "kept": label_ids,
+                                   "removed": removed_label_ids}),
+               username=getattr(request.state, "username", ""))
+    return HTMLResponse("", headers={"HX-Trigger": "reviewClausePending, reviewWordPending, reviewBlacklist"})
 
 
 # ═══════════════════════════════════════════

@@ -513,3 +513,98 @@ def test_blacklist_restore_then_approve(auth_client):
     assert c["dim6_material"] == "钢筋"
     assert q["status"] == "done"
     assert rule is not None and rule["confirmed"] >= 1 and rule["label"] == "钢筋"
+
+
+# ── Tab1 条文多标签 + 行内编辑（Task 5）────────────────────────────
+
+def test_tab1_clause_multi_label_approve_partial(auth_client):
+    """同条文两候选标签只勾 A → A approved+写列+queue done，B rejected 不写列。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        for lab in ("钢筋", "混凝土"):
+            rp.insert_pending(conn, cid, "dim6", "钢筋", lab, 0.9, "bT")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', batch_id='bT' WHERE clause_id=?", (cid,))
+        keep = [r["id"] for r in conn.execute(
+            "SELECT id FROM rule_pending WHERE clause_id=? AND dimension='dim6' "
+            "AND label='钢筋' AND status='pending'", (cid,)).fetchall()]
+    resp = auth_client.post(f"/review/clause-pending/{cid}/decide",
+                            json={"ids": keep, "action": "approve"})
+    assert resp.status_code == 200
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        st = {r["label"]: r["status"] for r in conn.execute(
+            "SELECT label, status FROM rule_pending WHERE clause_id=?", (cid,)).fetchall()}
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+    assert c["dim6_material"] == "钢筋"
+    assert st["钢筋"] == "approved" and st["混凝土"] == "rejected"
+    assert q["status"] == "done"
+
+
+def test_tab1_inline_remove_label_rejects(auth_client):
+    """inline 删除预填标签 → 该 (pattern,label) 组合 reject。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
+        pid = rp.clause_pending_ids(conn, cid, "dim6")[0]
+    resp = auth_client.post(f"/review/clause-pending/{cid}/inline-edit",
+                            json={"label_ids": [], "removed_label_ids": [pid],
+                                  "new_label": None})
+    assert resp.status_code == 200
+    with get_db() as conn:
+        st = conn.execute("SELECT status FROM rule_pending WHERE id=?", (pid,)).fetchone()["status"]
+    assert st == "rejected"
+
+
+def test_tab1_inline_new_label_writes_col_only(auth_client):
+    """驳回后 inline 编辑输入新标签 → 只写列（纯打标），不沉淀任何规则（F7）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
+        pid = rp.clause_pending_ids(conn, cid, "dim6")[0]
+        rp.set_status(conn, [pid], "rejected")
+    resp = auth_client.post(f"/review/clause-pending/{cid}/inline-edit",
+                            json={"label_ids": [], "removed_label_ids": [],
+                                  "new_label": "混凝土"})
+    assert resp.status_code == 200
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        n_rules = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
+    assert c["dim6_material"] == "混凝土"
+    assert n_rules == 0
+
+
+def test_tab1_inline_cancel_noop(auth_client):
+    """取消（仅读请求/不提交）不改变任何 pending/queue/列状态。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review' WHERE clause_id=?", (cid,))
+        pid = rp.clause_pending_ids(conn, cid, "dim6")[0]
+    resp = auth_client.get("/review/clause-pending")
+    assert resp.status_code == 200
+    with get_db() as conn:
+        st = conn.execute("SELECT status FROM rule_pending WHERE id=?", (pid,)).fetchone()["status"]
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        n_rules = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
+    assert st == "pending"
+    assert q["status"] == "review"
+    assert (c["dim6_material"] or "") == ""
+    assert n_rules == 0
+
+
+def test_clause_pending_get_includes_queue_fallback(auth_client):
+    """GET /review/clause-pending 返回含低置信 queue 兜底条文（无 pending 词）。"""
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB1', 'x')")
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("INSERT INTO clauses (spec_id, clause_no, content) "
+                     "VALUES (?, '1.1', '低置信兜底条文内容')", (sid,))
+        cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("INSERT INTO classification_queue (clause_id, dimension, keyword_score, status) "
+                     "VALUES (?, 'dim6', 0.2, 'review')", (cid,))
+    resp = auth_client.get("/review/clause-pending")
+    assert resp.status_code == 200
+    assert "低置信兜底条文内容" in resp.text

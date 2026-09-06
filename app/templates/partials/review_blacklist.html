@@ -1,0 +1,53 @@
+<!-- Tab3 黑名单：rejected 键聚合（恢复待审 / 批准两档） -->
+<div>
+    {% if rows %}
+    <table class="striped" style="font-size:0.85rem">
+        <thead>
+            <tr>
+                <th>维度</th>
+                <th>词面</th>
+                <th>标签</th>
+                <th>条文数</th>
+                <th>最近驳回</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in rows %}
+        <tr>
+            <td><small>{{ dim_labels.get(r.dimension, r.dimension) }}</small></td>
+            <td><code>{{ r.pattern }}</code></td>
+            <td><span class="dim-tag">{{ r.label }}</span></td>
+            <td><small>{{ r.clause_count }}</small></td>
+            <td><small>{{ r.last_rejected }}</small></td>
+            <td>
+                <div style="display:flex;gap:0.25rem">
+                    <button type="button" class="outline"
+                            style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                            onclick="blacklistAction('{{ r.id }}', 'restore')">恢复待审</button>
+                    <button type="button"
+                            style="font-size:0.75rem;padding:0.15rem 0.4rem;background:green;border-color:green;color:white"
+                            onclick="blacklistAction('{{ r.id }}', 'approve')">批准</button>
+                </div>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <script>
+    function blacklistAction(pid, action) {
+        var verb = action === 'restore' ? '恢复待审' : '批准';
+        if (!confirm(verb + '该黑名单组合？')) return;
+        fetch('/review/blacklist/' + pid + '/' + action, { method: 'POST' }).then(function (resp) {
+            if (resp.ok) {
+                document.body.dispatchEvent(new CustomEvent('reviewWordPending'));
+                document.body.dispatchEvent(new CustomEvent('reviewBlacklist'));
+                document.body.dispatchEvent(new CustomEvent('reviewClausePending'));
+            }
+        }).catch(function (e) { alert('操作失败：' + e.message); });
+    }
+    </script>
+    {% else %}
+    <p style="color:var(--pico-muted-color);text-align:center;padding:2rem">🎉 黑名单为空</p>
+    {% endif %}
+</div>
