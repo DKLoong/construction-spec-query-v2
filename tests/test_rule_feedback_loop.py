@@ -13,13 +13,17 @@ def _setup(monkeypatch, tmp_path):
 
 
 def test_auto_adopted_sinks_rule_active(monkeypatch, tmp_path):
-    """auto_adopted 分支沉淀新规则且 is_active=1，confirmed 不累加"""
+    """auto_adopted 对已背书词命中递增（不新建规则、confirmed 不新增）"""
     _setup(monkeypatch, tmp_path)
     from app.classifier.batch_queue import add_to_queue, apply_ai_results
     from app.database import get_db as _g
     with _g() as conn:
         clause = conn.execute("SELECT id, content FROM clauses WHERE content LIKE '%钢筋%' LIMIT 1").fetchone()
         conn.execute("UPDATE clauses SET content='钢筋进场应检验屈服强度' WHERE id=?", (clause["id"],))
+        # 预置已背书规则（confirmed≥1 且 is_active=1）→ '钢筋' 词 approved，auto 只做命中递增
+        conn.execute(
+            "INSERT INTO classification_rules (dimension, pattern, label, threshold, confirmed, is_active) "
+            "VALUES ('dim4', '钢筋', '结构专业', 0.6, 1, 1)")
     # 构造 pending 批次：add_to_queue 后手动置 batch_id + ai_processing（模拟 get_pending_batch）。
     # 注意 add_to_queue 内部会另开 get_db() 写连接，必须等上方 UPDATE 所在事务提交后再调用，
     # 否则两个写连接在 WAL 下互相锁死（database is locked）。
@@ -33,7 +37,6 @@ def test_auto_adopted_sinks_rule_active(monkeypatch, tmp_path):
         {"clause_id": clause["id"], "label": "结构专业", "confidence": 0.85},
     ])
     with _g() as conn:
-        # 关键词由 extract_keywords 提取，内容「钢筋进场应检验屈服强度」首词为「钢筋」（jieba 分词）
         rule = conn.execute(
             "SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋'"
         ).fetchone()
@@ -43,8 +46,8 @@ def test_auto_adopted_sinks_rule_active(monkeypatch, tmp_path):
         ).fetchone()
     assert q["status"] == "auto_adopted"
     assert rule is not None and rule["is_active"] == 1
-    assert rule["confirmed"] == 0  # auto_adopted 未人工确认，confirmed 不累加
-    assert rule["hit_count"] == 1  # 新规则创建即记首次命中（bump_rule 语义）
+    assert rule["confirmed"] == 1  # auto_adopted 未人工确认，confirmed 不累加
+    assert rule["hit_count"] == 1  # 已背书规则命中递增（0→1）
 
 
 def test_feedback_high_conf_rule_auto_active(monkeypatch, tmp_path):
@@ -55,7 +58,7 @@ def test_feedback_high_conf_rule_auto_active(monkeypatch, tmp_path):
         clause = conn.execute("SELECT id, content FROM clauses WHERE content LIKE '%钢筋%' LIMIT 1").fetchone()
         # 确保该条关键词语料能提取到独立关键词
         conn.execute("UPDATE clauses SET content='钢筋进场应检验屈服强度' WHERE id=?", (clause["id"],))
-    process_feedback(clause["id"], "dim4", "结构专业", source_conf=0.95)
+    process_feedback(clause["id"], "dim4", "结构专业", source_conf=0.95, patterns=["钢筋"])
     with get_db() as conn:
         rule = conn.execute("SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋'").fetchone()
         # 关键词含 钢筋（jieba 首词）→ 新规则；高置信 → is_active=1；人工确认来源首条即记 confirmed=1
@@ -72,7 +75,7 @@ def test_feedback_low_conf_rule_inactive(monkeypatch, tmp_path):
     with get_db() as conn:
         clause = conn.execute("SELECT id, content FROM clauses WHERE content LIKE '%钢筋%' LIMIT 1").fetchone()
         conn.execute("UPDATE clauses SET content='钢筋进场应检验屈服强度' WHERE id=?", (clause["id"],))
-    process_feedback(clause["id"], "dim4", "结构专业", source_conf=0.6)
+    process_feedback(clause["id"], "dim4", "结构专业", source_conf=0.6, patterns=["钢筋"])
     with get_db() as conn:
         rule = conn.execute("SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋'").fetchone()
         # 低置信 → 新规则初态 inactive，待审核

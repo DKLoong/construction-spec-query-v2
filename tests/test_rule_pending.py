@@ -327,3 +327,68 @@ def test_no_keywords_high_conf_autos_write_only(monkeypatch, tmp_path):
     assert q["status"] == "auto_adopted"
     assert c["dim6_material"] == "钢筋"
     assert p == 0
+
+
+# ── process_feedback 写列 + 勾选背书（Task 3）────────────────────
+
+def test_confirm_writes_col_and_only_endorses_checked_words(monkeypatch, tmp_path):
+    """勾选 patterns=['钢筋'] → 写列 + 仅该词沉淀（n_rule=1）。"""
+    from app.classifier.feedback import process_feedback
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        cid = _seed_clause(conn)   # content '钢筋 条文'
+        conn.execute(
+            "INSERT INTO classification_queue (clause_id, dimension, keyword_score, status) "
+            "VALUES (?, 'dim6', 0.2, 'review')", (cid,))
+    process_feedback(cid, "dim6", "钢筋", source_conf=0.95, patterns=["钢筋"])
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        n_rule = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+        n_pending = conn.execute("SELECT COUNT(*) n FROM rule_pending").fetchone()["n"]
+    assert c["dim6_material"] == "钢筋"
+    assert q["status"] == "done"
+    assert n_rule == 1                       # 仅勾选词沉淀
+    assert n_pending == 1                    # 该词人工背书直插 approved 行
+
+
+def test_confirm_no_patterns_writes_only(monkeypatch, tmp_path):
+    """patterns=None → 纯打标：写列、不沉淀任何规则/词。"""
+    from app.classifier.feedback import process_feedback
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        cid = _seed_clause(conn)
+        conn.execute(
+            "INSERT INTO classification_queue (clause_id, dimension, keyword_score, status) "
+            "VALUES (?, 'dim6', 0.2, 'review')", (cid,))
+    process_feedback(cid, "dim6", "钢筋", source_conf=0.95)   # patterns=None → 纯打标
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+        n_rule = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
+        n_pending = conn.execute("SELECT COUNT(*) n FROM rule_pending").fetchone()["n"]
+    assert c["dim6_material"] == "钢筋"
+    assert n_rule == 0
+    assert n_pending == 0
+
+
+def test_confirm_rejected_overwritten_to_approved(monkeypatch, tmp_path):
+    """预置 rejected 行后 patterns 含该词 → 覆盖为 approved + 生成规则。"""
+    from app.classifier.feedback import process_feedback
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        cid = _seed_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "b1")
+        rp.set_status(conn, rp.pending_ids(conn, "dim6", "钢筋", "钢筋"), "rejected")
+        conn.execute(
+            "INSERT INTO classification_queue (clause_id, dimension, keyword_score, status) "
+            "VALUES (?, 'dim6', 0.2, 'review')", (cid,))
+    process_feedback(cid, "dim6", "钢筋", source_conf=0.95, patterns=["钢筋"])
+    with get_db() as conn:
+        st = conn.execute(
+            "SELECT status FROM rule_pending WHERE clause_id=? AND dimension='dim6' "
+            "AND pattern='钢筋' AND label='钢筋'", (cid,)).fetchone()
+        n_rule = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
+    assert st["status"] == "approved"   # rejected 被人工显式批准覆盖
+    assert n_rule == 1
+    assert c["dim6_material"] == "钢筋"
