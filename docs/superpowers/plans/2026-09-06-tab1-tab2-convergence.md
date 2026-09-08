@@ -814,11 +814,20 @@ Commit: `git add tests/ docs/ && git commit -m "test: 全量回归绿 + spec 验
 
 ---
 
-## Self-Review 记录（写完即自查）
+## GSTACK REVIEW REPORT
 
-- **Spec 覆盖**：C1(T3/4/5)✓；C2(不动 apply_ai_results)✓；C3(T3/6)✓；C4(T3 reject 400 + T6 删按钮)✓；C5(T1)✓；C6(低置信保留)✓；C7(chip 展示不动)✓；C8(T2)✓；C9(T4)✓；C10(auto 不动)✓；C11(前置条件 GC)✓；C12(T5 表述)✓；C13(T3/4 dimension 收口)✓；C14(T2/3 _confirm_clause 条件更新)✓；C15(T5 端点守卫)✓；C16(T1 counts 口径)✓；C17(T1 排除无 queue 行)✓；C18(存量不动, GC)✓。
-- **评审反馈落位**：codex #1→C11/C18(GC)；#2→C16(T1)；#3→C17(T1)；#4→Task7 inline 全删；#5→C14(T2/3)；#6→C15(T5)；#7→C12(T5)；#8→C13(T3/4)；#9→Global Constraints「每 Task 绿提交」+各 Task Step5。
-- **占位符**：无 TBD/TODO；各 Task Step 3 为完整可运行实现。
-- **类型一致**：`_confirm_clause`/`_backfill_by_status`/`pending_counts`/`pending_clause_groups` 签名跨 Task 一致；`process_feedback` 保留 patterns 参数位。HX-Trigger 与前端事件名一致。
-- **并发**：C14 用条件更新+rowcount，无 `BEGIN IMMEDIATE` 全局改造（小 diff 达成 spec §七承诺）。
-- **表述诚实**：「词面沉淀只经 Tab2」已收窄为「普通沉淀」并列举黑名单 approve/auto 两例外（C12）。
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | ISSUES → ALL RESOLVED | 9 条独立发现，全部经 AUQ 采纳并落进 spec C11-C18 / plan 各 Task |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR | 3 findings（dimension 收口、写列去重、错误路径测试）已落 plan |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+**CODEX:** 9 findings absorbed — 存量碎片前置(C11/C18)、红点计数口径(C16)、无 queue 行排除(C17)、D1 适配走 inline 全删、并发条件更新(C14)、低置信端点守卫(C15)、「唯一出口」表述收窄+例外(C12)、inline dimension 收口(C13)、每 Task 绿提交(Global Constraints)。
+
+**CROSS-MODEL:** Claude review 独立发现 dimension 歧义/去重/错误路径测试，codex 独立命中同三处并追加 6 处——无冲突，codex 意见全部采纳后与 Claude 结论一致。
+
+**VERDICT:** ENG CLEARED（评审发现全部落进 spec C11-C18 与 plan 各 Task，无未决项）。CEO/Design/DX 本 plan 为语义重构非新产品/视觉/UX 变更，不触发。
+
+NO UNRESOLVED DECISIONS
