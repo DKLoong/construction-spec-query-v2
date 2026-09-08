@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把「条文打标」与「词面沉淀」解耦——Tab1 主表批准只写列、不再连带为词建规则；词面沉淀收敛为 Tab2 唯一出口，并堵住反联覆写人工定案的洞。
+**Goal:** 把「条文打标」与「词面沉淀」解耦——Tab1 主表批准只写列、不再连带为词建规则；词面普通沉淀只经 Tab2；堵住反联/低置信覆写人工定案的洞，并用条件更新落地并发守卫。
 
-**Architecture:** 改动集中在 rule_pending 查询/写回与 rules_routes 的 Tab1 动作语义；保留低置信兜底块与旧端点，不动表结构、不动 auto 分支。关键机制：`pending_clause_groups` 排除 queue 终态条文；`_backfill_by_status` 只写 queue `review` 条文；Tab1 `decide approve` = 写 queue ai_label 列 + done + 未勾选词 rejected；`inline_edit` 保留词不再 approve、new_label≠ai_label 时驳残留 pending 词；`process_feedback` 去 patterns 背书变纯打标。
+**Architecture:** 改动集中在 rule_pending 查询/写回与 rules_routes 的 Tab1/Tab2 动作语义。保留低置信兜底块与旧端点，不动表结构、不动 apply_ai_results auto 分支。关键机制：`pending_clause_groups` 排除终态+无 queue 行条文；`_backfill_by_status`/`_confirm_clause` 用带 `EXISTS(queue review)` 的条件更新 + rowcount 守卫（C14）；Tab1 `decide approve` = body 传 dimension + 只写列 + 去勾词 rejected（C13）；inline 同口径收口；`process_feedback` 去 patterns 背书变纯打标并加 review 守卫（C15）；低置信 confirm/reject 查询加 `status='review'`。
 
 **Tech Stack:** FastAPI + SQLite + pytest + HTMX + Jinja2 partials。
 
-**Spec:** `docs/superpowers/specs/2026-09-06-tab1-tab2-convergence-design.md`（v2 收窄版——低置信块与旧端点保留，仅主表语义改造）。
+**Spec:** `docs/superpowers/specs/2026-09-06-tab1-tab2-convergence-design.md`（v3 收窄 + 评审修订 C11-C18）。
 
 ## Global Constraints
 
@@ -16,81 +16,108 @@
 - Python 命令用 `D:/Python/python.exe`（禁用 `python3`）；测试用 `D:/Python/python.exe -m pytest`。
 - Git Bash 语法；路径用 `/` 正斜杠。
 - 中文注释与交流。
-- TDD：每个 Task 先写失败测试再实现，跑通相关全部测试后原子 commit。
+- **TDD + 每 Task 绿提交**：语义改动 Task 必须**在 Task 内**同步适配被它破坏的旧断言，跑通 `tests/test_rule_pending.py -q` 及相关文件再 commit；**禁止**留下中间红提交等后续 Task 收尾（评审修订 C-TDD）。Task7 只做全量回归扫尾与文档。
 - Commit 信息 `type: 描述`（feat/fix/test/docs/refactor/chore）。
 - 不得 stage `.claude/CLAUDE.md`（用户遗留未提交）与 `data/`。
 - 每次改动后主动 commit；不主动安装依赖、不起后台服务。
 - 服务重启（若需浏览器验证）须按项目 CLAUDE.md：全杀 reloader+worker 双进程 → 验证端口干净 → 启动 → 复验唯一监听。
-- 测试跑批：`D:/Python/python.exe -m pytest tests/test_rule_pending.py -q`（本 plan 主体）；最后 Task 全量 `tests/ -q`。
+- **前置条件（spec C11/C18）**：目标 dev 库须已清到 locked 种子基准（dim4/5/6 active=21/23/23，无 confirmed 碎片）。本 plan 不改存量碎片；若目标库未清，先跑既有清理脚本再实施。
+- 测试跑批：语义 Task 用 `D:/Python/python.exe -m pytest tests/test_rule_pending.py -q`；Task 5 用 `tests/test_rule_feedback_loop.py tests/test_review_batch.py tests/test_logs.py`；最终全量 `tests/ -q`。
 
 ---
 ## 现状速览（Task 实现者必读）
 
 关键现状函数与语义（已核实，行号供参考）：
-- `rule_pending.pending_clause_groups`（rule_pending.py:214）：`WHERE rp.status='pending' GROUP BY dimension, clause_id` 聚合有 pending 词的条文，join clauses/specifications 取文本。**未排除 queue 终态条文** → auto_adopted 残留词条文误入主表。
-- `rule_pending.rejected_clause_groups`（rule_pending.py:249）：全标签已驳且 queue 仍 review 的条文。
-- `rule_pending._backfill_by_status`（rule_pending.py:317）：按 (dim,pattern,label,status) 取来源 `clause_id IS NOT NULL` 条文 → 无条件写列 + queue(review)→done。**无 review 守卫** → 会覆写已人工定案/改标条文。
-- `rule_pending.backfill_and_close`（:339）= `_backfill_by_status(..., "pending")`；`approve_rule`（:364）bump confirmed 规则+复活停用碎片；`deactivate_fragment`（:349）停用 confirmed=0 碎片。
-- `rules_routes.review_clause_decide`（rules_routes.py:559）：Tab1 行级反义批量。approve → checked 词 backfill+set approved+approve_rule；未勾 rejected+deactivate。reject 反向。
-- `rules_routes.review_clause_inline_edit`（rules_routes.py:612）：removed → rejected+deactivate；keep → approve（回填+bump）；new_label → 只写列。
-- `feedback.process_feedback`（feedback.py:29）：写列+done + patterns 词 approved 背书+bump。
-- `batch_queue.apply_ai_results`（batch_queue.py:80）：已背书词 auto_adopted 写列；首见词 insert_pending+queue review。**本 plan 不动此函数**（C10 已满足）。
-- 测试夹具：`tests/test_rule_pending.py` 的 `_db`（tmp 库）、`_seed_spec_clause(conn)`（建 spec+clause 返回 cid）、`_seed_rule`、`auth_client`（conftest 已登录 client）。多数 Tab1 测试用 `auth_client` + `get_db()` 直接造数据。
+- `rule_pending.pending_clause_groups`（rule_pending.py:214）：`WHERE rp.status='pending' GROUP BY dimension, clause_id` 聚合有 pending 词的条文，join clauses/specifications。**未排除终态/无 queue 行**。
+- `rule_pending.rejected_clause_groups`（rule_pending.py:249）：全标签已驳且 queue 仍 review 的条文（D1，词全驳待重标）。**仅 inline 删光词不输新标签可达**（新语义下 approve 会写列 done 使行消失）。
+- `rule_pending._backfill_by_status`（rule_pending.py:317）：按 (dim,pattern,label,status) 取来源条文 → 无条件写列 + queue(review)→done。**无 review 守卫**。
+- `rule_pending.backfill_and_close`（:339）= `_backfill_by_status(..., "pending")`；`approve_rule`（:364）bump confirmed 规则（例外路径，保留）；`deactivate_fragment`（:349）停用 confirmed=0 碎片。
+- `rule_pending.pending_counts`（:292）：红点计数。clause 段把 pending 行按条文计——**须随 C5 改口径（C16）**。
+- `rules_routes.review_clause_decide`（rules_routes.py:559）：Tab1 行级反义批量，approve 展开词 approve_rule。
+- `rules_routes.review_clause_inline_edit`（rules_routes.py:612）：removed→rejected；keep→approve；new_label→只写列。**保留 id/clause 反查维度兜底——须收口（C13）**。
+- `rules_routes.confirm_review`（:311）/`reject_review`（:343）：queue 查询 `WHERE id=?` **未带 status='review'**——须加守卫（C15）。
+- `feedback.process_feedback`（feedback.py:29）：写列+done + patterns 词背书+bump——去背书变纯打标 + review 守卫。
+- `batch_queue.apply_ai_results`（batch_queue.py:80）：已背书词 auto_adopted 写列（例外，保留 C10）；首见词 insert_pending+queue review。**本 plan 不动此函数**。
+- 测试夹具：`tests/test_rule_pending.py` 的 `_db`、`_seed_spec_clause(conn)`、`_seed_rule`、`auth_client`（conftest）。**多数 Tab1 测试直插 pending + try_enqueue 建 queue review**；直插 pending 无 queue 的 seed 需按 C17 补 queue。
 
 ---
 
-### Task 1: pending_clause_groups 排除终态条文（C5）
+### Task 1: pending_clause_groups 排除终态+无 queue 行 + pending_counts 口径同步（C5/C16/C17）
 
 **Files:**
-- Modify: `app/classifier/rule_pending.py` — `pending_clause_groups`
+- Modify: `app/classifier/rule_pending.py` — `pending_clause_groups`、`pending_counts`
 - Test: `tests/test_rule_pending.py`
 
 **Interfaces:**
 - Consumes: 无（独立查询改造）
-- Produces: `pending_clause_groups(dimension=None) -> list[dict]`，返回结构与现一致 `[{dimension, clause_id, spec_code, clause_no, content, candidates:[{id, pattern, label, ai_confidence}], rejected_labels}]`；语义变化：queue 已是 done/auto_adopted/rejected 的条文不再返回。
+- Produces: `pending_clause_groups(dimension=None) -> list[dict]`：**仅返回存在 queue review 行**的条文（终态 done/auto_adopted/rejected 与无 queue 行均排除）。`pending_counts()` clause 口径 = `len(pending_clause_groups()) + len(rejected_clause_groups()) + 低置信兜底 count`。
 
-- [ ] **Step 1: 写失败测试**（验证已 auto_adopted 但有残留 pending 词的条文不出现在主表；无 queue 行的条文仍出现以兼容既有种子）
+- [ ] **Step 1: 写失败测试**
 
 ```python
-def test_pending_clause_groups_excludes_terminal_queue(auth_client):
-    """queue 已 auto_adopted/done 但有残留 pending 词的条文不再进 Tab1 主表。"""
+def test_pending_clause_groups_excludes_terminal_and_no_queue(auth_client):
+    """queue 终态(auto_adopted) 或无 queue 行的 pending 条文都不进 Tab1 主表。"""
     with get_db() as conn:
-        cid = _seed_spec_clause(conn)
-        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
-        bq.try_enqueue(conn, cid, "dim6", 0.0)
-        conn.execute(
-            "UPDATE classification_queue SET status='auto_adopted', batch_id='bT', "
-            "ai_label='钢筋' WHERE clause_id=?", (cid,))
+        # 终态：auto_adopted 但有残留 pending 词
+        c_term = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_term, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, c_term, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='auto_adopted', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_term,))
+        # 无 queue：直插 pending
+        c_noq = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_noq, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        # review：应保留
+        c_rev = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_rev, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, c_rev, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review' WHERE clause_id=?", (c_rev,))
     groups = rp.pending_clause_groups()
-    assert all(g["clause_id"] != cid for g in groups)
+    cids = {g["clause_id"] for g in groups}
+    assert c_rev in cids
+    assert c_term not in cids and c_noq not in cids
 
 
-def test_pending_clause_groups_keeps_no_queue_rows(auth_client):
-    """无 queue 行的 pending 条文（既有种子/直插测试数据）仍出现在主表（不破坏兼容）。"""
+def test_pending_counts_aligned_with_tab1_source(auth_client):
+    """pending_counts.clause = 主表组 + 词全驳组 + 低置信兜底（已确认 done 的残留 pending 词不计入）。"""
     with get_db() as conn:
-        cid = _seed_spec_clause(conn)
-        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
-    groups = rp.pending_clause_groups()
-    assert any(g["clause_id"] == cid for g in groups)
+        c_rev = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_rev, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, c_rev, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_rev,))
+        # 已确认 done 的条文，其勾选词仍 pending → 不计 clause 待审
+        c_done = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_done, "dim6", "混凝土", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, c_done, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='done', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_done,))
+        # 低置信兜底：review 无词
+        c_low = _seed_spec_clause(conn)
+        bq.try_enqueue(conn, c_low, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_low,))
+    counts = rp.pending_counts()
+    assert counts["clause"] == 2   # c_rev + 低置信 c_low；c_done 不计
+    assert counts["word"] == 2     # 钢筋 + 混凝土 两个词面组
 ```
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "excludes_terminal or keeps_no_queue" -v`
-Expected: 1 FAIL（auto_adopted 条文仍被返回）、1 PASS（无 queue 兼容本就成立）。
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "excludes_terminal_and_no_queue or counts_aligned_with_tab1" -v`
+Expected: FAIL（现终态/无 queue 行仍返回；counts 含 c_done）。
 
 - [ ] **Step 3: 实现**
 
-修改 `pending_clause_groups` 的 `sql`：在 `WHERE rp.status='pending'` 后追加排除「该 (clause,dimension) 存在 queue 终态行」：
+`pending_clause_groups` 的 sql 改为 join 过滤「存在 review queue 行」：
 
 ```python
 def pending_clause_groups(dimension: str | None = None) -> list[dict]:
-    """Tab1 条文多标签视图：status='pending' 按 (dimension, clause_id) 聚合，
-    join clauses/specifications 带条文文本。
+    """Tab1 条文多标签视图：status='pending' 按 (dimension, clause_id) 聚合。
 
-    终态排除（C5）：queue 该 (clause,dimension) 已是 done/auto_adopted/rejected 的
-    条文不再返回——已 auto_adopted 但有残留 pending 词的条文不应出现在「条文待审」。
-    无 queue 行的 pending 条文（既有种子/直插测试）仍返回，兼容不破坏。
+    仅返回存在 queue review 行的条文（C5/C17）：queue 终态(done/auto_adopted/rejected)
+    或完全无 queue 行的 pending 条文都是死行/已定案，不进「条文待审」。真实主链
+    insert_pending 必伴随 queue review。
     """
     from app.database import get_db
     sql = ("SELECT rp.dimension, rp.clause_id, s.code AS spec_code, c.clause_no, c.content "
@@ -98,16 +125,15 @@ def pending_clause_groups(dimension: str | None = None) -> list[dict]:
            "JOIN clauses c ON c.id = rp.clause_id "
            "JOIN specifications s ON s.id = c.spec_id "
            "WHERE rp.status='pending' "
-           "AND NOT EXISTS ("
+           "AND EXISTS ("
            "  SELECT 1 FROM classification_queue q "
            "  WHERE q.clause_id = rp.clause_id AND q.dimension = rp.dimension "
-           "  AND q.status IN ('done','auto_adopted','rejected'))")
+           "  AND q.status = 'review')")
     args = []
     if dimension:
         sql += " AND rp.dimension=?"
         args.append(dimension)
     sql += " GROUP BY rp.dimension, rp.clause_id ORDER BY rp.dimension, c.clause_no"
-    # 下方 rows/cands 循环不变
     with get_db() as conn:
         rows = conn.execute(sql, args).fetchall()
         groups = []
@@ -125,20 +151,45 @@ def pending_clause_groups(dimension: str | None = None) -> list[dict]:
     return groups
 ```
 
+`pending_counts` 的 clause 段改为与主表同口径：
+
+```python
+def pending_counts() -> dict:
+    """宫格「审核」红点计数（C16）：clause 与 Tab1 主表同口径。
+
+    clause = pending_clause_groups() 组数 + rejected_clause_groups() 组数（全驳待重标）
+             + 低置信 queue review 且无 pending/rejected 关联的兜底条数；
+    word   = pending_groups() 词面组数。已确认(done)条文的残留 pending 词不计 clause。
+    """
+    from app.database import get_db
+    n_clause = len(pending_clause_groups())
+    n_clause += len(rejected_clause_groups())
+    with get_db() as conn:
+        n_clause += conn.execute(
+            "SELECT COUNT(*) FROM classification_queue q WHERE q.status='review' "
+            "AND NOT EXISTS (SELECT 1 FROM rule_pending rp "
+            "  WHERE rp.clause_id=q.clause_id AND rp.dimension=q.dimension "
+            "  AND rp.status IN ('pending','rejected'))").fetchone()[0]
+        n_word = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM rule_pending WHERE status='pending' "
+            "GROUP BY dimension, pattern)").fetchone()[0]
+    return {"clause": n_clause, "word": n_word}
+```
+
 - [ ] **Step 4: 运行通过**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "excludes_terminal or keeps_no_queue" -v`
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "excludes_terminal_and_no_queue or counts_aligned_with_tab1" -v`
 Expected: 2 PASS。
 
-- [ ] **Step 5: 全 Task 相关测试 + 提交**
+- [ ] **Step 5: 相关测试绿 + 提交（本 Task 内适配受影响 seed/断言，不留红）**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -q`
-Expected: PASS（可能个别既有测试若原本断言 auto_adopted 残留条文在 Tab1 会失败——若失败，检查该测试意图，属预期语义变化，转到最后 Task 适配清单；此处先跑通新增两条）。
-Commit: `git add app/classifier/rule_pending.py tests/test_rule_pending.py && git commit -m "feat: pending_clause_groups 排除 queue 终态条文（auto_adopted 残留不入主表）"`
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py tests/test_review_batch.py tests/test_logs.py -q`
+说明：既有测试若直插 pending 无 queue 且断言在主表，需在 seed 里补 `try_enqueue`+置 review，或改断言（C17）。凡此类 seed 本 Task 内一并修。
+Commit: `git add app/classifier/rule_pending.py tests/test_rule_pending.py tests/test_review_batch.py tests/test_logs.py && git commit -m "feat: pending_clause_groups 排除终态/无 queue 行 + pending_counts 同口径(C5/C16/C17)"`
 
 ---
 
-### Task 2: _backfill_by_status 加 review 守卫（C8）
+### Task 2: _backfill_by_status 条件更新 + review 守卫（C8/C14）
 
 **Files:**
 - Modify: `app/classifier/rule_pending.py` — `_backfill_by_status`
@@ -146,48 +197,53 @@ Commit: `git add app/classifier/rule_pending.py tests/test_rule_pending.py && gi
 
 **Interfaces:**
 - Consumes: 无
-- Produces: `_backfill_by_status(conn, dimension, pattern, label, status) -> int`，返回「实际写列条文数」；仅对 queue 仍 `review` 的来源条文写列，queue 终态/已改标条文跳过。
+- Produces: `_backfill_by_status(conn, dimension, pattern, label, status) -> int`：clause 列 UPDATE 带 `AND EXISTS(queue review)` + 检查 rowcount；命中才置 queue done；未命中（已并发 done/改标）跳过。返回实际写列条文数。
 
 - [ ] **Step 1: 写失败测试**
 
 ```python
-def test_backfill_skips_terminal_queue_clause(auth_client):
-    """反联守卫：queue 已 done 的来源条文不被词面批准覆写（列保持原值），规则照常沉淀。"""
+def test_backfill_skips_terminal_and_writes_review(auth_client):
+    """反联守卫：queue 已 done 来源条文不覆写（列保持原值）；queue 仍 review 的写列。"""
     with get_db() as conn:
-        cid = _seed_spec_clause(conn)
-        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bC")
-        bq.try_enqueue(conn, cid, "dim6", 0.0)
-        conn.execute(
-            "UPDATE classification_queue SET status='done', batch_id='bC', ai_label='钢筋' "
-            "WHERE clause_id=?", (cid,))
-        # 人工已定案为别的标签
-        conn.execute("UPDATE clauses SET dim6_material='混凝土' WHERE id=?", (cid,))
+        c_done = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_done, "dim6", "钢筋", "钢筋", 0.9, "bC")
+        bq.try_enqueue(conn, c_done, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='done', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_done,))
+        conn.execute("UPDATE clauses SET dim6_material='混凝土' WHERE id=?", (c_done,))
+        c_rev = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_rev, "dim6", "钢筋", "钢筋", 0.9, "bC")
+        bq.try_enqueue(conn, c_rev, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_rev,))
     n = 0
     with get_db() as conn:
         n = rp.backfill_and_close(conn, "dim6", "钢筋", "钢筋")
     with get_db() as conn:
-        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()["dim6_material"]
-    assert n == 0
-    assert c == "混凝土"   # 未被反联覆写
+        vals = {r["id"]: r["dim6_material"] for r in conn.execute(
+            "SELECT id, dim6_material FROM clauses").fetchall()}
+        statuses = {r["clause_id"]: r["status"] for r in conn.execute(
+            "SELECT clause_id, status FROM classification_queue").fetchall()}
+    assert n == 1                          # 只写 c_rev
+    assert vals[c_done] == "混凝土"         # 不被反联覆写
+    assert vals[c_rev] == "钢筋"
+    assert statuses[c_rev] == "done"
 ```
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k backfill_skips_terminal -v`
-Expected: FAIL（当前 `_backfill_by_status` 无条件写列 → n==1、c=='钢筋'）。
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k backfill_skips_terminal_and_writes_review -v`
+Expected: FAIL（现无条件写列 → n==2、c_done 被改成 钢筋）。
 
 - [ ] **Step 3: 实现**
-
-修改 `_backfill_by_status`：取来源条文后，仅保留「queue 该 (clause_id,dimension) 状态为 review」的条文写列：
 
 ```python
 def _backfill_by_status(conn, dimension: str, pattern: str, label: str,
                         status: str) -> int:
-    """该键在指定 status 下的来源条文写列 + 其 queue(review) 置 done。返回写列条文数。
+    """该键在指定 status 下的来源条文写列 + queue(review)→done。返回实际写列条文数。
 
-    C8 反联守卫：仅对 queue 仍 status='review' 的来源条文写列——已 done/auto_adopted/
-    rejected（Tab1 已定案、inline 已改标）的条文跳过，防词面反联覆写人工决定。
-    无 queue 行的来源条文不写列（无「待 AI 打标」事实）。
+    C8/C14 反联守卫：clause 列 UPDATE 带 EXISTS(queue review) 并检查 rowcount——
+    已 done/auto_adopted/rejected（已定案/改标）或并发已被处理的条文跳过，防覆写。
     """
     col = _dim_column(dimension)
     rows = conn.execute(
@@ -197,62 +253,62 @@ def _backfill_by_status(conn, dimension: str, pattern: str, label: str,
         "AND rp.clause_id IS NOT NULL AND q.status='review'",
         (dimension, pattern, label, status)).fetchall()
     cids = [r["clause_id"] for r in rows]
-    if cids:
-        ph = ','.join('?' * len(cids))
-        conn.execute(
-            f"UPDATE clauses SET {col}=?, ai_classified=1 WHERE id IN ({ph})",
-            [label, *cids])
-        conn.execute(
-            f"UPDATE classification_queue SET status='done' WHERE clause_id IN ({ph}) "
-            f"AND dimension=? AND status='review'",
-            [*cids, dimension])
-    return len(cids)
+    written = 0
+    for cid in cids:
+        cur = conn.execute(
+            f"UPDATE clauses SET {col}=?, ai_classified=1 WHERE id=? "
+            f"AND EXISTS (SELECT 1 FROM classification_queue q "
+            f"WHERE q.clause_id=? AND q.dimension=? AND q.status='review')",
+            (label, cid, cid, dimension))
+        if cur.rowcount:
+            written += 1
+            conn.execute(
+                "UPDATE classification_queue SET status='done' "
+                "WHERE clause_id=? AND dimension=? AND status='review'",
+                (cid, dimension))
+    return written
 ```
 
 - [ ] **Step 4: 运行通过**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k backfill_skips_terminal -v`
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k backfill_skips_terminal_and_writes_review -v`
 Expected: PASS。
 
 - [ ] **Step 5: 回归既有反联测试 + 提交**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "backfill or decide or word" -q`
-说明：既有词面批准反联测试（`test_decide_approve_key_level_backfills_and_bumps` 等）在 seed 时把 queue 置为 review → 仍会写列，应通过。若个别 seed 未建 queue review 而断言写列，需在测试 seed 里补 `try_enqueue` + 置 review（属预期语义收紧）。
-Commit: `git add app/classifier/rule_pending.py tests/test_rule_pending.py && git commit -m "feat: 词面反联加 review 守卫——已定案/改标条文不被覆写(C8)"`
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -q`
+说明：既有词面批准反联测试 seed 把 queue 置 review → 仍写列应通过。若个别 seed 未建 queue review 而断言写列，Task 内补 queue（C17 同法）。
+Commit: `git add app/classifier/rule_pending.py tests/test_rule_pending.py && git commit -m "feat: 词面反联条件更新+review 守卫(C8/C14)"`
 
 ---
 
-### Task 3: Tab1 decide approve 改只写列 + 去勾词 rejected（C1/C3/C4）
+### Task 3: Tab1 decide approve 只写列 + 去勾词 rejected（C1/C3/C4/C13）+ _confirm_clause helper（C14）
 
 **Files:**
+- Modify: `app/classifier/rule_pending.py` — 新增 `_confirm_clause`
 - Modify: `app/routes/rules_routes.py` — `review_clause_decide`
 - Test: `tests/test_rule_pending.py`
 
 **Interfaces:**
-- Consumes: `rule_pending.clause_pending_ids(conn, clause_id, dimension)`、`rule_pending.resolve_keys`、`rule_pending.set_status`、`rule_pending.deactivate_fragment`、`_DIM_COLUMN`
-- Produces: `POST /review/clause-pending/{clause_id}/decide` body `{ids:[...], action:"approve"}` 新语义：ids = 去勾（要驳回）的词 id；approve = 写该条 queue ai_label 列 + queue done + ids 词 rejected（deactivate_fragment）+ 其余 pending 词保持不动。action="reject" 返回 400（按钮已删）。响应头 `HX-Trigger: reviewClausePending, reviewWordPending, reviewBlacklist`。
+- Consumes: `clause_pending_ids`、`resolve_keys`、`set_status`、`deactivate_fragment`、`_confirm_clause`、`_DIM_COLUMN`
+- Produces: `_confirm_clause(conn, clause_id, dimension, label) -> bool`（条件更新+rowcount，C14）；`POST /review/clause-pending/{clause_id}/decide` body `{dimension: str 必填, ids:[...], action:"approve"}`。ids=去勾词（可空=纯确认）；approve=写 ai_label 列 + queue done + ids 词 rejected + 其余 pending 不动。action='reject'→400。无 review queue→400；ai_label 空→400（C13）。
 
 - [ ] **Step 1: 写失败测试**
 
 ```python
 def test_tab1_approve_writes_col_keeps_checked_rejects_unchecked(auth_client):
-    """Tab1 确认 = 只写 queue ai_label 列 + queue done；勾选词留 pending(不 approved 不 bump)；
-    去勾词 rejected。不再为任何词建规则。"""
+    """确认=只写列+queue done；勾选词留 pending；去勾词 rejected；不建规则。dimension 必填。"""
     with get_db() as conn:
         cid = _seed_spec_clause(conn)
         rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
         rp.insert_pending(conn, cid, "dim6", "混凝土", "钢筋", 0.7, "bT")
         bq.try_enqueue(conn, cid, "dim6", 0.0)
-        conn.execute(
-            "UPDATE classification_queue SET status='review', batch_id='bT', "
-            "ai_label='钢筋', ai_confidence=0.9 WHERE clause_id=?", (cid,))
-        # 去勾「混凝土」→ 应驳回；「钢筋」勾选 → 留 pending
-        keep = [r["id"] for r in conn.execute(
-            "SELECT id FROM rule_pending WHERE clause_id=? AND pattern='钢筋'", (cid,)).fetchall()]
+        conn.execute("UPDATE classification_queue SET status='review', batch_id='bT', "
+                     "ai_label='钢筋', ai_confidence=0.9 WHERE clause_id=?", (cid,))
         reject = [r["id"] for r in conn.execute(
             "SELECT id FROM rule_pending WHERE clause_id=? AND pattern='混凝土'", (cid,)).fetchall()]
     resp = auth_client.post(f"/review/clause-pending/{cid}/decide",
-                            json={"ids": reject, "action": "approve"})
+                            json={"dimension": "dim6", "ids": reject, "action": "approve"})
     assert resp.status_code == 200
     with get_db() as conn:
         c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
@@ -260,14 +316,32 @@ def test_tab1_approve_writes_col_keeps_checked_rejects_unchecked(auth_client):
         st = {r["pattern"]: r["status"] for r in conn.execute(
             "SELECT pattern, status FROM rule_pending WHERE clause_id=?", (cid,)).fetchall()}
         n_rules = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
-    assert c["dim6_material"] == "钢筋"
-    assert q["status"] == "done"
-    assert st["钢筋"] == "pending" and st["混凝土"] == "rejected"   # 勾选保留 pending，去勾驳
-    assert n_rules == 0                                              # 不沉淀任何规则
+    assert c["dim6_material"] == "钢筋" and q["status"] == "done"
+    assert st["钢筋"] == "pending" and st["混凝土"] == "rejected"
+    assert n_rules == 0
+
+
+def test_tab1_approve_empty_ids_pure_confirm(auth_client):
+    """ids 空=纯确认：只写列+done，无词驳回、无规则。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', batch_id='bT', "
+                     "ai_label='钢筋' WHERE clause_id=?", (cid,))
+    resp = auth_client.post(f"/review/clause-pending/{cid}/decide",
+                            json={"dimension": "dim6", "ids": [], "action": "approve"})
+    assert resp.status_code == 200
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()["dim6_material"]
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()["status"]
+        st = conn.execute("SELECT status FROM rule_pending WHERE clause_id=?", (cid,)).fetchone()["status"]
+        n_rules = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
+    assert c == "钢筋" and q == "done" and st == "pending" and n_rules == 0
 
 
 def test_tab1_decide_reject_action_now_400(auth_client):
-    """Tab1 批量驳回按钮已删 → reject action 返回 400（防旧前端误调）。"""
+    """reject action 已删 → 400。"""
     with get_db() as conn:
         cid = _seed_spec_clause(conn)
         rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
@@ -275,74 +349,102 @@ def test_tab1_decide_reject_action_now_400(auth_client):
         conn.execute("UPDATE classification_queue SET status='review' WHERE clause_id=?", (cid,))
         pid = rp.clause_pending_ids(conn, cid, "dim6")[0]
     resp = auth_client.post(f"/review/clause-pending/{cid}/decide",
-                            json={"ids": [pid], "action": "reject"})
+                            json={"dimension": "dim6", "ids": [pid], "action": "reject"})
+    assert resp.status_code == 400
+
+
+def test_tab1_approve_no_review_queue_400(auth_client):
+    """无 review queue 项 → 400，不写列不改列。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
+    resp = auth_client.post(f"/review/clause-pending/{cid}/decide",
+                            json={"dimension": "dim6", "ids": [], "action": "approve"})
+    assert resp.status_code == 400
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()["dim6_material"]
+    assert (c or "") == ""
+
+
+def test_tab1_approve_empty_ai_label_400(auth_client):
+    """review 存在但 ai_label 为空 → 400（避免静默 no-op 页面卡死）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label=NULL "
+                     "WHERE clause_id=?", (cid,))
+    resp = auth_client.post(f"/review/clause-pending/{cid}/decide",
+                            json={"dimension": "dim6", "ids": [], "action": "approve"})
     assert resp.status_code == 400
 ```
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "writes_col_keeps_checked or reject_action_now_400" -v`
-Expected: FAIL（现 approve=词 approved+bump → n_rules 非 0 / 勾选词被 approved；reject 现成功）。
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "writes_col_keeps_checked or empty_ids_pure_confirm or reject_action_now_400 or no_review_queue_400 or empty_ai_label_400" -v`
+Expected: FAIL（现 approve=词 approved+bump、无 dimension 校验、reject 成功、ai_label 空无守卫）。
 
-- [ ] **Step 3: 实现**（整段替换 `review_clause_decide`）
+- [ ] **Step 3: 实现**
+
+**3a. `rule_pending.py` 新增 `_confirm_clause`（Task 3/4 共用；C14 条件更新）：**
+
+```python
+def _confirm_clause(conn, clause_id: int, dimension: str, label: str) -> bool:
+    """写该条分类列 + queue review→done（Tab1 确认/inline 共用打标出口）。
+
+    条件更新（C14）：clause 列 UPDATE 带 EXISTS(queue review)，命中才置 queue done，
+    未命中（已 done/改标/并发）返回 False no-op。返回是否实际写列。
+    """
+    col = _dim_column(dimension)
+    cur = conn.execute(
+        f"UPDATE clauses SET {col}=?, ai_classified=1, needs_review=0 WHERE id=? "
+        f"AND EXISTS (SELECT 1 FROM classification_queue q "
+        f"WHERE q.clause_id=? AND q.dimension=? AND q.status='review')",
+        (label, clause_id, clause_id, dimension))
+    if not cur.rowcount:
+        return False
+    conn.execute(
+        "UPDATE classification_queue SET status='done' "
+        "WHERE clause_id=? AND dimension=? AND status='review'",
+        (clause_id, dimension))
+    return True
+```
+
+**3b. 替换 `review_clause_decide`：**
 
 ```python
 @router.post("/review/clause-pending/{clause_id}/decide")
 async def review_clause_decide(request: Request, clause_id: int, body: dict):
-    """Tab1 主表确认标签（C1/C3/C4）：只写该条 queue ai_label 列 + queue done。
+    """Tab1 主表确认标签（C1/C3/C4/C13）：只写该条 queue ai_label 列 + queue done。
 
-    body: {ids:[词面 id], action:"approve"}。ids = 去勾（要驳回）的词面 id（可为空=纯确认）；
-    approve → 写 ai_label 列 + queue done；ids 词置 rejected（停用碎片）；
-    作用域内其余 pending 词保持 pending（流入 Tab2 池，不标 approved、不 approve_rule）。
-    action="reject" 已废弃（批量驳回按钮删除）→ 400。
+    body: {dimension: str 必填, ids:[去勾词面 id], action:"approve"}。ids 可为空=纯确认。
+    approve → 写 ai_label 列 + queue done（_confirm_clause）；ids 词 rejected（停用碎片）；
+    其余 pending 词保持 pending。action="reject" → 400。
     """
     from fastapi.responses import JSONResponse as _JR
 
     ids = body.get("ids") or []
     action = body.get("action")
+    dimension = body.get("dimension")
     if action != "approve" or not isinstance(ids, list):
         return _JR({"detail": "仅支持 approve（批量驳回已移除）"}, status_code=400)
+    if dimension not in _DIM_COLUMN:
+        return _JR({"detail": "dimension 不合法"}, status_code=400)
 
     with get_db() as conn:
-        # 作用域维度：有去勾 ids 时由 ids 反查；空 ids（纯确认）由 queue review 反查
-        if ids:
-            dims = {r["dimension"] for r in conn.execute(
-                f"SELECT DISTINCT dimension FROM rule_pending "
-                f"WHERE id IN ({','.join('?' * len(ids))}) AND status='pending'", ids).fetchall()}
-            if not dims:
-                return _JR({"detail": "无有效 pending 勾选"}, status_code=400)
-            if len(dims) != 1:
-                return _JR({"detail": "勾选须同维度"}, status_code=400)
-            dimension = next(iter(dims))
-        else:
-            qd = conn.execute(
-                "SELECT dimension FROM classification_queue "
-                "WHERE clause_id=? AND status='review' LIMIT 1", (clause_id,)).fetchone()
-            if not qd:
-                return _JR({"detail": "该条文无 review 队列项"}, status_code=400)
-            dimension = qd["dimension"]
-
         scope = rule_pending.clause_pending_ids(conn, clause_id, dimension)
         if ids and not set(ids) <= set(scope):
             return _JR({"detail": "勾选 id 不属于该条文待审作用域"}, status_code=400)
-
-        # 写列：取该条 queue 的 ai_label（review 条文由 apply_ai_results 写入，应存在）
         q = conn.execute(
             "SELECT ai_label FROM classification_queue "
             "WHERE clause_id=? AND dimension=? AND status='review'",
             (clause_id, dimension)).fetchone()
-        label = q["ai_label"] if q else None
-        col = _DIM_COLUMN.get(dimension)
-        if label and col:
-            conn.execute(
-                f"UPDATE clauses SET {col}=?, ai_classified=1, needs_review=0 WHERE id=?",
-                (label, clause_id))
-            conn.execute(
-                "UPDATE classification_queue SET status='done' "
-                "WHERE clause_id=? AND dimension=? AND status='review'",
-                (clause_id, dimension))
-
-        # 去勾词 → rejected（黑名单 + 停用碎片）；作用域内其余 pending 词不动
+        if not q:
+            return _JR({"detail": "该条文该维无 review 队列项"}, status_code=400)
+        label = q["ai_label"]
+        if not label:
+            return _JR({"detail": "该队列项无 AI 标签，请用编辑输入"}, status_code=400)
+        rule_pending._confirm_clause(conn, clause_id, dimension, label)
         if ids:
             reject_keys = rule_pending.resolve_keys(conn, ids)
             rule_pending.set_status(conn, ids, "rejected")
@@ -358,58 +460,57 @@ async def review_clause_decide(request: Request, clause_id: int, body: dict):
 
 - [ ] **Step 4: 运行通过**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "writes_col_keeps_checked or reject_action_now_400" -v`
-Expected: 2 PASS。
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "writes_col_keeps_checked or empty_ids_pure_confirm or reject_action_now_400 or no_review_queue_400 or empty_ai_label_400" -v`
+Expected: 5 PASS。
 
-- [ ] **Step 5: 回归既有 Tab1 测试（预期需同步修改断言）+ 提交**
+- [ ] **Step 5: 相关测试绿 + 提交（本 Task 内适配被打破的旧 Tab1 断言，不留红）**
 
 Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -q`
-Expected: 与「Tab1 approve 词 approved+bump」相关测试失败——这些断言是旧语义，按 Task 7 适配清单逐条改（本 Task 先改新增两条通过，回归失败项登记不阻塞提交，但**本 Task 提交前应先把直接冲突的 2-3 个用例改到新语义**，例如 `test_tab1_clause_multi_label_approve_partial` 改为断言「勾选词 pending / 未勾 rejected / 无规则」）。
-Commit: `git add app/routes/rules_routes.py tests/test_rule_pending.py && git commit -m "feat: Tab1 approve 只写列+去勾词进黑名单，删批量驳回语义(C1/C3/C4)"`
+本 Task 内同步改：`test_tab1_clause_multi_label_approve_partial`（→勾选 pending/未勾 rejected/无规则/补 dimension）、`test_word_approve_then_clause_queue_already_done_idempotent`（补 dimension 语义核对）、其余断言 approve→approved+bump 的用例同 Task 内适配。
+Commit: `git add app/classifier/rule_pending.py app/routes/rules_routes.py tests/test_rule_pending.py && git commit -m "feat: Tab1 approve 只写列+去勾词进黑名单，dimension 收口(C1/C3/C4/C13)"`
 
 ---
 
-### Task 4: inline_edit 保留词不 approve、new_label 驳残留旧词（C9）
+### Task 4: inline_edit 保留词不 approve、new_label 驳残留旧词、dimension 收口（C9/C13）
 
 **Files:**
 - Modify: `app/routes/rules_routes.py` — `review_clause_inline_edit`
 - Test: `tests/test_rule_pending.py`
 
 **Interfaces:**
-- Consumes: 同 Task 3 + `rule_pending.set_status`
-- Produces: `POST /review/clause-pending/{clause_id}/inline-edit` body `{label_ids:[保留], removed_label_ids:[驳], new_label?, dimension?}` 新语义：保留词=保持 pending（**不再 approve/回填/bump**）；removed → rejected；new_label 非空 → 写该列 + queue done，且若 new_label ≠ 原 queue ai_label 则把该 (clause,dimension) 残留 pending 词全部 rejected（防 Tab2 反嚼覆写）。
+- Consumes: 同 Task 3（含 `_confirm_clause`）+ `set_status`
+- Produces: `POST /review/clause-pending/{clause_id}/inline-edit` body `{label_ids:[保留], removed_label_ids:[驳], new_label?, dimension?}`。**dimension 收口（C13）**：优先 body，缺失回退「该 clause 唯一 review queue」，仍歧义才 400；不再从任意 pending id 反查。保留词=保持 pending；removed→rejected；new_label≠原 ai_label 且写列成功→驳残留 pending 词。new_label 无 review queue→`_confirm_clause` False→no-op 不报错。
 
 - [ ] **Step 1: 写失败测试**
 
 ```python
 def test_tab1_inline_keep_words_stay_pending_no_rule(auth_client):
-    """inline 保留词不再 approve：保持 pending、不写列、不 bump 规则（词面沉淀仅 Tab2）。"""
+    """inline 保留词不再 approve：保持 pending、不写列、不 bump（词面沉淀仅 Tab2）。"""
     with get_db() as conn:
         cid = _seed_spec_clause(conn)
         pid = rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
         bq.try_enqueue(conn, cid, "dim6", 0.0)
-        conn.execute(
-            "UPDATE classification_queue SET status='review', ai_label='钢筋' WHERE clause_id=?", (cid,))
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
     resp = auth_client.post(f"/review/clause-pending/{cid}/inline-edit",
                             json={"label_ids": [pid], "removed_label_ids": [],
-                                  "new_label": None})
+                                  "new_label": None, "dimension": "dim6"})
     assert resp.status_code == 200
     with get_db() as conn:
         st = conn.execute("SELECT status FROM rule_pending WHERE id=?", (pid,)).fetchone()["status"]
         n_rules = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
-    assert st == "pending"
-    assert n_rules == 0
+    assert st == "pending" and n_rules == 0
 
 
 def test_tab1_inline_new_label_rejects_residual_words(auth_client):
-    """inline 新标签 ≠ queue ai_label → 该条残留 pending 词全 rejected（防 Tab2 反嚼覆写）。"""
+    """new_label≠ai_label → 残留 pending 词全 rejected（防 Tab2 反嚼覆写）。"""
     with get_db() as conn:
         cid = _seed_spec_clause(conn)
         rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
         rp.insert_pending(conn, cid, "dim6", "混凝土", "钢筋", 0.8, "bU")
         bq.try_enqueue(conn, cid, "dim6", 0.0)
-        conn.execute(
-            "UPDATE classification_queue SET status='review', ai_label='钢筋' WHERE clause_id=?", (cid,))
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
     resp = auth_client.post(f"/review/clause-pending/{cid}/inline-edit",
                             json={"label_ids": [], "removed_label_ids": [],
                                   "new_label": "混凝土", "dimension": "dim6"})
@@ -419,26 +520,56 @@ def test_tab1_inline_new_label_rejects_residual_words(auth_client):
         q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
         st = {r["pattern"]: r["status"] for r in conn.execute(
             "SELECT pattern, status FROM rule_pending WHERE clause_id=?", (cid,)).fetchall()}
-    assert c["dim6_material"] == "混凝土"
-    assert q["status"] == "done"
-    assert st["钢筋"] == "rejected" and st["混凝土"] == "rejected"   # 残留全驳
+    assert c["dim6_material"] == "混凝土" and q["status"] == "done"
+    assert st["钢筋"] == "rejected" and st["混凝土"] == "rejected"
+
+
+def test_tab1_inline_new_label_no_review_queue_noop(auth_client):
+    """new_label 但无 review queue → no-op：不抛错、不改列、不驳词。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
+    resp = auth_client.post(f"/review/clause-pending/{cid}/inline-edit",
+                            json={"label_ids": [], "removed_label_ids": [],
+                                  "new_label": "混凝土", "dimension": "dim6"})
+    assert resp.status_code == 200
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()["dim6_material"]
+        st = conn.execute("SELECT status FROM rule_pending WHERE clause_id=?", (cid,)).fetchone()["status"]
+    assert (c or "") == "" and st == "pending"
+
+
+def test_tab1_inline_cross_dim_ambiguous_400(auth_client):
+    """dimension 缺失且该 clause 跨多 review 维 → 400（C13 不再从任意 id 反查）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        for dim in ("dim6", "dim5"):
+            rp.insert_pending(conn, cid, dim, "钢筋", "钢筋", 0.9, "bU")
+            bq.try_enqueue(conn, cid, dim, 0.0)
+            conn.execute("UPDATE classification_queue SET status='review' "
+                         "WHERE clause_id=? AND dimension=?", (cid, dim))
+    resp = auth_client.post(f"/review/clause-pending/{cid}/inline-edit",
+                            json={"label_ids": [], "removed_label_ids": [],
+                                  "new_label": "混凝土"})  # 无 dimension
+    assert resp.status_code == 400
 ```
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "keep_words_stay_pending or new_label_rejects_residual" -v`
-Expected: FAIL（现 keep → approved+bump；new_label 只写列不驳残留）。
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "keep_words_stay_pending or new_label_rejects_residual or new_label_no_review_queue_noop or cross_dim_ambiguous_400" -v`
+Expected: FAIL（现 keep→approved+bump；new_label 不驳残留；维度可任意推断）。
 
-- [ ] **Step 3: 实现**（整段替换 `review_clause_inline_edit` 主体；保留 dimension 白名单校验）
+- [ ] **Step 3: 实现**（整段替换 `review_clause_inline_edit` 主体）
 
 ```python
 @router.post("/review/clause-pending/{clause_id}/inline-edit")
 async def review_clause_inline_edit(request: Request, clause_id: int, body: dict):
-    """Tab1 行内编辑（C1/C3/C9）：删 chip=驳词；保留词=保持 pending（不 approve）；
-    新标签=写列 + queue done +（≠原 ai_label 时）驳残留 pending 词防反嚼覆写。
+    """Tab1 行内编辑（C1/C3/C9/C13）：删 chip=驳词；保留词=保持 pending；新标签≠原
+    ai_label 且写列成功 → 驳残留 pending 词防反嚼。
 
-    body: {label_ids:[保留 pending id], removed_label_ids:[删除 pending id],
-           new_label: str|None, dimension: str|None}。
+    body: {label_ids:[保留], removed_label_ids:[删除], new_label, dimension}。
+    dimension 收口：优先 body；缺失回退「该 clause 唯一 review queue 的 dimension」，
+    仍歧义才 400（不再从任意 pending id 反查）。
     """
     from fastapi.responses import JSONResponse as _JR
 
@@ -450,63 +581,47 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
         return _JR({"detail": "label_ids/removed_label_ids 须为数组"}, status_code=400)
 
     with get_db() as conn:
+        # C13 dimension 收口
+        if dimension not in _DIM_COLUMN:
+            rows = conn.execute(
+                "SELECT DISTINCT dimension FROM classification_queue "
+                "WHERE clause_id=? AND status='review'", (clause_id,)).fetchall()
+            if len(rows) == 1:
+                dimension = rows[0]["dimension"]
+            else:
+                return _JR({"detail": "dimension 缺失或歧义（该条文跨多维或无 review 维）"},
+                           status_code=400)
+
+        pending_set = set()
         all_ids = list(label_ids) + list(removed_label_ids)
-        if not dimension:
-            if all_ids:
-                d_row = conn.execute(
-                    f"SELECT dimension FROM rule_pending "
-                    f"WHERE id IN ({','.join('?' * len(all_ids))}) "
-                    f"ORDER BY id DESC LIMIT 1", all_ids).fetchone()
-                dimension = d_row["dimension"] if d_row else None
-            if not dimension:
-                dr = conn.execute(
-                    "SELECT dimension FROM rule_pending WHERE clause_id=? "
-                    "ORDER BY id DESC LIMIT 1", (clause_id,)).fetchone()
-                dimension = dr["dimension"] if dr else None
-        if dimension and dimension not in _DIM_COLUMN:
-            return _JR({"detail": "dimension 不合法"}, status_code=400)
+        if all_ids:
+            pending_set = set(r["id"] for r in conn.execute(
+                f"SELECT id FROM rule_pending WHERE id IN ({','.join('?' * len(all_ids))}) "
+                f"AND status='pending'", all_ids).fetchall())
+        rem = [i for i in removed_label_ids if i in pending_set]
+        # keep 不 approve、不回填、不 bump——词面沉淀仅 Tab2
 
-        if dimension:
-            pending_set = set()
-            if all_ids:
-                pending_set = set(r["id"] for r in conn.execute(
-                    f"SELECT id FROM rule_pending WHERE id IN ({','.join('?' * len(all_ids))}) "
-                    f"AND status='pending'", all_ids).fetchall())
-            rem = [i for i in removed_label_ids if i in pending_set]
-            keep = [i for i in label_ids if i in pending_set]
+        if rem:
+            rem_keys = rule_pending.resolve_keys(conn, rem)
+            rule_pending.set_status(conn, rem, "rejected")
+            for d, p, l in sorted(rem_keys):
+                rule_pending.deactivate_fragment(conn, d, p, l)
 
-            # 删除项 → rejected（黑名单 + 停用碎片）；保留项 → 保持 pending（不 approve）
-            if rem:
-                rem_keys = rule_pending.resolve_keys(conn, rem)
-                rule_pending.set_status(conn, rem, "rejected")
-                for d, p, l in sorted(rem_keys):
-                    rule_pending.deactivate_fragment(conn, d, p, l)
-            # keep：不 approve、不回填、不 bump——词面沉淀仅 Tab2
-
-            col = _DIM_COLUMN[dimension]
-            if new_label and str(new_label).strip():
-                val = str(new_label).strip()
-                # 取 queue 原 ai_label，判定是否人工改标
-                q = conn.execute(
-                    "SELECT ai_label FROM classification_queue "
-                    "WHERE clause_id=? AND dimension=? AND status='review'",
-                    (clause_id, dimension)).fetchone()
-                orig = (q["ai_label"] if q else None)
-                conn.execute(
-                    f"UPDATE clauses SET {col}=?, ai_classified=1, needs_review=0 WHERE id=?",
-                    (val, clause_id))
-                conn.execute(
-                    "UPDATE classification_queue SET status='done' "
-                    "WHERE clause_id=? AND dimension=? AND status='review'",
-                    (clause_id, dimension))
-                # C9：新标签 ≠ 原 AI 标签 → 残留 pending 词全驳（防 Tab2 反嚼覆写）
-                if orig is not None and val != orig:
-                    residual = rule_pending.clause_pending_ids(conn, clause_id, dimension)
-                    if residual:
-                        rkeys = rule_pending.resolve_keys(conn, residual)
-                        rule_pending.set_status(conn, residual, "rejected")
-                        for d, p, l in sorted(rkeys):
-                            rule_pending.deactivate_fragment(conn, d, p, l)
+        if new_label and str(new_label).strip():
+            val = str(new_label).strip()
+            q = conn.execute(
+                "SELECT ai_label FROM classification_queue "
+                "WHERE clause_id=? AND dimension=? AND status='review'",
+                (clause_id, dimension)).fetchone()
+            orig = (q["ai_label"] if q else None)
+            written = rule_pending._confirm_clause(conn, clause_id, dimension, val)
+            if written and orig is not None and val != orig:
+                residual = rule_pending.clause_pending_ids(conn, clause_id, dimension)
+                if residual:
+                    rkeys = rule_pending.resolve_keys(conn, residual)
+                    rule_pending.set_status(conn, residual, "rejected")
+                    for d, p, l in sorted(rkeys):
+                        rule_pending.deactivate_fragment(conn, d, p, l)
 
     log_action("review", "INFO", "条文行内编辑",
                detail=json_detail({"clause_id": clause_id, "dimension": dimension,
@@ -518,154 +633,175 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
 
 - [ ] **Step 4: 运行通过**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "keep_words_stay_pending or new_label_rejects_residual" -v`
-Expected: 2 PASS。
+Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -k "keep_words_stay_pending or new_label_rejects_residual or new_label_no_review_queue_noop or cross_dim_ambiguous_400" -v`
+Expected: 4 PASS。
 
-- [ ] **Step 5: 回归 + 提交**
+- [ ] **Step 5: 相关测试绿 + 提交（本 Task 内适配被打破的旧 inline 断言）**
 
 Run: `D:/Python/python.exe -m pytest tests/test_rule_pending.py -q`
-Expected: 旧「inline keep=approve」断言失败登记 Task 7 适配；本 Task 两条新通过后提交。
-Commit: `git add app/routes/rules_routes.py tests/test_rule_pending.py && git commit -m "feat: inline 保留词不 approve、新标签≠ai_label 驳残留 pending 词(C9)"`
+本 Task 内同步改：`test_tab1_inline_remove_label_rejects`（removed→rejected 仍成立，补 dimension）、`test_tab1_inline_new_label_writes_col_only`（加残留词被驳断言）、`test_tab1_inline_edit_rejects_invalid_dimension`（400 保留）、`test_tab1_inline_cancel_noop`（GET 取消无副作用仍成立）。
+Commit: `git add app/routes/rules_routes.py tests/test_rule_pending.py && git commit -m "feat: inline 保留词不 approve、新标签驳残留、dimension 收口(C9/C13)"`
 
 ---
 
-### Task 5: process_feedback 去 patterns 背书 → 纯打标（低置信 confirm 收敛）
+### Task 5: process_feedback 纯打标 + review 守卫 + 低置信端点守卫（C1 延伸/C12/C15）
 
 **Files:**
 - Modify: `app/classifier/feedback.py` — `process_feedback`
-- Modify: `app/routes/rules_routes.py` — `_fetch_review_items`（去 extract 勾选词）、confirm/batch_confirm（停传 patterns）
+- Modify: `app/routes/rules_routes.py` — `confirm_review`/`reject_review` 加 `status='review'` 守卫；`_fetch_review_items` 去 extract 勾选词
 - Modify: `app/templates/partials/review_list.html` — 去候选词勾选 UI
-- Test: `tests/test_rule_feedback_loop.py`、`tests/test_rule_pending.py`、`tests/test_logs.py`、`tests/test_review_batch.py`
+- Test: `tests/test_rule_feedback_loop.py`、`tests/test_review_batch.py`、`tests/test_logs.py`、`tests/test_rules_routes.py`
 
 **Interfaces:**
 - Consumes: 无
-- Produces: `process_feedback(clause_id, dimension, confirmed_label, source_conf=0.0, patterns=None)` 语义：写列 + queue done；`patterns` 参数**忽略**（保留签名兼容，不背书不 bump）。词面沉淀仅 Tab2，低置信 confirm 不再产生规则。
+- Produces: `process_feedback(clause_id, dimension, confirmed_label, source_conf=0.0, patterns=None)`：纯打标写列（review 守卫）+ queue done；patterns/source_conf 参数保留仅签名兼容，忽略。低置信 confirm/reject 端点对非 review 行 no-op。
 
 - [ ] **Step 1: 写失败测试**
 
 ```python
 def test_process_feedback_ignores_patterns_no_rule(auth_client):
-    """低置信确认传 patterns 也不再沉淀词面——纯打标（词面沉淀仅 Tab2）。"""
+    """低置信确认传 patterns 不再沉淀词面——纯打标（词面沉淀仅 Tab2）。"""
+    from app.classifier.feedback import process_feedback
     with get_db() as conn:
         cid = _seed_spec_clause(conn)
         bq.try_enqueue(conn, cid, "dim6", 0.0)
-        conn.execute(
-            "UPDATE classification_queue SET status='review', ai_label='钢筋' WHERE clause_id=?", (cid,))
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
     process_feedback(cid, "dim6", "钢筋", source_conf=0.5, patterns=["钢筋"])
     with get_db() as conn:
         c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()["dim6_material"]
         n_rules = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
         st = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()["status"]
-    assert c == "钢筋"
-    assert n_rules == 0
-    assert st == "done"
+    assert c == "钢筋" and n_rules == 0 and st == "done"
+
+
+def test_process_feedback_no_review_queue_noop(auth_client):
+    """queue 非 review（已 done）时 process_feedback 不覆写列（C15）。"""
+    from app.classifier.feedback import process_feedback
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='done', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
+        conn.execute("UPDATE clauses SET dim6_material='混凝土' WHERE id=?", (cid,))
+    process_feedback(cid, "dim6", "钢筋")
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()["dim6_material"]
+    assert c == "混凝土"   # 不覆写人工定案
 ```
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_feedback_loop.py -k ignores_patterns -v`
-Expected: FAIL（现 patterns 背书生成规则 → n_rules>0）。
+Run: `D:/Python/python.exe -m pytest tests/test_rule_feedback_loop.py -k "ignores_patterns_no_rule or no_review_queue_noop" -v`
+Expected: FAIL（现 patterns 背书生成规则；process_feedback 无条件写列会覆写 混凝土）。
 
-- [ ] **Step 3: 实现**（process_feedback 去掉 patterns 背书分支）
+- [ ] **Step 3: 实现**
+
+**3a. `process_feedback` 整段替换为纯打标 + review 守卫（完整自含实现）：**
 
 ```python
 def process_feedback(clause_id: int, dimension: str, confirmed_label: str,
                      source_conf: float = 0.0, patterns: list[str] | None = None):
-    """人工确认：纯打标写列 + queue done（C1 延伸——词面沉淀仅 Tab2）。
+    """人工确认：纯打标写列 + queue done（C1 延伸 / C12 / C15）。
 
-    patterns 参数保留仅为签名兼容，忽略（不再背书词面/不再 bump 规则）。
+    patterns/source_conf 保留仅为签名兼容，忽略（不再背书词面/不再 bump 规则——
+    词面普通沉淀仅 Tab2，见 spec C12）。
+    仅当 queue 仍 review 时写列（已 done/改标 no-op），闭环 C8「不被覆写」。
     """
+    from app.database import get_db
+    col = _dim_to_column(dimension)
     with get_db() as conn:
-        conn.execute(
-            "UPDATE classification_queue SET status = 'done' WHERE clause_id = ? AND dimension = ?",
-            (clause_id, dimension),
-        )
-        col = _dim_to_column(dimension)
-        conn.execute(
-            f"UPDATE clauses SET {col} = ?, ai_classified = 1, needs_review = 0 WHERE id = ?",
-            (confirmed_label, clause_id),
-        )
+        cur = conn.execute(
+            f"UPDATE clauses SET {col}=?, ai_classified=1, needs_review=0 WHERE id=? "
+            f"AND EXISTS (SELECT 1 FROM classification_queue q "
+            f"WHERE q.clause_id=? AND q.dimension=? AND q.status='review')",
+            (confirmed_label, clause_id, clause_id, dimension))
+        if cur.rowcount:
+            conn.execute(
+                "UPDATE classification_queue SET status='done' "
+                "WHERE clause_id=? AND dimension=? AND status='review'",
+                (clause_id, dimension))
 ```
 
-同时：
-- `_fetch_review_items`：去掉 `it["keywords"] = extract_keywords(...)`（不再提供勾选词背书入口）；若前端还需展示可留空列表。
-- `review_list.html`：删「候选词（勾选背书）」表头列与 checkbox 渲染、`confirmFallback` 的 `patterns` 收集（POST body 传空或不传 patterns）。
-- confirm / batch_confirm 路由：不再从 body 读 patterns 传给 process_feedback（或传 patterns=None）。
+**3b. `confirm_review`/`reject_review` queue 查询加 `status='review'`**：
+
+```python
+# confirm_review:
+item = conn.execute(
+    "SELECT clause_id, dimension, ai_label, ai_confidence "
+    "FROM classification_queue WHERE id=? AND status='review'",
+    (queue_id,)).fetchone()
+# reject_review:
+item = conn.execute(
+    "SELECT clause_id, dimension FROM classification_queue "
+    "WHERE id=? AND status='review'", (queue_id,)).fetchone()
+```
+
+**3c. `_fetch_review_items`**：去掉 `it["keywords"] = extract_keywords(...)`（不再提供勾选词背书）；`review_list.html` 删「候选词」列与 checkbox、`confirmFallback` 的 patterns 收集。
 
 - [ ] **Step 4: 运行通过**
 
-Run: `D:/Python/python.exe -m pytest tests/test_rule_feedback_loop.py tests/test_review_batch.py tests/test_logs.py -q`
-Expected: 新测试 PASS；既有「确认背书生成规则」断言失败→按 Task 7 适配。
+Run: `D:/Python/python.exe -m pytest tests/test_rule_feedback_loop.py tests/test_review_batch.py tests/test_logs.py tests/test_rules_routes.py -q`
+Expected: 新测试 PASS；既有「确认背书生成规则」断言本 Task 内改纯打标。
 
 - [ ] **Step 5: 提交**
 
-Commit: `git add app/classifier/feedback.py app/routes/rules_routes.py app/templates/partials/review_list.html tests/ && git commit -m "feat: process_feedback 去 patterns 背书——低置信确认纯打标(C1延伸)"`
+Commit: `git add app/classifier/feedback.py app/routes/rules_routes.py app/templates/partials/review_list.html tests/ && git commit -m "feat: process_feedback 纯打标+review 守卫，低置信端点守卫(C1/C12/C15)"`
 
 ---
 
-### Task 6: 前端 review_clause_panel 交互收敛（删批量驳回、checkbox 去勾语义）
+### Task 6: 前端 review_clause_panel 交互收敛（删批量驳回、checkbox 去勾语义、dimension 必传）
 
 **Files:**
 - Modify: `app/templates/partials/review_clause_panel.html`
-- Test: 手工/Playwright 冒烟（无新增单测；改动纯 UI 文案与 JS 动作）
+- Test: 手工/Playwright 冒烟（无新增单测；纯 UI 文案与 JS）
 
 **Interfaces:**
 - Consumes: Task 3/4 端点新语义
-- Produces: Tab1 主表按钮组 = ✅ 确认 | ✏️ 编辑 | 取消（无 ❌ 批量驳回）；词 chip checkbox 默认全勾 + 小字「未勾选的词将进入黑名单」；JS `clauseDecide` 收集**未勾选词 id** 作为 `ids` 调 approve。
+- Produces: Tab1 主表按钮组 = ✅ 确认标签 | ✏️ 编辑 | 取消（无 ❌ 批量驳回）；词 chip checkbox 默认全勾 + 小字「未勾选的词将进入黑名单」；JS `clauseConfirm(clauseId, dimension)` 收集未勾选词 id 作 `ids` 并**必传 dimension**。
 
-- [ ] **Step 1: 改模板**（review_clause_panel.html 主表按钮区 + JS）
+- [ ] **Step 1: 改模板**（按钮区 + JS）
 
-现状按钮区（第 33-44 行附近）：
-```html
-<button ... onclick="clauseDecide('{{ g.clause_id }}', '{{ g.dimension }}', 'approve')">✅ 批量确认</button>
-<button ... class="outline secondary" ... onclick="clauseDecide('{{ g.clause_id }}', '{{ g.dimension }}', 'reject')">❌ 批量驳回</button>
-<button ... onclick="toggleClauseEdit(...)">✏️ 编辑</button>
-<small ...>未勾选标签将自动驳回/通过</small>
-```
-改为：
+按钮区现状 → 改为：
 ```html
 <button ... onclick="clauseConfirm('{{ g.clause_id }}', '{{ g.dimension }}')">✅ 确认标签</button>
 <button class="outline" ... onclick="toggleClauseEdit('{{ g.clause_id }}', '{{ g.dimension }}')">✏️ 编辑</button>
 <small style="color:var(--pico-muted-color);font-size:0.7rem">未勾选的词将进入黑名单，不再被提议/沉淀</small>
 ```
-JS：`clauseDecide` 改为 `clauseConfirm(clauseId, dimension)`——收集 `#candidates-{cid}-{dim} .cand-check:not(:checked)` 的 value 作为 `ids`，调 `POST .../decide` body `{ids, action:'approve'}`；确认文案「确认该标签？未勾选的词将进入黑名单。」
+JS `clauseDecide` → `clauseConfirm(clauseId, dimension)`：收集 `#candidates-{cid}-{dim} .cand-check:not(:checked)` 的 value 作 `ids`，`POST .../decide` body `{dimension, ids, action:'approve'}`；确认文案「确认该标签？未勾选的词将进入黑名单。」
 
-- [ ] **Step 2: 冒烟验证**（起临时库 + headless Chrome，参照会话既有 playwright 冒烟模式；或仅手工强刷 dev 验证按钮/文案）
+- [ ] **Step 2: 冒烟验证**（临时库 + headless Chrome 或 dev 强刷）
 
-验证点：主表无「批量驳回」按钮；checkbox 默认全勾；确认后列写入、queue done、去勾词进黑名单页。
-（此项不产单测；如环境不便起服务可跳过自动冒烟，改由用户在 dev 强刷人工确认。）
+验证点：无「批量驳回」按钮；checkbox 默认全勾；确认写列+done、去勾词进黑名单页；跨维条文两维独立可确认。
 
 - [ ] **Step 3: 提交**
 
-Commit: `git add app/templates/partials/review_clause_panel.html && git commit -m "feat: Tab1 主表删批量驳回、checkbox 去勾=黑名单交互"`
+Commit: `git add app/templates/partials/review_clause_panel.html && git commit -m "feat: Tab1 主表删批量驳回、checkbox 去勾=黑名单、dimension 必传"`
 
 ---
 
-### Task 7: 全量回归与测试适配收尾
+### Task 7: 全量回归收尾 + 低置信块/旧端点回归 + 文档
 
 **Files:**
-- Modify: `tests/test_rule_pending.py`、`tests/test_rule_feedback_loop.py`、`tests/test_review_batch.py`、`tests/test_logs.py`、`tests/test_rules_routes.py`（按失败清单）
+- Modify: `tests/`（按失败清单）
+- Modify: `docs/superpowers/specs/2026-09-06-tab1-tab2-convergence-design.md`（更新验收口径，若 Task 内实现偏离）
 
 **Interfaces:**
 - Consumes: 前 6 Task 全部新语义
-- Produces: 全量测试绿；无残留旧语义断言。
+- Produces: 全量测试绿；无残留旧语义断言；验收口径与实现一致。
 
 - [ ] **Step 1: 全量跑并收集失败**
 
 Run: `D:/Python/python.exe -m pytest tests/ -q`
-Expected: 失败集中在「Tab1 approve/inline/confirm = 词 approved / bump 规则 / 候选词背书」旧语义断言。
+Expected: 语义 Task 已逐 Task 适配，此处应近绿；剩余为遗漏的旧语义断言或 D1/inline 边角。
 
-- [ ] **Step 2: 逐条适配**（清单，覆盖 spec §八）
+- [ ] **Step 2: 逐条适配遗留（清单）**
 
-- `test_tab1_clause_multi_label_approve_partial` → 改：勾选词 `pending`、未勾词 `rejected`、列写入 ai_label、queue done、无规则。
-- `test_tab1_inline_remove_label_rejects` → 语义仍成立（removed → rejected），核对无 approve 副作用。
-- `test_tab1_inline_new_label_writes_col_only` → 加断言残留 pending 词被驳（C9）。
-- `test_tab1_inline_cancel_noop` → 应仍成立。
-- `test_reject_keeps_clause_in_tab1_marked` → 原走 reject action 已删 → 改为「词全驳 + 仍留主表待重标」（用 approve + 全 ids 去勾模拟，或 inline 新标签路径），断言主表渲染「词已驳回」标记。
-- `test_word_approve_then_clause_queue_already_done_idempotent` → queue done 后词面再批准不再写列但规则照常（Task 2 守卫），核对断言。
-- `test_rule_feedback_loop.py` 背书用例 → 改纯打标断言。
-- `test_logs.py`/`test_review_batch.py` → batch_confirm 不再传 patterns，若断言日志含背书词则去掉。
-- `test_rules_routes.py` `/review/{qid}/reject` 用例 → queue rejected 语义保留（reject 端点未删）应仍通过，核对。
+- `test_reject_keeps_clause_in_tab1_marked` → **inline 删光词不输新标签**模拟「词全驳+queue review」，断言主表渲染「词已驳回」标记（codex #4；approve 已写列 done 行消失，不可用）。
+- `test_word_approve_then_clause_queue_already_done_idempotent` → queue done 后词面再批准不写列但规则照常（Task 2 守卫）。
+- `test_lowconf_clause_without_pending_still_in_tab1` / `test_clause_pending_get_includes_queue_fallback` → 低置信兜底保留，断言不变；confirm 传 patterns 现被忽略（纯打标）。
+- `test_rules_routes.py` `/review/{qid}/reject` → reject 端点保留但加 review 守卫，断言核对。
+- D1 / inline 边角用例按 Task 3/4 已适配方向复核。
 
 - [ ] **Step 3: 全量通过**
 
@@ -674,12 +810,15 @@ Expected: 全绿（基线 693 → 预期 695+）。
 
 - [ ] **Step 4: 提交**
 
-Commit: `git add tests/ && git commit -m "test: 适配 Tab1 打标-沉淀解耦语义（全量回归绿）"`
+Commit: `git add tests/ docs/ && git commit -m "test: 全量回归绿 + spec 验收口径复核（收尾）"`
 
 ---
 
 ## Self-Review 记录（写完即自查）
 
-- **Spec 覆盖**：C1(§Task3/4/5) ✓；C2(不动 apply_ai_results) ✓；C3(Task3/6 checkbox 去勾) ✓；C4(Task3 reject 400 + Task6 删按钮) ✓；C5(Task1) ✓；C6(Tab1 主表+低置信保留，未动 review_list 结构) ✓；C7(chip 展示未动) ✓；C8(Task2) ✓；C9(Task4) ✓；C10(auto 分支不动，回归) ✓。低置信块保留、旧端点保留 ✓。
-- **占位符**：无 TBD/TODO；Task 3 approve 的 ids 空/非空两分支已在同一函数体内给出可运行代码。各 Task Step 3 均为完整可运行实现。
-- **类型一致**：`clause_pending_ids`/`resolve_keys`/`set_status`/`deactivate_fragment`/`_DIM_COLUMN` 沿用现有签名；`process_feedback` 保留 `patterns` 参数位。HX-Trigger 与前端事件名一致。
+- **Spec 覆盖**：C1(T3/4/5)✓；C2(不动 apply_ai_results)✓；C3(T3/6)✓；C4(T3 reject 400 + T6 删按钮)✓；C5(T1)✓；C6(低置信保留)✓；C7(chip 展示不动)✓；C8(T2)✓；C9(T4)✓；C10(auto 不动)✓；C11(前置条件 GC)✓；C12(T5 表述)✓；C13(T3/4 dimension 收口)✓；C14(T2/3 _confirm_clause 条件更新)✓；C15(T5 端点守卫)✓；C16(T1 counts 口径)✓；C17(T1 排除无 queue 行)✓；C18(存量不动, GC)✓。
+- **评审反馈落位**：codex #1→C11/C18(GC)；#2→C16(T1)；#3→C17(T1)；#4→Task7 inline 全删；#5→C14(T2/3)；#6→C15(T5)；#7→C12(T5)；#8→C13(T3/4)；#9→Global Constraints「每 Task 绿提交」+各 Task Step5。
+- **占位符**：无 TBD/TODO；各 Task Step 3 为完整可运行实现。
+- **类型一致**：`_confirm_clause`/`_backfill_by_status`/`pending_counts`/`pending_clause_groups` 签名跨 Task 一致；`process_feedback` 保留 patterns 参数位。HX-Trigger 与前端事件名一致。
+- **并发**：C14 用条件更新+rowcount，无 `BEGIN IMMEDIATE` 全局改造（小 diff 达成 spec §七承诺）。
+- **表述诚实**：「词面沉淀只经 Tab2」已收窄为「普通沉淀」并列举黑名单 approve/auto 两例外（C12）。

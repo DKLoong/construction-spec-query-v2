@@ -41,6 +41,19 @@
 - 不做「三源合一 / 大总览重构」；不做低置信数据源并表。
 - ③④ 另 spec；rule_pending / classification_queue 表结构不变。
 
+### 评审修订（2026-09-06 /plan-eng-review + codex outside voice 采纳）
+
+| # | 决策（评审补） |
+| --- | --- |
+| C11 | **前置条件**：目标库须已清到「locked 种子基准」（dim4/5/6 active=21/23/23，无 confirmed 碎片；dev 已在 9-06 清过）。旧 confirmed>0 碎片是设计信任标记，**不被**词面驳回停用（`deactivate_fragment` 只停 confirmed=0 是有意的）；本 spec 不改存量，只防新污染。 |
+| C12 | **表述收窄**：「词面沉淀只经 Tab2 一个出口」实际含两类**既定例外**——① 黑名单 approve（Tab3 两档恢复的 approve）仍直接 `approve_rule`；② auto 分支对已背书词仍 bump（C10）。故准确表述为「**新词面的普通沉淀只经 Tab2**」；低置信条文确认=纯打标，其内容词不入池（这些词从未进 rule_pending，删 patterns 背书不造成词面丢失）。 |
+| C13 | **维度收口**：`decide approve` 与 `inline_edit` 的 dimension 一律优先取 body 显式值；缺失时仅回退「该 (clause_id) 唯一 review queue 的 dimension」，仍歧义才 400。**废弃**从任意 pending id 反查维度的兜底（防跨 dim4/5/6 条文错维写列/错维驳词）。 |
+| C14 | **并发守卫落地**：`_confirm_clause` 与 `_backfill_by_status` 用**条件更新**——clause 列 UPDATE 带 `AND EXISTS(SELECT 1 FROM queue WHERE clause_id=? AND dimension=? AND status='review')` 并检查 rowcount 命中才置 queue done；未命中（已被并发 done/改标）返回 no-op。兑现 spec §七「先到者生效，后到者 no-op」。 |
+| C15 | **低置信端点守卫**：`confirm_review`/`reject_review` 的 queue 查询加 `AND status='review'`；`process_feedback` 写列前确认 queue 仍 review（无 review 行 → no-op 不覆写），闭环 C8「已定案/改标条文不被覆写」。 |
+| C16 | **计数口径同步**：`pending_counts()` 的 clause 计数改为 = `pending_clause_groups()` + `rejected_clause_groups()` + 低置信兜底（与 Tab1 新数据源同口径），Tab1 已确认（queue done）条文其残留 pending 词不再计入红点「条文待审」。 |
+| C17 | **无 queue 行统一排除**：`pending_clause_groups` 排除「无 review queue 行」的 pending 条文（与 decide 400 语义一致）；既有测试种子若直插 pending 无 queue，须补 queue 或改断言。真实主链 `insert_pending` 必伴随 queue review，无 queue 残留属脏数据。 |
+| C18 | **存量清理明确不做**（同 C11）：locked 基准后的存量 confirmed 碎片留给后续维护/规则页手动处理，不入本 spec Task。 |
+
 ## 三、数据流
 
 ```text
