@@ -578,7 +578,9 @@ async def review_clause_decide(request: Request, clause_id: int, body: dict):
     dimension = body.get("dimension")
     if action != "approve" or not isinstance(ids, list):
         return _JR({"detail": "仅支持 approve（批量驳回已移除）"}, status_code=400)
-    if dimension not in _DIM_COLUMN:
+    # 外部输入类型+范围校验（项目规则 1.1）：非字符串先挡下，防 dict 成员测试抛
+    # TypeError: unhashable type → 500
+    if not isinstance(dimension, str) or dimension not in _DIM_COLUMN:
         return _JR({"detail": "dimension 不合法"}, status_code=400)
 
     with get_db() as conn:

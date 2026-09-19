@@ -675,6 +675,19 @@ def test_tab1_approve_no_review_queue_400(auth_client):
     assert (c or "") == ""
 
 
+def test_tab1_approve_non_string_dimension_400(auth_client):
+    """dimension 传非字符串（如数组）→ 400 而非 500（外部输入类型校验）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
+    resp = auth_client.post(f"/review/clause-pending/{cid}/decide",
+                            json={"dimension": ["dim6"], "ids": [], "action": "approve"})
+    assert resp.status_code == 400
+
+
 def test_tab1_approve_empty_ai_label_400(auth_client):
     """review 存在但 ai_label 为空 → 400（避免静默 no-op 页面卡死）。"""
     with get_db() as conn:
