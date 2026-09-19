@@ -32,26 +32,12 @@ def process_feedback(clause_id: int, dimension: str, confirmed_label: str,
 
     patterns/source_conf 保留仅为签名兼容，忽略（不再背书词面/不再 bump 规则——
     词面普通沉淀仅 Tab2，见 spec C12）。
-    仅当 queue 仍 review 时写列（已 done/改标 no-op），闭环 C8「不被覆写」。
+
+    写列与 review 守卫复用 `rule_pending._confirm_clause`（与 Tab1 decide/inline 同一出口，
+    含维度白名单）：仅当 queue 仍 review 时写列（已 done/改标 no-op），闭环 C8「不被覆写」。
+    返回值（是否实际写列）在此无需区分，忽略即可。
     """
-    from app.database import get_db
-    col = _dim_to_column(dimension)
+    from app.classifier import rule_pending
+
     with get_db() as conn:
-        cur = conn.execute(
-            f"UPDATE clauses SET {col}=?, ai_classified=1, needs_review=0 WHERE id=? "
-            f"AND EXISTS (SELECT 1 FROM classification_queue q "
-            f"WHERE q.clause_id=? AND q.dimension=? AND q.status='review')",
-            (confirmed_label, clause_id, clause_id, dimension))
-        if cur.rowcount:
-            conn.execute(
-                "UPDATE classification_queue SET status='done' "
-                "WHERE clause_id=? AND dimension=? AND status='review'",
-                (clause_id, dimension))
-
-
-def _dim_to_column(dim: str) -> str:
-    return {
-        "dim4": "dim4_specialty",
-        "dim5": "dim5_location",
-        "dim6": "dim6_material",
-    }.get(dim, dim)
+        rule_pending._confirm_clause(conn, clause_id, dimension, confirmed_label)

@@ -319,6 +319,12 @@ async def confirm_review(request: Request, queue_id: int, body: dict | None = No
             "FROM classification_queue WHERE id=? AND status='review'",
             (queue_id,),
         ).fetchone()
+        # 守卫未命中时区分「行不存在」与「行存在但非待审」，日志文案才不误导（仅 miss 路径多查一次）
+        other_status = None
+        if not item:
+            row = conn.execute(
+                "SELECT status FROM classification_queue WHERE id=?", (queue_id,)).fetchone()
+            other_status = row["status"] if row else None
 
     if item:
         log_action("review", "INFO", "确认分类标签",
@@ -329,6 +335,10 @@ async def confirm_review(request: Request, queue_id: int, body: dict | None = No
                    username=getattr(request.state, "username", ""))
         process_feedback(item["clause_id"], item["dimension"], item["ai_label"],
                          source_conf=item["ai_confidence"] or 0.0)
+    elif other_status is not None:
+        log_action("review", "WARN", "确认跳过-非待审状态",
+                   detail=json_detail({"queue_id": queue_id, "status": other_status}),
+                   username=getattr(request.state, "username", ""))
     else:
         log_action("review", "WARN", "确认失败-队列项不存在",
                    detail=json_detail({"queue_id": queue_id}),

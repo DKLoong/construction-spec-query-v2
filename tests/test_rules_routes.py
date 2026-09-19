@@ -226,7 +226,11 @@ def test_confirm_review_pure_tagging(auth_client, monkeypatch, tmp_path):
 
 
 def test_confirm_review_guard_non_review_noop(auth_client, monkeypatch, tmp_path):
-    """C15：已定案（status='done'）队列项在 confirm/reject 端点均 no-op，不覆写人工定案。"""
+    """C15：已定案（status='done'）队列项在 confirm/reject 端点均 no-op，不覆写人工定案。
+
+    断言端点自身守卫（而非仅 process_feedback 内层 EXISTS）：若 rules_routes 的
+    `AND status='review'` 被删，本行会走 INFO「确认分类标签」分支 → 下方日志断言失败。
+    """
     db_path = tmp_path / "test_guard.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
     from app.database import init_db, get_db
@@ -253,8 +257,15 @@ def test_confirm_review_guard_non_review_noop(auth_client, monkeypatch, tmp_path
     with get_db() as conn:
         c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (clause_id,)).fetchone()
         q = conn.execute("SELECT status FROM classification_queue WHERE id=?", (queue_id,)).fetchone()
+        skipped = conn.execute(
+            "SELECT COUNT(*) n FROM system_logs WHERE category='review' "
+            "AND action='确认跳过-非待审状态' AND level='WARN'").fetchone()["n"]
+        confirmed = conn.execute(
+            "SELECT COUNT(*) n FROM system_logs WHERE category='review' "
+            "AND action='确认分类标签'").fetchone()["n"]
     assert c["dim6_material"] == "混凝土"   # 人工定案不被覆写
     assert q["status"] == "done"           # 已定案不被驳回重开
+    assert skipped == 1 and confirmed == 0  # 端点守卫命中：记「跳过」而非「确认成功」
 
 
 def test_reject_review_clears_label(auth_client, monkeypatch, tmp_path):
