@@ -33,14 +33,14 @@
                 <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap">
                     <button type="button"
                             style="font-size:0.75rem;padding:0.2rem 0.5rem;background:green;border-color:green;color:white"
-                            onclick="clauseDecide('{{ g.clause_id }}', '{{ g.dimension }}', 'approve')">✅ 批量确认</button>
-                    <button type="button" class="outline secondary"
-                            style="font-size:0.75rem;padding:0.2rem 0.5rem"
-                            onclick="clauseDecide('{{ g.clause_id }}', '{{ g.dimension }}', 'reject')">❌ 批量驳回</button>
+                            onclick="clauseConfirm('{{ g.clause_id }}', '{{ g.dimension }}')">✅ 确认标签</button>
                     <button type="button" class="outline"
                             style="font-size:0.75rem;padding:0.2rem 0.5rem"
                             onclick="toggleClauseEdit('{{ g.clause_id }}', '{{ g.dimension }}')">✏️ 编辑</button>
-                    <small style="color:var(--pico-muted-color);font-size:0.7rem">未勾选标签将自动驳回/通过</small>
+                    <button type="button" class="outline secondary"
+                            style="font-size:0.75rem;padding:0.2rem 0.5rem"
+                            onclick="cancelClauseEdit('{{ g.clause_id }}', '{{ g.dimension }}')">取消</button>
+                    <small style="color:var(--pico-muted-color);font-size:0.7rem">未勾选的词将进入黑名单，不再被提议/沉淀</small>
                 </div>
             </div>
 
@@ -94,16 +94,14 @@ function refreshReviewPanels() {
 
 var removedChipIds = {};
 
-function clauseDecide(clauseId, dimension, action) {
-    var checked = Array.from(document.querySelectorAll('#candidates-' + clauseId + '-' + dimension + ' .cand-check:checked'))
+function clauseConfirm(clauseId, dimension) {
+    // 去勾 = 进黑名单：ids 收集「未勾选」的词 id；全部勾选时 ids 空 = 纯确认（只写列+done）
+    var rejected = Array.from(document.querySelectorAll('#candidates-' + clauseId + '-' + dimension + ' .cand-check:not(:checked)'))
         .map(function (c) { return parseInt(c.value, 10); });
-    if (!checked.length) { alert('请至少勾选一个标签'); return; }
-    var verb = action === 'approve' ? '确认' : '驳回';
-    var anti = action === 'approve' ? '驳回' : '通过';
-    if (!confirm(verb + '所选标签？未勾选标签将自动' + anti + '。')) return;
+    if (!confirm('确认该标签？未勾选的词将进入黑名单。')) return;
     fetch('/review/clause-pending/' + clauseId + '/decide', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ids: checked, action: action }),
+        body: JSON.stringify({ dimension: dimension, ids: rejected, action: 'approve' }),
     }).then(function (resp) {
         if (resp.ok) refreshReviewPanels();
         else resp.text().then(function (t) { alert('操作失败：' + t); });
@@ -118,7 +116,8 @@ function toggleClauseEdit(clauseId, dimension) {
 }
 
 function cancelClauseEdit(clauseId, dimension) {
-    // 取消：仅重拉面板（读请求，无后端状态变更），恢复初始 chips
+    // 取消（查看态/编辑态共用）：仅重拉面板（读请求，无后端状态变更），
+    // 恢复初始全勾 chips、退出编辑态；本次去勾改动一并丢弃
     refreshReviewPanels();
 }
 
