@@ -204,6 +204,9 @@ def test_pending_clause_groups_joins_text(monkeypatch, tmp_path):
         c1 = _seed_clause(conn, "GB1")
         rp.insert_pending(conn, c1, "dim6", "钢筋", "钢筋", 0.9, "b1")
         rp.insert_pending(conn, c1, "dim6", "钢筋", "混凝土", 0.7, "b1")
+        # C17：真实主链 insert_pending 必伴随 queue review，补队列行方进 Tab1 主表
+        bq.try_enqueue(conn, c1, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review' WHERE clause_id=?", (c1,))
     groups = rp.pending_clause_groups("dim6")
     assert len(groups) == 1
     g = groups[0]
@@ -212,6 +215,29 @@ def test_pending_clause_groups_joins_text(monkeypatch, tmp_path):
     assert "钢筋" in g["content"]
     assert {c["label"] for c in g["candidates"]} == {"钢筋", "混凝土"}
     assert rp.pending_clause_groups("dim5") == []
+
+
+def test_pending_clause_groups_excludes_terminal_and_no_queue(auth_client):
+    """queue 终态(auto_adopted) 或无 queue 行的 pending 条文都不进 Tab1 主表。"""
+    with get_db() as conn:
+        # 终态：auto_adopted 但有残留 pending 词
+        c_term = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_term, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, c_term, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='auto_adopted', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_term,))
+        # 无 queue：直插 pending
+        c_noq = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_noq, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        # review：应保留
+        c_rev = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_rev, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, c_rev, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review' WHERE clause_id=?", (c_rev,))
+    groups = rp.pending_clause_groups()
+    cids = {g["clause_id"] for g in groups}
+    assert c_rev in cids
+    assert c_term not in cids and c_noq not in cids
 
 
 def test_clause_pending_ids(monkeypatch, tmp_path):
@@ -966,6 +992,12 @@ def test_pending_counts_clause_and_word_groups(auth_client):
         rp.insert_pending(conn, c2, "dim6", "钢筋", "钢筋", 0.9, "b")
         # 新维度新词面 → 两方向都 +1
         rp.insert_pending(conn, c2, "dim5", "梁", "梁", 0.7, "b")
+        # C17：clause 与 Tab1 主表同口径，需存在 queue review 行
+        for cid, dim in ((c1, "dim6"), (c2, "dim6"), (c2, "dim5")):
+            bq.try_enqueue(conn, cid, dim, 0.0)
+            conn.execute(
+                "UPDATE classification_queue SET status='review' WHERE clause_id=? AND dimension=?",
+                (cid, dim))
     resp = auth_client.get("/review/pending-count")
     j = resp.json()
     assert j["clause"] == 3      # (c1,dim6) (c2,dim6) (c2,dim5)
@@ -999,3 +1031,27 @@ def test_pending_counts_lowconf_fallback(auth_client):
     j = resp.json()
     assert j["clause"] == 1
     assert j["word"] == 0
+
+
+def test_pending_counts_aligned_with_tab1_source(auth_client):
+    """pending_counts.clause = 主表组 + 词全驳组 + 低置信兜底（已确认 done 的残留 pending 词不计入）。"""
+    with get_db() as conn:
+        c_rev = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_rev, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, c_rev, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_rev,))
+        # 已确认 done 的条文，其勾选词仍 pending → 不计 clause 待审
+        c_done = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_done, "dim6", "混凝土", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, c_done, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='done', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_done,))
+        # 低置信兜底：review 无词
+        c_low = _seed_spec_clause(conn)
+        bq.try_enqueue(conn, c_low, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_low,))
+    counts = rp.pending_counts()
+    assert counts["clause"] == 2   # c_rev + 低置信 c_low；c_done 不计
+    assert counts["word"] == 2     # 钢筋 + 混凝土 两个词面组
