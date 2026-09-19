@@ -42,7 +42,7 @@
             </td>
             <td>
                 <select class="spec-status-select" data-id="{{ s.id }}"
-                        style="font-size:0.75rem;padding:0.15rem 0.3rem"
+                        style="margin:0;font-size:0.75rem;padding:0.15rem 0.3rem"
                         onchange="window.dispatchEvent(new CustomEvent('spec-status-change', {detail:{id:{{ s.id }}, status:this.value}}))">
                     {% for st in ['现行', '修订中', '废止'] %}
                     <option value="{{ st }}" {% if s.status == st %}selected{% endif %}>{{ st }}</option>
