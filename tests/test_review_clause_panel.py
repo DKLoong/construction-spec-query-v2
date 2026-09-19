@@ -6,9 +6,30 @@
 确认走 clauseConfirm(clauseId, dimension) 且必传 dimension、并带「去勾=黑名单」提示。
 任何人把旧按钮/旧函数名改回来，套件立即红。
 """
+import re
+
 from app.database import get_db
 from app.classifier import rule_pending as rp
 from app.classifier import batch_queue as bq
+
+
+def _extract_js_func(html: str, name: str) -> str:
+    """从模板内联 script 抠出 `function <name>(...) {...}` 源码（按花括号配平）。
+
+    模板是纯字符串资源，pytest 无 JS 引擎，只能对函数源码做结构断言；
+    故用「守卫语句必须出现在副作用调用之前」这类位置断言替代执行断言。
+    """
+    start = html.index("function " + name + "(")
+    i = html.index("{", start)
+    depth = 0
+    for j in range(i, len(html)):
+        if html[j] == "{":
+            depth += 1
+        elif html[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return html[start:j + 1]
+    raise AssertionError("函数 %s 花括号未配平" % name)
 
 
 def _seed_review_clause(conn) -> int:
@@ -40,7 +61,9 @@ def test_tab1_panel_uses_new_confirm_contract(auth_client):
     # 旧交互必须彻底消失（删按钮 + 删函数名）
     assert "批量驳回" not in html, "❌ 批量驳回 按钮应已删除"
     assert "clauseDecide(" not in html, "旧函数名 clauseDecide 不得残留"
-    assert "action: 'reject'" not in html, "已废弃的 reject action 不得残留"
+    # 旧调用形态 clauseDecide(id, dim, 'reject') 渲染出的字面量（真实旧样式；
+    # 不要写成 "action: 'reject'"——旧模板从无该字面量，那种断言永远不会变红）
+    assert "', 'reject')" not in html, "旧 reject 调用形态不得残留"
 
     # 新交互必须存在
     assert "确认标签" in html, "应有 ✅ 确认标签 按钮"
@@ -49,6 +72,44 @@ def test_tab1_panel_uses_new_confirm_contract(auth_client):
     # dimension 必传：按钮实参须带上该分组的 dimension（旧前端正是漏传此参 → 400）
     assert "clauseConfirm('%d', 'dim6')" % cid in html, \
         "确认按钮应传 clauseId 与该分组 dimension"
+
+    # 候选词 checkbox 默认全勾（C3：勾选=留 pending 进 Tab2；去勾才是黑名单）
+    checks = re.findall(r'<input[^>]*class="cand-check"[^>]*>', html)
+    assert checks, "该组应渲染出候选词 checkbox"
+    assert all("checked" in c for c in checks), "候选词 checkbox 应默认全勾"
+
+
+def test_tab1_confirm_guards_group_without_candidates(auth_client):
+    """D1 行（候选已全驳、candidates 恒空）点「确认标签」须被前端守卫拦下。
+
+    该行无任何 checkbox，去掉旧 `!checked.length` 守卫后点按钮会 POST ids:[] →
+    后端按「纯确认」写 ai_label + queue done，抹掉人工「请为条文输入新标签」待办，
+    而确认框还谎称「未勾选的词将进入黑名单」。守卫须早于 confirm()/fetch()。
+    """
+    with get_db() as conn:
+        cid = _seed_review_clause(conn)
+        # 把该条剩余 pending 词一并驳回 → 该 (clause, dim) 无 pending，D1 组（候选区空）
+        rp.set_status(conn, rp.clause_pending_ids(conn, cid, "dim6"), "rejected")
+
+    resp = auth_client.get("/review/clause-pending")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "词已驳回" in html, "全驳条文应留在主表 D1 行"
+    # 该行确无 checkbox（正是守卫要拦的场景）
+    assert '<input type="checkbox" class="cand-check"' not in html
+
+    fn = _extract_js_func(html, "clauseConfirm")
+    assert "该条无候选词，请用编辑输入新标签" in fn, "应有无候选词守卫提示"
+    # 守卫判空用的是「候选区无 .cand-check」（不带 :not(:checked)，
+    # 否则「有候选词但全勾」的合法纯确认路径会被误伤）
+    guard_at = fn.index("该条无候选词")
+    guard = fn[:guard_at]
+    assert ".cand-check'" in guard, "守卫应按「候选区无 checkbox」判空"
+    assert "alert(" in guard, "守卫应 alert 提示"
+    assert ":not(:checked)" not in guard, "判空不得复用去勾选择器（会误伤全勾纯确认）"
+    # 守卫必须早于 confirm()/fetch()，否则空 ids 已经发出去了
+    assert guard_at < fn.index("fetch("), "守卫必须在 fetch 之前"
+    assert guard_at < fn.index("confirm('确认该标签"), "守卫必须在 confirm 之前"
 
 
 def test_tab1_edit_panel_copy_matches_new_semantics(auth_client):

@@ -95,6 +95,13 @@ function refreshReviewPanels() {
 var removedChipIds = {};
 
 function clauseConfirm(clauseId, dimension) {
+    // D1 行守卫：该组候选已全驳（candidates 恒空、无任何 checkbox）——此处「确认标签」
+    // 无标签可确认。若放行会把 ids:[] 当「纯确认」发出去，后端写 ai_label + queue done，
+    // 抹掉「请为条文输入新标签」的人工待办，且确认框文案（未勾选进黑名单）在此行不成立。
+    if (!document.querySelectorAll('#candidates-' + clauseId + '-' + dimension + ' .cand-check').length) {
+        alert('该条无候选词，请用编辑输入新标签');
+        return;
+    }
     // 去勾 = 进黑名单：ids 收集「未勾选」的词 id；全部勾选时 ids 空 = 纯确认（只写列+done）
     var rejected = Array.from(document.querySelectorAll('#candidates-' + clauseId + '-' + dimension + ' .cand-check:not(:checked)'))
         .map(function (c) { return parseInt(c.value, 10); });
