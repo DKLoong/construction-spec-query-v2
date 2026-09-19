@@ -93,8 +93,8 @@ def _load_all() -> list[LexiconRow]:
         if _check_equiv_unique(rows):
             _cache = rows
         else:
-            logger.warning("词库 equiv 词条冲突（同一词属多组），本次加载作废: %s",
-                           equiv_conflict_word)
+            logger.error("词库 equiv 词条冲突（同一词属多组），本次加载作废: %s",
+                         equiv_conflict_word)
             _cache = []
     except Exception as e:
         logger.warning("词库加载失败，回退空列表: %s", e)

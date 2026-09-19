@@ -6,6 +6,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import BASE_DIR
 from app.auth import decode_access_token
 from app.database import init_db
+from app.logging_setup import setup_logging
 from jose import JWTError
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ def _startup_log_cleanup():
 
 
 def startup():
+    setup_logging()  # 先接日志桥，后续启动步骤的告警才能进 system_logs
     init_db()
     _startup_log_cleanup()
     _startup_vector_sync()

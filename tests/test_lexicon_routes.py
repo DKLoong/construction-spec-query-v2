@@ -54,6 +54,30 @@ def test_lexicon_csv_import(auth_client, monkeypatch, tmp_path):
     assert "成功" in body and "跳过" in body and "失败" in body
 
 
+def test_lexicon_write_is_audited(auth_client, monkeypatch, tmp_path):
+    """词库写操作必须留审计（此前 lexicon_routes 埋点数为 0，故障无法追溯）
+
+    2026-09-19：一批 alias 导入把词库全表搞失效，却因无审计无告警，静默 13 天。
+    """
+    import sqlite3
+
+    from app import database as _db
+    from app.database import init_db
+
+    db = str(tmp_path / "audit.db")
+    monkeypatch.setattr(_db, "DATABASE_PATH", db)
+    init_db()
+
+    auth_client.post("/lexicon/create",
+                     data={"kind": "alias", "canonical": "水灰比", "variants": "W/C"})
+
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT action, level FROM system_logs WHERE category='lexicon'").fetchall()
+    conn.close()
+    assert rows, "词库新增应写入 system_logs(category='lexicon')"
+
+
 def test_lexicon_requires_auth(client):
     """未登录不能访问词库管理页"""
     resp = client.get("/lexicon", follow_redirects=False)

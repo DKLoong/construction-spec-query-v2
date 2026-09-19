@@ -65,3 +65,29 @@ def test_equiv_conflict_word_blocks_load(monkeypatch, tmp_path):
     invalidate_lexicon_caches()
     assert load_equivalent_groups() == []
     assert store.equiv_conflict_word == "混凝土"
+
+
+def test_equiv_conflict_logged_at_error(monkeypatch, tmp_path, caplog):
+    """冲突必须以 ERROR 级记录：这是「整表失效」而非普通告警
+
+    WARNING 级在日志界面里不够醒目，历史上正因级别不够+不可见，静默了 13 天。
+    """
+    import logging
+
+    from app.database import get_db, init_db
+
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "c2.db"))
+    invalidate_lexicon_caches()
+    init_db()
+    with get_db() as conn:
+        conn.execute("DELETE FROM lexicon_entries")
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('alias','混凝土','砼')")
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('synonym','钢筋','混凝土')")
+    invalidate_lexicon_caches()
+
+    with caplog.at_level(logging.ERROR, logger="app.lexicon.store"):
+        assert load_equivalent_groups() == []
+
+    assert any(r.levelno == logging.ERROR and "冲突" in r.getMessage()
+               for r in caplog.records), "冲突应以 ERROR 级记录"
+

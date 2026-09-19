@@ -8,6 +8,7 @@ from app.database import get_db
 from app.lexicon.store import invalidate_lexicon_caches
 from app.lexicon.validation import validate_row
 from app.lexicon.store import EQUIV_KINDS
+from app.logging_util import log_action, json_detail
 
 router = APIRouter()
 
@@ -129,6 +130,10 @@ async def create_lexicon(request: Request, kind: str = Form(...),
     if cur.rowcount == 0:
         return HTMLResponse('<p style="color:orange">⚠️ 该词条已存在（全行幂等）</p>',
                             headers={"HX-Trigger": "lexiconUpdated"})
+    log_action("lexicon", "INFO", "新增词条",
+               detail=json_detail({"kind": data["kind"], "canonical": data["canonical"],
+                                   "variants": data["variants"]}),
+               username=getattr(request.state, "username", ""))
     return HTMLResponse('<p style="color:green;margin-top:0.5rem">✅ 词条已添加</p>',
                         headers={"HX-Trigger": "lexiconUpdated"})
 
@@ -142,6 +147,10 @@ async def toggle_lexicon(request: Request, lid: int):
     if row is None:
         return HTMLResponse("", status_code=404)
     invalidate_lexicon_caches()
+    log_action("lexicon", "INFO", "启停词条",
+               detail=json_detail({"id": lid, "canonical": row["canonical"],
+                                   "is_active": row["is_active"]}),
+               username=getattr(request.state, "username", ""))
     from app.main import templates
     return templates.TemplateResponse(request, "partials/lexicon_row.html", {
         "row": dict(row), "kind": row["kind"],
@@ -183,6 +192,11 @@ async def edit_lexicon(request: Request, lid: int, canonical: str = Form(""),
     if updated is None:
         return HTMLResponse("", status_code=404)
     invalidate_lexicon_caches()
+    log_action("lexicon", "INFO", "编辑词条",
+               detail=json_detail({"id": lid, "canonical": data["canonical"],
+                                   "variants": data["variants"],
+                                   "distinguish": data["distinguish"]}),
+               username=getattr(request.state, "username", ""))
     # 返回单行 partial（非整表）：与 lexicon_edit_row.html 保存按钮
     # hx-target="closest tr" hx-swap="outerHTML" 契约匹配，closest tr 被替换为合法新 <tr>；
     # confusable 行的区分说明列由 lexicon_row.html 按 kind=='confusable' 渲染。
@@ -195,10 +209,18 @@ async def edit_lexicon(request: Request, lid: int, canonical: str = Form(""),
 @router.delete("/lexicon/{lid}")
 async def delete_lexicon(request: Request, lid: int):
     with get_db() as conn:
+        # 先取旧行，供审计记录「删掉的是什么」（删除后无法追溯）
+        old = conn.execute(
+            "SELECT kind, canonical, variants FROM lexicon_entries WHERE id=?", (lid,)).fetchone()
         cur = conn.execute("DELETE FROM lexicon_entries WHERE id=?", (lid,))
     if cur.rowcount == 0:
         return HTMLResponse("", status_code=404)
     invalidate_lexicon_caches()
+    log_action("lexicon", "INFO", "删除词条",
+               detail=json_detail({"id": lid, "kind": old["kind"],
+                                   "canonical": old["canonical"],
+                                   "variants": old["variants"]}),
+               username=getattr(request.state, "username", ""))
     return HTMLResponse("", headers={"HX-Trigger": "lexiconUpdated"})
 
 
@@ -253,6 +275,10 @@ async def import_lexicon(request: Request, file: UploadFile = File(...),
             else:
                 ok += 1
     invalidate_lexicon_caches()
+    log_action("lexicon", "INFO", "CSV导入词库",
+               detail=json_detail({"ok": ok, "skip": skip, "fail": fail,
+                                   "kind": kind or "auto"}),
+               username=getattr(request.state, "username", ""))
     from app.main import templates
     # 触发列表刷新：与增删启禁一致，导入也可能新增/合并词条，需重拉当前 kind 列表
     return templates.TemplateResponse(request, "partials/lexicon_import_result.html",
