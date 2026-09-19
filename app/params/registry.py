@@ -13,7 +13,7 @@ import time
 from app import database as _db
 from app.config import (
     ADAPTIVE_THRESHOLDS, BATCH_SIZE,
-    RULE_AUTO_ENABLE_RATIO, RULE_AUTO_ENABLE_MIN_HIT, RULE_AUTO_ENABLE_CONF,
+    RULE_AUTO_ENABLE_RATIO, RULE_AUTO_ENABLE_MIN_HIT,
     RULE_AUTO_DISABLE_RATIO, RULE_AUTO_DISABLE_MIN_HIT,
     NEW_RULE_THRESHOLD, LABEL_CANDIDATE_LIMIT,
     SEARCH_RERANK_TOP_N, SEARCH_VECTOR_TOP_K, SEARCH_VECTOR_L2_THRESHOLD, SEARCH_RRF_K,
@@ -71,10 +71,6 @@ def _build_meta():
         "classify.rule_auto_enable_min_hit", "classify", "规则自动启用最少命中", float(RULE_AUTO_ENABLE_MIN_HIT),
         1, 100, "1~100",
         "规则自动启用的最少命中次数下限，配合上方正确率使用。", dtype="int"))
-    meta.append(_num(
-        "classify.rule_auto_enable_conf", "classify", "高置信来源规则初始启用", float(RULE_AUTO_ENABLE_CONF),
-        0.0, 1.0, "0~1",
-        "人工确认且来源 AI 置信度 ≥ 该值时，沉淀的新规则直接启用；否则先停用待观察。"))
     meta.append(_num(
         "classify.rule_disable_ratio", "classify", "规则自动停用正确率", float(RULE_AUTO_DISABLE_RATIO),
         0.0, 1.0, "0~1",
