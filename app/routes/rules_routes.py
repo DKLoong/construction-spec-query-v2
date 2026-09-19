@@ -605,6 +605,8 @@ async def review_clause_decide(request: Request, clause_id: int, body: dict):
         label = q["ai_label"]
         if not label:
             return _JR({"detail": "该队列项无 AI 标签，请用编辑输入"}, status_code=400)
+        # 返回值有意丢弃：黑名单意图独立于标签写入是否成功——写列可能因并发 done/no-op
+        # 返回 False，但 ids 词该驳仍然驳（勿改成 if written: 而让黑名单路径被静默跳过）
         rule_pending._confirm_clause(conn, clause_id, dimension, label)
         if ids:
             reject_keys = rule_pending.resolve_keys(conn, ids)
@@ -661,6 +663,15 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
             else:
                 return _JR({"detail": "dimension 缺失或歧义（该条文跨多维或无 review 维）"},
                            status_code=400)
+
+        # 作用域校验（项目规则 1.1）：label_ids（保留）与 removed_label_ids（删除）都必须
+        # 落在「该条文该维」的 pending 集合内。缺此校验则带上别的条文/别的维的 id 会顺手把
+        # 那条条文的词拉黑并停用其 confirmed=0 碎片规则。与 decide 保持一致：越界直接 400，
+        # 不静默丢弃（显式报错更能暴露调用方 bug）。守卫置于任何写入之前。
+        scope = set(rule_pending.clause_pending_ids(conn, clause_id, dimension))
+        out_of_scope = [i for i in label_ids + removed_label_ids if i not in scope]
+        if out_of_scope:
+            return _JR({"detail": "存在不属于该条文该维待审作用域的 id"}, status_code=400)
 
         # 仅 removed 需要参与 pending 判定：label_ids（保留词）新语义下只读（校验+日志）
         pending_set = set()

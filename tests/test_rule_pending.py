@@ -675,6 +675,34 @@ def test_tab1_approve_no_review_queue_400(auth_client):
     assert (c or "") == ""
 
 
+def test_tab1_decide_out_of_scope_ids_400(auth_client):
+    """decide 作用域守卫（项目规则 1.1）：ids 带别的条文的 pending id → 400，
+    且那条条文的词仍 pending、其碎片规则仍启用、本条文不写列（守卫须在任何写入之前）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        other = _seed_spec_clause(conn)
+        _seed_rule(conn, "dim6", "试验", "试验", confirmed=0, is_active=1)
+        rp.insert_pending(conn, other, "dim6", "试验", "试验", 0.9, "bO")
+        other_pid = rp.clause_pending_ids(conn, other, "dim6")[0]
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
+    resp = auth_client.post(f"/review/clause-pending/{cid}/decide",
+                            json={"dimension": "dim6", "ids": [other_pid], "action": "approve"})
+    assert resp.status_code == 400
+    with get_db() as conn:
+        st = conn.execute("SELECT status FROM rule_pending WHERE id=?",
+                          (other_pid,)).fetchone()["status"]
+        rule = conn.execute("SELECT is_active FROM classification_rules "
+                            "WHERE dimension='dim6' AND pattern='试验'").fetchone()
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?",
+                         (cid,)).fetchone()["dim6_material"]
+    assert st == "pending"          # 越界词未被驳回
+    assert rule["is_active"] == 1   # 越界词碎片未被停用
+    assert (c or "") == ""          # 越界请求整体 no-op，本条文不写列
+
+
 def test_tab1_approve_non_string_dimension_400(auth_client):
     """dimension 传非字符串（如数组）→ 400 而非 500（外部输入类型校验）。"""
     with get_db() as conn:
@@ -1317,6 +1345,35 @@ def test_inline_removed_deactivates_fragment(auth_client):
     assert st == "rejected"
     assert rule["confirmed"] == 0
     assert rule["is_active"] == 0
+
+
+def test_tab1_inline_out_of_scope_removed_ids_400(auth_client):
+    """inline 作用域守卫（项目规则 1.1）：removed_label_ids 带别的条文的 pending id →
+    400，且那条条文的词仍 pending、其碎片规则仍启用、本条文不写列。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        other = _seed_spec_clause(conn)
+        _seed_rule(conn, "dim6", "试验", "试验", confirmed=0, is_active=1)
+        rp.insert_pending(conn, other, "dim6", "试验", "试验", 0.9, "bO")
+        other_pid = rp.clause_pending_ids(conn, other, "dim6")[0]
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bU")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
+    resp = auth_client.post(f"/review/clause-pending/{cid}/inline-edit",
+                            json={"label_ids": [], "removed_label_ids": [other_pid],
+                                  "new_label": None, "dimension": "dim6"})
+    assert resp.status_code == 400
+    with get_db() as conn:
+        st = conn.execute("SELECT status FROM rule_pending WHERE id=?",
+                          (other_pid,)).fetchone()["status"]
+        rule = conn.execute("SELECT is_active FROM classification_rules "
+                            "WHERE dimension='dim6' AND pattern='试验'").fetchone()
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?",
+                         (cid,)).fetchone()["dim6_material"]
+    assert st == "pending"          # 越界词未被驳回
+    assert rule["is_active"] == 1   # 越界词碎片未被停用
+    assert (c or "") == ""          # 越界请求整体 no-op，本条文不写列
 
 
 def test_word_pending_get_renders_rule_level(auth_client):
