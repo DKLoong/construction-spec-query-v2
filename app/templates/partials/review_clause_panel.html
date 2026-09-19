@@ -32,13 +32,13 @@
                 </div>
                 <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap">
                     <button type="button"
-                            style="font-size:0.75rem;padding:0.2rem 0.5rem;background:green;border-color:green;color:white"
+                            style="margin:0;font-size:0.75rem;padding:0.2rem 0.5rem;background:green;border-color:green;color:white"
                             onclick="clauseConfirm('{{ g.clause_id }}', '{{ g.dimension }}')">✅ 确认标签</button>
                     <button type="button" class="outline"
-                            style="font-size:0.75rem;padding:0.2rem 0.5rem"
+                            style="margin:0;font-size:0.75rem;padding:0.2rem 0.5rem"
                             onclick="toggleClauseEdit('{{ g.clause_id }}', '{{ g.dimension }}')">✏️ 编辑</button>
                     <button type="button" class="outline secondary"
-                            style="font-size:0.75rem;padding:0.2rem 0.5rem"
+                            style="margin:0;font-size:0.75rem;padding:0.2rem 0.5rem"
                             onclick="cancelClauseEdit('{{ g.clause_id }}', '{{ g.dimension }}')">取消</button>
                     <small style="color:var(--pico-muted-color);font-size:0.7rem">未勾选的词将进入黑名单，不再被提议/沉淀</small>
                 </div>
@@ -53,7 +53,7 @@
                           style="display:inline-flex;align-items:center;gap:0.25rem;font-size:0.75rem;border:1px dashed var(--pico-muted-border-color, #ccc);padding:0.15rem 0.4rem;border-radius:12px">
                         {{ c.label }}
                         <button type="button" onclick="removeEditChip(this)"
-                                style="background:none;border:none;color:#c44;cursor:pointer;padding:0;line-height:1" aria-label="删除">×</button>
+                                style="margin:0;background:none;border:none;color:#c44;cursor:pointer;padding:0;line-height:1" aria-label="删除">×</button>
                     </span>
                     {% endfor %}
                 </div>
@@ -62,9 +62,9 @@
                            placeholder="输入新标签（只写分类列，不沉淀规则）"
                            style="font-size:0.75rem;padding:0.3rem 0.4rem;flex:1;box-sizing:border-box">
                     <button type="button"
-                            style="font-size:0.75rem;padding:0.3rem 0.6rem;background:green;border-color:green;color:white"
+                            style="margin:0;font-size:0.75rem;padding:0.3rem 0.6rem;background:green;border-color:green;color:white"
                             onclick="saveClauseEdit('{{ g.clause_id }}', '{{ g.dimension }}')">💾 保存</button>
-                    <button type="button" class="outline" style="font-size:0.75rem;padding:0.3rem 0.6rem"
+                    <button type="button" class="outline" style="margin:0;font-size:0.75rem;padding:0.3rem 0.6rem"
                             onclick="cancelClauseEdit('{{ g.clause_id }}', '{{ g.dimension }}')">取消</button>
                 </div>
             </div>
