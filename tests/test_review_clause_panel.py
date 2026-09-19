@@ -19,6 +19,9 @@ def _seed_review_clause(conn) -> int:
                  "VALUES (?, '1.1', '含 钢筋 的条文内容')", (sid,))
     cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
+    # 另加一个已驳回词：主表渲染「词已驳回」标记（D1 路径），且不影响 pending 候选
+    rid = rp.insert_pending(conn, cid, "dim6", "混凝土", "钢筋", 0.7, "bT")
+    rp.set_status(conn, [rid], "rejected")
     bq.try_enqueue(conn, cid, "dim6", 0.0)
     conn.execute("UPDATE classification_queue SET status='review', batch_id='bT', "
                  "ai_label='钢筋' WHERE clause_id=?", (cid,))
@@ -46,3 +49,18 @@ def test_tab1_panel_uses_new_confirm_contract(auth_client):
     # dimension 必传：按钮实参须带上该分组的 dimension（旧前端正是漏传此参 → 400）
     assert "clauseConfirm('%d', 'dim6')" % cid in html, \
         "确认按钮应传 clauseId 与该分组 dimension"
+
+
+def test_tab1_edit_panel_copy_matches_new_semantics(auth_client):
+    """inline 编辑面板文案：× = 进黑名单；保留 ≠ 批准成规则（Task 4 后保留词只留 pending）"""
+    with get_db() as conn:
+        _seed_review_clause(conn)
+
+    html = auth_client.get("/review/clause-pending").text
+
+    assert "保留=批准" not in html, "旧文案「保留=批准」已不成立（保留词只留 pending，不建规则）"
+    assert "点 × 进黑名单" in html, "× 按钮应说明为进黑名单"
+    assert "不代表已成规则" in html, "应说明保留 ≠ 批准成规则"
+    # 仍准确的文案不得被误改：新标签只写分类列、词已驳回标记
+    assert "只写分类列，不沉淀规则" in html, "新标签输入框说明本就准确，应保留"
+    assert "词已驳回" in html, "全标签已驳条文的标记文案应保留"

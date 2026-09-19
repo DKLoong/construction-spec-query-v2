@@ -45,7 +45,7 @@
             </div>
 
             <div id="edit-{{ g.clause_id }}-{{ g.dimension }}" style="display:none;margin-top:0.5rem;padding-top:0.5rem;border-top:1px dashed var(--pico-muted-border-color, #ddd)">
-                <div style="font-size:0.75rem;color:var(--pico-muted-color);margin-bottom:0.3rem">可删候选标签（点 × 删除=驳回；保留=批准）：</div>
+                <div style="font-size:0.75rem;color:var(--pico-muted-color);margin-bottom:0.3rem">可删候选标签（点 × 进黑名单；保留=留作 Tab2 词面校核候选，不代表已成规则）：</div>
                 <div id="edit-chips-{{ g.clause_id }}-{{ g.dimension }}"
                      style="display:flex;gap:0.3rem;flex-wrap:wrap;margin-bottom:0.4rem">
                     {% for c in g.candidates %}
