@@ -565,53 +565,45 @@ async def review_clause_pending(request: Request, dimension: str = ""):
 
 @router.post("/review/clause-pending/{clause_id}/decide")
 async def review_clause_decide(request: Request, clause_id: int, body: dict):
-    """Tab1 行批量（条文级反义，D4）：作用域=clause_pending_ids(clause_id, dim)。
+    """Tab1 主表确认标签（C1/C3/C4/C13）：只写该条 queue ai_label 列 + queue done。
 
-    approve → 勾选标签键回填（写列+queue done）后置 approved + bump；未勾置 rejected；
-    reject  → 勾选置 rejected（不写列、queue 滞留）；未勾置 approved + 回填 + bump。
+    body: {dimension: str 必填, ids:[去勾词面 id], action:"approve"}。ids 可为空=纯确认。
+    approve → 写 ai_label 列 + queue done（_confirm_clause）；ids 词 rejected（停用碎片）；
+    其余 pending 词保持 pending。action="reject" → 400。
     """
     from fastapi.responses import JSONResponse as _JR
 
     ids = body.get("ids") or []
     action = body.get("action")
-    if action not in ("approve", "reject") or not isinstance(ids, list) or not ids:
-        return _JR({"detail": "ids/action 不合法"}, status_code=400)
+    dimension = body.get("dimension")
+    if action != "approve" or not isinstance(ids, list):
+        return _JR({"detail": "仅支持 approve（批量驳回已移除）"}, status_code=400)
+    if dimension not in _DIM_COLUMN:
+        return _JR({"detail": "dimension 不合法"}, status_code=400)
 
     with get_db() as conn:
-        dims = {r["dimension"] for r in conn.execute(
-            f"SELECT DISTINCT dimension FROM rule_pending "
-            f"WHERE id IN ({','.join('?' * len(ids))}) AND status='pending'", ids).fetchall()}
-        if not dims:
-            return _JR({"detail": "无有效 pending 勾选"}, status_code=400)
-        if len(dims) != 1:
-            return _JR({"detail": "勾选须同维度"}, status_code=400)
-        dimension = next(iter(dims))
         scope = rule_pending.clause_pending_ids(conn, clause_id, dimension)
-        # 一致性校验：提交 ids 须全部属于该条文该维 pending 作用域（防跨条文 id 使
-        # checked 空 → approve 误全驳 / reject 误全批）
-        if not set(ids) <= set(scope):
+        if ids and not set(ids) <= set(scope):
             return _JR({"detail": "勾选 id 不属于该条文待审作用域"}, status_code=400)
-        checked = set(ids) & set(scope)
-        if action == "approve":
-            approved_ids = sorted(checked)
-            rejected_ids = [i for i in scope if i not in checked]
-        else:
-            rejected_ids = sorted(checked)
-            approved_ids = [i for i in scope if i not in checked]
+        q = conn.execute(
+            "SELECT ai_label FROM classification_queue "
+            "WHERE clause_id=? AND dimension=? AND status='review'",
+            (clause_id, dimension)).fetchone()
+        if not q:
+            return _JR({"detail": "该条文该维无 review 队列项"}, status_code=400)
+        label = q["ai_label"]
+        if not label:
+            return _JR({"detail": "该队列项无 AI 标签，请用编辑输入"}, status_code=400)
+        rule_pending._confirm_clause(conn, clause_id, dimension, label)
+        if ids:
+            reject_keys = rule_pending.resolve_keys(conn, ids)
+            rule_pending.set_status(conn, ids, "rejected")
+            for d, p, l in sorted(reject_keys):
+                rule_pending.deactivate_fragment(conn, d, p, l)
 
-        approved_keys = rule_pending.resolve_keys(conn, approved_ids)
-        rejected_keys = rule_pending.resolve_keys(conn, rejected_ids)
-        for d, p, l in sorted(approved_keys):
-            rule_pending.backfill_and_close(conn, d, p, l)
-        rule_pending.set_status(conn, approved_ids, "approved")
-        rule_pending.set_status(conn, rejected_ids, "rejected")
-        for d, p, l in sorted(approved_keys):
-            rule_pending.approve_rule(conn, d, p, l)
-        for d, p, l in sorted(rejected_keys):
-            rule_pending.deactivate_fragment(conn, d, p, l)
-
-    log_action("review", "INFO", f"条文{'批准' if action == 'approve' else '驳回'}",
-               detail=json_detail({"clause_id": clause_id, "ids": ids, "action": action}),
+    log_action("review", "INFO", "条文批准(打标解耦)",
+               detail=json_detail({"clause_id": clause_id, "dimension": dimension,
+                                   "label": label, "rejected_word_ids": ids}),
                username=getattr(request.state, "username", ""))
     return HTMLResponse("", headers={"HX-Trigger": "reviewClausePending, reviewWordPending, reviewBlacklist"})
 

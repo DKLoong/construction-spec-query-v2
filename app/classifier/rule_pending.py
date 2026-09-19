@@ -408,6 +408,27 @@ def _backfill_by_status(conn, dimension: str, pattern: str, label: str,
     return written
 
 
+def _confirm_clause(conn, clause_id: int, dimension: str, label: str) -> bool:
+    """写该条分类列 + queue review→done（Tab1 确认/inline 共用打标出口）。
+
+    条件更新（C14）：clause 列 UPDATE 带 EXISTS(queue review)，命中才置 queue done，
+    未命中（已 done/改标/并发）返回 False no-op。返回是否实际写列。
+    """
+    col = _dim_column(dimension)
+    cur = conn.execute(
+        f"UPDATE clauses SET {col}=?, ai_classified=1, needs_review=0 WHERE id=? "
+        f"AND EXISTS (SELECT 1 FROM classification_queue q "
+        f"WHERE q.clause_id=? AND q.dimension=? AND q.status='review')",
+        (label, clause_id, clause_id, dimension))
+    if not cur.rowcount:
+        return False
+    conn.execute(
+        "UPDATE classification_queue SET status='done' "
+        "WHERE clause_id=? AND dimension=? AND status='review'",
+        (clause_id, dimension))
+    return True
+
+
 def backfill_and_close(conn, dimension: str, pattern: str, label: str) -> int:
     """组合被人工批准：其全部 pending 来源条文写列 + 联动清 Tab1 review 项。"""
     return _backfill_by_status(conn, dimension, pattern, label, "pending")
