@@ -616,11 +616,12 @@ async def review_clause_decide(request: Request, clause_id: int, body: dict):
 
 @router.post("/review/clause-pending/{clause_id}/inline-edit")
 async def review_clause_inline_edit(request: Request, clause_id: int, body: dict):
-    """Tab1 行内编辑（GC10/F7）：删标签=驳（reject）、保留=approve、新标签=只写列纯打标。
+    """Tab1 行内编辑（C1/C3/C9/C13）：删 chip=驳词；保留词=保持 pending；新标签≠原
+    ai_label 且写列成功 → 驳残留 pending 词防反嚼。
 
-    body: {label_ids:[保留 pending id], removed_label_ids:[删除 pending id],
-           new_label: str|None, dimension: str|None}。删除项→该 (pattern,label) reject；
-    保留项→approve（回填+bump）；new_label 非空→只写分类列（不沉淀规则）。
+    body: {label_ids:[保留], removed_label_ids:[删除], new_label, dimension}。
+    dimension 收口：优先 body；缺失回退「该 clause 唯一 review queue 的 dimension」，
+    仍歧义才 400（不再从任意 pending id 反查）。
     """
     from fastapi.responses import JSONResponse as _JR
 
@@ -630,57 +631,58 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
     dimension = body.get("dimension")
     if not isinstance(label_ids, list) or not isinstance(removed_label_ids, list):
         return _JR({"detail": "label_ids/removed_label_ids 须为数组"}, status_code=400)
+    # 元素类型校验（项目规则 1.1）：短路在任何 set/IN 绑定之前，
+    # 防 dict/list 元素绑定抛 sqlite3.ProgrammingError → 500
+    if not all(isinstance(i, int) for i in label_ids + removed_label_ids):
+        return _JR({"detail": "label_ids/removed_label_ids 须为整数数组"}, status_code=400)
+    # 外部输入类型+范围校验（项目规则 1.1）：非字符串先挡下，防成员测试抛
+    # TypeError: unhashable type → 500；None=未传，保持 C13 唯一 review 维回退语义
+    if dimension is not None and (not isinstance(dimension, str)
+                                  or dimension not in _DIM_COLUMN):
+        return _JR({"detail": "dimension 不合法"}, status_code=400)
 
     with get_db() as conn:
+        # C13 dimension 收口：未传则取该 clause 唯一 review 维，跨多维/无 review 维才 400
+        if dimension not in _DIM_COLUMN:
+            rows = conn.execute(
+                "SELECT DISTINCT dimension FROM classification_queue "
+                "WHERE clause_id=? AND status='review'", (clause_id,)).fetchall()
+            if len(rows) == 1:
+                dimension = rows[0]["dimension"]
+            else:
+                return _JR({"detail": "dimension 缺失或歧义（该条文跨多维或无 review 维）"},
+                           status_code=400)
+
+        pending_set = set()
         all_ids = list(label_ids) + list(removed_label_ids)
-        if not dimension:
-            if all_ids:
-                d_row = conn.execute(
-                    f"SELECT dimension FROM rule_pending "
-                    f"WHERE id IN ({','.join('?' * len(all_ids))}) "
-                    f"ORDER BY id DESC LIMIT 1", all_ids).fetchone()
-                dimension = d_row["dimension"] if d_row else None
-            if not dimension:
-                dr = conn.execute(
-                    "SELECT dimension FROM rule_pending WHERE clause_id=? "
-                    "ORDER BY id DESC LIMIT 1",
-                    (clause_id,)).fetchone()
-                dimension = dr["dimension"] if dr else None
+        if all_ids:
+            pending_set = set(r["id"] for r in conn.execute(
+                f"SELECT id FROM rule_pending WHERE id IN ({','.join('?' * len(all_ids))}) "
+                f"AND status='pending'", all_ids).fetchall())
+        rem = [i for i in removed_label_ids if i in pending_set]
+        # keep 不 approve、不回填、不 bump——词面沉淀仅 Tab2
 
-        # I1：外部输入 dimension 白名单校验（拼列名前先校验，防 SQL 注入/非法列）
-        if dimension and dimension not in _DIM_COLUMN:
-            return _JR({"detail": "dimension 不合法"}, status_code=400)
+        if rem:
+            rem_keys = rule_pending.resolve_keys(conn, rem)
+            rule_pending.set_status(conn, rem, "rejected")
+            for d, p, l in sorted(rem_keys):
+                rule_pending.deactivate_fragment(conn, d, p, l)
 
-        if dimension:
-            # I2：单条查询取全部 pending id，避免循环内逐行查询（N+1）
-            pending_set = set()
-            if all_ids:
-                pending_set = set(r["id"] for r in conn.execute(
-                    f"SELECT id FROM rule_pending WHERE id IN ({','.join('?' * len(all_ids))}) "
-                    f"AND status='pending'", all_ids).fetchall())
-            rem = [i for i in removed_label_ids if i in pending_set]
-            keep = [i for i in label_ids if i in pending_set]
-            if rem:
-                rem_keys = rule_pending.resolve_keys(conn, rem)
-                rule_pending.set_status(conn, rem, "rejected")
-                for d, p, l in sorted(rem_keys):
-                    rule_pending.deactivate_fragment(conn, d, p, l)
-            if keep:
-                approved_keys = rule_pending.resolve_keys(conn, keep)
-                for d, p, l in sorted(approved_keys):
-                    rule_pending.backfill_and_close(conn, d, p, l)
-                rule_pending.set_status(conn, keep, "approved")
-                for d, p, l in sorted(approved_keys):
-                    rule_pending.approve_rule(conn, d, p, l)
-            if new_label and str(new_label).strip():
-                col = _DIM_COLUMN[dimension]
-                conn.execute(
-                    f"UPDATE clauses SET {col}=?, ai_classified=1, needs_review=0 WHERE id=?",
-                    (str(new_label).strip(), clause_id))
-                conn.execute(
-                    "UPDATE classification_queue SET status='done' "
-                    "WHERE clause_id=? AND dimension=? AND status='review'",
-                    (clause_id, dimension))
+        if new_label and str(new_label).strip():
+            val = str(new_label).strip()
+            q = conn.execute(
+                "SELECT ai_label FROM classification_queue "
+                "WHERE clause_id=? AND dimension=? AND status='review'",
+                (clause_id, dimension)).fetchone()
+            orig = (q["ai_label"] if q else None)
+            written = rule_pending._confirm_clause(conn, clause_id, dimension, val)
+            if written and orig is not None and val != orig:
+                residual = rule_pending.clause_pending_ids(conn, clause_id, dimension)
+                if residual:
+                    rkeys = rule_pending.resolve_keys(conn, residual)
+                    rule_pending.set_status(conn, residual, "rejected")
+                    for d, p, l in sorted(rkeys):
+                        rule_pending.deactivate_fragment(conn, d, p, l)
 
     log_action("review", "INFO", "条文行内编辑",
                detail=json_detail({"clause_id": clause_id, "dimension": dimension,
