@@ -287,6 +287,34 @@ def test_backfill_and_close_writes_col_and_done_queue(monkeypatch, tmp_path):
     assert q["status"] == "done"
 
 
+def test_backfill_skips_terminal_and_writes_review(auth_client):
+    """反联守卫：queue 已 done 来源条文不覆写（列保持原值）；queue 仍 review 的写列。"""
+    with get_db() as conn:
+        c_done = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_done, "dim6", "钢筋", "钢筋", 0.9, "bC")
+        bq.try_enqueue(conn, c_done, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='done', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_done,))
+        conn.execute("UPDATE clauses SET dim6_material='混凝土' WHERE id=?", (c_done,))
+        c_rev = _seed_spec_clause(conn)
+        rp.insert_pending(conn, c_rev, "dim6", "钢筋", "钢筋", 0.9, "bC")
+        bq.try_enqueue(conn, c_rev, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (c_rev,))
+    n = 0
+    with get_db() as conn:
+        n = rp.backfill_and_close(conn, "dim6", "钢筋", "钢筋")
+    with get_db() as conn:
+        vals = {r["id"]: r["dim6_material"] for r in conn.execute(
+            "SELECT id, dim6_material FROM clauses").fetchall()}
+        statuses = {r["clause_id"]: r["status"] for r in conn.execute(
+            "SELECT clause_id, status FROM classification_queue").fetchall()}
+    assert n == 1                          # 只写 c_rev
+    assert vals[c_done] == "混凝土"         # 不被反联覆写
+    assert vals[c_rev] == "钢筋"
+    assert statuses[c_rev] == "done"
+
+
 def test_key_all_pending_ids(monkeypatch, tmp_path):
     """按行 id 反查键，取该键指定状态的全部行（黑名单 restore/approve 用）。"""
     _db(monkeypatch, tmp_path)

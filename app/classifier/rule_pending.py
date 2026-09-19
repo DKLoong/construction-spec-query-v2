@@ -377,24 +377,35 @@ def _key_all_pending_ids(conn, pid: int, target_status: str) -> list[int]:
 
 def _backfill_by_status(conn, dimension: str, pattern: str, label: str,
                         status: str) -> int:
-    """该键在指定 status 下的全部来源条文写列 + 其 queue(review) 置 done。返回写列条文数。"""
+    """该键在指定 status 下的来源条文写列 + queue(review)→done。返回实际写列条文数。
+
+    C8/C14 反联守卫：clause 列 UPDATE 带 EXISTS(queue status='review') 条件，rowcount
+    即实际写列数——已 done/auto_adopted/rejected（已定案/改标）或并发已被处理的条文
+    跳过，防词面反联覆写人工决定。单条批量 UPDATE（不在循环内逐条提交）。
+    """
     col = _dim_column(dimension)
     rows = conn.execute(
-        "SELECT DISTINCT clause_id FROM rule_pending "
-        "WHERE dimension=? AND pattern=? AND label=? AND status=? "
-        "AND clause_id IS NOT NULL",
+        "SELECT DISTINCT rp.clause_id FROM rule_pending rp "
+        "JOIN classification_queue q ON q.clause_id = rp.clause_id AND q.dimension = rp.dimension "
+        "WHERE rp.dimension=? AND rp.pattern=? AND rp.label=? AND rp.status=? "
+        "AND rp.clause_id IS NOT NULL AND q.status='review'",
         (dimension, pattern, label, status)).fetchall()
     cids = [r["clause_id"] for r in rows]
-    if cids:
-        ph = ','.join('?' * len(cids))
-        conn.execute(
-            f"UPDATE clauses SET {col}=?, ai_classified=1 WHERE id IN ({ph})",
-            [label, *cids])
-        conn.execute(
-            f"UPDATE classification_queue SET status='done' WHERE clause_id IN ({ph}) "
-            f"AND dimension=? AND status='review'",
-            [*cids, dimension])
-    return len(cids)
+    if not cids:
+        return 0
+    ph = ','.join('?' * len(cids))
+    cur = conn.execute(
+        f"UPDATE clauses SET {col}=?, ai_classified=1 "
+        f"WHERE id IN ({ph}) AND EXISTS ("
+        f"  SELECT 1 FROM classification_queue q "
+        f"  WHERE q.clause_id=clauses.id AND q.dimension=? AND q.status='review')",
+        [label, *cids, dimension])
+    written = cur.rowcount
+    conn.execute(
+        f"UPDATE classification_queue SET status='done' "
+        f"WHERE clause_id IN ({ph}) AND dimension=? AND status='review'",
+        [*cids, dimension])
+    return written
 
 
 def backfill_and_close(conn, dimension: str, pattern: str, label: str) -> int:
