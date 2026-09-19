@@ -617,7 +617,7 @@ async def review_clause_decide(request: Request, clause_id: int, body: dict):
 @router.post("/review/clause-pending/{clause_id}/inline-edit")
 async def review_clause_inline_edit(request: Request, clause_id: int, body: dict):
     """Tab1 行内编辑（C1/C3/C9/C13）：删 chip=驳词；保留词=保持 pending；新标签≠原
-    ai_label 且写列成功 → 驳残留 pending 词防反嚼。
+    ai_label（NULL 视为不同）且写列成功 → 驳残留 pending 词防反嚼。
 
     body: {label_ids:[保留], removed_label_ids:[删除], new_label, dimension}。
     dimension 收口：优先 body；缺失回退「该 clause 唯一 review queue 的 dimension」，
@@ -640,25 +640,30 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
     if dimension is not None and (not isinstance(dimension, str)
                                   or dimension not in _DIM_COLUMN):
         return _JR({"detail": "dimension 不合法"}, status_code=400)
+    # new_label 是唯一直达分类列的 body 值：非字符串会经 str() 变成字面量写库 → 400
+    if new_label is not None and not isinstance(new_label, str):
+        return _JR({"detail": "new_label 须为字符串"}, status_code=400)
 
     with get_db() as conn:
-        # C13 dimension 收口：未传则取该 clause 唯一 review 维，跨多维/无 review 维才 400
-        if dimension not in _DIM_COLUMN:
+        # C13 dimension 收口：仅 None（未传/缺失）可达此处（""/非法值已在上方挡掉）；
+        # 回退取该 clause 唯一 review 维，跨多维/无 review 维/维度异常才 400
+        if dimension is None:
             rows = conn.execute(
                 "SELECT DISTINCT dimension FROM classification_queue "
                 "WHERE clause_id=? AND status='review'", (clause_id,)).fetchall()
-            if len(rows) == 1:
+            if len(rows) == 1 and rows[0]["dimension"] in _DIM_COLUMN:
                 dimension = rows[0]["dimension"]
             else:
                 return _JR({"detail": "dimension 缺失或歧义（该条文跨多维或无 review 维）"},
                            status_code=400)
 
+        # 仅 removed 需要参与 pending 判定：label_ids（保留词）新语义下只读（校验+日志）
         pending_set = set()
-        all_ids = list(label_ids) + list(removed_label_ids)
-        if all_ids:
+        if removed_label_ids:
             pending_set = set(r["id"] for r in conn.execute(
-                f"SELECT id FROM rule_pending WHERE id IN ({','.join('?' * len(all_ids))}) "
-                f"AND status='pending'", all_ids).fetchall())
+                f"SELECT id FROM rule_pending "
+                f"WHERE id IN ({','.join('?' * len(removed_label_ids))}) "
+                f"AND status='pending'", removed_label_ids).fetchall())
         rem = [i for i in removed_label_ids if i in pending_set]
         # keep 不 approve、不回填、不 bump——词面沉淀仅 Tab2
 
@@ -668,15 +673,17 @@ async def review_clause_inline_edit(request: Request, clause_id: int, body: dict
             for d, p, l in sorted(rem_keys):
                 rule_pending.deactivate_fragment(conn, d, p, l)
 
-        if new_label and str(new_label).strip():
-            val = str(new_label).strip()
+        if new_label and new_label.strip():
+            val = new_label.strip()
             q = conn.execute(
                 "SELECT ai_label FROM classification_queue "
                 "WHERE clause_id=? AND dimension=? AND status='review'",
                 (clause_id, dimension)).fetchone()
             orig = (q["ai_label"] if q else None)
             written = rule_pending._confirm_clause(conn, clause_id, dimension, val)
-            if written and orig is not None and val != orig:
+            # C9：ai_label 为 NULL 视为「与任何非空新标签不同」（NULL 不可能等于 val），
+            # 否则该状态会被静默跳过 → Tab2 之后旧词面回填覆写人工新标签
+            if written and val != (orig or ""):
                 residual = rule_pending.clause_pending_ids(conn, clause_id, dimension)
                 if residual:
                     rkeys = rule_pending.resolve_keys(conn, residual)
