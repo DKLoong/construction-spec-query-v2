@@ -1055,3 +1055,28 @@ def test_pending_counts_aligned_with_tab1_source(auth_client):
     counts = rp.pending_counts()
     assert counts["clause"] == 2   # c_rev + 低置信 c_low；c_done 不计
     assert counts["word"] == 2     # 钢筋 + 混凝土 两个词面组
+
+
+def test_pending_counts_count_sql_matches_group_functions(auth_client):
+    """COUNT 版与 group 函数逐字同口径：孤儿行（clause 已删）不计、同 clause 多维度分组去重。"""
+    with get_db() as conn:
+        # 正常 review 组
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        rp.insert_pending(conn, cid, "dim6", "试验", "钢筋", 0.8, "bT")
+        rp.insert_pending(conn, cid, "dim5", "梁", "梁", 0.7, "bT")
+        for dim in ("dim6", "dim5"):
+            bq.try_enqueue(conn, cid, dim, 0.0)
+            conn.execute(
+                "UPDATE classification_queue SET status='review' WHERE clause_id=? AND dimension=?",
+                (cid, dim))
+        # 孤儿 pending/rejected 行：clause_id 指向不存在的条文 → JOIN 应排除
+        rp.insert_pending(conn, 9999, "dim6", "孤儿", "钢筋", 0.9, "bT")
+        rp.insert_pending(conn, 9998, "dim6", "孤儿驳", "钢筋", 0.9, "bT")
+        conn.execute("UPDATE rule_pending SET status='rejected' WHERE clause_id=9998")
+    groups = len(rp.pending_clause_groups()) + len(rp.rejected_clause_groups())
+    counts = rp.pending_counts()
+    # 本场景兜底段为 0 → clause 应等于两个 group 函数之和，且孤儿行不参与分组
+    assert groups == 2           # (cid,dim6) (cid,dim5)，无孤儿组
+    assert counts["clause"] == groups
+    assert counts["word"] == 4   # (dim6,钢筋)(dim6,试验)(dim5,梁)(dim6,孤儿) 词面组
