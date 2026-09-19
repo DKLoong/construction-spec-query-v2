@@ -82,7 +82,7 @@ Tab2（pending_groups 按 dim+pattern 聚合，沉淀主链）
 
 1. **反联守卫（C8）**：`_backfill_by_status` 写列时须确认该条 `queue.status='review'`（或等价：clauses 列未被人工改标）。已 done / 已改标的来源条文跳过写列，仅统计。`_backfill_by_status` 先按 (dimension, pattern, label, status) 取 DISTINCT clause_id（**仅取 queue review 的**），再对这批 id 发**单条批量条件 UPDATE**（`id IN (…) AND EXISTS(queue review)`），rowcount 即实际写列数；随后一条批量 UPDATE 把该批 queue `review→done`。逐条循环 UPDATE 是明确不采用的反模式。
 2. **inline 覆盖驳旧词（C9）**：`inline_edit` 收到 `new_label` 且 ≠ 原 ai_label 时，把该 `(clause_id, dimension)` 残留 pending 词置 `rejected`（并走 `deactivate_fragment` 停用碎片）。**落地顺序与门控**：先经 `_confirm_clause` 写新列，**仅当写列成功（`written=True`，即 queue 仍 review）且 `val != (orig or "")`** 时再驳残留；**ai_label 为 NULL 视为「与任何非空新标签不同」**（否则该状态被静默跳过 → Tab2 之后旧词面回填覆写人工新标签）。写列 no-op 则不驳残留。幂等。
-3. **Tab1 确认不碰词 approved（C1）**：写列路径与 `approve_rule` 解耦——规则侧背书只发生在 Tab2 批准、黑名单 approve、或既有 auto 沉淀（已背书词）。**审阅/确认路径的唯一写列出口**：`rule_pending._confirm_clause(conn, clause_id, dimension, label) -> bool`（内置维度白名单，非法维度抛 `ValueError`）。Tab1 `decide`、Tab1 `inline-edit`、低置信 `process_feedback`（`/review/{qid}/confirm` 路径）**全部委托它**，不自带写列副本——三处守卫强度因此天然一致。（该「唯一」限定在审阅/确认路径内；dim4/5/6 分类列另有两处**非审阅**写入方：`batch_queue` 的 auto 免审分支与规范页的人工改维度，二者均不走本守卫，属 C10 设计内的既定点。）
+3. **Tab1 确认不碰词 approved（C1）**：写列路径与 `approve_rule` 解耦——规则侧背书只发生在 Tab2 批准、黑名单 approve、或既有 auto 沉淀（已背书词）。**审阅/确认路径的唯一写列出口**：`rule_pending._confirm_clause(conn, clause_id, dimension, label) -> bool`（内置维度白名单，非法维度抛 `ValueError`）。Tab1 `decide`、Tab1 `inline-edit`、低置信 `process_feedback`（`/review/{qid}/confirm` 路径）**全部委托它**，不自带写列副本——三处守卫强度因此天然一致。（该「唯一」限定在审阅/确认路径内；dim4/5/6 分类列另有若干处**非审阅**写入方，如 `batch_queue` 的 auto 免审分支、规范页的人工改维度、import 期的 `classify_clause` 等，均不走本守卫，属 C10 设计内的既定点。）
 4. **主表终态排除（C5）**：`pending_clause_groups` 增加 NOT EXISTS（queue 该 clause+dim 状态 ∈ done/auto_adopted/rejected）或 join queue 过滤 review——已定案条文不再因残留词出现在主表。
 
 ## 五、Tab1 交互（主表）
@@ -114,7 +114,7 @@ Tab2（pending_groups 按 dim+pattern 聚合，沉淀主链）
 
 | 场景 | 行为 |
 | --- | --- |
-| Tab1 主表确认时 queue 已 done / 条文已删 | 写列 no-op（`_confirm_clause` 的 EXISTS(queue review) 守卫，rowcount=0 → 返回 False）；端点仍返回 200 空响应（幂等友好，不把重复点击报成失败）。前端据 `resp.ok` 自行重拉面板（`clauseConfirm` 里的 `refreshReviewPanels()`）；端点同时返回 `HX-Trigger` 以兼容 htmx 发起的调用方——**注意该响应头对本路径无效**（htmx 只处理它自己发起的请求的 `HX-Trigger`），故删掉 `refreshReviewPanels()` 会让重复点击后的刷新静默失效 |
+| Tab1 主表确认时 queue 已 done / 条文已删 | 写列 no-op（`_confirm_clause` 的 EXISTS(queue review) 守卫，rowcount=0 → 返回 False）；此时端点**通常返回 400**「该条文该维无 review 队列项」（前述 `SELECT … AND status='review'` 已取不到行）；**200 只在窄竞态下可达**——该 SELECT 与 `_confirm_clause` 的条件 UPDATE 之间队列项被并发置 done，此时端点仍返回 200（幂等友好，不把并发重复提交报成故障），并非普遍返回 200。前端据 `resp.ok` 自行重拉面板（`clauseConfirm` 里的 `refreshReviewPanels()`）；端点同时返回 `HX-Trigger` 以兼容 htmx 发起的调用方——**注意该响应头对本路径无效**（htmx 只处理它自己发起的请求的 `HX-Trigger`），故删掉 `refreshReviewPanels()` 会让重复点击后的刷新静默失效 |
 | Tab1 确认 ids 为空 | 纯确认：只写列 + queue done，不 set 任何词状态（合法路径，非错误） |
 | Tab1 确认命中 D1 行（无候选词） | 前端 `clauseConfirm` 守卫拦截（alert + return，不发请求）；后端本身不区分 D1 行，靠 `ai_label` 空则 400 兜底 |
 | inline 新标签覆盖时残留词已 approved/rejected | 只处理 `status='pending'` 残留（`clause_pending_ids`），幂等；且仅在写列成功且 `val != (orig or "")` 时触发 |
