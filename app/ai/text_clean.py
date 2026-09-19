@@ -2,6 +2,13 @@
 
 OCR/PDF 导入的条文 content 中常混有 <div style=...>、<br>、<table> 等标记
 （markdown 转换残留）。这些标记不应进入 AI 分类/问答上下文，本模块统一清理。
+
+`plain_text` 与 `strip_html` 的分工（2026-09-19 引入，详见 TODOS 与 spec）：
+- `clauses.content` 是**渲染载荷**——详情页走 marked + KaTeX 渲染表格/公式，
+  因此正文入库时**不得清洗**，标记要原样保留。
+- 但索引/向量/提词/精排这些**派生文本**必须先去标记，否则 `td`/`style`/`word`
+  这类标记会被切成 token 灌进 FTS5 与 embedding（实测约占索引 20-25%）。
+- 故：**派生文本用 `plain_text`，渲染载荷保持原文**。
 """
 import re
 from html.parser import HTMLParser
@@ -11,6 +18,14 @@ _BLOCK_TAGS = {
     "div", "p", "br", "table", "tr", "ul", "ol", "li",
     "h1", "h2", "h3", "h4", "h5", "h6",
 }
+
+# 表格单元格标签：strip_html 只把 tr 当块级，相邻 <td> 文字会粘连
+# （实测「接头类型」+「连接件型式」→「接头类型连接件型式」），故先转为空格
+_CELL_TAG = re.compile(r"</?t[dh][^>]*>", re.I)
+
+# LaTeX 数学段：PaddleOCR-VL 对公式输出 $...$（含 $$...$$）或 \(...\) / \[...\]
+# 实测 17 条含公式的条文 $ 全部成对、定界符外无裸命令，故整段丢弃即可
+_LATEX = re.compile(r"\$\$.*?\$\$|\$[^$\n]{1,200}\$|\\\(.*?\\\)|\\\[.*?\\\]", re.S)
 
 
 class _MarkupToText(HTMLParser):
@@ -72,3 +87,22 @@ def strip_html(text: str | None) -> str:
         if cleaned:
             lines.append(cleaned)
     return "\n".join(lines)
+
+
+def plain_text(text: str | None) -> str:
+    """派生文本专用清洗：去 HTML 标记 + 丢 LaTeX 段 + 单元格分隔
+
+    仅用于**派生文本**（FTS 索引 / 向量 embedding / 提词 / 精排输入）；
+    `clauses.content` 是渲染载荷，**不要**用本函数覆盖它。
+
+    - 单元格标签（<td>/<th>）先转空格，避免相邻单元格文字粘连
+    - 复用 `strip_html` 去标签并解码实体
+    - LaTeX 数学段整段丢弃（符号名 `f_{yk}`、单位 `N/mm^{2}` 判定为不可检索）
+    - 末尾再走一次 `strip_html` 归并空白，保证**幂等**：
+      非标记条文的派生结果与原文一致，不会造成全库索引口径漂移
+    """
+    if not text:
+        return ""
+
+    spaced = _CELL_TAG.sub(" ", text)
+    return strip_html(_LATEX.sub(" ", strip_html(spaced)))

@@ -1,4 +1,5 @@
 from collections import Counter
+from app.ai.text_clean import plain_text
 from app.database import get_db
 
 
@@ -8,6 +9,10 @@ def extract_keywords(text: str, top_n: int = 5) -> list[str]:
     旧实现 `re.findall(r"[一-龥]{2,4}")` 非重叠贪心切 2-4 字块，产出「应检验屈」「服强度」
     这类无意义碎片并被当作规则（标签）→ 强行打标。改为 jieba 词典分词 + 词长/停用词过滤，
     得到「钢筋」「检验」「屈服强度」等语义词——作为规则匹配词（label 语义已由确认标签承载）。
+
+    **入参先过 `plain_text`**：本函数是纯词频 Counter，而 content 里的 OCR 标记
+    出现频率远高于正文词（实测 `td` 1448 次），不清洗则标记必然挤进 top_n 并成为
+    规则 pattern（碎片污染的历史成因之一）。
     """
     import jieba
 
@@ -16,7 +21,7 @@ def extract_keywords(text: str, top_n: int = 5) -> list[str]:
         "等", "以", "中", "对", "按", "可", "须", "均", "时", "于", "并", "则",
         "规定", "要求", "采用", "符合", "进行", "使用", "必须", "不得", "本",
     }
-    words = [w.strip() for w in jieba.lcut(text or "") if w.strip()]
+    words = [w.strip() for w in jieba.lcut(plain_text(text)) if w.strip()]
     filtered = [
         w for w in words
         if len(w) >= 2 and w not in stopwords

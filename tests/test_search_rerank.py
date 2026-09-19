@@ -13,6 +13,44 @@ def _make_candidates(n):
     ]
 
 
+def test_rerank_candidates_strips_markup_before_scoring(monkeypatch):
+    """喂给 CrossEncoder 的文本必须先去掉 OCR 标记/LaTeX
+
+    精排只取前 300 字符，而表格条文的前 300 字符几乎全是 HTML——
+    不清洗等于把「接头极限抗拉强度」这类正文截掉、只剩标记给模型打分。
+    """
+    from app.search.rerank import rerank_candidates
+
+    candidates = [
+        {"spec_code": "JGJ 107", "clause_no": "3.0.5",
+         "content": ('<div style="text-align: center;">表3.0.5 接头极限抗拉强度</div>'
+                     '<table border=1><tr><td style="text-align: center;">接头等级</td>'
+                     '<td colspan="2">Ⅰ级</td></tr></table>'
+                     "抗拉强度 $ N/mm^{{2}} $ 应符合表3.0.5的规定。")},
+        {"spec_code": "JGJ 107", "clause_no": "3.0.7", "content": "接头变形性能应符合规定。"},
+    ]
+    captured = []
+
+    def fake_rerank(question, texts):
+        captured.extend(texts)
+        return [0.5, 0.5]
+
+    monkeypatch.setattr("app.ai.reranker.rerank", fake_rerank)
+
+    rerank_candidates("接头抗拉强度要求", candidates)
+
+    assert len(captured) == 2
+    scored = captured[0]
+    assert "<" not in scored and "$" not in scored
+    for bad in ("div", "style", "table", "border", "td", "tr", "colspan", "N/mm"):
+        assert bad not in scored, f"精排文本残留标记: {bad}"
+    assert "接头极限抗拉强度" in scored
+    assert "接头等级" in scored
+    assert "应符合表3.0.5的规定" in scored
+    # 无标记候选逐字不变
+    assert captured[1] == "接头变形性能应符合规定。"
+
+
 def test_rerank_candidates_crossencoder_desc(monkeypatch):
     """CrossEncoder 可用时返回 (候选, 分数) 按分数降序全量 + 档位 crossencoder"""
     from app.search.rerank import rerank_candidates

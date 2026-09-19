@@ -135,3 +135,27 @@ def test_extract_keywords():
     keywords = extract_keywords(text, top_n=5)
     assert len(keywords) >= 1
     assert any("模板" in kw for kw in keywords)
+
+
+def test_extract_keywords_ignores_markup_residue():
+    """提词不得把 HTML/LaTeX 标记当成关键词（否则会变成规则 pattern 污染）
+
+    标记在实践中出现频率远高于正文词（实测索引里 td 出现 1448 次），
+    而 extract_keywords 是纯词频 Counter，故不清洗时标记必然挤进 top_n。
+    """
+    content = (
+        "接头等级应符合表3.0.5的规定。"
+        "<table border=1>"
+        "<tr><td style='text-align: center;'>接头等级</td>"
+        "<td style='text-align: center;'>连接件型式</td>"
+        "<td style='text-align: center;'>接头等级</td></tr>"
+        "</table>"
+        "残余变形 $ u_0 \\le 0.3 $ 应合格。"
+    )
+    kws = extract_keywords(content, top_n=5)
+    assert kws, "清洗后仍应能提出关键词"
+    for bad in ("td", "tr", "style", "center", "text", "align", "table",
+                "border", "u_0", "le", "0.3"):
+        assert bad not in kws, f"标记被提为关键词: {bad}"
+    # 正文词应被提出
+    assert any("接头" in kw or "等级" in kw or "残余" in kw for kw in kws)

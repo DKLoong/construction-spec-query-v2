@@ -7,6 +7,8 @@
 import re
 import jieba
 
+from app.ai.text_clean import plain_text
+
 
 def tokenize(text: str) -> list[str]:
     """jieba 精确模式切词，过滤空白与纯标点 token。
@@ -26,11 +28,14 @@ def tokenize(text: str) -> list[str]:
 def build_search_text(clause_no: str, title: str, content: str) -> str:
     """构建 FTS5 索引文本：jieba(标题+正文) 空格连接 + 追加 clause_no 原文。
 
+    - **先过 `plain_text` 去标记**：content 是渲染载荷（含 PaddleOCR-VL 的
+      HTML 表格与 LaTeX），直接分词会把 td/style/word 等标记灌进索引
+      （实测约占索引 20-25%，严重稀释 BM25）。详见 `app/ai/text_clean.plain_text`
     - clause_no 不走 jieba（点号会被拆成独立 token），直接追加原文，
       由 FTS5 的 unicode61 分词器统一切分（"5.1.1" → 5/1/1 三个 token）
     - 空文本返回占位空格，避免 FTS5 索引 NULL 值报 datatype mismatch
     """
-    parts = tokenize(f"{title or ''} {content or ''}")
+    parts = tokenize(plain_text(f"{title or ''} {content or ''}"))
     if clause_no and clause_no.strip():
         parts.append(clause_no.strip())
     return " ".join(parts) or " "

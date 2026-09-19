@@ -10,6 +10,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 from app.database import get_db
 from app.search.vector_search import VectorStore
+from app.search.embed_text import build_embed_text
 from app.ai.embedding import get_model
 
 
@@ -38,18 +39,13 @@ def main():
     print("Rebuilding vector index from scratch...")
     print()
 
-    # 构建嵌入文本：规范编号 + 规范名称 + 条文号 + 标题 + 内容
-    # 这样向量就能捕捉到规范级别的语义（如"混凝土结构工程施工质量验收规范"）
+    # 构建嵌入文本：走共享的 build_embed_text（含 plain_text 去标记 + 与导入路径同格式）。
+    # 此处曾内联重复拼接，导致与导入路径漂移、且会绕过标记清洗，切勿再内联。
     clauses = []
     for r in rows:
-        text_parts = [
-            r["spec_code"] or "",
-            r["spec_title"] or "",
-            f"[{r['clause_no']}]",
-            r["title"] or "",
-            r["content"] or "",
-        ]
-        text = " ".join(filter(None, text_parts))
+        text = build_embed_text(
+            r["spec_code"] or "", r["spec_title"] or "",
+            r["clause_no"] or "", r["title"] or "", r["content"] or "")
 
         # 构建维度分数字符串
         dim_parts = []

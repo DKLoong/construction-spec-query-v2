@@ -55,6 +55,36 @@ def test_build_search_text_deterministic():
     assert a == b
 
 
+def test_build_search_text_strips_markup_residue():
+    """含 PaddleOCR-VL 标记的条文：索引不得出现标记 token，正文与单元格文字保留"""
+    content = (
+        "I 级、Ⅱ级、Ⅲ级接头的极限抗拉强度必须符合表3.0.5的规定。\n"
+        '<div style="text-align: center;">表3.0.5 接头极限抗拉强度</div>\n'
+        "<table border=1 style='margin: auto;'>"
+        "<tr><td style='text-align: center;'>接头等级</td>"
+        "<td colspan=\"2\">连接件型式</td></tr></table>"
+        "<img src='imgs/a.jpg' alt=\"Image\" />"
+        "抗拉强度 $ N/mm^{{2}} $ 应符合要求"
+    )
+    st = build_search_text("3.0.5", "", content)
+    toks = {w.lower() for w in st.split()}
+    leftover = toks & {
+        "td", "tr", "style", "table", "div", "center", "img", "src", "alt",
+        "image", "colspan", "rowspan", "border", "margin", "auto", "text",
+        "align", "wrap", "break", "word", "mathrm", "times", "N/mm",
+    }
+    assert not leftover, f"索引残留标记 token: {sorted(leftover)}"
+    # 正文与单元格文字仍可检索（断言 token 而非整词：jieba 会再切分）
+    assert {"抗拉强度", "接头", "等级", "连接件", "型式", "符合"} <= toks
+    assert st.endswith("3.0.5")
+
+
+def test_build_search_text_plain_content_unchanged():
+    """无标记条文的索引结果不得改变（依赖 plain_text 幂等，否则全库索引口径漂移）"""
+    content = "套筒 coupler 是钢筋机械连接的关键部件。"
+    assert build_search_text("", "", content) == " ".join(tokenize(content))
+
+
 def test_build_match_query_quotes_tokens_with_and():
     """MATCH 查询串：token 加引号、AND 连接（jieba 会切分标点，故 token 不含引号）"""
     q = build_match_query("钢筋 混凝土")

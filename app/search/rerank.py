@@ -6,6 +6,8 @@ QA 模块共同调用，避免两处复制同一套降级逻辑。
 
 import logging
 
+from app.ai.text_clean import plain_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +25,9 @@ def rerank_candidates(question: str, candidates: list[dict]) -> tuple[list[tuple
     if len(candidates) <= 1:
         return [(c, 1.0) for c in candidates], "none"
 
-    texts = [(c.get("content") or "")[:300] for c in candidates]
+    # content 是渲染载荷（含 OCR 的 HTML 表格/LaTeX），先清洗再截断：
+    # 否则表格条文的前 300 字符几乎全是标记，正文被截掉、模型只看到「td style」。
+    texts = [plain_text(c.get("content") or "")[:300] for c in candidates]
 
     try:
         from app.ai.reranker import rerank
