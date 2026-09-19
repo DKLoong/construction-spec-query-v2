@@ -105,6 +105,11 @@ def test_tab1_confirm_guards_group_without_candidates(auth_client):
     guard_at = fn.index("该条无候选词")
     guard = fn[:guard_at]
     assert ".cand-check'" in guard, "守卫应按「候选区无 checkbox」判空"
+    # 分组作用域：选择器必须锚定本组候选区（'#candidates-' + clauseId + '-' + dimension）。
+    # 若退化成全局 '.cand-check'，多分组页面里别组的 checkbox 会让 D1 行守卫误判为「有候选」
+    # → 守卫静默失效（本组恰恰没有 checkbox）。去空白后比对，免受换行/缩进写法差异影响。
+    assert "'#candidates-'+clauseId+'-'+dimension" in re.sub(r"\s+", "", guard), \
+        "守卫选择器必须锚定本分组候选区，不得退化为全局 .cand-check"
     assert "alert(" in guard, "守卫应 alert 提示"
     assert ":not(:checked)" not in guard, "判空不得复用去勾选择器（会误伤全勾纯确认）"
     # 守卫必须早于 confirm()/fetch()，否则空 ids 已经发出去了
