@@ -27,10 +27,13 @@ KEY_DIMS = ("dim4", "dim5", "dim6")
 _DIM_SUB_FIELD = {"dim4": "specialty", "dim5": "location", "dim6": "material"}
 
 
+# 维度 → clauses 分类列名（同时充当维度白名单：写列前必须校验，防拼入非法列名）
+_DIM_COLUMN = {"dim4": "dim4_specialty", "dim5": "dim5_location", "dim6": "dim6_material"}
+
+
 def _dim_column(dim: str) -> str:
     """维度 → clauses 分类列名（写列/回填用）。"""
-    return {"dim4": "dim4_specialty", "dim5": "dim5_location",
-            "dim6": "dim6_material"}.get(dim, dim)
+    return _DIM_COLUMN.get(dim, dim)
 
 
 def key_state(conn, dimension: str, pattern: str, label: str) -> str:
@@ -413,7 +416,11 @@ def _confirm_clause(conn, clause_id: int, dimension: str, label: str) -> bool:
 
     条件更新（C14）：clause 列 UPDATE 带 EXISTS(queue review)，命中才置 queue done，
     未命中（已 done/改标/并发）返回 False no-op。返回是否实际写列。
+
+    维度白名单内置（不只依赖调用方校验）：非法维度抛 ValueError，绝不拼进列名。
     """
+    if dimension not in _DIM_COLUMN:
+        raise ValueError(f"非法维度: {dimension!r}")
     col = _dim_column(dimension)
     cur = conn.execute(
         f"UPDATE clauses SET {col}=?, ai_classified=1, needs_review=0 WHERE id=? "

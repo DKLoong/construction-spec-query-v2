@@ -688,6 +688,49 @@ def test_tab1_approve_non_string_dimension_400(auth_client):
     assert resp.status_code == 400
 
 
+def test_tab1_approve_missing_dimension_400(auth_client):
+    """dimension 缺失 → 400（外部输入必填校验）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
+    resp = auth_client.post(f"/review/clause-pending/{cid}/decide",
+                            json={"ids": [], "action": "approve"})
+    assert resp.status_code == 400
+
+
+def test_tab1_approve_non_int_ids_400(auth_client):
+    """ids 含非整数元素（dict/list 不可哈希）→ 400 而非 500（外部输入类型校验）。"""
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
+    resp = auth_client.post(f"/review/clause-pending/{cid}/decide",
+                            json={"dimension": "dim6", "ids": [{"x": 1}], "action": "approve"})
+    assert resp.status_code == 400
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()["dim6_material"]
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()["status"]
+    assert (c or "") == "" and q == "review"   # 未写列、队列未推进
+
+
+def test_confirm_clause_rejects_invalid_dimension(monkeypatch, tmp_path):
+    """_confirm_clause 内置维度白名单：非法维度直接 ValueError，不拼进列名（防御注入面）。"""
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review' WHERE clause_id=?", (cid,))
+        with pytest.raises(ValueError):
+            rp._confirm_clause(conn, cid, "dim6; DROP TABLE clauses", "钢筋")
+        q = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()
+    assert q["status"] == "review"   # 抛错前未动队列/未写列
+
+
 def test_tab1_approve_empty_ai_label_400(auth_client):
     """review 存在但 ai_label 为空 → 400（避免静默 no-op 页面卡死）。"""
     with get_db() as conn:

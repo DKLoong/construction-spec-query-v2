@@ -578,6 +578,10 @@ async def review_clause_decide(request: Request, clause_id: int, body: dict):
     dimension = body.get("dimension")
     if action != "approve" or not isinstance(ids, list):
         return _JR({"detail": "仅支持 approve（批量驳回已移除）"}, status_code=400)
+    # 元素类型校验（项目规则 1.1）：短路在任何 set/比较之前，防不可哈希元素抛
+    # TypeError: unhashable type → 500
+    if not all(isinstance(i, int) for i in ids):
+        return _JR({"detail": "ids 须为整数数组"}, status_code=400)
     # 外部输入类型+范围校验（项目规则 1.1）：非字符串先挡下，防 dict 成员测试抛
     # TypeError: unhashable type → 500
     if not isinstance(dimension, str) or dimension not in _DIM_COLUMN:
