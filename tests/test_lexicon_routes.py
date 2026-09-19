@@ -54,6 +54,88 @@ def test_lexicon_csv_import(auth_client, monkeypatch, tmp_path):
     assert "成功" in body and "跳过" in body and "失败" in body
 
 
+def test_lexicon_create_rejects_cross_group_word(auth_client, monkeypatch, tmp_path):
+    """新增时若词面已属别的组 → 400 且不写入
+
+    不变量对称：读侧 _check_equiv_unique 一旦发现同词跨组就整表作废，
+    写入侧必须同样严格，否则写入能通过、读时全灭（2026-09-19 事故成因）。
+    init_db 预置 alias 混凝土={砼}，故占用「砼」即冲突。
+    """
+    import sqlite3
+
+    from app import database as _db
+    from app.database import init_db, get_db
+
+    db = str(tmp_path / "cg.db")
+    monkeypatch.setattr(_db, "DATABASE_PATH", db)
+    init_db()
+
+    resp = auth_client.post("/lexicon/create",
+                            data={"kind": "alias", "canonical": "水泥砂浆", "variants": "砼"})
+    assert resp.status_code == 400
+
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM lexicon_entries WHERE canonical='水泥砂浆'").fetchone()[0]
+    assert n == 0, "冲突行不得写入"
+
+
+def test_lexicon_edit_rejects_cross_group_word(auth_client, monkeypatch, tmp_path):
+    """编辑引入别的组的词面 → 400（排除自身后仍冲突）"""
+    from app import database as _db
+    from app.database import init_db, get_db
+
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "cg2.db"))
+    init_db()
+    auth_client.post("/lexicon/create",
+                     data={"kind": "alias", "canonical": "水灰比", "variants": "W/C"})
+    with get_db() as conn:
+        lid = conn.execute(
+            "SELECT id FROM lexicon_entries WHERE canonical='水灰比'").fetchone()["id"]
+
+    resp = auth_client.post(f"/lexicon/{lid}/edit",
+                            data={"canonical": "水灰比", "variants": "W/C,砼"})
+    assert resp.status_code == 400
+
+    with get_db() as conn:
+        v = conn.execute("SELECT variants FROM lexicon_entries WHERE id=?", (lid,)).fetchone()[0]
+    assert "砼" not in v, "冲突变体不得写入"
+
+
+def test_lexicon_csv_import_rejects_cross_group_and_keeps_lexicon_alive(
+        auth_client, monkeypatch, tmp_path):
+    """CSV 导入含跨组冲突行：该行计入失败，且**词库不得被整表作废**
+
+    这是 ② 的验收测试：修复前一次批量导入就能让 load_equivalent_groups() 归零。
+    """
+    from app import database as _db
+    from app.database import init_db, get_db
+    from app.lexicon.store import invalidate_lexicon_caches, load_equivalent_groups
+
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "cg3.db"))
+    invalidate_lexicon_caches()
+    init_db()
+
+    csv_text = ("kind,canonical,variants,distinguish,note\n"
+                "alias,水泥砂浆,砼,,冲突行（砼已属混凝土组）\n"
+                "alias,坍落度,塌度,,正常行\n")
+    resp = auth_client.post("/lexicon/import",
+                            files={"file": ("cg.csv", csv_text.encode("utf-8"), "text/csv")})
+    assert resp.status_code == 200
+    assert "失败" in resp.text and "成功" in resp.text
+
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM lexicon_entries WHERE canonical='水泥砂浆'").fetchone()[0]
+    assert n == 0, "冲突行不得写入"
+
+    # 关键：词库必须仍可加载（未被整表作废）
+    invalidate_lexicon_caches()
+    groups = load_equivalent_groups()
+    assert groups, "导入后词库不得被整表作废"
+    assert any(g.canonical == "坍落度" for g in groups), "正常行应已写入"
+
+
 def test_lexicon_write_is_audited(auth_client, monkeypatch, tmp_path):
     """词库写操作必须留审计（此前 lexicon_routes 埋点数为 0，故障无法追溯）
 

@@ -7,10 +7,20 @@ from fastapi.responses import HTMLResponse, Response
 from app.database import get_db
 from app.lexicon.store import invalidate_lexicon_caches
 from app.lexicon.validation import validate_row
-from app.lexicon.store import EQUIV_KINDS
+from app.lexicon.store import EQUIV_KINDS, find_equiv_conflict
 from app.logging_util import log_action, json_detail
 
 router = APIRouter()
+
+# 跨组词面冲突的文案（create/edit/import 三路径共用，避免措辞漂移）
+_CONFLICT_MSG = "词「{}」已属于其它等价组，请先在该组补充/调整，避免同一词面被两组占用"
+
+
+def _equiv_words(data: dict | None) -> list[str]:
+    """validate_row 输出 → 占用词面列表（canonical + variants）；None/空 → 空列表"""
+    if not data:
+        return []
+    return [data["canonical"], *[v.strip() for v in (data["variants"] or "").split(",") if v.strip()]]
 
 
 def _find_equiv_group(conn, kind: str, canonical: str):
@@ -122,6 +132,10 @@ async def create_lexicon(request: Request, kind: str = Form(...),
             if _find_equiv_group(conn, data["kind"], data["canonical"]):
                 return HTMLResponse(
                     '<p style="color:orange">⚠️ 该代表词已有词条，请在其变体列补充</p>', status_code=400)
+            conflict = find_equiv_conflict(conn, _equiv_words(data))
+            if conflict:
+                return HTMLResponse(
+                    f'<p style="color:red">❌ {_CONFLICT_MSG.format(conflict)}</p>', status_code=400)
         cur = conn.execute(
             "INSERT OR IGNORE INTO lexicon_entries(kind,canonical,variants,distinguish,note,updated_at)"
             " VALUES (?,?,?,?,'WebUI 新增',datetime('now','localtime'))",
@@ -183,6 +197,11 @@ async def edit_lexicon(request: Request, lid: int, canonical: str = Form(""),
             dup = _find_equiv_group(conn, row["kind"], data["canonical"])
             if dup and dup["id"] != lid:
                 return HTMLResponse('<p style="color:orange">⚠️ 已有同代表词词条</p>', status_code=400)
+            # exclude_id=lid：本行自己的词面不算冲突
+            conflict = find_equiv_conflict(conn, _equiv_words(data), exclude_id=lid)
+            if conflict:
+                return HTMLResponse(
+                    f'<p style="color:red">❌ {_CONFLICT_MSG.format(conflict)}</p>', status_code=400)
     with get_db() as conn:
         conn.execute(
             "UPDATE lexicon_entries SET canonical=?, variants=?, distinguish=?, "
@@ -254,6 +273,14 @@ async def import_lexicon(request: Request, file: UploadFile = File(...),
             # variants（UPDATE 补集合并，不改 is_active），否则 INSERT；confusable 仍全行幂等。
             if data["kind"] in EQUIV_KINDS:
                 existing = _find_equiv_group(conn, data["kind"], data["canonical"])
+                # 跨组词面校验：与同 (kind,canonical) 的合并目标互相排除，其余组一律拦住
+                conflict = find_equiv_conflict(
+                    conn, _equiv_words(data),
+                    exclude_id=existing["id"] if existing else None)
+                if conflict:
+                    fail += 1
+                    fails.append(f"第{line_no}行: {_CONFLICT_MSG.format(conflict)}")
+                    continue
                 if existing:
                     cur_variants = [v for v in (existing["variants"] or "").split(",") if v.strip()]
                     incoming = [v for v in data["variants"].split(",") if v.strip()]

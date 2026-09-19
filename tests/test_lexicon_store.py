@@ -67,6 +67,100 @@ def test_equiv_conflict_word_blocks_load(monkeypatch, tmp_path):
     assert store.equiv_conflict_word == "混凝土"
 
 
+def _seed_conflict_db(monkeypatch, tmp_path, name="wc.db"):
+    """建一个含「已有组」的临时库：alias 混凝土={砼} + synonym 钢筋={钢筋}"""
+    from app.database import get_db, init_db
+
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / name))
+    invalidate_lexicon_caches()
+    init_db()
+    with get_db() as conn:
+        conn.execute("DELETE FROM lexicon_entries")
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('alias','混凝土','砼')")
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('synonym','钢结构','钢构')")
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants,distinguish) "
+                     "VALUES ('confusable','圈梁','构造柱','竖向构件不同')")
+    invalidate_lexicon_caches()
+
+
+def test_find_equiv_conflict_detects_canonical_hit(monkeypatch, tmp_path):
+    """新组的 canonical 已属别的组 → 报出该词"""
+    from app.database import get_db
+    from app.lexicon.store import find_equiv_conflict
+
+    _seed_conflict_db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        assert find_equiv_conflict(conn, ["混凝土", "水泥"]) == "混凝土"
+
+
+def test_find_equiv_conflict_detects_variant_hit(monkeypatch, tmp_path):
+    """新组的 variant 落在别的组的 variants 里 → 也要报出（variants 同样占用词面）"""
+    from app.database import get_db
+    from app.lexicon.store import find_equiv_conflict
+
+    _seed_conflict_db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        assert find_equiv_conflict(conn, ["水灰比", "砼"]) == "砼"
+
+
+def test_find_equiv_conflict_is_cross_kind(monkeypatch, tmp_path):
+    """跨 kind 也算冲突：alias 的词不能被 synonym 组再占用（读侧校验如此）"""
+    from app.database import get_db
+    from app.lexicon.store import find_equiv_conflict
+
+    _seed_conflict_db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        assert find_equiv_conflict(conn, ["钢构"]) == "钢构"
+
+
+def test_find_equiv_conflict_none_when_clean(monkeypatch, tmp_path):
+    """全新词面无冲突"""
+    from app.database import get_db
+    from app.lexicon.store import find_equiv_conflict
+
+    _seed_conflict_db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        assert find_equiv_conflict(conn, ["水灰比", "W/C"]) is None
+
+
+def test_find_equiv_conflict_excludes_self(monkeypatch, tmp_path):
+    """编辑自身时不得与自己冲突（exclude_id 排除本行）"""
+    from app.database import get_db
+    from app.lexicon.store import find_equiv_conflict
+
+    _seed_conflict_db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        row = conn.execute("SELECT id FROM lexicon_entries WHERE canonical='混凝土'").fetchone()
+        assert find_equiv_conflict(conn, ["混凝土", "砼"], exclude_id=row["id"]) is None
+        # 但引入别人的词仍要拦住
+        assert find_equiv_conflict(conn, ["混凝土", "钢构"], exclude_id=row["id"]) == "钢构"
+
+
+def test_find_equiv_conflict_ignores_confusable(monkeypatch, tmp_path):
+    """confusable 独立命名空间，不参与 equiv 词面占用"""
+    from app.database import get_db
+    from app.lexicon.store import find_equiv_conflict
+
+    _seed_conflict_db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        assert find_equiv_conflict(conn, ["圈梁", "构造柱"]) is None
+
+
+def test_find_equiv_conflict_accepts_words_own_group_after_write(monkeypatch, tmp_path):
+    """写入校验必须与读侧 _check_equiv_unique 同严格：通过校验的写入不得让读侧作废"""
+    from app.database import get_db
+    from app.lexicon.store import find_equiv_conflict
+
+    _seed_conflict_db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        assert find_equiv_conflict(conn, ["水灰比", "W/C"]) is None
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) "
+                     "VALUES ('alias','水灰比','W/C')")
+    invalidate_lexicon_caches()
+    # 读侧必须仍能正常加载（未被整表作废）
+    assert len(load_equivalent_groups()) >= 3
+
+
 def test_equiv_conflict_logged_at_error(monkeypatch, tmp_path, caplog):
     """冲突必须以 ERROR 级记录：这是「整表失效」而非普通告警
 

@@ -79,6 +79,38 @@ def _check_equiv_unique(rows: list[LexiconRow]) -> bool:
     return True
 
 
+def find_equiv_conflict(conn, words, exclude_id: int | None = None) -> str | None:
+    """写入侧校验：这些词面是否已属于**别的** equiv 组？返回首个冲突词或 None。
+
+    **必须与读侧 `_check_equiv_unique` 同样严格**——读侧一旦发现同词跨组就整表
+    作废（fail-closed），若写入侧更宽松，就能写进读侧会整体拒绝的数据，
+    即「一次 CSV 导入搞死整个词库」（2026-09-19 事故）。故对齐三点：
+    canonical 与 variants 全算、跨 kind（alias/synonym 同一命名空间）、精确匹配。
+
+    - `exclude_id`：编辑/合并时排除自身行（自己占自己的词面不算冲突）
+    - confusable 是独立命名空间，不参与 equiv 词面占用
+
+    词条量级很小（<1000 行），故整表读出在内存比对，避免 variants 逗号串的
+    SQL 精确匹配难题。
+    """
+    wanted = {w.strip() for w in (words or []) if w and w.strip()}
+    if not wanted:
+        return None
+    rows = conn.execute(
+        "SELECT id, canonical, variants FROM lexicon_entries WHERE kind IN (?, ?)",
+        EQUIV_KINDS,
+    ).fetchall()
+    for r in rows:
+        if exclude_id is not None and r["id"] == exclude_id:
+            continue
+        owned = {r["canonical"]}
+        owned |= {v.strip() for v in (r["variants"] or "").split(",") if v.strip()}
+        hit = wanted & owned
+        if hit:
+            return sorted(hit)[0]
+    return None
+
+
 def _load_all() -> list[LexiconRow]:
     global _cache, _cache_ts, _cache_path
     from app.database import DATABASE_PATH
