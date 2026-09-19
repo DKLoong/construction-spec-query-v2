@@ -84,10 +84,12 @@ async with async_playwright() as p:
 > 本仓的 AI 协作工作建议使用 gstack 技能套件（/qa、/review、/ship、/browse、/investigate 等）。**非强制**：未安装时按常规流程工作即可。
 
 - **安装（需开发者自己本机全局装一次）**：
+
   ```bash
   git clone --single-branch --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack
   cd ~/.claude/skills/gstack && ./setup
   ```
-- **工具分工**：常规浏览/QA 走 gstack `/browse`（用户自行调用，勿强制）；性能分析（Performance Trace / Lighthouse / 内存）用 `mcp__chrome-devtools__*` 工具。
+
+- **工具分工**：常规浏览/QA 走 gstack `/browse`（你可以自行调用）；性能分析（Performance Trace / Lighthouse / 内存）用 `mcp__chrome-devtools__*` 工具。
 - Windows 下 bun 位于 `D:\bun-windows-x64\bun.exe`（该目录仅有 bun.exe、无 bunx shim；需 `bun x` 时自行包装）。
 - 装好后 `/gstack-upgrade` 可随时升级；`./setup` 重跑可刷新技能文件。
