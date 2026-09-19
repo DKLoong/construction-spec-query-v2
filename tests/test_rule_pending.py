@@ -417,10 +417,10 @@ def test_no_keywords_high_conf_autos_write_only(monkeypatch, tmp_path):
     assert p == 0
 
 
-# ── process_feedback 写列 + 勾选背书（Task 3）────────────────────
+# ── process_feedback 纯打标（Task 3 / C12）──────────────────────
 
-def test_confirm_writes_col_and_only_endorses_checked_words(monkeypatch, tmp_path):
-    """勾选 patterns=['钢筋'] → 写列 + 仅该词沉淀（n_rule=1）。"""
+def test_confirm_writes_col_ignores_patterns(monkeypatch, tmp_path):
+    """低置信确认传 patterns 也不沉淀（C12：词面沉淀仅 Tab2）→ 写列 + queue done。"""
     from app.classifier.feedback import process_feedback
     _db(monkeypatch, tmp_path)
     with get_db() as conn:
@@ -436,8 +436,8 @@ def test_confirm_writes_col_and_only_endorses_checked_words(monkeypatch, tmp_pat
         n_pending = conn.execute("SELECT COUNT(*) n FROM rule_pending").fetchone()["n"]
     assert c["dim6_material"] == "钢筋"
     assert q["status"] == "done"
-    assert n_rule == 1                       # 仅勾选词沉淀
-    assert n_pending == 1                    # 该词人工背书直插 approved 行
+    assert n_rule == 0                       # patterns 被忽略：不建规则
+    assert n_pending == 0                    # 不沉淀词面
 
 
 def test_confirm_no_patterns_writes_only(monkeypatch, tmp_path):
@@ -459,8 +459,8 @@ def test_confirm_no_patterns_writes_only(monkeypatch, tmp_path):
     assert n_pending == 0
 
 
-def test_confirm_rejected_overwritten_to_approved(monkeypatch, tmp_path):
-    """预置 rejected 行后 patterns 含该词 → 覆盖为 approved + 生成规则。"""
+def test_confirm_does_not_overwrite_rejected_word(monkeypatch, tmp_path):
+    """低置信确认不覆写已驳回词面（C12）：rejected 行保持 rejected，不生成规则。"""
     from app.classifier.feedback import process_feedback
     _db(monkeypatch, tmp_path)
     with get_db() as conn:
@@ -477,9 +477,9 @@ def test_confirm_rejected_overwritten_to_approved(monkeypatch, tmp_path):
             "AND pattern='钢筋' AND label='钢筋'", (cid,)).fetchone()
         n_rule = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
         c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()
-    assert st["status"] == "approved"   # rejected 被人工显式批准覆盖
-    assert n_rule == 1
-    assert c["dim6_material"] == "钢筋"
+    assert st["status"] == "rejected"   # 驳回保持：词面复核只在 Tab2
+    assert n_rule == 0
+    assert c["dim6_material"] == "钢筋"  # 打标照写
 
 
 # ── 词面校核 / 黑名单管理端点（Task 4）───────────────────────────

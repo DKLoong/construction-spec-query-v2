@@ -28,52 +28,25 @@ def extract_keywords(text: str, top_n: int = 5) -> list[str]:
 
 def process_feedback(clause_id: int, dimension: str, confirmed_label: str,
                      source_conf: float = 0.0, patterns: list[str] | None = None):
-    """人工确认：写列 + 只对勾选词面 patterns 背书（废除原 top3 全 bump 的隐式夹带）。
+    """人工确认：纯打标写列 + queue done（C1 延伸 / C12 / C15）。
 
-    patterns=None/空 → 纯打标（写列、不沉淀任何词）。patterns 中的词对
-    (dimension, pattern, confirmed_label) 组合做 approved 背书并 bump(confirmed=1)。
-    已 rejected 的组合：人工显式批准 → 覆盖为 approved；无行则直插 approved；
-    已 approved 则幂等（仅 bump 命中/确认递增）。
+    patterns/source_conf 保留仅为签名兼容，忽略（不再背书词面/不再 bump 规则——
+    词面普通沉淀仅 Tab2，见 spec C12）。
+    仅当 queue 仍 review 时写列（已 done/改标 no-op），闭环 C8「不被覆写」。
     """
-    from app.classifier.rule_pending import KEY_DIMS, insert_pending, key_state
-    from app.classifier.rule_sink import bump_rule
-    from app.params.registry import get_param_float
-    patterns = [p for p in (patterns or []) if p and p.strip()]
+    from app.database import get_db
+    col = _dim_to_column(dimension)
     with get_db() as conn:
-        conn.execute(
-            "UPDATE classification_queue SET status = 'done' WHERE clause_id = ? AND dimension = ?",
-            (clause_id, dimension),
-        )
-        col = _dim_to_column(dimension)
-        conn.execute(
-            f"UPDATE clauses SET {col} = ?, ai_classified = 1, needs_review = 0 WHERE id = ?",
-            (confirmed_label, clause_id),
-        )
-        if dimension in KEY_DIMS and patterns:
-            enable_conf = get_param_float("classify.rule_auto_enable_conf")
-            sub_field = {"dim4": "specialty", "dim5": "location",
-                         "dim6": "material"}.get(dimension, "")
-            for kw in patterns:
-                # 人工显式背书：rejected 覆盖为 approved；无行直插 approved；已 approved 幂等
-                st = key_state(conn, dimension, kw, confirmed_label)
-                if st == "rejected":
-                    conn.execute(
-                        "UPDATE rule_pending SET status='approved', "
-                        "updated_at=datetime('now','localtime') "
-                        "WHERE dimension=? AND pattern=? AND label=? AND status='rejected'",
-                        (dimension, kw, confirmed_label))
-                elif st == "none":
-                    insert_pending(conn, clause_id, dimension, kw, confirmed_label,
-                                   None, "manual-confirm")
-                    conn.execute(
-                        "UPDATE rule_pending SET status='approved', "
-                        "updated_at=datetime('now','localtime') "
-                        "WHERE clause_id=? AND dimension=? AND pattern=? AND label=?",
-                        (clause_id, dimension, kw, confirmed_label))
-                bump_rule(conn, dimension, kw, sub_field,
-                          is_confirmed=True,
-                          new_rule_active=(source_conf >= enable_conf),
-                          label=confirmed_label)
+        cur = conn.execute(
+            f"UPDATE clauses SET {col}=?, ai_classified=1, needs_review=0 WHERE id=? "
+            f"AND EXISTS (SELECT 1 FROM classification_queue q "
+            f"WHERE q.clause_id=? AND q.dimension=? AND q.status='review')",
+            (confirmed_label, clause_id, clause_id, dimension))
+        if cur.rowcount:
+            conn.execute(
+                "UPDATE classification_queue SET status='done' "
+                "WHERE clause_id=? AND dimension=? AND status='review'",
+                (clause_id, dimension))
 
 
 def _dim_to_column(dim: str) -> str:

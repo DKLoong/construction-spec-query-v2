@@ -1,5 +1,6 @@
-"""半监督闭环：auto_adopted 沉淀规则 + 人工确认高置信自动启用"""
+"""半监督闭环：auto_adopted 沉淀规则 + 低置信确认纯打标（词面沉淀仅 Tab2）"""
 from app.database import init_db, get_db
+from app.classifier import batch_queue as bq
 
 
 def _setup(monkeypatch, tmp_path):
@@ -10,6 +11,15 @@ def _setup(monkeypatch, tmp_path):
     with get_db() as conn:
         setup_search_data(conn)  # 3 条文
     return db_path
+
+
+def _seed_spec_clause(conn):
+    """写一条测试条文（含可提词内容），返回 clause_id"""
+    conn.execute("INSERT INTO specifications (code, title) VALUES ('GB1', 'x')")
+    sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("INSERT INTO clauses (spec_id, clause_no, content) "
+                 "VALUES (?, '1.1', '含 钢筋 与 试验 的条文内容')", (sid,))
+    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
 
 def test_auto_adopted_sinks_rule_active(monkeypatch, tmp_path):
@@ -50,34 +60,57 @@ def test_auto_adopted_sinks_rule_active(monkeypatch, tmp_path):
     assert rule["hit_count"] == 1  # 已背书规则命中递增（0→1）
 
 
-def test_feedback_high_conf_rule_auto_active(monkeypatch, tmp_path):
-    """人工确认高置信(>=0.9)生成新规则 is_active=1"""
-    _setup(monkeypatch, tmp_path)
+def test_feedback_conf_no_longer_creates_rules(auth_client):
+    """C12：人工确认不再按来源置信度生成/启用规则（高/低置信均不沉淀词面）。
+
+    原「高置信→规则启用 / 低置信→规则待审」语义随词面沉淀出口迁至 Tab2 词面批准
+    （`rule_pending.approve_rule`）而废除，本测试锁死 process_feedback 不再建规则。
+    """
     from app.classifier.feedback import process_feedback
+    confs = (0.95, 0.6)
     with get_db() as conn:
-        clause = conn.execute("SELECT id, content FROM clauses WHERE content LIKE '%钢筋%' LIMIT 1").fetchone()
-        # 确保该条关键词语料能提取到独立关键词
-        conn.execute("UPDATE clauses SET content='钢筋进场应检验屈服强度' WHERE id=?", (clause["id"],))
-    process_feedback(clause["id"], "dim4", "结构专业", source_conf=0.95, patterns=["钢筋"])
+        cids = [_seed_spec_clause(conn) for _ in confs]
+        for cid in cids:
+            bq.try_enqueue(conn, cid, "dim4", 0.0)
+            conn.execute("UPDATE classification_queue SET status='review' "
+                         "WHERE clause_id=? AND dimension='dim4'", (cid,))
+    for cid, conf in zip(cids, confs):
+        process_feedback(cid, "dim4", "结构专业", source_conf=conf, patterns=["钢筋"])
     with get_db() as conn:
-        rule = conn.execute("SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋'").fetchone()
-        # 关键词含 钢筋（jieba 首词）→ 新规则；高置信 → is_active=1；人工确认来源首条即记 confirmed=1
-        assert rule is not None
-        assert rule["is_active"] == 1
-        assert rule["confirmed"] == 1
-        assert rule["hit_count"] == 1  # 新规则创建即记首次命中
+        n_rules = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
+        n_pending = conn.execute("SELECT COUNT(*) n FROM rule_pending").fetchone()["n"]
+        done = conn.execute("SELECT COUNT(*) n FROM classification_queue WHERE status='done'").fetchone()["n"]
+    assert done == len(confs)      # 纯打标：写列 + queue done 照常
+    assert n_rules == 0            # 不再生成规则
+    assert n_pending == 0          # 不再沉淀词面
 
 
-def test_feedback_low_conf_rule_inactive(monkeypatch, tmp_path):
-    """人工确认低置信(<0.9)生成新规则 is_active=0 待审核"""
-    _setup(monkeypatch, tmp_path)
+def test_process_feedback_ignores_patterns_no_rule(auth_client):
+    """低置信确认传 patterns 不再沉淀词面——纯打标（词面沉淀仅 Tab2）。"""
     from app.classifier.feedback import process_feedback
     with get_db() as conn:
-        clause = conn.execute("SELECT id, content FROM clauses WHERE content LIKE '%钢筋%' LIMIT 1").fetchone()
-        conn.execute("UPDATE clauses SET content='钢筋进场应检验屈服强度' WHERE id=?", (clause["id"],))
-    process_feedback(clause["id"], "dim4", "结构专业", source_conf=0.6, patterns=["钢筋"])
+        cid = _seed_spec_clause(conn)
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
+    process_feedback(cid, "dim6", "钢筋", source_conf=0.5, patterns=["钢筋"])
     with get_db() as conn:
-        rule = conn.execute("SELECT * FROM classification_rules WHERE dimension='dim4' AND pattern='钢筋'").fetchone()
-        # 低置信 → 新规则初态 inactive，待审核
-        assert rule is not None
-        assert rule["is_active"] == 0
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()["dim6_material"]
+        n_rules = conn.execute("SELECT COUNT(*) n FROM classification_rules").fetchone()["n"]
+        st = conn.execute("SELECT status FROM classification_queue WHERE clause_id=?", (cid,)).fetchone()["status"]
+    assert c == "钢筋" and n_rules == 0 and st == "done"
+
+
+def test_process_feedback_no_review_queue_noop(auth_client):
+    """queue 非 review（已 done）时 process_feedback 不覆写列（C15）。"""
+    from app.classifier.feedback import process_feedback
+    with get_db() as conn:
+        cid = _seed_spec_clause(conn)
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='done', ai_label='钢筋' "
+                     "WHERE clause_id=?", (cid,))
+        conn.execute("UPDATE clauses SET dim6_material='混凝土' WHERE id=?", (cid,))
+    process_feedback(cid, "dim6", "钢筋")
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (cid,)).fetchone()["dim6_material"]
+    assert c == "混凝土"   # 不覆写人工定案

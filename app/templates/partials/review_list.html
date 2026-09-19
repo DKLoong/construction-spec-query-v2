@@ -1,4 +1,4 @@
-<!-- 低置信 queue 兜底区块（无 pending 候选词的待审条文，原 review 确认/驳回逻辑） -->
+<!-- 低置信 queue 兜底区块（无 pending 候选词的待审条文；确认=纯打标，词面沉淀仅 Tab2） -->
 <div id="review-list">
 {% if items %}
     <table class="striped" style="font-size:0.85rem">
@@ -9,7 +9,6 @@
                 <th>内容</th>
                 <th>维度</th>
                 <th>AI 建议</th>
-                <th>候选词（勾选背书）</th>
                 <th>操作</th>
             </tr>
         </thead>
@@ -23,18 +22,6 @@
                 title="{{ item.content }}">{{ item.content[:50] }}</td>
             <td><small>{{ labels.get(item.dimension, item.dimension) }}</small></td>
             <td><span class="dim-tag">{{ item.ai_label }}</span></td>
-            <td>
-                {% if item.keywords %}
-                <div style="display:flex;gap:0.25rem;flex-wrap:wrap">
-                    {% for kw in item.keywords %}
-                    <label style="display:inline-flex;align-items:center;gap:0.2rem;font-size:0.7rem">
-                        <input type="checkbox" class="kw-check" value="{{ kw }}" checked
-                               style="width:0.8rem;height:0.8rem"> {{ kw }}
-                    </label>
-                    {% endfor %}
-                </div>
-                {% else %}<small style="color:var(--pico-muted-color)">-</small>{% endif %}
-            </td>
             <td>
                 <div style="display:flex;gap:0.25rem">
                     <button type="button"
@@ -51,13 +38,8 @@
     </table>
     <script>
     async function confirmFallback(queueId) {
-        var patterns = Array.from(document.querySelectorAll('#fallback-row-' + queueId + ' .kw-check:checked'))
-            .map(function (c) { return c.value; });
         try {
-            var resp = await fetch('/review/' + queueId + '/confirm', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ patterns: patterns }),
-            });
+            var resp = await fetch('/review/' + queueId + '/confirm', { method: 'POST' });
             if (resp.ok) { document.body.dispatchEvent(new CustomEvent('reviewClausePending')); }
         } catch (e) { alert('操作失败：' + e.message); }
     }

@@ -256,8 +256,7 @@ def _fetch_review_items(conn) -> list[dict]:
     """查询待审核队列兜底项（status='review' 且无 pending 候选词、无 rejected 标签），
     Tab1 兜底块与 /review/list 共用。有 pending 词的条文在 Tab1 主表（pending_clause_groups）、
     候选全 reject 的条文在主表「词已驳回」行（rejected_clause_groups）展示，均不在此兜底块
-    重复出现；每条附 extract_keywords 候选词供确认勾选背书。"""
-    from app.classifier.feedback import extract_keywords
+    重复出现。确认=纯打标（C12：不再提供候选词勾选背书，词面沉淀仅 Tab2）。"""
     rows = conn.execute(
         """SELECT q.id as queue_id, q.clause_id, q.dimension, q.keyword_score,
                   q.ai_label, q.ai_confidence, q.status,
@@ -274,10 +273,7 @@ def _fetch_review_items(conn) -> list[dict]:
              )
            ORDER BY q.created_at DESC LIMIT 50"""
     ).fetchall()
-    items = [dict(r) for r in rows]
-    for it in items:
-        it["keywords"] = extract_keywords(it["content"] or "", top_n=3)
-    return items
+    return [dict(r) for r in rows]
 
 
 @router.get("/review")
@@ -310,15 +306,17 @@ async def review_list(request: Request):
 
 @router.post("/review/{queue_id}/confirm")
 async def confirm_review(request: Request, queue_id: int, body: dict | None = None):
-    """确认 AI 分类标签 — 触发反馈闭环（body.patterns=勾选词；None/空→纯打标不沉淀）"""
-    from app.classifier.feedback import process_feedback
+    """确认 AI 分类标签 — 纯打标（写列 + queue done，不沉淀词面，C12）。
 
-    patterns = (body or {}).get("patterns") if body else None
+    body 保留仅为签名兼容（不再消费 patterns）；仅对 status='review' 的队列项生效，
+    已定案/改标的行 no-op（C15）。
+    """
+    from app.classifier.feedback import process_feedback
 
     with get_db() as conn:
         item = conn.execute(
             "SELECT clause_id, dimension, ai_label, ai_confidence "
-            "FROM classification_queue WHERE id = ?",
+            "FROM classification_queue WHERE id=? AND status='review'",
             (queue_id,),
         ).fetchone()
 
@@ -330,8 +328,7 @@ async def confirm_review(request: Request, queue_id: int, body: dict | None = No
                                        "ai_label": item["ai_label"]}),
                    username=getattr(request.state, "username", ""))
         process_feedback(item["clause_id"], item["dimension"], item["ai_label"],
-                         source_conf=item["ai_confidence"] or 0.0,
-                         patterns=patterns)
+                         source_conf=item["ai_confidence"] or 0.0)
     else:
         log_action("review", "WARN", "确认失败-队列项不存在",
                    detail=json_detail({"queue_id": queue_id}),
@@ -342,10 +339,11 @@ async def confirm_review(request: Request, queue_id: int, body: dict | None = No
 
 @router.post("/review/{queue_id}/reject")
 async def reject_review(request: Request, queue_id: int):
-    """驳回 AI 分类标签"""
+    """驳回 AI 分类标签（仅 status='review' 生效，已定案行 no-op，C15）"""
     with get_db() as conn:
         item = conn.execute(
-            "SELECT clause_id, dimension FROM classification_queue WHERE id = ?", (queue_id,)
+            "SELECT clause_id, dimension FROM classification_queue "
+            "WHERE id=? AND status='review'", (queue_id,)
         ).fetchone()
         if item:
             conn.execute(
@@ -368,12 +366,11 @@ async def reject_review(request: Request, queue_id: int):
 
 @router.post("/review/batch-confirm")
 async def batch_confirm(request: Request, body: dict):
-    """批量确认复核项（逐条走 process_feedback 反馈闭环；patterns=勾选词，None→纯打标）"""
+    """批量确认复核项（逐条纯打标；仅 status='review' 行，C12/C15）"""
     from app.classifier.feedback import process_feedback
     from fastapi.responses import JSONResponse as _JR
 
     ids = body.get("queue_ids") or []
-    patterns = body.get("patterns")
     if not isinstance(ids, list):
         return _JR({"detail": "queue_ids 须为数组"}, status_code=400)
     with get_db() as conn:
@@ -383,10 +380,8 @@ async def batch_confirm(request: Request, body: dict):
             ids,
         ).fetchall()
     for item in rows:
-        kwargs = {"source_conf": item["ai_confidence"] or 0.0}
-        if patterns is not None:
-            kwargs["patterns"] = patterns
-        process_feedback(item["clause_id"], item["dimension"], item["ai_label"], **kwargs)
+        process_feedback(item["clause_id"], item["dimension"], item["ai_label"],
+                         source_conf=item["ai_confidence"] or 0.0)
     log_action("review", "INFO", "批量确认",
                detail=json_detail({"count": len(rows)}),
                username=getattr(request.state, "username", ""))

@@ -170,10 +170,12 @@ def test_review_list_shows_items(auth_client, monkeypatch, tmp_path):
     assert resp.status_code == 200
     # 应该包含条文内容
     assert "混凝土施工" in resp.text
+    # 低置信块不再提供候选词勾选背书（C12：确认=纯打标，词面沉淀仅 Tab2）
+    assert "候选词（勾选背书）" not in resp.text and "kw-check" not in resp.text
 
 
-def test_confirm_review_triggers_feedback(auth_client, monkeypatch, tmp_path):
-    """确认 AI 标签触发反馈闭环"""
+def test_confirm_review_pure_tagging(auth_client, monkeypatch, tmp_path):
+    """确认 AI 标签 = 纯打标：写列 + queue done，不沉淀词面（C12）"""
     db_path = tmp_path / "test_confirm.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
     from app.database import init_db, get_db
@@ -217,12 +219,42 @@ def test_confirm_review_triggers_feedback(auth_client, monkeypatch, tmp_path):
         assert clause["ai_classified"] == 1
         assert clause["needs_review"] == 0
 
-        # 反馈应创建关键词规则
-        rules = conn.execute(
-            "SELECT * FROM classification_rules WHERE dimension = ? AND pattern IN (?, ?, ?, ?)",
-            ("dim6", "钢筋绑扎", "钢筋绑", "钢筋", "绑扎"),
-        ).fetchone()
-        assert rules is not None, f"确认后应自动提取关键词创建规则，现有规则: {[dict(r) for r in conn.execute('SELECT pattern FROM classification_rules WHERE dimension=?', ('dim6',)).fetchall()]}"
+        # 纯打标：不沉淀任何规则（即便请求体带了 patterns，词面沉淀仅 Tab2）
+        n_rules = conn.execute(
+            "SELECT COUNT(*) n FROM classification_rules WHERE dimension='dim6'").fetchone()["n"]
+        assert n_rules == 0, f"低置信确认不应创建规则，现有规则: {[dict(r) for r in conn.execute('SELECT pattern FROM classification_rules WHERE dimension=?', ('dim6',)).fetchall()]}"
+
+
+def test_confirm_review_guard_non_review_noop(auth_client, monkeypatch, tmp_path):
+    """C15：已定案（status='done'）队列项在 confirm/reject 端点均 no-op，不覆写人工定案。"""
+    db_path = tmp_path / "test_guard.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-G1', '守卫规范')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, content, dim6_material, needs_review) "
+            "VALUES (?, '1.1', '守卫条文', '混凝土', 0)", (spec_id,))
+        clause_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO classification_queue (clause_id, dimension, keyword_score, ai_label, "
+            "ai_confidence, status) VALUES (?, 'dim6', 0.2, '金属材料', 0.55, 'done')",
+            (clause_id,))
+        queue_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    resp = auth_client.post(f"/review/{queue_id}/confirm", json={})
+    assert resp.status_code == 200
+    resp = auth_client.post(f"/review/{queue_id}/reject")
+    assert resp.status_code == 200
+
+    with get_db() as conn:
+        c = conn.execute("SELECT dim6_material FROM clauses WHERE id=?", (clause_id,)).fetchone()
+        q = conn.execute("SELECT status FROM classification_queue WHERE id=?", (queue_id,)).fetchone()
+    assert c["dim6_material"] == "混凝土"   # 人工定案不被覆写
+    assert q["status"] == "done"           # 已定案不被驳回重开
 
 
 def test_reject_review_clears_label(auth_client, monkeypatch, tmp_path):
