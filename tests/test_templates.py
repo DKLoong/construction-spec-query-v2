@@ -91,6 +91,34 @@ def test_rules_grouped_rows_use_js_handlers_not_row_patch():
     assert "hx-post" not in html and "hx-delete" not in html
 
 
+def test_rules_form_omits_unusable_exact_match_type():
+    """匹配方式不得再提供 exact：它要求 pattern 逐字等于「正文+父路径」全串，
+    实战永不命中（库内 113/113 规则均为 keyword，从未被使用）——留着即是静默死规则"""
+    html = _read("rules_list.html")
+    assert 'value="exact"' not in html
+    # 仍保留另两种
+    assert html.count('value="keyword"') == 2   # 新建 + 编辑
+    assert html.count('value="regex"') == 2
+
+
+def test_rules_pattern_field_carries_writing_hint():
+    """关键词须给写法提示：用规范术语（写俗称永不命中）+ 避免过泛短词（子串计数会虚高）"""
+    html = _read("rules_list.html")
+    assert html.count("（用规范术语；避免过泛短词）") == 2   # 新建 + 编辑
+    for prefix in ("new", "edit"):
+        assert f"helpFor('{prefix}.pattern')" in html
+        assert f"focusField('{prefix}.pattern')" in html
+        assert f"blurField('{prefix}.pattern')" in html
+    assert "pattern: " in html          # helpText 里有 pattern 的说明文案
+    assert "俗称" in html and "规范" in html
+
+
+def test_rules_validate_field_tolerates_non_numeric_field():
+    """validateField 对无范围定义的字段（如 pattern）必须直接放行，不得读 undefined.min"""
+    html = _read("rules_list.html")
+    assert "if (!range) { this.fieldErrs[k] = false; return; }" in html
+
+
 def test_force_ocr_checkbox_uses_pico_default_width():
     """强制OCR复选框不得带 width:auto（否则宽度塌缩为4px导致视觉不刷新）"""
     html = _read("tree_panel.html")

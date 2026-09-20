@@ -17,6 +17,10 @@ def _match_score(text: str, rule: dict) -> float:
     priority = rule.get("priority", 1)
 
     if match_type == "exact":
+        # 已不再对外提供（规则页已移除该选项）：此处 text 是「归一化后的正文 + 过滤后的
+        # 父路径」拼接串，要求 pattern 与之逐字相等，等于为每条条文抄一遍全文——实战
+        # 不可能命中（有父路径时连抄原文都不成立）。实测库内 113/113 规则均为 keyword，
+        # 该模式从未被使用。分支保留仅为兼容历史数据，避免对存量行产生静默行为变更。
         if pattern == text.strip():
             return 1.0 * (1 + 0.1 * priority)
         return 0.0

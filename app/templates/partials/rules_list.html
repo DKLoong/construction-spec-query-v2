@@ -94,15 +94,22 @@
                         </ul>
                     </div>
                 </label>
-                <label>关键词 <input type="text" x-model="newRule.pattern" required
-                       placeholder="如 混凝土"></label>
+                <label>关键词 <small class="field-hint">（用规范术语；避免过泛短词）</small>
+                    <div class="rule-field">
+                        <input type="text" x-model="newRule.pattern" required
+                               placeholder="如 混凝土"
+                               @focus="focusField('new.pattern')"
+                               @blur="blurField('new.pattern')">
+                        <div class="rule-pop" x-show="showHelp('new.pattern')"
+                             x-text="helpFor('new.pattern')"></div>
+                    </div>
+                </label>
                 <label>标签 <small style="color:var(--pico-muted-color)">（可空；填了则命中后把该标签写入分类列，同一标签可配多个关键词）</small>
                     <input type="text" x-model="newRule.label" placeholder="留空 = 关键词本身就是标签">
                 </label>
                 <label>匹配方式
                     <select x-model="newRule.match_type">
                         <option value="keyword">关键词 (keyword)</option>
-                        <option value="exact">精确 (exact)</option>
                         <option value="regex">正则 (regex)</option>
                     </select>
                 </label>
@@ -172,15 +179,22 @@
                         </ul>
                     </div>
                 </label>
-                <label>关键词 <input type="text" x-model="editRule.pattern" required
-                       placeholder="如 混凝土"></label>
+                <label>关键词 <small class="field-hint">（用规范术语；避免过泛短词）</small>
+                    <div class="rule-field">
+                        <input type="text" x-model="editRule.pattern" required
+                               placeholder="如 混凝土"
+                               @focus="focusField('edit.pattern')"
+                               @blur="blurField('edit.pattern')">
+                        <div class="rule-pop" x-show="showHelp('edit.pattern')"
+                             x-text="helpFor('edit.pattern')"></div>
+                    </div>
+                </label>
                 <label>标签 <small style="color:var(--pico-muted-color)">（可空；填了则命中后把该标签写入分类列，同一标签可配多个关键词）</small>
                     <input type="text" x-model="editRule.label" placeholder="留空 = 关键词本身就是标签">
                 </label>
                 <label>匹配方式
                     <select x-model="editRule.match_type">
                         <option value="keyword">关键词 (keyword)</option>
-                        <option value="exact">精确 (exact)</option>
                         <option value="regex">正则 (regex)</option>
                     </select>
                 </label>
@@ -241,6 +255,7 @@ document.addEventListener('alpine:init', () => {
         helpText: {
             priority: '优先级越高，该规则与其他规则竞争同一维度时的得分加成越大（每级 +10%）。它只影响同维竞争的排序，不改变是否命中。可调范围 0~10。',
             threshold: '规则自身的匹配门槛：条文匹配得分低于此值时不参与该维度竞争，也就不会被采纳为该维标签。可调范围 0~1，越大越严格（越不易打标）。',
+            pattern: '词面按「出现次数」计分，不判词边界，所以：① 务必用规范术语——条文会先被词库归一化（俗称→规范词），而 pattern 本身不归一化，写俗称将永不命中；② 避免过泛短词——「钢筋」会命中「预应力钢筋」，「接头」会命中「接头百分率」，短泛词容易虚高得分；③ 同一标签配多个关键词＝建多条规则共享同一标签（逗号分隔不生效）。',
         },
         ranges: { priority: {min: 0, max: 10}, threshold: {min: 0, max: 1} },
         editRule: {id:'', dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6},
@@ -321,6 +336,7 @@ document.addEventListener('alpine:init', () => {
         validateField(k) {
             const field = this.fieldOf(k);
             const range = this.ranges[field];
+            if (!range) { this.fieldErrs[k] = false; return; }  // 非数值字段（如 pattern）不做范围校验
             const form = k.startsWith('edit.') ? this.editRule : this.newRule;
             const raw = String(form[field] ?? '').trim();
             if (raw === '') { this.fieldErrs[k] = false; return; }  // 留空不算越界（同参数模块）
