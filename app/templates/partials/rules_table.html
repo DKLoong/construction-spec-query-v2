@@ -60,7 +60,7 @@
             {% endif %}
         </td>
         <td>
-            <div style="display:flex;gap:0.25rem">
+            <div class="row-actions">
                 <button hx-post="/rules/{{ r.id }}/lock" hx-target="closest tr" hx-swap="outerHTML"
                         class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
                         title="{{ '点击解锁' if r.locked else '锁定（不纳入僵尸判断）' }}">

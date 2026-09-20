@@ -65,7 +65,6 @@ def test_rules_subfield_dropdown_supports_keyboard_selection():
 def test_rules_page_has_view_toggle_and_single_load_path():
     """规则页须有「按规则 | 按标签」切换，且列表加载只走 JS（htmx 那条会绕过视图模式）"""
     html = _read("rules_list.html")
-    assert 'role="tablist"' in html
     assert "setView('rules')" in html and "setView('label')" in html
     assert "viewMode: 'rules'" in html
     # loadRules 按 viewMode 选端点
@@ -77,6 +76,83 @@ def test_rules_page_has_view_toggle_and_single_load_path():
     assert "addEventListener('rulesListRefresh'" in html
     # 分组视图改标签会换组 → 编辑保存走整体重载
     assert "this.viewMode === 'label'" in html
+
+
+def test_rules_view_toggle_sits_in_filter_row_right_aligned():
+    """视图切换须与六维筛选同一行、靠右，且自身不换行
+
+    实测教训：若视图键与筛选键同处一个 flex-wrap 行，宽度不足时会把「按标签」
+    单独挤到第二行（截图确认）。故视图组须独立成列 + flex-shrink:0。
+    """
+    html = _read("rules_list.html")
+    assert 'role="tablist"' not in html, "视图切换不应再是独立 tablist"
+    row = html.split("<!-- 控制行", 1)[1].split('id="rules-table"', 1)[0]
+
+    # 用完整 style 属性串定位（模板注释里也提到 flex-shrink:0 等词，短串会切错位置）
+    left_attr = "display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;flex:1;min-width:0"
+    right_attr = "display:flex;align-items:center;gap:0.5rem;flex-shrink:0"
+    assert left_attr in row, "找不到可换行的筛选列"
+    assert right_attr in row, "找不到不换行的视图列"
+
+    left, right = row.split(right_attr, 1)
+    assert "filterDim = ''" in left, "筛选键不在左列"
+    assert "flex-wrap:wrap" in left, "筛选列自身不可换行，会连带把视图组挤走"
+    assert "setView(" in right, "视图键不在右列"
+    assert "filterDim" not in right, "右列混进了筛选键"
+    # 两个视图键必须同处右列 → 永远不会被拆到两行
+    assert "setView('rules')" in right and "setView('label')" in right
+
+
+def test_rules_view_toggle_buttons_match_filter_chips_for_equal_height():
+    """视图键须与筛选键同构（都 outline + contrast 选中态、都不覆盖字号）→ 等高、文字同基线"""
+    html = _read("rules_list.html")
+    row = html.split("<!-- 控制行", 1)[1].split('id="rules-table"', 1)[0]
+    for mode in ("rules", "label"):
+        btn = row.split(f"setView('{mode}')", 1)[0].rsplit("<button", 1)[1]
+        assert 'class="outline"' in btn, f"{mode} 键丢了 outline 基类"
+        assert f":class=\"{{ contrast: viewMode === '{mode}' }}\"" in btn, \
+            f"{mode} 键未用与筛选键一致的 contrast 选中态"
+        assert "font-size" not in btn, f"{mode} 键覆盖了字号 → 与筛选键不等高"
+
+
+def test_rules_action_buttons_clear_pico_phantom_margin():
+    """操作列按钮须清零 Pico 的默认 margin-bottom，否则撑高单元格、与相邻列不垂直居中"""
+    html = _read("rules_list.html")
+    assert ".row-actions { display:flex; gap:0.25rem; align-items:center; }" in html
+    assert ".row-actions button { margin:0; }" in html
+    assert "#rules-table td { vertical-align:middle; }" in html
+    # 规则页三个片段都改用共用类（分组 + 平铺表 + 单行片段）
+    for name in ("rules_grouped.html", "rules_table.html", "rules_row.html"):
+        assert 'class="row-actions"' in _read(name), f"{name} 未使用 .row-actions"
+        assert 'display:flex;gap:0.25rem' not in _read(name), f"{name} 仍留着旧内联写法"
+
+
+def test_rules_grouped_header_is_dark_band_with_light_text():
+    """分组头须为深底 + 近白字（浅灰底+灰字仅 2.74:1；只改白字会掉到 1.29:1）"""
+    html = _read("rules_list.html")
+    head = html.split(".rule-group-head {", 1)[1].split("}", 1)[0]
+    assert "background:var(--pico-contrast-background)" in head, "组头未改深底"
+    assert "color:var(--pico-primary-inverse)" in head, "组头文字未改近白"
+    meta = html.split(".rule-group-head .meta {", 1)[1].split("}", 1)[0]
+    assert "var(--pico-primary-inverse)" in meta, "组头小字仍是灰字"
+    assert "var(--pico-muted-color)" not in meta, "组头小字残留灰字"
+
+
+def test_rules_grouped_add_keyword_button_is_filled_reference_style():
+    """「+ 添加关键词」须参考 AI 分类键：纯色填充 + 白字（不再是描边按钮）"""
+    html = _read("rules_grouped.html")
+    btn = html.split("+ 添加关键词", 1)[0].rsplit("<button", 1)[1]
+    assert 'class="secondary"' in btn
+    assert "background:var(--pico-primary-background)" in btn
+    assert "color:white" in btn
+    assert 'class="outline"' not in btn
+
+
+def test_rules_grouped_partial_has_no_inline_style_block():
+    """分组片段不得内置样式元素：它经 innerHTML 反复装载，内联样式会不断累积"""
+    import re
+    html = _read("rules_grouped.html")
+    assert not re.search(r"^\s*<style>", html, re.M), "分组片段仍含内联 <style> 元素"
 
 
 def test_rules_grouped_rows_use_js_handlers_not_row_patch():

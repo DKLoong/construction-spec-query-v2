@@ -119,4 +119,27 @@
 - **Blocked by**：无。
 - **Status（2026-09-20）**：7 项全部完成。
 
+## T10 — pico.custom.css 的颜色变量实际未生效（仅颜色，非颜色变量正常）
+
+- **What**：`static/pico.custom.css` 的 `:root` 里定义的**颜色**变量全部被压掉，运行时取到的是 Pico 默认值。若不做 UI 走查不会发现（非颜色变量正常生效，掩盖了问题）。
+- **实测证据**（浏览器 `getComputedStyle(document.documentElement)`，页面 8001 隔离实例 `/rules`）：
+
+  | 变量 | 自定义表声明 | 运行时实际值 | 结果 |
+  | --- | --- | --- | --- |
+  | `--pico-primary-background` | `#8a9e8b` 鼠尾草绿 | **`#0172ad` 默认蓝** | ❌ 被压掉 |
+  | `--pico-background-color` | `#f4f0ea` 暖奶油白 | **`#fff`** | ❌ 被压掉 |
+  | `--pico-secondary-hover` | `#8b7d71` | **`#48536b`** | ❌ 被压掉 |
+  | `--pico-contrast-background` | `#4a4454` | **`#181c25`** | ❌ 被压掉 |
+  | `--pico-border-radius` | `0.35rem` | `0.35rem` | ✅ 生效 |
+  | `--pico-font-size` | `90%` | `90%` | ✅ 生效 |
+
+- **根因（推断，待验证）**：Pico v2 把**颜色**变量声明在更高优先级的主题块里（形如 `:root:not([data-theme=dark])`，特异性 0,1,1），而 `pico.custom.css` 用朴素 `:root`（0,1,0）→ 无论加载顺序都输给 Pico。`--pico-border-radius` / `--pico-font-size` 在 Pico 侧也是朴素 `:root` 声明（0,1,0），同级下**后加载者胜** → 自定义表恰好生效。这解释了「为什么只有颜色没生效」，也是问题长期隐蔽的原因。
+- **影响面**：全站组件配色停留在 Pico 默认蓝（按钮、链接、表单焦点等）。页面背景的暖色来自 `app.css` 而非主题变量，进一步掩盖了症状。**这也意味着任何新写的、依赖 `pico.custom.css` 颜色 token 的样式都会静默取到与设计意图不同的值**——本次规则页组头的深底就是这种情况（幸而 Pico 默认的 contrast 底也是深色，白字仍达 ~15:1，未出可读性问题）。
+- **修法候选**（择一，需全站视觉走查后决定）：
+  1. 把自定义表的 `:root` 改成与 Pico 同特异性的选择器（如 `:root:not([data-theme=dark])`），或直接 `[data-theme=light]`/`html` 提升特异性；
+  2. 给 `<html>` 显式加 `data-theme="light"` 并让自定义表用 `[data-theme=light]` 覆盖；
+  3. 用 CSS `@layer` 控制层序（改动面最大）。
+- **风险**：修好后**全站配色会立刻从默认蓝变成鼠尾草绿系**，属大范围视觉变更，必须逐页走查后再启用，不可顺手改。
+- **Status（2026-09-20）**：已定位并留证，**未修**（超出当次「规则页 4 项 UI 修正」范围，且属全站级变更）。
+
 

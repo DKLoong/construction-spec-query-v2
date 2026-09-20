@@ -11,6 +11,31 @@
 .sf-item { padding:0.3rem 0.5rem; cursor:pointer; }
 .sf-item.sf-active { background:var(--pico-primary-focus); }
 .field-hint { font-size:0.72rem; color:var(--pico-muted-color); }
+
+/* ── 行内操作按钮的垂直居中 ──
+   Pico 按钮自带 margin-bottom(var(--pico-spacing)≈14.4px)：在 flex 行内会把按钮顶偏，
+   并撑高所在单元格，使其与相邻列文字不垂直居中（本仓同类修复的既有先例）。
+   两个视图共用 .row-actions，一次清零。 */
+.row-actions { display:flex; gap:0.25rem; align-items:center; }
+.row-actions button { margin:0; }
+/* #rules-table 是两种视图片段的共同容器，故一条规则同时覆盖平铺表与分组表 */
+#rules-table td { vertical-align:middle; }
+
+/* ── 分组视图（rules_grouped.html）样式放这里而非片段内 ──
+   片段经 innerHTML 反复装载，内联 <style> 会随每次切换视图重复注入、不断累积。 */
+.rule-group { border:1px solid var(--pico-muted-border-color,#ddd); border-radius:6px;
+    margin-bottom:0.6rem; overflow:hidden; }
+/* 组头 = section band：深底 + 近白字（只改字不改底反而更看不见）。
+   取值一律走 Pico 变量而非硬编码 hex：本项目 pico.custom.css 的颜色变量实际被 Pico
+   自身的更高优先级主题块压掉（见 TODOS T10），写死 hex 会与运行时不一致。 */
+.rule-group-head { display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;
+    padding:0.45rem 0.6rem; cursor:pointer;
+    background:var(--pico-contrast-background); color:var(--pico-primary-inverse); }
+.rule-group-head .caret { font-size:0.8rem; color:var(--pico-primary-inverse); }
+.rule-group-head .meta { font-size:0.72rem; color:var(--pico-primary-inverse); opacity:0.85; }
+.rule-group-head button { margin:0; }
+.rule-group-body { padding:0.4rem 0.6rem; }
+.rule-group-body table { font-size:0.85rem; margin:0; }
 </style>
 <div x-data="rulesManager()" style="padding:1rem">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
@@ -18,27 +43,27 @@
         <button @click="window.dispatchEvent(new CustomEvent('open-settings', {detail: {tab: 'ai'}}))" class="outline secondary" style="font-size:0.75rem;padding:0.2rem 0.5rem">⚙️ 设置</button>
     </div>
 
-    <!-- 视图切换：按规则（平铺）| 按标签（分组）—— 对齐 /review 的 tablist 约定 -->
-    <div role="tablist"
-         style="display:flex;gap:0.5rem;margin-bottom:0.75rem;border-bottom:1px solid var(--pico-muted-border-color, #ddd);padding-bottom:0.5rem">
-        <button type="button" @click="setView('rules')"
-                :class="viewMode==='rules' ? '' : 'outline'"
-                :aria-selected="viewMode==='rules' ? 'true' : 'false'"
-                style="font-size:0.85rem">📋 按规则</button>
-        <button type="button" @click="setView('label')"
-                :class="viewMode==='label' ? '' : 'outline'"
-                :aria-selected="viewMode==='label' ? 'true' : 'false'"
-                style="font-size:0.85rem">🏷 按标签</button>
-    </div>
-
-    <!-- 维度筛选（标题行下加 20px 间距，保持标题与筛选标签的协调性） -->
-    <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
-        <button class="outline" :class="{ contrast: filterDim === '' }"
-                @click="filterDim = ''; loadRules()">全部</button>
-        <template x-for="d in dimensions" :key="d.key">
-            <button class="outline" :class="{ contrast: filterDim === d.key }"
-                    @click="filterDim = d.key; loadRules()" x-text="d.label"></button>
-        </template>
+    <!-- 控制行：左列＝六维筛选（自身可换行），右列＝视图切换（独立不换行 → 右缘对齐设置键右缘）
+         视图键与筛选键同构（都 outline + contrast 选中态、都不覆盖字号）→ 天然等高、文字同基线。
+         视图组必须独立成列并 flex-shrink:0：若与筛选键同处一个 flex-wrap 行，
+         宽度不足时会把「按标签」单独挤到第二行（实测发生）。 -->
+    <div style="margin-bottom:1rem;display:flex;align-items:center;gap:0.75rem">
+        <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;flex:1;min-width:0">
+            <button class="outline" :class="{ contrast: filterDim === '' }"
+                    @click="filterDim = ''; loadRules()">全部</button>
+            <template x-for="d in dimensions" :key="d.key">
+                <button class="outline" :class="{ contrast: filterDim === d.key }"
+                        @click="filterDim = d.key; loadRules()" x-text="d.label"></button>
+            </template>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0">
+            <button type="button" class="outline" :class="{ contrast: viewMode === 'rules' }"
+                    :aria-pressed="viewMode === 'rules' ? 'true' : 'false'"
+                    @click="setView('rules')">📋 按规则</button>
+            <button type="button" class="outline" :class="{ contrast: viewMode === 'label' }"
+                    :aria-pressed="viewMode === 'label' ? 'true' : 'false'"
+                    @click="setView('label')">🏷 按标签</button>
+        </div>
     </div>
 
     <!-- 规则质量报表（实时：三类异常 + 一键处理） -->

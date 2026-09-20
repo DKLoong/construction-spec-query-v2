@@ -1,16 +1,8 @@
 <!-- 规则分组视图（按「维度 + 赋值标签」聚合）——与「按规则」平铺视图互斥切换
      行内操作走 JS 处理器（操作后整体重载），不复用平铺行片段的 htmx 局部替换：
-     分组视图里的行没有对应的 <tr> 可替换，注入扁平行会串味。 -->
-<style>
-.rule-group { border:1px solid var(--pico-muted-border-color,#ddd); border-radius:6px;
-    margin-bottom:0.6rem; overflow:hidden; }
-.rule-group-head { display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;
-    padding:0.45rem 0.6rem; cursor:pointer; background:var(--pico-secondary-background); }
-.rule-group-head .caret { font-size:0.8rem; color:var(--pico-muted-color); }
-.rule-group-head .meta { font-size:0.72rem; color:var(--pico-muted-color); }
-.rule-group-body { padding:0.4rem 0.6rem; }
-.rule-group-body table { font-size:0.85rem; margin:0; }
-</style>
+     分组视图里的行没有对应的 <tr> 可替换，注入扁平行会串味。
+     样式统一放在 rules_list.html 的 <style> 块：本片段经 innerHTML 反复装载，
+     内联 <style> 会随每次切换视图重复注入、不断累积。 -->
 
 {% if groups %}
 {% for g in groups %}
@@ -23,7 +15,7 @@
         {% if g.label %}
         <strong>{{ g.label }}</strong>
         {% else %}
-        <strong style="color:var(--pico-muted-color)">词即标签</strong>
+        <strong>词即标签</strong>
         <small class="meta">（未设赋值标签：命中后直接用关键词当标签，旧语义）</small>
         {% endif %}
         <span class="meta">
@@ -31,8 +23,8 @@
             {{ g.rules|length }} 个关键词 · 命中 {{ g.hits }}
         </span>
         <span style="flex:1"></span>
-        <button type="button" class="outline" @click.stop="openCreateFor('{{ g.dimension }}', '{{ g.label }}')"
-                style="font-size:0.75rem;padding:0.15rem 0.45rem"
+        <button type="button" class="secondary" @click.stop="openCreateFor('{{ g.dimension }}', '{{ g.label }}')"
+                style="background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:white;font-size:0.78rem;padding:0.22rem 0.6rem;line-height:1.2"
                 title="新建一条归属「{{ g.label or '词即标签' }}」的关键词规则，标签已预填">
             + 添加关键词
         </button>
@@ -67,7 +59,7 @@
                     {% endif %}
                 </td>
                 <td>
-                    <div style="display:flex;gap:0.25rem">
+                    <div class="row-actions">
                         <button type="button" class="outline"
                                 style="font-size:0.75rem;padding:0.15rem 0.4rem"
                                 title="{{ '点击解锁' if r.locked else '锁定（不纳入僵尸判断）' }}"
