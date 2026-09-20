@@ -18,6 +18,19 @@
         <button @click="window.dispatchEvent(new CustomEvent('open-settings', {detail: {tab: 'ai'}}))" class="outline secondary" style="font-size:0.75rem;padding:0.2rem 0.5rem">⚙️ 设置</button>
     </div>
 
+    <!-- 视图切换：按规则（平铺）| 按标签（分组）—— 对齐 /review 的 tablist 约定 -->
+    <div role="tablist"
+         style="display:flex;gap:0.5rem;margin-bottom:0.75rem;border-bottom:1px solid var(--pico-muted-border-color, #ddd);padding-bottom:0.5rem">
+        <button type="button" @click="setView('rules')"
+                :class="viewMode==='rules' ? '' : 'outline'"
+                :aria-selected="viewMode==='rules' ? 'true' : 'false'"
+                style="font-size:0.85rem">📋 按规则</button>
+        <button type="button" @click="setView('label')"
+                :class="viewMode==='label' ? '' : 'outline'"
+                :aria-selected="viewMode==='label' ? 'true' : 'false'"
+                style="font-size:0.85rem">🏷 按标签</button>
+    </div>
+
     <!-- 维度筛选（标题行下加 20px 间距，保持标题与筛选标签的协调性） -->
     <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
         <button class="outline" :class="{ contrast: filterDim === '' }"
@@ -202,8 +215,9 @@
         </div>
     </div>
 
-    <!-- 规则表格 -->
-    <div id="rules-table" hx-get="/rules/list" hx-trigger="load, rulesListRefresh from:body">
+    <!-- 规则列表：加载统一走 JS loadRules()（按 viewMode 选端点）。
+         不再挂 htmx 加载——否则 htmx 那条路径会绕过视图模式、恒取平铺列表。 -->
+    <div id="rules-table">
         <p aria-busy="true">加载中...</p>
     </div>
 </div>
@@ -212,6 +226,7 @@
 document.addEventListener('alpine:init', () => {
     Alpine.data('rulesManager', () => ({
         filterDim: '',
+        viewMode: 'rules',   // 'rules' = 平铺（按规则）| 'label' = 分组（按标签）
         showForm: false,
         showEditForm: false,
         stats: [],
@@ -244,12 +259,55 @@ document.addEventListener('alpine:init', () => {
             return d ? d.label : key;
         },
 
+        init() {
+            this.loadRules();
+            // 质量报表批量动作等仍以 body 事件请求刷新列表（原 htmx 触发点改由这里接管）
+            document.body.addEventListener('rulesListRefresh', () => this.loadRules());
+        },
+
+        setView(mode) {
+            if (this.viewMode === mode) return;
+            this.viewMode = mode;
+            this.loadRules();
+        },
+
         loadRules() {
-            const url = this.filterDim ? `/rules/list?dimension=${this.filterDim}` : '/rules/list';
+            const base = this.viewMode === 'label' ? '/rules/grouped' : '/rules/list';
+            const url = this.filterDim ? `${base}?dimension=${this.filterDim}` : base;
             fetch(url).then(r => r.text()).then(html => {
-                document.getElementById('rules-table').innerHTML = html;
-                if (window.htmx) htmx.process(document.getElementById('rules-table'));
+                const el = document.getElementById('rules-table');
+                el.innerHTML = html;
+                if (window.htmx) htmx.process(el);  // 平铺片段内含 htmx 属性，需重新绑定
             });
+        },
+
+        // 分组视图的行内操作：操作后整体重载 + 刷新质量报表。
+        // 不复用平铺行的 htmx 局部替换——分组视图里没有对应的 <tr> 可换。
+        refreshAfterAction() {
+            this.loadRules();
+            document.body.dispatchEvent(new CustomEvent('rulesQualityRefresh'));
+        },
+        async toggleRule(id) {
+            await fetch(`/rules/${id}/toggle`, {method: 'POST'});
+            this.refreshAfterAction();
+        },
+        async lockRule(id) {
+            await fetch(`/rules/${id}/lock`, {method: 'POST'});
+            this.refreshAfterAction();
+        },
+        async deleteRule(id, pattern) {
+            if (!confirm(`确定删除规则「${pattern}」？`)) return;
+            await fetch(`/rules/${id}`, {method: 'DELETE'});
+            this.refreshAfterAction();
+        },
+        // 组头「+ 添加关键词」：预填该组的维度与标签后打开新建弹窗
+        openCreateFor(dimension, label) {
+            this.fieldErrs = {}; this.activeHelp = '';
+            this.newRule = {
+                dimension: dimension, sub_field: '', pattern: '', match_type: 'keyword',
+                priority: 0, threshold: 0.6, label: label || '',
+            };
+            this.showForm = true;
         },
 
         // ── 数值字段：悬浮说明 + 失焦范围校验（对齐运维「参数设置」模块）──
@@ -367,17 +425,22 @@ document.addEventListener('alpine:init', () => {
                     body: fd,
                 });
                 if (resp.ok) {
-                    const html = await resp.text();
-                    const rowEl = document.querySelector(`tr:has(button[data-id="${this.editRule.id}"])`);
-                    if (rowEl) {
-                        const parent = rowEl.parentElement;  // outerHTML 后 rowEl 脱离 DOM，提前保存引用
-                        rowEl.outerHTML = html;
-                        if (window.htmx) htmx.process(parent);
-                    }
                     this.showEditForm = false;
                     document.getElementById('edit-result').innerHTML = '';
-                    // fetch 成功路径显式派发质量报表刷新（与 htmx:afterSettle dispatcher 互补）
-                    document.body.dispatchEvent(new CustomEvent('rulesQualityRefresh'));
+                    if (this.viewMode === 'label') {
+                        // 分组视图：行的列结构不同于平铺片段，且改标签会换组 → 整体重载
+                        this.refreshAfterAction();
+                    } else {
+                        const html = await resp.text();
+                        const rowEl = document.querySelector(`tr:has(button[data-id="${this.editRule.id}"])`);
+                        if (rowEl) {
+                            const parent = rowEl.parentElement;  // outerHTML 后 rowEl 脱离 DOM，提前保存引用
+                            rowEl.outerHTML = html;
+                            if (window.htmx) htmx.process(parent);
+                        }
+                        // fetch 成功路径显式派发质量报表刷新（与 htmx:afterSettle dispatcher 互补）
+                        document.body.dispatchEvent(new CustomEvent('rulesQualityRefresh'));
+                    }
                 } else {
                     const err = await resp.json();
                     document.getElementById('edit-result').innerHTML = `<p style="color:red">❌ ${err.detail || '编辑失败'}</p>`;

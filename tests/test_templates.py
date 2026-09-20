@@ -61,6 +61,37 @@ def test_rules_subfield_dropdown_supports_keyboard_selection():
     assert "pickSubField(s)" in html    # 鼠标与键盘共用同一填充出口
     assert "onSubFieldEnter(ev)" in html and "ev.preventDefault()" in html
 
+
+def test_rules_page_has_view_toggle_and_single_load_path():
+    """规则页须有「按规则 | 按标签」切换，且列表加载只走 JS（htmx 那条会绕过视图模式）"""
+    html = _read("rules_list.html")
+    assert 'role="tablist"' in html
+    assert "setView('rules')" in html and "setView('label')" in html
+    assert "viewMode: 'rules'" in html
+    # loadRules 按 viewMode 选端点
+    assert "'/rules/grouped'" in html and "'/rules/list'" in html
+    # 容器不得再挂 htmx 加载（否则恒取平铺列表，绕过分组视图）
+    container = html.split('id="rules-table"', 1)[1].split(">", 1)[0]
+    assert "hx-get" not in container, f"#rules-table 仍挂着 htmx 加载：{container}"
+    # init 里注册 rulesListRefresh 监听（接管原 htmx from:body 触发点）
+    assert "addEventListener('rulesListRefresh'" in html
+    # 分组视图改标签会换组 → 编辑保存走整体重载
+    assert "this.viewMode === 'label'" in html
+
+
+def test_rules_grouped_rows_use_js_handlers_not_row_patch():
+    """分组视图的行内操作须走 JS 处理器（操作后整体重载），不复用扁平行片段交换"""
+    html = _read("rules_grouped.html")
+    assert "toggleRule({{ r.id }})" in html
+    assert "lockRule({{ r.id }})" in html
+    assert "deleteRule({{ r.id }}, '{{ r.pattern }}')" in html
+    assert "openCreateFor('{{ g.dimension }}', '{{ g.label }}')" in html
+    # 不得出现平铺片段那种 htmx 局部交换（分组视图无对应 <tr> 可换）
+    assert "hx-target" not in html
+    assert "hx-post" not in html and "hx-delete" not in html
+
+
+def test_force_ocr_checkbox_uses_pico_default_width():
     """强制OCR复选框不得带 width:auto（否则宽度塌缩为4px导致视觉不刷新）"""
     html = _read("tree_panel.html")
     line = next(l for l in html.splitlines() if 'name="force_ocr"' in l)
