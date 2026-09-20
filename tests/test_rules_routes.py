@@ -658,6 +658,102 @@ def test_update_rule_response_reflects_cleared_label(auth_client, monkeypatch, t
     assert "词即标签" in resp.text
 
 
+# ── T9 按标签分组视图（/rules/grouped）──
+# 分组键 = (维度, 有效标签)；label 为空归入该维「词即标签」组（旧语义：pattern 即标签）。
+
+def _insert_rule(conn, dimension, pattern, label=None, hit=0, confirmed=0, priority=0):
+    conn.execute(
+        """INSERT INTO classification_rules
+           (dimension, sub_field, pattern, match_type, priority, threshold,
+            hit_count, confirmed, is_active, label)
+           VALUES (?, 'x', ?, 'keyword', ?, 0.5, ?, ?, 1, ?)""",
+        (dimension, pattern, priority, hit, confirmed, label),
+    )
+
+
+def _grouped_db(auth_client, monkeypatch, tmp_path, name):
+    db_path = tmp_path / f"{name}.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    return get_db
+
+
+def test_rules_grouped_groups_by_label_with_counts_and_hits(
+        auth_client, monkeypatch, tmp_path):
+    """同标签的多条关键词聚成一组，并给出关键词数与命中合计"""
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "grp_basic")
+    with get_db() as conn:
+        _insert_rule(conn, "dim6", "接头", "钢筋", hit=2)
+        _insert_rule(conn, "dim6", "丝头", "钢筋", hit=3)
+        _insert_rule(conn, "dim6", "套筒", "钢筋", hit=4)
+
+    resp = auth_client.get("/rules/grouped")
+    assert resp.status_code == 200
+    # 属性顺序固定，整串断言以保证计数/命中合计归属于该组
+    assert ('data-dimension="dim6" data-label="钢筋" data-count="3" data-hits="9"'
+            in resp.text)
+    for pat in ("接头", "丝头", "套筒"):
+        assert pat in resp.text
+
+
+def test_rules_grouped_label_less_grouped_per_dimension(
+        auth_client, monkeypatch, tmp_path):
+    """未设标签的规则按维度各自成组，不混成一个全局组"""
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "grp_nolabel")
+    with get_db() as conn:
+        _insert_rule(conn, "dim4", "结构")
+        _insert_rule(conn, "dim6", "砌体")
+
+    html = auth_client.get("/rules/grouped").text
+    assert 'data-dimension="dim4" data-label="" data-count="1"' in html
+    assert 'data-dimension="dim6" data-label="" data-count="1"' in html
+    assert "词即标签" in html
+
+
+def test_rules_grouped_collapse_default_labeled_open_others_closed(
+        auth_client, monkeypatch, tmp_path):
+    """默认折叠态：有标签组展开（可读），未设标签组折叠（词表量大）"""
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "grp_collapse")
+    with get_db() as conn:
+        _insert_rule(conn, "dim6", "接头", "钢筋")
+        _insert_rule(conn, "dim4", "结构")
+
+    html = auth_client.get("/rules/grouped").text
+    assert 'data-label="钢筋" data-count="1" data-hits="0" data-default-open="true"' in html
+    assert 'data-label="" data-count="1" data-hits="0" data-default-open="false"' in html
+
+
+def test_rules_grouped_dimension_filter(auth_client, monkeypatch, tmp_path):
+    """?dimension= 只返回该维度的组"""
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "grp_filter")
+    with get_db() as conn:
+        _insert_rule(conn, "dim4", "结构")
+        _insert_rule(conn, "dim6", "接头", "钢筋")
+
+    html = auth_client.get("/rules/grouped?dimension=dim6").text
+    assert 'data-dimension="dim6"' in html
+    assert 'data-dimension="dim4"' not in html
+
+
+def test_rules_grouped_header_offers_add_keyword_prefilled(
+        auth_client, monkeypatch, tmp_path):
+    """组头「+ 添加关键词」须把该组的维度与标签预填进新建弹窗"""
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "grp_add")
+    with get_db() as conn:
+        _insert_rule(conn, "dim6", "接头", "钢筋")
+
+    html = auth_client.get("/rules/grouped").text
+    assert "+ 添加关键词" in html
+    assert "openCreateFor('dim6', '钢筋')" in html
+
+
+def test_rules_grouped_requires_auth(client):
+    """未登录不能访问分组视图"""
+    resp = client.get("/rules/grouped", follow_redirects=False)
+    assert resp.status_code == 302
+
+
 def test_rules_list_shows_label_or_placeholder(auth_client, monkeypatch, tmp_path):
     """label 为空时列表显示「词即标签」占位，不显示空白"""
     db_path = tmp_path / "test_label_placeholder.db"

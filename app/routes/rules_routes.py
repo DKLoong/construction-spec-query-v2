@@ -84,6 +84,46 @@ async def rules_list(request: Request, dimension: str = ""):
     })
 
 
+@router.get("/rules/grouped")
+async def rules_grouped(request: Request, dimension: str = ""):
+    """按 (维度, 赋值标签) 分组的规则视图（T9）
+
+    - 分组键 = (dimension, label)；label 为空归入该维「词即标签」组
+      （旧语义：pattern 本身就是标签值）。
+    - 未设标签组按维度各自成组，不混成一个全局组——各维的词表本就互不相干。
+    - 单次查询取全量后在内存分组，避免块内逐组查库。
+    - 排序：有标签组在前（命中合计降序），未设标签组押后（按维度）。
+    """
+    with get_db() as conn:
+        if dimension:
+            rows = conn.execute(
+                """SELECT * FROM classification_rules WHERE dimension = ?
+                   ORDER BY priority DESC, hit_count DESC, id""",
+                (dimension,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM classification_rules
+                   ORDER BY priority DESC, hit_count DESC, id"""
+            ).fetchall()
+
+    buckets: dict[tuple[str, str], list[dict]] = {}
+    for r in rows:
+        buckets.setdefault((r["dimension"], r["label"] or ""), []).append(dict(r))
+
+    groups = [
+        {"dimension": dim, "label": lbl, "rules": rules,
+         "hits": sum(x["hit_count"] for x in rules)}
+        for (dim, lbl), rules in buckets.items()
+    ]
+    groups.sort(key=lambda g: (g["label"] == "", -g["hits"], g["dimension"]))
+
+    from app.main import templates
+    return templates.TemplateResponse(request, "partials/rules_grouped.html", {
+        "groups": groups, "dim_labels": dim_labels, "filter_dimension": dimension,
+    })
+
+
 @router.get("/rules/sub-fields")
 async def sub_fields(request: Request, dimension: str = ""):
     """返回某维度下已有的子字段列表（用于自动补全）"""

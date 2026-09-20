@@ -1,0 +1,104 @@
+<!-- 规则分组视图（按「维度 + 赋值标签」聚合）——与「按规则」平铺视图互斥切换
+     行内操作走 JS 处理器（操作后整体重载），不复用平铺行片段的 htmx 局部替换：
+     分组视图里的行没有对应的 <tr> 可替换，注入扁平行会串味。 -->
+<style>
+.rule-group { border:1px solid var(--pico-muted-border-color,#ddd); border-radius:6px;
+    margin-bottom:0.6rem; overflow:hidden; }
+.rule-group-head { display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;
+    padding:0.45rem 0.6rem; cursor:pointer; background:var(--pico-secondary-background); }
+.rule-group-head .caret { font-size:0.8rem; color:var(--pico-muted-color); }
+.rule-group-head .meta { font-size:0.72rem; color:var(--pico-muted-color); }
+.rule-group-body { padding:0.4rem 0.6rem; }
+.rule-group-body table { font-size:0.85rem; margin:0; }
+</style>
+
+{% if groups %}
+{% for g in groups %}
+<div class="rule-group"
+     data-dimension="{{ g.dimension }}" data-label="{{ g.label }}" data-count="{{ g.rules|length }}" data-hits="{{ g.hits }}" data-default-open="{{ 'true' if g.label else 'false' }}"
+     x-data="{ open: {{ 'true' if g.label else 'false' }} }">
+    <div class="rule-group-head" @click="open = !open"
+         :aria-expanded="open ? 'true' : 'false'">
+        <span class="caret" x-text="open ? '▾' : '▸'">▾</span>
+        {% if g.label %}
+        <strong>{{ g.label }}</strong>
+        {% else %}
+        <strong style="color:var(--pico-muted-color)">词即标签</strong>
+        <small class="meta">（未设赋值标签：命中后直接用关键词当标签，旧语义）</small>
+        {% endif %}
+        <span class="meta">
+            {{ dim_labels.get(g.dimension, g.dimension) }} ·
+            {{ g.rules|length }} 个关键词 · 命中 {{ g.hits }}
+        </span>
+        <span style="flex:1"></span>
+        <button type="button" class="outline" @click.stop="openCreateFor('{{ g.dimension }}', '{{ g.label }}')"
+                style="font-size:0.75rem;padding:0.15rem 0.45rem"
+                title="新建一条归属「{{ g.label or '词即标签' }}」的关键词规则，标签已预填">
+            + 添加关键词
+        </button>
+    </div>
+    <div class="rule-group-body" x-show="open">
+        <table class="striped">
+            <thead>
+                <tr>
+                    <th>关键词</th>
+                    <th>类型</th>
+                    <th>优先级</th>
+                    <th>阈值</th>
+                    <th>命中/确认</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for r in g.rules %}
+            <tr>
+                <td><code>{{ r.pattern }}</code></td>
+                <td><small>{{ r.match_type }}</small></td>
+                <td>{{ r.priority }}</td>
+                <td>{{ r.threshold }}</td>
+                <td><small>{{ r.hit_count }}/{{ r.confirmed }}</small></td>
+                <td>
+                    {% if r.locked %}<span title="已锁定（不纳入僵尸判断）" style="margin-right:0.2rem">🔒</span>{% endif %}
+                    {% if r.is_active %}
+                    <span style="color:green">● 启用</span>
+                    {% else %}
+                    <span style="color:gray">○ 禁用</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <div style="display:flex;gap:0.25rem">
+                        <button type="button" class="outline"
+                                style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                                title="{{ '点击解锁' if r.locked else '锁定（不纳入僵尸判断）' }}"
+                                @click="lockRule({{ r.id }})">{{ '🔓' if r.locked else '🔒' }}</button>
+                        <button type="button" class="{% if r.is_active %}secondary{% endif %} outline"
+                                style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                                @click="toggleRule({{ r.id }})">{{ '禁用' if r.is_active else '启用' }}</button>
+                        <button type="button" class="secondary outline"
+                                style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                                data-id="{{ r.id }}"
+                                data-dimension="{{ r.dimension }}"
+                                data-sub_field="{{ r.sub_field or '' }}"
+                                data-pattern="{{ r.pattern }}"
+                                data-label="{{ r.label or '' }}"
+                                data-match_type="{{ r.match_type }}"
+                                data-priority="{{ r.priority }}"
+                                data-threshold="{{ r.threshold }}"
+                                data-is_active="{{ r.is_active }}"
+                                @click="openEdit($el.dataset)">编辑</button>
+                        <button type="button" class="secondary outline"
+                                style="font-size:0.75rem;padding:0.15rem 0.4rem;color:red"
+                                @click="deleteRule({{ r.id }}, '{{ r.pattern }}')">删除</button>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endfor %}
+{% else %}
+<p style="color:var(--pico-muted-color)">暂无规则。点击「新建规则」添加。</p>
+{% endif %}
