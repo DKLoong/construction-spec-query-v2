@@ -158,10 +158,13 @@ def seed(conn=None):
         inserted = 0
         for dim, sub_field, pattern, match_type, priority, threshold in RULES:
             # 幂等：检查是否已存在相同规则
+            # 幂等键与唯一索引 uq_rule_dim_pattern（及 rule_sink.bump_rule 的定位条件）对齐：
+            # 规则身份 = (dimension, pattern)。仍按 sub_field 判重的话，一旦种子声明同一
+            # (dim, pattern) 而 sub_field 不同，就会绕过判重直接撞唯一索引报错。
             existing = c.execute(
                 """SELECT id FROM classification_rules
-                   WHERE dimension = ? AND sub_field = ? AND pattern = ?""",
-                (dim, sub_field, pattern),
+                   WHERE dimension = ? AND pattern = ?""",
+                (dim, pattern),
             ).fetchone()
             if existing:
                 continue

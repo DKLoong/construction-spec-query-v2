@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from contextlib import contextmanager
 from app.config import DATABASE_PATH
@@ -422,6 +423,26 @@ def init_db():
             conn.execute("ALTER TABLE classification_rules ADD COLUMN locked INTEGER DEFAULT 0")
         except Exception:
             pass  # 列已存在
+        # 迁移：规则身份唯一键 (dimension, pattern)
+        #   同一维度下同一关键词只应有一条规则——classify_clause 同维只取最高分那一条
+        #   （重复者沦为死配置），且 bump_rule 按 (dimension, pattern) 定位规则累加命中
+        #   （重复时统计落到不确定的行，而规则自动启停正是按 confirmed/hit_count 正确率算的）。
+        #   库内若已有重复，建索引必然失败：此处只跳过 + 告警，**绝不静默删数据**。
+        #   清理走 scripts/migrate_rule_unique_key.py，清理后本迁移会自动补建。
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_rule_dim_pattern "
+                "ON classification_rules(dimension, pattern)"
+            )
+        except sqlite3.IntegrityError:
+            dup_groups = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM classification_rules "
+                "GROUP BY dimension, pattern HAVING COUNT(*) > 1)"
+            ).fetchone()[0]
+            logging.getLogger(__name__).warning(
+                "classification_rules 存在 %d 组同 (dimension, pattern) 的重复规则，"
+                "已跳过唯一索引 uq_rule_dim_pattern；请运行 "
+                "scripts/migrate_rule_unique_key.py --apply 清理后重建", dup_groups)
         # 迁移：specifications 加 dim1_industry（规范所属行业，层级归并后单独承载行业）
         try:
             conn.execute("ALTER TABLE specifications ADD COLUMN dim1_industry TEXT")

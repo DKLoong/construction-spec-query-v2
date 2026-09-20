@@ -770,3 +770,153 @@ def test_rules_list_shows_label_or_placeholder(auth_client, monkeypatch, tmp_pat
 
     html = auth_client.get("/rules/list").text
     assert "词即标签" in html
+
+
+# ── 规则身份唯一键 (dimension, pattern)：同维同词只应有一条规则 ──
+# 语义依据：classify_clause 同维只取最高分那一条（重复者沦为死配置）；
+# bump_rule 按 (dimension, pattern) 定位规则（重复时命中统计落到不确定的行，
+# 而规则自动启停正是按 confirmed/hit_count 的正确率算的，因而被污染）。
+# 跨维度同词合法（钢筋 在 dim5/dim6 含义不同），不得拦。
+
+def _mk_rule(client, **over):
+    data = {"dimension": "dim6", "sub_field": "material", "pattern": "翻模",
+            "match_type": "keyword", "priority": 0, "threshold": 0.6, "label": ""}
+    data.update(over)
+    return client.post("/rules/create", data=data)
+
+
+def test_create_rule_duplicate_same_dimension_blocked(auth_client, monkeypatch, tmp_path):
+    """同维度同关键词重复新建 → 400，且不落行"""
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "dup_block")
+    with get_db() as conn:
+        _insert_rule(conn, "dim6", "翻模", "翻模")
+
+    resp = _mk_rule(auth_client)
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "翻模" in body["detail"]
+    # 冲突信息须含既有规则全字段，供前端「改为编辑该规则」直接打开
+    conflict = body["conflict"]
+    assert conflict["pattern"] == "翻模"
+    assert conflict["label"] == "翻模"
+    assert conflict["dimension"] == "dim6"
+    for k in ("id", "sub_field", "match_type", "priority", "threshold", "is_active"):
+        assert k in conflict, f"冲突信息缺字段 {k}"
+
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM classification_rules WHERE pattern='翻模'").fetchone()[0]
+    assert n == 1, "被拦下后不应新增行"
+
+
+def test_create_rule_same_pattern_other_dimension_allowed(auth_client, monkeypatch, tmp_path):
+    """跨维度同词合法（钢筋 在 dim5/dim6 含义不同）→ 不得拦"""
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "dup_crossdim")
+    with get_db() as conn:
+        _insert_rule(conn, "dim5", "钢筋", "主体结构")
+
+    resp = _mk_rule(auth_client, dimension="dim6", pattern="钢筋")
+    assert resp.status_code == 200
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM classification_rules WHERE pattern='钢筋'").fetchone()[0]
+    assert n == 2
+
+
+def test_create_rule_pattern_whitespace_trimmed(auth_client, monkeypatch, tmp_path):
+    """关键词前后空白须裁掉 —— 否则 ' 翻模' 能绕过判重、也会导致匹配不上"""
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "dup_trim")
+    with get_db() as conn:
+        _insert_rule(conn, "dim6", "翻模", "翻模")
+
+    resp = _mk_rule(auth_client, pattern="  翻模  ")
+    assert resp.status_code == 400, "' 翻模' 应被判为与 '翻模' 重复"
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT pattern FROM classification_rules WHERE dimension='dim6'").fetchall()
+    assert [r["pattern"] for r in rows] == ["翻模"]
+
+
+def test_update_rule_pattern_collision_blocked(auth_client, monkeypatch, tmp_path):
+    """编辑时把关键词改成同维已存在的 → 400（否则编辑路径可绕过判重）"""
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "dup_update")
+    with get_db() as conn:
+        _insert_rule(conn, "dim6", "接头", "钢筋")
+        _insert_rule(conn, "dim6", "丝头", "钢筋")
+        other_id = conn.execute(
+            "SELECT id FROM classification_rules WHERE pattern='丝头'").fetchone()[0]
+
+    resp = auth_client.put(f"/rules/{other_id}", data={
+        "dimension": "dim6", "sub_field": "material", "pattern": "接头",
+        "match_type": "keyword", "priority": 0, "threshold": 0.6, "label": "钢筋",
+    })
+    assert resp.status_code == 400
+    assert "接头" in resp.json()["detail"]
+    with get_db() as conn:
+        kept = conn.execute(
+            "SELECT pattern FROM classification_rules WHERE id = ?", (other_id,)).fetchone()
+    assert kept["pattern"] == "丝头", "被拦下后不应改动"
+
+
+def test_update_rule_keeping_own_pattern_allowed(auth_client, monkeypatch, tmp_path):
+    """只改阈值/标签、关键词不变 → 200（判重必须排除自身）"""
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "dup_self")
+    with get_db() as conn:
+        _insert_rule(conn, "dim6", "接头", "钢筋")
+        rid = conn.execute("SELECT id FROM classification_rules").fetchone()[0]
+
+    resp = auth_client.put(f"/rules/{rid}", data={
+        "dimension": "dim6", "sub_field": "material", "pattern": "接头",
+        "match_type": "keyword", "priority": 3, "threshold": 0.8, "label": "钢筋",
+    })
+    assert resp.status_code == 200
+    with get_db() as conn:
+        r = conn.execute("SELECT threshold, priority FROM classification_rules WHERE id = ?",
+                         (rid,)).fetchone()
+    assert r["threshold"] == 0.8 and r["priority"] == 3
+
+
+def test_rule_unique_index_created_on_init(auth_client, monkeypatch, tmp_path):
+    """init_db 须建 (dimension, pattern) 唯一索引（权威兜底）"""
+    import sqlite3
+    import pytest
+    get_db = _grouped_db(auth_client, monkeypatch, tmp_path, "dup_index")
+    with get_db() as conn:
+        names = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='classification_rules'")]
+    assert "uq_rule_dim_pattern" in names
+
+    with get_db() as conn:
+        _insert_rule(conn, "dim6", "翻模", "翻模")
+    with pytest.raises(sqlite3.IntegrityError):
+        with get_db() as conn:
+            _insert_rule(conn, "dim6", "翻模")
+
+
+def test_init_db_skips_index_when_duplicates_exist(tmp_path, monkeypatch):
+    """库内已有重复时，建索引须跳过并告警，绝不静默删数据"""
+    import sqlite3
+    db = tmp_path / "dup_pre.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db))
+    with sqlite3.connect(db) as c:
+        c.execute("""CREATE TABLE classification_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, dimension TEXT NOT NULL,
+            sub_field TEXT, pattern TEXT NOT NULL, match_type TEXT DEFAULT 'keyword',
+            priority INTEGER DEFAULT 0, threshold REAL NOT NULL,
+            hit_count INTEGER DEFAULT 0, confirmed INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1, label TEXT, locked INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            updated_at TEXT DEFAULT (datetime('now','localtime')))""")
+        c.executemany(
+            "INSERT INTO classification_rules (dimension, pattern, threshold) VALUES (?,?,0.5)",
+            [("dim6", "翻模"), ("dim6", "翻模")])
+
+    from app.database import init_db
+    init_db()  # 不得抛错
+
+    with sqlite3.connect(db) as c:
+        names = [r[0] for r in c.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='uq_rule_dim_pattern'")]
+        n = c.execute("SELECT COUNT(*) FROM classification_rules").fetchone()[0]
+    assert names == [], "有重复时不应建索引"
+    assert n == 2, "绝不能在迁移里静默删除数据"

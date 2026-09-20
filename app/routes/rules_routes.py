@@ -1,6 +1,6 @@
 """分类规则管理 + 审核队列路由"""
 from fastapi import APIRouter, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from app.database import get_db
 from app.models import ClassificationRuleCreate
 from app.logging_util import log_action, json_detail
@@ -137,6 +137,34 @@ async def sub_fields(request: Request, dimension: str = ""):
     return [r["sub_field"] for r in rows]
 
 
+def _find_duplicate_rule(conn, dimension: str, pattern: str,
+                         exclude_id: int | None = None) -> dict | None:
+    """同 (dimension, pattern) 是否已有规则；编辑时用 exclude_id 排除自身。
+
+    规则身份 = (维度, 关键词)。依据：classify_clause 同维只取最高分那一条，所以同维同词的
+    第二条永远是死配置；且 bump_rule 也按 (dimension, pattern) 定位规则累加命中，重复会让
+    统计落到不确定的行，而规则自动启停正是按 confirmed/hit_count 的正确率算的。
+    跨维度同词合法（钢筋 在 dim5/dim6 含义不同），故不加维度之外的约束。
+    """
+    sql = "SELECT * FROM classification_rules WHERE dimension = ? AND pattern = ?"
+    args: list = [dimension, pattern]
+    if exclude_id is not None:
+        sql += " AND id != ?"
+        args.append(exclude_id)
+    row = conn.execute(sql, args).fetchone()
+    return dict(row) if row else None
+
+
+def _duplicate_rule_response(dup: dict) -> JSONResponse:
+    """重复规则的 400 响应：detail 给可读提示，conflict 带全字段供前端「改为编辑该规则」"""
+    return JSONResponse({
+        "detail": (f"「{dim_labels.get(dup['dimension'], dup['dimension'])} · {dup['pattern']}」"
+                   f"已存在（标签：{dup['label'] or '词即标签'}）。"
+                   f"同一维度下同一关键词只能有一条规则，请改为编辑那条规则，或换一个关键词。"),
+        "conflict": dup,
+    }, status_code=400)
+
+
 @router.post("/rules/create")
 async def create_rule(
     request: Request,
@@ -153,8 +181,14 @@ async def create_rule(
     label 可空：填「词即标签」（旧语义，pattern 即该维标签值）；填了则是
     「特征词→标签」（pattern 只做匹配，命中后把 label 写入分类列）。
     同一 label 挂多条规则 = 「同一标签多关键词」，无需额外结构。
+
+    同 (dimension, pattern) 已存在时返 400（硬拦截 + conflict 供前端给出路）。
     """
+    pattern = pattern.strip()  # 裁掉前后空白：否则 ' 翻模' 既绕过判重、也匹配不上条文
     with get_db() as conn:
+        dup = _find_duplicate_rule(conn, dimension, pattern)
+        if dup:
+            return _duplicate_rule_response(dup)
         cur = conn.execute(
             """INSERT INTO classification_rules
                (dimension, sub_field, pattern, match_type, priority, threshold, is_active, label)
@@ -264,15 +298,21 @@ async def update_rule(
     label: str = Form(""),
 ):
     """编辑规则（含赋值标签 label：改 label 即可调整该规则命中后写入分类列的值；
-    多条规则配同一 label 即「同一标签多关键词」）"""
-    from fastapi.responses import JSONResponse
+    多条规则配同一 label 即「同一标签多关键词」）
 
+    改后的 pattern 若与同维其它规则撞车，同样 400 拦截（否则编辑路径可绕过判重）。
+    """
+    pattern = pattern.strip()  # 与 create 一致：裁空白，避免绕过判重
     with get_db() as conn:
         existing = conn.execute(
             "SELECT * FROM classification_rules WHERE id = ?", (rule_id,)
         ).fetchone()
         if not existing:
             return JSONResponse({"detail": "规则不存在"}, status_code=404)
+
+        dup = _find_duplicate_rule(conn, dimension, pattern, exclude_id=rule_id)
+        if dup:
+            return _duplicate_rule_response(dup)
 
         conn.execute(
             """UPDATE classification_rules

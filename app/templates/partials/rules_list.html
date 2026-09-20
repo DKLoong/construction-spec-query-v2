@@ -172,6 +172,14 @@
                 </div>
             </form>
             <div id="create-result"></div>
+            <!-- 重复拦截提示（同维度同关键词已存在）：给出冲突信息 + 一条去路，不让用户干瞪眼 -->
+            <div x-show="createConflict" x-cloak style="margin-top:0.6rem">
+                <p style="color:#d32f2f;font-size:0.8rem;margin:0 0 0.4rem"
+                   x-text="createDuplicateMsg"></p>
+                <button type="button" class="outline" style="font-size:0.8rem;margin:0"
+                        @click="editConflict()"
+                        x-text="'✏️ 改为编辑「' + (createConflict ? createConflict.pattern : '') + '」'"></button>
+            </div>
         </div>
     </div>
 
@@ -272,6 +280,8 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('rulesManager', () => ({
         filterDim: '',
         viewMode: 'rules',   // 'rules' = 平铺（按规则）| 'label' = 分组（按标签）
+        createConflict: null,      // 新建被「同维度同关键词已存在」拦下时，携带既有规则全字段
+        createDuplicateMsg: '',
         showForm: false,
         showEditForm: false,
         stats: [],
@@ -349,6 +359,7 @@ document.addEventListener('alpine:init', () => {
         // 组头「+ 添加关键词」：预填该组的维度与标签后打开新建弹窗
         openCreateFor(dimension, label) {
             this.fieldErrs = {}; this.activeHelp = '';
+            this.createConflict = null; this.createDuplicateMsg = '';
             this.newRule = {
                 dimension: dimension, sub_field: '', pattern: '', match_type: 'keyword',
                 priority: 0, threshold: 0.6, label: label || '',
@@ -376,7 +387,16 @@ document.addEventListener('alpine:init', () => {
         },
         openCreate() {
             this.fieldErrs = {}; this.activeHelp = '';
+            this.createConflict = null; this.createDuplicateMsg = '';
             this.showForm = !this.showForm;
+        },
+        // 重复被拦时：关掉新建弹窗，改用编辑弹窗打开冲突的那条规则（失败即导航）
+        editConflict() {
+            if (!this.createConflict) return;
+            const c = this.createConflict;
+            this.showForm = false;
+            this.createConflict = null; this.createDuplicateMsg = '';
+            this.openEdit(c);  // openEdit 需要 id/dimension/sub_field/pattern/label/match_type/priority/threshold
         },
         // 提交前统一校验：越界则不下发（服务端无范围校验，放任会写脏数据）
         formValid(prefix) {
@@ -502,6 +522,22 @@ document.addEventListener('alpine:init', () => {
             const fd = new FormData();
             for (const [k, v] of Object.entries(this.newRule)) fd.append(k, v);
             const resp = await fetch('/rules/create', {method:'POST', body:fd});
+            if (!resp.ok) {
+                // 同维度同关键词被拦下（400）：显示冲突信息 + 「改为编辑」出路，弹窗保持打开
+                let msg = '创建失败';
+                this.createConflict = null;
+                try {
+                    const err = await resp.json();
+                    msg = err.detail || msg;
+                    this.createConflict = err.conflict || null;
+                } catch (e) {
+                    console.warn('解析创建失败响应出错:', e);
+                }
+                this.createDuplicateMsg = msg;
+                document.getElementById('create-result').innerHTML = '';
+                return;
+            }
+            this.createConflict = null; this.createDuplicateMsg = '';
             const html = await resp.text();
             document.getElementById('create-result').innerHTML = html;
             this.showForm = false;

@@ -103,6 +103,20 @@ def test_rules_view_toggle_sits_in_filter_row_right_aligned():
     assert "setView('rules')" in right and "setView('label')" in right
 
 
+def test_rules_create_dialog_handles_duplicate_conflict():
+    """新建被「同维度同关键词已存在」拦下时，须显示冲突信息并给出「改为编辑该规则」出路"""
+    html = _read("rules_list.html")
+    assert 'x-show="createConflict"' in html
+    assert "createDuplicateMsg" in html
+    assert "editConflict()" in html
+    # createRule 必须检查 resp.ok —— 否则 400 的 JSON 会被当作成功 HTML 塞进结果区
+    create_body = html.split("async createRule()", 1)[1].split("\n        },", 1)[0]
+    assert "if (!resp.ok)" in create_body
+    assert "err.conflict" in create_body
+    # 状态须在各打开/成功路径清空，避免上一轮提示残留
+    assert html.count("this.createConflict = null; this.createDuplicateMsg = '';") >= 3
+
+
 def test_rules_control_row_zeroes_button_margins():
     """控制行内按钮须清零 Pico 下边距——否则视图键比筛选键偏上
 
