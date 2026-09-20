@@ -67,6 +67,9 @@
                 </label>
                 <label>关键词 <input type="text" x-model="newRule.pattern" required
                        placeholder="如 混凝土"></label>
+                <label>标签 <small style="color:var(--pico-muted-color)">（可空；填了则命中后把该标签写入分类列，同一标签可配多个关键词）</small>
+                    <input type="text" x-model="newRule.label" placeholder="留空 = 关键词本身就是标签">
+                </label>
                 <label>匹配方式
                     <select x-model="newRule.match_type">
                         <option value="keyword">关键词 (keyword)</option>
@@ -123,6 +126,9 @@
                 </label>
                 <label>关键词 <input type="text" x-model="editRule.pattern" required
                        placeholder="如 混凝土"></label>
+                <label>标签 <small style="color:var(--pico-muted-color)">（可空；填了则命中后把该标签写入分类列，同一标签可配多个关键词）</small>
+                    <input type="text" x-model="editRule.label" placeholder="留空 = 关键词本身就是标签">
+                </label>
                 <label>匹配方式
                     <select x-model="editRule.match_type">
                         <option value="keyword">关键词 (keyword)</option>
@@ -170,7 +176,7 @@ document.addEventListener('alpine:init', () => {
             {key: 'dim5', label: '工程部位'},
             {key: 'dim6', label: '材料/工艺'},
         ],
-        newRule: {dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6},
+        newRule: {dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6, label:''},
 
         dimLabel(key) {
             const d = this.dimensions.find(d => d.key === key);
@@ -214,6 +220,7 @@ document.addEventListener('alpine:init', () => {
                 dimension: dataset.dimension,
                 sub_field: dataset.sub_field || '',
                 pattern: dataset.pattern,
+                label: dataset.label || '',
                 match_type: dataset.match_type,
                 priority: parseInt(dataset.priority) || 0,
                 threshold: parseFloat(dataset.threshold) || 0.6,
@@ -227,6 +234,7 @@ document.addEventListener('alpine:init', () => {
             fd.append('sub_field', this.editRule.sub_field);
             fd.append('pattern', this.editRule.pattern);
             fd.append('match_type', this.editRule.match_type);
+            fd.append('label', this.editRule.label || '');
             fd.append('priority', this.editRule.priority);
             fd.append('threshold', this.editRule.threshold);
             try {
@@ -262,7 +270,7 @@ document.addEventListener('alpine:init', () => {
             const html = await resp.text();
             document.getElementById('create-result').innerHTML = html;
             this.showForm = false;
-            this.newRule = {dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6};
+            this.newRule = {dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6, label:''};
             // fetch 成功路径显式派发质量报表刷新（与 htmx:afterSettle dispatcher 互补）
             document.body.dispatchEvent(new CustomEvent('rulesQualityRefresh'));
             // 触发列表刷新

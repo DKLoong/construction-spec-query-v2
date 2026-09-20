@@ -484,3 +484,136 @@ def test_update_rule_requires_auth(client):
     resp = client.put("/rules/1", data={"dimension": "dim4", "pattern": "x"},
                       follow_redirects=False)
     assert resp.status_code == 302
+
+
+# ── label（赋值标签）人工可维护：规则页原先不支持 label，人工只能建「词即标签」规则，
+#    「特征词→标签」是 AI 沉淀路径专属。以下用例锁定 label 的人工编辑能力。──
+
+def test_create_rule_with_label(auth_client, monkeypatch, tmp_path):
+    """新建规则可指定 label（特征词 → 标签）"""
+    db_path = tmp_path / "test_create_label.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+
+    resp = auth_client.post("/rules/create", data={
+        "dimension": "dim6",
+        "sub_field": "material",
+        "pattern": "丝头",
+        "match_type": "keyword",
+        "priority": 1,
+        "threshold": 0.6,
+        "label": "钢筋",
+    })
+    assert resp.status_code == 200
+
+    with get_db() as conn:
+        rule = conn.execute(
+            "SELECT * FROM classification_rules WHERE pattern = ?", ("丝头",)
+        ).fetchone()
+    assert rule["label"] == "钢筋"
+
+
+def test_create_rule_without_label_stores_null(auth_client, monkeypatch, tmp_path):
+    """不传 label 时存 NULL（旧语义：词即标签），不得存空字符串"""
+    db_path = tmp_path / "test_create_nolabel.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+
+    resp = auth_client.post("/rules/create", data={
+        "dimension": "dim6",
+        "sub_field": "material",
+        "pattern": "砌体",
+        "match_type": "keyword",
+        "priority": 1,
+        "threshold": 0.6,
+        "label": "   ",  # 仅空白 → 视同未填
+    })
+    assert resp.status_code == 200
+
+    with get_db() as conn:
+        rule = conn.execute(
+            "SELECT * FROM classification_rules WHERE pattern = ?", ("砌体",)
+        ).fetchone()
+    assert rule["label"] is None
+
+
+def test_update_rule_changes_label(auth_client, monkeypatch, tmp_path):
+    """编辑规则可改 label —— 「给同一标签配多个关键词」的基础能力"""
+    db_path = tmp_path / "test_update_label.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO classification_rules "
+            "(dimension, sub_field, pattern, match_type, priority, threshold, label) "
+            "VALUES ('dim6', 'material', '混凝土', 'keyword', 1, 0.5, NULL)"
+        )
+        rule_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    resp = auth_client.put(f"/rules/{rule_id}", data={
+        "dimension": "dim6",
+        "sub_field": "material",
+        "pattern": "混凝土",
+        "match_type": "keyword",
+        "priority": 1,
+        "threshold": 0.5,
+        "label": "现浇混凝土",
+    })
+    assert resp.status_code == 200
+
+    with get_db() as conn:
+        rule = conn.execute(
+            "SELECT label FROM classification_rules WHERE id = ?", (rule_id,)
+        ).fetchone()
+    assert rule["label"] == "现浇混凝土"
+
+
+def test_same_label_multiple_patterns(auth_client, monkeypatch, tmp_path):
+    """同一标签可挂多个关键词（多条规则共享 label），且列表页显示该标签"""
+    db_path = tmp_path / "test_multi_pattern.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+    for pat in ("接头", "丝头", "套筒"):
+        auth_client.post("/rules/create", data={
+            "dimension": "dim6", "sub_field": "material", "pattern": pat,
+            "match_type": "keyword", "priority": 1, "threshold": 0.6,
+            "label": "钢筋",
+        })
+
+    with get_db() as conn:
+        rules = conn.execute(
+            "SELECT pattern, label FROM classification_rules WHERE label = '钢筋' ORDER BY pattern"
+        ).fetchall()
+    assert [r["pattern"] for r in rules] == ["丝头", "套筒", "接头"]
+
+    html = auth_client.get("/rules/list").text
+    assert "标签" in html                      # 列表含标签列
+    for pat in ("接头", "丝头", "套筒"):
+        assert pat in html
+    assert html.count("钢筋") >= 3             # 三个关键词都显示同一标签
+
+
+def test_rules_list_shows_label_or_placeholder(auth_client, monkeypatch, tmp_path):
+    """label 为空时列表显示「词即标签」占位，不显示空白"""
+    db_path = tmp_path / "test_label_placeholder.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO classification_rules "
+            "(dimension, sub_field, pattern, match_type, priority, threshold, label) "
+            "VALUES ('dim4', 'specialty', '屋面', 'keyword', 1, 0.5, NULL)"
+        )
+
+    html = auth_client.get("/rules/list").text
+    assert "词即标签" in html

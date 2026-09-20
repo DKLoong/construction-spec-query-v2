@@ -106,14 +106,21 @@ async def create_rule(
     match_type: str = Form("keyword"),
     priority: int = Form(0),
     threshold: float = Form(0.6),
+    label: str = Form(""),
 ):
-    """创建新规则"""
+    """创建新规则
+
+    label 可空：填「词即标签」（旧语义，pattern 即该维标签值）；填了则是
+    「特征词→标签」（pattern 只做匹配，命中后把 label 写入分类列）。
+    同一 label 挂多条规则 = 「同一标签多关键词」，无需额外结构。
+    """
     with get_db() as conn:
         cur = conn.execute(
             """INSERT INTO classification_rules
-               (dimension, sub_field, pattern, match_type, priority, threshold, is_active)
-               VALUES (?, ?, ?, ?, ?, ?, 1)""",
-            (dimension, sub_field, pattern, match_type, priority, threshold),
+               (dimension, sub_field, pattern, match_type, priority, threshold, is_active, label)
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
+            (dimension, sub_field, pattern, match_type, priority, threshold,
+             label.strip() or None),
         )
         new_id = cur.lastrowid
 
@@ -214,8 +221,10 @@ async def update_rule(
     match_type: str = Form("keyword"),
     priority: int = Form(0),
     threshold: float = Form(0.6),
+    label: str = Form(""),
 ):
-    """编辑规则"""
+    """编辑规则（含赋值标签 label：改 label 即可调整该规则命中后写入分类列的值；
+    多条规则配同一 label 即「同一标签多关键词」）"""
     from fastapi.responses import JSONResponse
 
     with get_db() as conn:
@@ -228,9 +237,11 @@ async def update_rule(
         conn.execute(
             """UPDATE classification_rules
                SET dimension = ?, sub_field = ?, pattern = ?, match_type = ?,
-                   priority = ?, threshold = ?, updated_at = datetime('now','localtime')
+                   priority = ?, threshold = ?, label = ?,
+                   updated_at = datetime('now','localtime')
                WHERE id = ?""",
-            (dimension, sub_field, pattern, match_type, priority, threshold, rule_id),
+            (dimension, sub_field, pattern, match_type, priority, threshold,
+             label.strip() or None, rule_id),
         )
 
     log_action("rule", "INFO", "编辑规则",

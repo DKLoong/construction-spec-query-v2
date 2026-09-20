@@ -20,6 +20,7 @@
             <th>维度</th>
             <th>子字段</th>
             <th>关键词</th>
+            <th>标签</th>
             <th>类型</th>
             <th>优先级</th>
             <th>阈值</th>
@@ -38,6 +39,14 @@
         </small></td>
         <td><small>{{ r.sub_field or '-' }}</small></td>
         <td><code>{{ r.pattern }}</code></td>
+        <td>
+            {% if r.label %}
+            <strong title="命中后写入分类列的值">{{ r.label }}</strong>
+            {% else %}
+            <small style="color:var(--pico-muted-color)"
+                   title="未设赋值标签：命中后直接用关键词当标签（旧语义）">词即标签</small>
+            {% endif %}
+        </td>
         <td><small>{{ r.match_type }}</small></td>
         <td>{{ r.priority }}</td>
         <td>{{ r.threshold }}</td>
@@ -68,6 +77,7 @@
                         data-dimension="{{ r.dimension }}"
                         data-sub_field="{{ r.sub_field or '' }}"
                         data-pattern="{{ r.pattern }}"
+                        data-label="{{ r.label or '' }}"
                         data-match_type="{{ r.match_type }}"
                         data-priority="{{ r.priority }}"
                         data-threshold="{{ r.threshold }}"
