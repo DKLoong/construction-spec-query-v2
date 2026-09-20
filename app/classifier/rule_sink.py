@@ -16,7 +16,10 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
       （仅 hit++，避免 AI 未人工确认虚增正确率）
     - new_rule_active：新生成规则初始是否启用（auto_adopted 或人工确认 conf≥阈值 传 True）
     - label：规则赋值标签（命中后写入分类列，区别于匹配词 pattern）。历史规则 label 为
-      NULL（旧 pattern 当标签语义）时，本次带 label 沉淀会回填纠正
+      NULL（旧 pattern 当标签语义）时，本次带 label 沉淀会回填纠正。
+      但 locked=1 的人工种子规则**不回填**——种子词表是人工权威语义（词即标签），
+      不得被 AI 沉淀路径按单一文档的局部语料经验改写（实证污染：dim6 种子「混凝土」
+      被回填成 label='钢筋'）。命中/确认计数仍正常递增。
     """
     enable_ratio = get_param_float("classify.rule_auto_enable_ratio")
     enable_min_hit = get_param_int("classify.rule_auto_enable_min_hit")
@@ -24,7 +27,7 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
     disable_min_hit = get_param_int("classify.rule_disable_min_hit")
     new_threshold = get_param_float("classify.new_rule_threshold")
     row = conn.execute(
-        "SELECT id, hit_count, confirmed, is_active, label FROM classification_rules "
+        "SELECT id, hit_count, confirmed, is_active, label, locked FROM classification_rules "
         "WHERE dimension = ? AND pattern = ?",
         (dimension, pattern),
     ).fetchone()
@@ -38,7 +41,8 @@ def bump_rule(conn, dimension: str, pattern: str, sub_field: str = "",
             (new_hit, new_conf, row["id"]),
         )
         # 历史规则 label 为空且本次带 label → 回填（纠正「匹配词被当标签」的旧语义）
-        if not row["label"] and label:
+        # 但种子规则（locked=1）例外：其语义归人工所有，AI 沉淀不得改写
+        if not row["label"] and label and not row["locked"]:
             conn.execute(
                 "UPDATE classification_rules SET label = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                 (label, row["id"]),

@@ -37,6 +37,31 @@ def test_bump_rule_existing_backfills_label(monkeypatch, tmp_path):
     assert rule["label"] == "结构专业"
 
 
+def test_bump_rule_locked_seed_not_backfilled(monkeypatch, tmp_path):
+    """种子规则（locked=1）是人工权威词表，AI 沉淀路径不得回填改写其 label
+
+    实证污染：dim6 种子规则「混凝土」（seed_rules.py 中 dim6 材料标签词）
+    被 AI 沉淀路径回填成 label='钢筋'（源自 JGJ107 单文档的局部语料经验）。
+    回填只应纠正「动态沉淀规则」，不应改写人工种子词表的语义。
+    """
+    _setup(monkeypatch, tmp_path)
+    from app.classifier.rule_sink import bump_rule
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO classification_rules (dimension, sub_field, pattern, match_type,
+               priority, threshold, hit_count, confirmed, is_active, label, locked)
+               VALUES ('dim6','material','混凝土','keyword',1,0.5,0,0,1,NULL,1)"""
+        )
+        bump_rule(conn, "dim6", "混凝土", is_confirmed=True, label="钢筋")
+        rule = conn.execute(
+            "SELECT label, hit_count, confirmed FROM classification_rules WHERE pattern='混凝土'"
+        ).fetchone()
+    assert rule["label"] is None, "种子规则 label 不得被回填"
+    # 命中与确认计数仍应正常递增（规则确实命中了，只是不改写其标签语义）
+    assert rule["hit_count"] == 1
+    assert rule["confirmed"] == 1
+
+
 def test_classify_assigns_label_not_pattern():
     """规则匹配命中 → 赋值 label（而非匹配词 pattern）——修复强行打标"""
     from app.classifier.rule_engine import classify_clause
