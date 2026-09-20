@@ -7,7 +7,7 @@
 
 
 def rrf_fusion(sql_results: list[dict], vector_results: list[dict],
-               k: int = 60) -> list[dict]:
+               k: float = 60) -> list[dict]:
     """融合两路有序结果，返回按 RRF 分数降序的合并 dict 列表。
 
     - sql_results：已按字段优先级有序（clause_no 精确 > title > content）

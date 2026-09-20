@@ -42,6 +42,10 @@ def _seed_review_clause(conn) -> int:
     rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "bT")
     # 另加一个已驳回词：主表渲染「词已驳回」标记（D1 路径），且不影响 pending 候选
     rid = rp.insert_pending(conn, cid, "dim6", "混凝土", "钢筋", 0.7, "bT")
+    # 该 rejected 行是下面「词已驳回」标记断言的唯一来源（见 test_..._keeps_marker 等）。
+    # insert_pending 返回 int | None（None = 键已存在未新建），而 set_status(conn,[None])
+    # 实测静默返回 0 → rejected_labels 为空 → 标记不渲染。故断言非 None。
+    assert rid is not None
     rp.set_status(conn, [rid], "rejected")
     bq.try_enqueue(conn, cid, "dim6", 0.0)
     conn.execute("UPDATE classification_queue SET status='review', batch_id='bT', "

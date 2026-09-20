@@ -1,0 +1,12 @@
+{
+  "include": ["app", "tests"],
+  "exclude": [
+    "**/__pycache__",
+    "**/node_modules",
+    "data",
+    "models",
+    "lance_db"
+  ],
+  "extraPaths": [".", "scripts"],
+  "reportMissingTypeStubs": "none"
+}

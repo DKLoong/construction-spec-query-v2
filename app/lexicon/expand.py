@@ -4,7 +4,26 @@
 groups 为空/开关关时直接委托 app.search.tokenize.build_match_query，保证旧行为
 与既有检索测试逐字节一致（退化护栏）。
 """
+from typing import NamedTuple
+
 from app.lexicon.store import LexiconRow
+
+
+class _GroupItem(NamedTuple):
+    """命中某个等价组 → 整组 OR 扩展；gi 为 groups 下标。"""
+    gi: int
+
+
+class _SegItem(NamedTuple):
+    """未命中任何组 → 交给 jieba 再切。"""
+    text: str
+
+
+# 用两个 NamedTuple 的联合 + isinstance 分派，而非 `(kind, payload)` 元组：
+# **Pyright/静态检查不做元组跨元素的相关窄化**（`if kind == "group"` 不会窄化
+# payload，实测 confirm），故元组形态必然留下"payload 是 object/联合"的报错。
+# isinstance 的类窄化则完整支持。见 tests/test_lexicon_expand.py 覆盖。
+_Item = _GroupItem | _SegItem
 
 
 def _quote(word: str) -> str:
@@ -21,19 +40,16 @@ def _terms_by_len(groups: list[LexiconRow]) -> list[tuple[int, str]]:
     return [(gi, w) for w, gi in sorted(items.items(), key=lambda kv: len(kv[0]), reverse=True)]
 
 
-def _items(keyword: str, groups: list[LexiconRow]) -> list[tuple[str, object]]:
-    """把 keyword 切成有序项列表。
-
-    返回 list of ('group', (gi, hit_word)) | ('seg', 子串)；seg 交给 jieba 再切。
-    """
+def _items(keyword: str, groups: list[LexiconRow]) -> list[_Item]:
+    """把 keyword 切成有序项列表：命中组 → `_GroupItem`，未命中 → `_SegItem`。"""
     terms = _terms_by_len(groups)
-    pieces: list[tuple[str, object]] = []
+    pieces: list[_Item] = []
     i, n = 0, len(keyword)
     while i < n:
         matched = False
         for gi, w in terms:
             if keyword.startswith(w, i):
-                pieces.append(("group", (gi, w)))
+                pieces.append(_GroupItem(gi))
                 i += len(w)
                 matched = True
                 break
@@ -45,7 +61,7 @@ def _items(keyword: str, groups: list[LexiconRow]) -> list[tuple[str, object]]:
                 break
             j += 1
         if j > i:
-            pieces.append(("seg", keyword[i:j]))
+            pieces.append(_SegItem(keyword[i:j]))
         i = j
     return pieces
 
@@ -69,17 +85,16 @@ def build_expanded_match(keyword: str, groups: list[LexiconRow],
         return build_match_query(keyword, join_with)
 
     tokens: list[str] = []
-    for kind, payload in _items(keyword, groups):
-        if kind == "group":
-            gi, _ = payload
-            words = [_quote(w) for w in _group_words(groups, gi)]
+    for item in _items(keyword, groups):
+        if isinstance(item, _GroupItem):
+            words = [_quote(w) for w in _group_words(groups, item.gi)]
             if len(words) == 1:
                 tokens.append(words[0])
             else:
                 tokens.append("(" + " OR ".join(words) + ")")
         else:
             from app.search.tokenize import tokenize
-            for tok in tokenize(payload):
+            for tok in tokenize(item.text):
                 tokens.append(_quote(tok))
     if not tokens:
         return ""

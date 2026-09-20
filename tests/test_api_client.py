@@ -121,7 +121,15 @@ def test_api_backend_handles_429_error(monkeypatch):
 
         def raise_for_status(self):
             import httpx
-            raise httpx.HTTPStatusError("429", request=None, response=self)
+            from typing import cast
+            # 用真实 Request / cast 后的 Response，忠实复刻 raise_for_status() 的产物：
+            # 生产侧异常自带 request（实测读 .request 正常）；此前传 request=None 会让
+            # 该替身与真实异常不同——将来若在 except 里读 e.request 会只在测试里炸。
+            raise httpx.HTTPStatusError(
+                "429",
+                request=httpx.Request("POST", "http://test.local/v1/chat"),
+                response=cast(httpx.Response, self),
+            )
 
     import httpx
 

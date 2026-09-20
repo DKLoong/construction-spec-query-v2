@@ -159,6 +159,9 @@ def test_decide_scope_key_level_across_clauses(monkeypatch, tmp_path):
         c1 = _seed_clause(conn, "GB1")
         c2 = _seed_clause(conn, "GB2")
         id_a = rp.insert_pending(conn, c1, "dim6", "检验", "钢筋", 0.9, "b1")
+        # insert_pending 返回 int | None（None = 该键已有行，未新建）。此处依赖"首次插入"
+        # 这一前提，故断言非 None——否则下游 scope 会静默空转（实测 [None] → 计数全 0）
+        assert id_a is not None
         rp.insert_pending(conn, c2, "dim6", "检验", "钢筋", 0.9, "b2")
         rp.insert_pending(conn, c1, "dim6", "检验", "混凝土", 0.7, "b1")
         r = rp.decide_scope(conn, [id_a], "approve", expand=True)
@@ -247,6 +250,7 @@ def test_clause_pending_ids(monkeypatch, tmp_path):
         c2 = _seed_clause(conn, "GB2")
         a = rp.insert_pending(conn, c1, "dim6", "钢筋", "钢筋", 0.9, "b1")
         b = rp.insert_pending(conn, c1, "dim6", "钢筋", "混凝土", 0.7, "b1")
+        assert a is not None and b is not None  # 首次插入，见上方说明
         rp.insert_pending(conn, c2, "dim6", "钢筋", "钢筋", 0.6, "b2")
         ids = rp.clause_pending_ids(conn, c1, "dim6")
         assert sorted(ids) == sorted([a, b])
@@ -323,6 +327,7 @@ def test_key_all_pending_ids(monkeypatch, tmp_path):
         c2 = _seed_clause(conn, "GB2")
         a = rp.insert_pending(conn, c1, "dim6", "钢筋", "钢筋", 0.9, "b1")
         b = rp.insert_pending(conn, c2, "dim6", "钢筋", "钢筋", 0.7, "b2")
+        assert a is not None and b is not None  # 首次插入；None 会让下游静默空转
         rp.set_status(conn, [a, b], "rejected")
         ids = rp._key_all_pending_ids(conn, a, "rejected")
         assert sorted(ids) == sorted([a, b])
@@ -1125,6 +1130,7 @@ def test_clause_decide_idempotent(monkeypatch, tmp_path):
     with get_db() as conn:
         cid = _seed_spec_clause(conn)
         a = rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "b1")
+        assert a is not None  # 首次插入；None 会让下游 decide_scope 静默返回空结果
         rp.insert_pending(conn, cid, "dim6", "钢筋", "混凝土", 0.7, "b1")
         bq.try_enqueue(conn, cid, "dim6", 0.0)
         conn.execute("UPDATE classification_queue SET status='review', batch_id='b1' WHERE clause_id=?", (cid,))
@@ -1424,6 +1430,7 @@ def test_pending_counts_rejected_needs_relabel(auth_client):
     with get_db() as conn:
         cid = _seed_spec_clause(conn)
         pid = rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "b")
+        assert pid is not None  # 首次插入；None 会让 set_status 静默返回 0
         rp.set_status(conn, [pid], "rejected")
         bq.try_enqueue(conn, cid, "dim6", 0.0)
         conn.execute(

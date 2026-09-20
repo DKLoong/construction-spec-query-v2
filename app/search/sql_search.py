@@ -10,7 +10,7 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
     多词 AND 无结果时降级 OR 召回（任一 token 命中），避免严格匹配查空。
     无关键词（纯维度筛选/浏览全部）路径不变。返回签名不变 → RRF/hybrid/QA 零改动。
     """
-    def _match_for(keyword: str, join: str = "AND") -> str:
+    def _match_for(keyword: str | None, join: str = "AND") -> str:
         """keyword → FTS MATCH 串。开关关/无词条时委托原 build_match_query（退化护栏）。"""
         if not keyword:
             return ""

@@ -127,7 +127,6 @@ def test_seed_rules_keyword_works(monkeypatch, tmp_path):
 
     for text, expected_dim in results:
         scores, labels, rule_ids = classify_clause(text, [], rules)
-        max_dim = max(scores, key=scores.get)
         assert scores[expected_dim] > 0, (
             f"'{text}' 未能匹配 {expected_dim}，scores={ {k: round(v,2) for k,v in scores.items()} }"
         )

@@ -4,11 +4,28 @@ import base64
 import json
 import logging
 from pathlib import Path
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
 # 每批最大页数
 _BATCH_PAGES = 99
+
+
+class OCRClient(Protocol):
+    """`create_ocr_client()` 的返回契约：各后端共同实现的方法。
+
+    此前该工厂标注 `-> object`，导致调用方（import_routes）在
+    `api.ocr_pdf_to_md(...)` 处无法通过类型检查——用 Protocol 描述鸭子类型，
+    而非用 `object` 把类型信息抹掉。
+
+    `progress_cb` 只有 PaddleVLClient 支持（可选属性），故**不列入协议**；
+    调用方以 hasattr 探测 + setattr 注入，避免把它变成所有实现者的硬要求。
+    """
+
+    def ocr_pdf_to_md(self, pdf_path: str, output_dir: str | None = None) -> str:
+        """把 PDF 解析为 Markdown/纯文本，返回产出文件路径。"""
+        ...
 
 
 def get_setting(key: str) -> str:
@@ -474,7 +491,7 @@ class PaddleVLClient:
 # 工厂函数
 # ═══════════════════════════════════════════
 
-def create_ocr_client() -> object:
+def create_ocr_client() -> OCRClient:
     """根据 settings 中的 ocr.backend 配置创建 OCR 客户端。
 
     返回实现了 ocr_pdf_to_md(pdf_path, output_dir=None) -> str 的客户端实例。

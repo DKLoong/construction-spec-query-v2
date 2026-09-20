@@ -51,7 +51,8 @@ def test_clause_create_with_dimensions():
         content="模板及其支架应根据工程结构形式...",
         dim6_material="混凝土材料,模板工程",
     )
-    assert "模板工程" in clause.dim6_material
+    # dim6_material 声明为 Optional[str]：先断言非空再判包含，避免类型上的 `in None`
+    assert clause.dim6_material and "模板工程" in clause.dim6_material
 
 
 def test_rule_create():
