@@ -103,6 +103,22 @@ def test_rules_view_toggle_sits_in_filter_row_right_aligned():
     assert "setView('rules')" in right and "setView('label')" in right
 
 
+def test_rules_control_row_zeroes_button_margins():
+    """控制行内按钮须清零 Pico 下边距——否则视图键比筛选键偏上
+
+    实测根因：Pico 只给**带显式 type 属性**的 <button> 加 margin-bottom:
+    var(--pico-spacing)（14.4px）。控制行里筛选键无 type（margin 0）、视图键有
+    type="button"（margin 14.4px）→ 视图列被撑高 14.4px，行内 align-items:center
+    转而把矮的筛选列居中 → 视图键偏上 7.2px。
+    实测 top：筛选键 92.16 / 视图键 84.97（偏移 -7.2）；清零后三者 top 全等 84.97。
+    注意「两键高度都是 44.19px」并不能发现此问题——必须比 top，不能只比 height。
+    """
+    html = _read("rules_list.html")
+    row = html.split("<!-- 控制行", 1)[1].split('id="rules-table"', 1)[0]
+    assert 'class="rules-controls"' in row, "控制行未加 rules-controls 类"
+    assert ".rules-controls button { margin:0; }" in html
+
+
 def test_rules_view_toggle_buttons_match_filter_chips_for_equal_height():
     """视图键须与筛选键同构（都 outline + contrast 选中态、都不覆盖字号）→ 等高、文字同基线"""
     html = _read("rules_list.html")

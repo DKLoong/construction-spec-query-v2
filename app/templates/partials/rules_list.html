@@ -18,6 +18,12 @@
    两个视图共用 .row-actions，一次清零。 */
 .row-actions { display:flex; gap:0.25rem; align-items:center; }
 .row-actions button { margin:0; }
+/* 控制行（筛选 + 视图切换）也必须清零按钮下边距：
+   Pico 只给带显式 type 属性的 <button> 加 margin-bottom:var(--pico-spacing)（14.4px），
+   而筛选键无 type、视图键是 type="button" → 视图列被撑高 14.4px，行内 align-items:center
+   转而把矮的筛选列居中，结果视图键比筛选键偏上 7.2px（实测 top 92.16 vs 84.97）。
+   清零后三者 top 全等。（只比 height 发现不了：两键高度本就都是 44.19px。） */
+.rules-controls button { margin:0; }
 /* #rules-table 是两种视图片段的共同容器，故一条规则同时覆盖平铺表与分组表 */
 #rules-table td { vertical-align:middle; }
 
@@ -47,7 +53,7 @@
          视图键与筛选键同构（都 outline + contrast 选中态、都不覆盖字号）→ 天然等高、文字同基线。
          视图组必须独立成列并 flex-shrink:0：若与筛选键同处一个 flex-wrap 行，
          宽度不足时会把「按标签」单独挤到第二行（实测发生）。 -->
-    <div style="margin-bottom:1rem;display:flex;align-items:center;gap:0.75rem">
+    <div class="rules-controls" style="margin-bottom:1rem;display:flex;align-items:center;gap:0.75rem">
         <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;flex:1;min-width:0">
             <button class="outline" :class="{ contrast: filterDim === '' }"
                     @click="filterDim = ''; loadRules()">全部</button>
