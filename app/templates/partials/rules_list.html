@@ -1,4 +1,17 @@
 <!-- 中栏：规则列表 -->
+<style>
+/* 数值字段的悬浮说明与越界提示（对齐运维「参数设置」模块的观感） */
+.rule-field { position:relative; }
+.rule-pop { position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:50;
+    background:#fffdf8; border:1px solid #ddd0bd; border-radius:6px;
+    box-shadow:0 4px 14px rgba(74,68,84,.14); padding:0.4rem 0.5rem;
+    font-size:0.72rem; color:#5a4a33; line-height:1.35; }
+.rule-err { color:#d32f2f; font-size:0.72rem; display:block; margin-top:0.15rem; }
+/* 子字段下拉的键盘高亮项（与鼠标 hover 同为 sf-active） */
+.sf-item { padding:0.3rem 0.5rem; cursor:pointer; }
+.sf-item.sf-active { background:var(--pico-primary-focus); }
+.field-hint { font-size:0.72rem; color:var(--pico-muted-color); }
+</style>
 <div x-data="rulesManager()" style="padding:1rem">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
         <h2 style="margin:0">📋 分类规则管理</h2>
@@ -22,7 +35,7 @@
 
     <!-- 操作按钮行 -->
     <div style="margin-bottom:1rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
-        <button @click="showForm = !showForm" class="secondary">➕ 新建规则</button>
+        <button @click="openCreate()" class="secondary">➕ 新建规则</button>
         <button hx-post="/classify/run" hx-target="#classify-result" class="secondary"
                 style="background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:white">
             🤖 运行 AI 分类
@@ -45,21 +58,24 @@
                         <option :value="d.key" x-text="d.label"></option>
                     </template>
                 </select></label>
-                <label>子字段
+                <label>子字段 <small class="field-hint">（信息性，不参与匹配，可留空）</small>
                     <div style="position:relative">
                         <input type="text" x-model="newRule.sub_field" placeholder="如 specialty"
-                               @input="fetchSubFields(newRule.dimension, newRule.sub_field)"
-                               @focus="fetchSubFields(newRule.dimension, newRule.sub_field)"
-                               @blur="hideSubFieldDropdown()">
+                               @input="fetchSubFields('new')"
+                               @focus="openSubField('new')"
+                               @blur="hideSubFieldDropdown()"
+                               @keydown.arrow-down="onSubFieldArrow($event, 1)"
+                               @keydown.arrow-up="onSubFieldArrow($event, -1)"
+                               @keydown.enter="onSubFieldEnter($event)"
+                               @keydown.escape="subFieldOpen = false">
                         <ul x-show="subFieldSuggestions.length > 0 && subFieldOpen"
                             x-transition
                             @mousedown.prevent
                             style="position:absolute;top:100%;left:0;right:0;background:var(--pico-form-element-background-color);border:1px solid var(--pico-form-element-border-color);border-radius:0 0 4px 4px;max-height:150px;overflow-y:auto;z-index:100;list-style:none;padding:0;margin:0">
-                            <template x-for="s in subFieldSuggestions" :key="s">
-                                <li @click="newRule.sub_field = s; subFieldOpen = false"
-                                    style="padding:0.3rem 0.5rem;cursor:pointer"
-                                    @mouseover="$el.style.background='var(--pico-primary-focus)'"
-                                    @mouseout="$el.style.background=''"
+                            <template x-for="(s, i) in subFieldSuggestions" :key="s">
+                                <li class="sf-item" :class="subFieldIndex === i ? 'sf-active' : ''"
+                                    @click="pickSubField(s)"
+                                    @mouseover="subFieldIndex = i"
                                     x-text="s"></li>
                             </template>
                         </ul>
@@ -78,10 +94,26 @@
                     </select>
                 </label>
                 <label>优先级 (0-10)
-                    <input type="number" x-model="newRule.priority" min="0" max="10">
+                    <div class="rule-field">
+                        <input type="number" x-model="newRule.priority" min="0" max="10"
+                               @focus="focusField('new.priority')"
+                               @blur="blurField('new.priority')"
+                               :aria-invalid="invalid('new.priority')">
+                        <div class="rule-pop" x-show="showHelp('new.priority')"
+                             x-text="helpFor('new.priority')"></div>
+                    </div>
+                    <small class="rule-err" x-show="fieldErrs['new.priority']">您输入的参数超出可调范围，请重新输入</small>
                 </label>
                 <label>阈值 (0-1)
-                    <input type="number" x-model="newRule.threshold" min="0" max="1" step="0.1">
+                    <div class="rule-field">
+                        <input type="number" x-model="newRule.threshold" min="0" max="1" step="0.1"
+                               @focus="focusField('new.threshold')"
+                               @blur="blurField('new.threshold')"
+                               :aria-invalid="invalid('new.threshold')">
+                        <div class="rule-pop" x-show="showHelp('new.threshold')"
+                             x-text="helpFor('new.threshold')"></div>
+                    </div>
+                    <small class="rule-err" x-show="fieldErrs['new.threshold']">您输入的参数超出可调范围，请重新输入</small>
                 </label>
                 <div style="margin-top:1rem;display:flex;gap:0.5rem">
                     <button type="submit">✅ 创建</button>
@@ -104,21 +136,24 @@
                         <option :value="d.key" x-text="d.label"></option>
                     </template>
                 </select></label>
-                <label>子字段
+                <label>子字段 <small class="field-hint">（信息性，不参与匹配，可留空）</small>
                     <div style="position:relative">
                         <input type="text" x-model="editRule.sub_field" placeholder="如 specialty"
-                               @input="fetchSubFields(editRule.dimension, editRule.sub_field)"
-                               @focus="fetchSubFields(editRule.dimension, editRule.sub_field)"
-                               @blur="hideSubFieldDropdown()">
+                               @input="fetchSubFields('edit')"
+                               @focus="openSubField('edit')"
+                               @blur="hideSubFieldDropdown()"
+                               @keydown.arrow-down="onSubFieldArrow($event, 1)"
+                               @keydown.arrow-up="onSubFieldArrow($event, -1)"
+                               @keydown.enter="onSubFieldEnter($event)"
+                               @keydown.escape="subFieldOpen = false">
                         <ul x-show="subFieldSuggestions.length > 0 && subFieldOpen"
                             x-transition
                             @mousedown.prevent
                             style="position:absolute;top:100%;left:0;right:0;background:var(--pico-form-element-background-color);border:1px solid var(--pico-form-element-border-color);border-radius:0 0 4px 4px;max-height:150px;overflow-y:auto;z-index:100;list-style:none;padding:0;margin:0">
-                            <template x-for="s in subFieldSuggestions" :key="s">
-                                <li @click="editRule.sub_field = s; subFieldOpen = false"
-                                    style="padding:0.3rem 0.5rem;cursor:pointer"
-                                    @mouseover="$el.style.background='var(--pico-primary-focus)'"
-                                    @mouseout="$el.style.background=''"
+                            <template x-for="(s, i) in subFieldSuggestions" :key="s">
+                                <li class="sf-item" :class="subFieldIndex === i ? 'sf-active' : ''"
+                                    @click="pickSubField(s)"
+                                    @mouseover="subFieldIndex = i"
                                     x-text="s"></li>
                             </template>
                         </ul>
@@ -137,10 +172,26 @@
                     </select>
                 </label>
                 <label>优先级 (0-10)
-                    <input type="number" x-model="editRule.priority" min="0" max="10">
+                    <div class="rule-field">
+                        <input type="number" x-model="editRule.priority" min="0" max="10"
+                               @focus="focusField('edit.priority')"
+                               @blur="blurField('edit.priority')"
+                               :aria-invalid="invalid('edit.priority')">
+                        <div class="rule-pop" x-show="showHelp('edit.priority')"
+                             x-text="helpFor('edit.priority')"></div>
+                    </div>
+                    <small class="rule-err" x-show="fieldErrs['edit.priority']">您输入的参数超出可调范围，请重新输入</small>
                 </label>
                 <label>阈值 (0-1)
-                    <input type="number" x-model="editRule.threshold" min="0" max="1" step="0.1">
+                    <div class="rule-field">
+                        <input type="number" x-model="editRule.threshold" min="0" max="1" step="0.1"
+                               @focus="focusField('edit.threshold')"
+                               @blur="blurField('edit.threshold')"
+                               :aria-invalid="invalid('edit.threshold')">
+                        <div class="rule-pop" x-show="showHelp('edit.threshold')"
+                             x-text="helpFor('edit.threshold')"></div>
+                    </div>
+                    <small class="rule-err" x-show="fieldErrs['edit.threshold']">您输入的参数超出可调范围，请重新输入</small>
                 </label>
                 <div style="margin-top:1rem;display:flex;gap:0.5rem">
                     <button type="submit">💾 保存</button>
@@ -167,6 +218,16 @@ document.addEventListener('alpine:init', () => {
         subFieldSuggestions: [],
         subFieldOpen: false,
         subFieldTimer: null,
+        subFieldTarget: 'new',    // 下拉归属表单：'new' | 'edit'（两弹窗共用一套候选态）
+        subFieldIndex: -1,        // 键盘高亮项下标；-1 = 未选
+        // 数值字段的悬浮说明与可调范围（对齐运维「参数设置」模块的交互）
+        activeHelp: '',
+        fieldErrs: {},
+        helpText: {
+            priority: '优先级越高，该规则与其他规则竞争同一维度时的得分加成越大（每级 +10%）。它只影响同维竞争的排序，不改变是否命中。可调范围 0~10。',
+            threshold: '规则自身的匹配门槛：条文匹配得分低于此值时不参与该维度竞争，也就不会被采纳为该维标签。可调范围 0~1，越大越严格（越不易打标）。',
+        },
+        ranges: { priority: {min: 0, max: 10}, threshold: {min: 0, max: 1} },
         editRule: {id:'', dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6},
         dimensions: [
             // dim1（规范属性）由编号前缀硬编码管理，规则引擎不参与，故不纳入规则管理
@@ -191,18 +252,79 @@ document.addEventListener('alpine:init', () => {
             });
         },
 
-        fetchSubFields(dimension, typed) {
-            if (!dimension) { this.subFieldSuggestions = []; return; }
+        // ── 数值字段：悬浮说明 + 失焦范围校验（对齐运维「参数设置」模块）──
+        fieldOf(k) { return k.split('.')[1]; },
+        helpFor(k) { return this.helpText[this.fieldOf(k)]; },
+        showHelp(k) { return this.activeHelp === k && !this.fieldErrs[k]; },
+        // aria-invalid=true 由 Pico 原生渲染红边框 + 无效图标
+        invalid(k) { return this.fieldErrs[k] ? 'true' : null; },
+        focusField(k) { this.activeHelp = k; },
+        blurField(k) { this.activeHelp = ''; this.validateField(k); },
+        validateField(k) {
+            const field = this.fieldOf(k);
+            const range = this.ranges[field];
+            const form = k.startsWith('edit.') ? this.editRule : this.newRule;
+            const raw = String(form[field] ?? '').trim();
+            if (raw === '') { this.fieldErrs[k] = false; return; }  // 留空不算越界（同参数模块）
+            const v = Number(raw);
+            this.fieldErrs[k] = !(Number.isFinite(v) && v >= range.min && v <= range.max);
+        },
+        openCreate() {
+            this.fieldErrs = {}; this.activeHelp = '';
+            this.showForm = !this.showForm;
+        },
+        // 提交前统一校验：越界则不下发（服务端无范围校验，放任会写脏数据）
+        formValid(prefix) {
+            for (const f of Object.keys(this.ranges)) this.validateField(`${prefix}.${f}`);
+            const bad = Object.keys(this.ranges).some(f => this.fieldErrs[`${prefix}.${f}`]);
+            if (bad) {
+                const el = document.getElementById(prefix === 'edit' ? 'edit-result' : 'create-result');
+                if (el) el.innerHTML = '<p style="color:red">❌ 存在超出可调范围的参数，请修正后再提交。</p>';
+            }
+            return !bad;
+        },
+
+        // ── 子字段下拉：鼠标与键盘共用同一套候选态 ──
+        openSubField(target) {
+            this.subFieldTarget = target;
+            this.fetchSubFields(target);
+        },
+        pickSubField(val) {
+            const form = this.subFieldTarget === 'edit' ? this.editRule : this.newRule;
+            form.sub_field = val;
+            this.subFieldOpen = false;
+            this.subFieldIndex = -1;
+        },
+        onSubFieldArrow(ev, step) {
+            if (!this.subFieldOpen || this.subFieldSuggestions.length === 0) return;
+            ev.preventDefault();
+            const n = this.subFieldSuggestions.length;
+            // 取模支持上下循环；-1 起步时 ↓ 落到 0、↑ 落到末项
+            this.subFieldIndex = ((this.subFieldIndex + step) % n + n) % n;
+        },
+        onSubFieldEnter(ev) {
+            // 下拉未开时不拦截，让 Enter 照常提交表单
+            if (!this.subFieldOpen || this.subFieldSuggestions.length === 0) return;
+            ev.preventDefault();
+            this.pickSubField(this.subFieldSuggestions[this.subFieldIndex < 0 ? 0 : this.subFieldIndex]);
+        },
+
+        fetchSubFields(target) {
+            const form = target === 'edit' ? this.editRule : this.newRule;
+            this.subFieldIndex = -1;
+            if (!form.dimension) { this.subFieldSuggestions = []; this.subFieldOpen = false; return; }
             clearTimeout(this.subFieldTimer);
             this.subFieldTimer = setTimeout(async () => {
                 try {
-                    const resp = await fetch(`/rules/sub-fields?dimension=${dimension}`);
+                    const resp = await fetch(`/rules/sub-fields?dimension=${form.dimension}`);
                     const all = await resp.json();
                     // 按已键入内容过滤
+                    const typed = (form.sub_field || '').trim();
                     this.subFieldSuggestions = typed
                         ? all.filter(s => s.toLowerCase().includes(typed.toLowerCase()))
                         : all;
                     this.subFieldOpen = this.subFieldSuggestions.length > 0;
+                    this.subFieldIndex = -1;
                 } catch (e) {
                     console.error('获取子字段列表失败:', e);
                 }
@@ -215,6 +337,7 @@ document.addEventListener('alpine:init', () => {
         },
 
         openEdit(dataset) {
+            this.fieldErrs = {}; this.activeHelp = ''; this.subFieldIndex = -1;  // 清上一轮校验态
             this.editRule = {
                 id: dataset.id,
                 dimension: dataset.dimension,
@@ -229,6 +352,7 @@ document.addEventListener('alpine:init', () => {
         },
 
         async updateRule() {
+            if (!this.formValid('edit')) return;
             const fd = new FormData();
             fd.append('dimension', this.editRule.dimension);
             fd.append('sub_field', this.editRule.sub_field);
@@ -264,6 +388,7 @@ document.addEventListener('alpine:init', () => {
         },
 
         async createRule() {
+            if (!this.formValid('new')) return;
             const fd = new FormData();
             for (const [k, v] of Object.entries(this.newRule)) fd.append(k, v);
             const resp = await fetch('/rules/create', {method:'POST', body:fd});
@@ -271,6 +396,7 @@ document.addEventListener('alpine:init', () => {
             document.getElementById('create-result').innerHTML = html;
             this.showForm = false;
             this.newRule = {dimension:'', sub_field:'', pattern:'', match_type:'keyword', priority:0, threshold:0.6, label:''};
+            this.fieldErrs = {}; this.activeHelp = '';
             // fetch 成功路径显式派发质量报表刷新（与 htmx:afterSettle dispatcher 互补）
             document.body.dispatchEvent(new CustomEvent('rulesQualityRefresh'));
             // 触发列表刷新

@@ -21,7 +21,46 @@ def _read_static(name: str) -> str:
     return (PARTIALS.parent.parent.parent / "static" / name).read_text(encoding="utf-8")
 
 
-def test_force_ocr_checkbox_uses_pico_default_width():
+def test_rules_numeric_fields_have_help_popover_and_range_error():
+    """规则页 优先级/阈值 须有悬浮说明 + 失焦范围校验（对齐运维「参数设置」模块）
+
+    参考实现 app/templates/partials/params_panel.html：focus 显示 .param-pop 说明、
+    blur 校验并置 aria-invalid（Pico 原生渲染红边框）、越界显示 .param-err 红字。
+    """
+    html = _read("rules_list.html")
+    for field in ("priority", "threshold"):
+        for prefix in ("new", "edit"):
+            key = f"{prefix}.{field}"
+            assert f"focusField('{key}')" in html
+            assert f"blurField('{key}')" in html
+            assert f"invalid('{key}')" in html
+            assert f"x-show=\"fieldErrs['{key}']\"" in html
+            assert f"helpFor('{key}')" in html
+    assert "您输入的参数超出可调范围，请重新输入" in html
+    # Pico 靠 [aria-invalid=true] 出红边框，样式类需在位
+    assert ".rule-pop" in html and ".rule-err" in html
+
+
+def test_rules_subfield_label_carries_informational_hint():
+    """子字段 label 后须有「信息性」提示语（该字段只用于沉淀规则时填 sub_field）"""
+    html = _read("rules_list.html")
+    assert html.count("（信息性，不参与匹配，可留空）") == 2  # 新建 + 编辑两处
+
+
+def test_rules_subfield_dropdown_supports_keyboard_selection():
+    """子字段下拉须支持 ↑↓ 选择 + Enter 填充 + Esc 关闭（原先只能鼠标点击）"""
+    html = _read("rules_list.html")
+    for target in ("new", "edit"):
+        assert f"@keydown.arrow-down=\"onSubFieldArrow($event, 1)\"" in html
+        assert f"@keydown.arrow-up=\"onSubFieldArrow($event, -1)\"" in html
+        assert "@keydown.enter=\"onSubFieldEnter($event)\"" in html
+        assert f"openSubField('{target}')" in html
+        assert f"fetchSubFields('{target}')" in html
+    assert "@keydown.escape=\"subFieldOpen = false\"" in html
+    assert "sf-active" in html          # 键盘高亮项样式
+    assert "pickSubField(s)" in html    # 鼠标与键盘共用同一填充出口
+    assert "onSubFieldEnter(ev)" in html and "ev.preventDefault()" in html
+
     """强制OCR复选框不得带 width:auto（否则宽度塌缩为4px导致视觉不刷新）"""
     html = _read("tree_panel.html")
     line = next(l for l in html.splitlines() if 'name="force_ocr"' in l)
