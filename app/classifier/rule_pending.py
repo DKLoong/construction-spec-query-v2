@@ -19,7 +19,10 @@
   - insert_pending：同 (clause_id, dimension, pattern, label) 任一状态行已存在则
     None（不再重复）；并发由 UNIQUE 索引兜底 → 捕获 sqlite3.IntegrityError 返回 None。
 """
+import logging
 import sqlite3
+
+logger = logging.getLogger(__name__)
 
 KEY_DIMS = ("dim4", "dim5", "dim6")
 
@@ -88,6 +91,14 @@ def insert_pending(conn, clause_id: int | None, dimension: str, pattern: str, la
             (dimension, pattern, label, clause_id, confidence, batch_id))
         return cur.lastrowid
     except sqlite3.IntegrityError:
+        # 兜底分支必须留痕：它与此前"预检命中已有行"走同一条 return None，但语义
+        # 截然不同——那条是日常幂等重跑（不得告警，否则噪音淹没本条），本条是
+        # **并发竞态或预检与 UNIQUE 索引漂移**。二者漂移时后果是每次提案被静默丢弃，
+        # 唯一症状是"Tab2 少了个词"（与词库整表失效事故同形的静默降级）。
+        logger.warning(
+            "insert_pending 捕获 IntegrityError（UNIQUE 兜底：并发竞态或索引/预检漂移）: "
+            "dimension=%s pattern=%s label=%s clause_id=%s",
+            dimension, pattern, label, clause_id)
         return None
 
 

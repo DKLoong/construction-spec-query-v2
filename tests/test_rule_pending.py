@@ -1502,3 +1502,69 @@ def test_pending_counts_count_sql_matches_group_functions(auth_client):
     assert groups == 2           # (cid,dim6) (cid,dim5)，无孤儿组
     assert counts["clause"] == groups
     assert counts["word"] == 4   # (dim6,钢筋)(dim6,试验)(dim5,梁)(dim6,孤儿) 词面组
+
+
+# ── insert_pending 的 UNIQUE 兜底分支（此前完全静默）────────────────────
+
+class _StubCursor:
+    """预检 SELECT 的游标：fetchone 返回无行 → 让流程继续走到 INSERT"""
+
+    def __init__(self):
+        self.lastrowid = 7
+
+    def fetchone(self):
+        return None
+
+
+class _ConflictOnInsertConn:
+    """预检查不到行、INSERT 却撞 UNIQUE —— 复刻并发竞态 / 预检与索引漂移的形态。
+
+    真实库下**无法确定性复现**（预检总会先挡住同键行），唯一真实场景是两个连接
+    同时插入同键。故用 stub 精确命中该分支。
+    """
+
+    def __init__(self):
+        self.insert_attempted = False
+
+    def execute(self, sql, params=()):
+        if sql.lstrip().upper().startswith("SELECT"):
+            return _StubCursor()
+        self.insert_attempted = True
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: rule_pending.dimension")
+
+
+def test_insert_pending_integrity_error_warns(caplog):
+    """UNIQUE 兜底分支：返回 None、不抛，且**必须留一条 WARNING**
+
+    该分支此前完全静默。它与本项目的词库整表失效事故**同形**：
+    `insert_pending` 的预检 与 `idx_rule_pending_uniq` 是一对必须同步的
+    「读侧校验 + 写侧兜底」，一旦漂移，每次提案都被静默丢弃，唯一症状是
+    "Tab2 少了个词"，日志里无痕 —— 静默降级 + 不可观测 = 长期无人发现。
+    """
+    import logging
+
+    conn = _ConflictOnInsertConn()
+    with caplog.at_level(logging.WARNING, logger="app.classifier.rule_pending"):
+        assert rp.insert_pending(conn, 1, "dim6", "钢筋", "钢筋") is None
+    assert conn.insert_attempted, "应确实走到 INSERT（否则没测到兜底分支）"
+    assert any(r.levelno == logging.WARNING and "IntegrityError" in r.getMessage()
+               for r in caplog.records), "UNIQUE 兜底必须留一条 WARNING"
+
+
+def test_insert_pending_dedup_hit_is_silent(monkeypatch, tmp_path, caplog):
+    """正常幂等路径（预检命中已有行）**不得**告警
+
+    这是**日常重跑**会走的路（对同一条文重跑 AI 分类时，已提案的键都会经过它），
+    故告警会迅速变成噪音，反而埋掉上面那条真正该看的 WARNING。
+    """
+    import logging
+
+    _db(monkeypatch, tmp_path)
+    with get_db() as conn:
+        cid = _seed_clause(conn)
+        assert rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "b1") is not None
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="app.classifier.rule_pending"):
+            assert rp.insert_pending(conn, cid, "dim6", "钢筋", "钢筋", 0.9, "b1") is None
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], \
+        "正常去重路径不应产生告警"
