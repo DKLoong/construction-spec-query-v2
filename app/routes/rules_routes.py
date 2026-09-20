@@ -243,19 +243,22 @@ async def update_rule(
             (dimension, sub_field, pattern, match_type, priority, threshold,
              label.strip() or None, rule_id),
         )
+        # 读回更新后的行：响应的唯一数据来源。
+        # 不再用「UPDATE 前的行 + 手工叠加各字段」拼装——那种写法必须随列增加而同步
+        # 维护，漏一项就会让响应片段陈旧（曾漏 label，导致前端替换行后标签列不更新）。
+        updated = conn.execute(
+            "SELECT * FROM classification_rules WHERE id = ?", (rule_id,)
+        ).fetchone()
 
     log_action("rule", "INFO", "编辑规则",
                detail=json_detail({"rule_id": rule_id, "dimension": dimension,
                                    "pattern": pattern}),
                username=getattr(request.state, "username", ""))
 
-    # 返回更新后的规则行 HTML 片段（供 htmx 替换）
+    # 返回更新后的规则行 HTML 片段（供 htmx/fetch 替换）
     from app.main import templates
     return templates.TemplateResponse(request, "partials/rules_row.html", {
-        "rule": dict(existing) | {
-            "dimension": dimension, "sub_field": sub_field, "pattern": pattern,
-            "match_type": match_type, "priority": priority, "threshold": threshold,
-        }
+        "rule": dict(updated),
     })
 
 

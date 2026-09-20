@@ -601,6 +601,63 @@ def test_same_label_multiple_patterns(auth_client, monkeypatch, tmp_path):
     assert html.count("钢筋") >= 3             # 三个关键词都显示同一标签
 
 
+def test_update_rule_response_reflects_new_label(auth_client, monkeypatch, tmp_path):
+    """PUT 返回的行片段必须反映新 label —— 否则前端替换行后「标签」列仍显示旧值
+
+    原缺陷：响应由 UPDATE 之前查到的行 dict 叠加 7 个字段拼成，唯独漏了 label，
+    于是 DB 更新成功但返回片段陈旧，前端 htmx/fetch 替换行后标签列不更新。
+    """
+    db_path = tmp_path / "test_update_label_resp.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO classification_rules "
+            "(dimension, sub_field, pattern, match_type, priority, threshold, label) "
+            "VALUES ('dim6', 'material', '接头', 'keyword', 1, 0.5, '旧标签')"
+        )
+        rule_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    resp = auth_client.put(f"/rules/{rule_id}", data={
+        "dimension": "dim6",
+        "sub_field": "material",
+        "pattern": "接头",
+        "match_type": "keyword",
+        "priority": 1,
+        "threshold": 0.5,
+        "label": "新标签",
+    })
+    assert resp.status_code == 200
+    assert "新标签" in resp.text, "响应片段未反映新 label"
+    assert "旧标签" not in resp.text, "响应片段残留旧 label"
+
+
+def test_update_rule_response_reflects_cleared_label(auth_client, monkeypatch, tmp_path):
+    """清空 label 后响应片段也不得残留旧标签（占位「词即标签」应出现）"""
+    db_path = tmp_path / "test_update_label_clear.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO classification_rules "
+            "(dimension, sub_field, pattern, match_type, priority, threshold, label) "
+            "VALUES ('dim6', 'material', '砌体', 'keyword', 1, 0.5, '待清标签')"
+        )
+        rule_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    resp = auth_client.put(f"/rules/{rule_id}", data={
+        "dimension": "dim6", "sub_field": "material", "pattern": "砌体",
+        "match_type": "keyword", "priority": 1, "threshold": 0.5, "label": "",
+    })
+    assert resp.status_code == 200
+    assert "待清标签" not in resp.text
+    assert "词即标签" in resp.text
+
+
 def test_rules_list_shows_label_or_placeholder(auth_client, monkeypatch, tmp_path):
     """label 为空时列表显示「词即标签」占位，不显示空白"""
     db_path = tmp_path / "test_label_placeholder.db"
