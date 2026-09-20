@@ -165,9 +165,12 @@ def collect_label_candidates(dimension: str, limit: int | None = None) -> list[s
     """收集某维度已有标签候选，供 AI 分类 prompt 约束标签口径
 
     来源合并：
-    - classification_rules 中该维度激活规则的 pattern（按 priority/hit_count 降序）
+    - classification_rules 中该维度激活规则的**标签**（按 priority/hit_count 降序）：
+      label 有值取 label（新语义：pattern 只是匹配用的特征词），label 为空回退
+      pattern（旧语义：词即标签）。取 pattern 会把「套筒/保护层/丝头」这类特征词
+      混进候选标签，误导 AI 的标签口径。
     - clauses 表中该维度已填写的值（拆逗号分隔的多标签）
-    结果去重保序，优先规则关键词（更稳定）。
+    结果去重保序，优先规则标签（更稳定）。
     """
     if limit is None:
         from app.params.registry import get_param_int
@@ -178,7 +181,8 @@ def collect_label_candidates(dimension: str, limit: int | None = None) -> list[s
 
     with get_db() as conn:
         rules = conn.execute(
-            """SELECT pattern FROM classification_rules
+            """SELECT COALESCE(NULLIF(label, ''), pattern) AS cand
+               FROM classification_rules
                WHERE dimension = ? AND is_active = 1
                ORDER BY priority DESC, hit_count DESC""",
             (dimension,),

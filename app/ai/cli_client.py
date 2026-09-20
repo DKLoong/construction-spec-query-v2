@@ -72,10 +72,15 @@ def build_classify_prompt(clauses: list[dict], dimension: str,
 
     parts = [f"你是施工规范分类助手。请为以下条文标注「{dim_label}」维度。"]
     if candidate_labels:
+        # 候选集来自该维已有标签词表 ∪ 库内已用值 → 具备权威性，禁止绕过自造标签
+        # （放开「可新建」会让 AI 产出漂移标签，污染分类树与规则词表）
         parts.append(
-            "候选标签（请优先从其中选择；若确实不匹配可新建更贴切标签）:\n"
+            "候选标签（必须从其中选择，不得使用列表之外的标签）:\n"
             + "、".join(candidate_labels)
         )
+    else:
+        # 该维尚无可用词表（冷启动），只能由 AI 依据条文给出，不做约束
+        parts.append("无预设标签可选，请依据条文内容给出贴切标签。")
     # 输出格式说明（Few-shot 样例之前）
     parts.append(
         "输出格式：请仅以 JSON 数组返回分类结果，不要输出其它说明文字:\n"

@@ -40,6 +40,22 @@ def test_prompt_without_candidate_labels():
     assert "候选标签" not in prompt
 
 
+def test_prompt_candidate_labels_are_authoritative():
+    """给定候选标签时禁止 AI 自造列表之外的标签（约束标签口径，防凭空新标签）
+
+    候选集来自 collect_label_candidates（该维已有标签词表 ∪ 库内已用值）；
+    放开「可新建」会让 AI 绕过既有词表产出漂移标签。
+    """
+    prompt = build_classify_prompt(_sample_batch(), "dim6", ["钢筋", "砌体"])
+    assert "不得使用列表之外的标签" in prompt
+
+
+def test_prompt_no_candidates_allows_new_label():
+    """无候选标签时允许 AI 依据条文给出标签（该维尚无词表，需冷启动）"""
+    prompt = build_classify_prompt(_sample_batch(), "dim6")
+    assert "无预设标签可选" in prompt
+
+
 def test_prompt_html_cleaned():
     """条文内容中的 HTML 残留应在 prompt 中清理"""
     prompt = build_classify_prompt(_sample_batch(), "dim6")

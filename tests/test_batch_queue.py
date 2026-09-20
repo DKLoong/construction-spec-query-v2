@@ -91,6 +91,35 @@ def test_collect_label_candidates_merges_rules_and_values(monkeypatch, tmp_path)
     assert len(labels) == len(set(labels))  # 去重
 
 
+def test_collect_label_candidates_uses_label_over_pattern(monkeypatch, tmp_path):
+    """带 label 的规则应贡献 label，而非把特征词(pattern)当候选标签
+
+    解耦后的规则有两种形态：label 为空 → pattern 即标签（旧语义）；
+    label 有值 → pattern 只是匹配用的特征词（新语义）。候选标签必须取前者语义，
+    否则「套筒/保护层/丝头」这类特征词会混进候选标签，误导 AI 标注口径。
+    """
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    init_db()
+    with get_db() as conn:
+        setup_sample_data(conn)
+        conn.executemany(
+            """INSERT INTO classification_rules
+               (dimension, sub_field, pattern, match_type, priority, threshold, is_active, label)
+               VALUES (?, ?, ?, 'keyword', ?, ?, 1, ?)""",
+            [
+                ("dim5", "location", "套筒", 2, 0.6, "主体结构"),    # 特征词 → 标签
+                ("dim5", "location", "保护层", 1, 0.6, "主体结构"),  # 同一标签多入口
+                ("dim5", "location", "屋面", 1, 0.6, None),        # 旧语义：词即标签
+            ],
+        )
+    labels = collect_label_candidates("dim5")
+    assert "主体结构" in labels   # 带 label 的规则贡献其标签
+    assert "套筒" not in labels   # 特征词不得进候选标签
+    assert "保护层" not in labels
+    assert "屋面" in labels       # label 为空时回退 pattern（旧语义保留）
+
+
 def test_collect_label_candidates_unknown_dim(monkeypatch, tmp_path):
     """未知维度返回空列表"""
     db_path = tmp_path / "test.db"
