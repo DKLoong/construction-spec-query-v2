@@ -184,6 +184,15 @@ async def upload_file(
         "owner": getattr(request.state, "username", ""),
     }
 
+    # filename 为库声明中的可选字段（`str | None`）：经 HTTP 由 Starlette 的
+    # MultiPartParser 构造时恒为 str（无 filename= 的 part 会被当成普通表单字段而
+    # 非 UploadFile），但直接依赖库声明之外的形态不严谨 —— 按全局规则 1.1 校验外部输入。
+    if not file.filename:
+        progress_store.pop(task_id, None)
+        return HTMLResponse(
+            '<div id="import-status" style="color:#c00;font-weight:bold">'
+            "❌ 缺少文件名，无法识别文件类型</div>", status_code=400)
+
     ext = Path(file.filename).suffix.lower()
     save_path = Path(UPLOAD_DIR) / f"{task_id}{ext}"
     save_path.write_bytes(content)
@@ -254,7 +263,9 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
                 if hasattr(api, "progress_cb"):
                     def _ocr_progress(msg: str, _tid: str = task_id) -> None:
                         progress_store[_tid].update(message=msg)
-                    api.progress_cb = _ocr_progress
+                    # 动态可选属性（仅 PaddleVLClient 支持）→ 用 setattr，
+                    # 而非在 OCRClient 协议里声明成所有实现者的硬要求
+                    setattr(api, "progress_cb", _ocr_progress)
                 md_path = api.ocr_pdf_to_md(file_path)
                 md_text = Path(md_path).read_text(encoding="utf-8")
             else:

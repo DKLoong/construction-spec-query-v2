@@ -130,6 +130,69 @@ def test_upload_no_file_authenticated(auth_client):
     assert resp.status_code in (400, 422)
 
 
+def _multipart_without_filename(data: bytes = b"# T\n\n## 1 \xe6\x80\xbb\xe5\x88\x99\n",
+                                field: str = "file"):
+    """构造**没有 filename= 参数**的 multipart part。
+
+    注意：`filename=""`（空串）**不是**这种情况——`Path("")` 不抛异常。只有整个
+    part 缺 filename 时 Starlette 才给出 `filename=None`（其注解即 `str | None`）。
+    """
+    boundary = "----noFilenameBoundary"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{field}"\r\n'
+        f"Content-Type: text/markdown\r\n\r\n"
+    ).encode() + data + f"\r\n--{boundary}--\r\n".encode()
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
+def test_upload_without_filename_never_5xx(auth_client, monkeypatch, tmp_path):
+    """畸形上传（part 缺 filename）不得 5xx
+
+    实测：Starlette 只在 part **带** `filename=` 时才构造 UploadFile，否则当普通
+    表单字段 → FastAPI 校验直接拒 → 422。此处锁住「不得 500」这个契约。
+    """
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "nf.db"))
+    from app.database import init_db
+    init_db()
+
+    body, content_type = _multipart_without_filename()
+    resp = auth_client.post("/import/upload", content=body,
+                            headers={"content-type": content_type})
+    assert resp.status_code < 500, f"畸形上传不应 5xx，实际 {resp.status_code}"
+
+
+def test_upload_null_filename_returns_400(monkeypatch, tmp_path):
+    """直接以 filename=None 调用路由须返回 400（防御性校验，非可达 bug）
+
+    经 HTTP **不可达**：Starlette 的 MultiPartParser 仅在 part 带 `filename=` 时
+    构造 UploadFile，且 filename 恒为解码后的 str（可能空串、永不为 None）。
+    但 `UploadFile.filename` 的库声明是 `str | None`，据此直接 `Path(...)` 推导扩展名
+    属于「假定库声明之外的输入形态」；按全局规则 1.1（外部输入必须校验）加守卫。
+    本测试是该守卫的唯一回归入口（HTTP 层到不了）。
+    """
+    import asyncio
+    import io
+
+    from fastapi import BackgroundTasks, UploadFile
+    from starlette.requests import Request
+
+    from app.routes.import_routes import upload_file
+
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "nf2.db"))
+    from app.database import init_db
+    init_db()
+
+    req = Request({"type": "http", "method": "POST", "path": "/import/upload",
+                   "headers": []})
+    req.state.username = "tester"
+    upload = UploadFile(filename=None, file=io.BytesIO(b"x"))
+
+    resp = asyncio.run(upload_file(req, BackgroundTasks(), upload))
+
+    assert resp.status_code == 400, f"应返回 400，实际 {resp.status_code}"
+
+
 def test_upload_markdown(auth_client, monkeypatch, tmp_path):
     """测试上传 MD 文件导入流程"""
     db_path = tmp_path / "test_import.db"
