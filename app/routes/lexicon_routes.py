@@ -125,6 +125,10 @@ async def create_lexicon(request: Request, kind: str = Form(...),
     data, err = validate_row(kind, canonical, variants, distinguish)
     if err:
         return HTMLResponse(f'<p style="color:red">❌ {err}</p>', status_code=400)
+    # validate_row 契约：err 为空 ⟹ data 必为 dict。
+    # 该契约由 tests/test_lexicon_validation.py 逐条错误路径守护；此处断言让类型检查器
+    # 也认可（Pyright 不做「元组两元素互斥」的跨元素窄化），且违约时立刻暴露而非静默 500。
+    assert data is not None
     with get_db() as conn:
         # synonym/alias 组唯一（应用层）：同 kind canonical 已存在 → 拒绝并立。
         # 用 validate_row 返回的 data["kind"]（已 strip），不用原始 Form kind。
@@ -192,6 +196,7 @@ async def edit_lexicon(request: Request, lid: int, canonical: str = Form(""),
     data, err = validate_row(row["kind"], canonical, variants, distinguish)
     if err:
         return HTMLResponse(f'<p style="color:red">❌ {err}</p>', status_code=400)
+    assert data is not None  # 同 create：validate_row 契约，见 test_lexicon_validation.py
     if row["kind"] in EQUIV_KINDS:
         with get_db() as conn:
             dup = _find_equiv_group(conn, row["kind"], data["canonical"])
@@ -264,6 +269,7 @@ async def import_lexicon(request: Request, file: UploadFile = File(...),
                 fail += 1
                 fails.append(f"第{line_no}行: {err}")
                 continue
+            assert data is not None  # 同上：validate_row 契约
             key = (data["kind"], data["canonical"], data["variants"])
             if key in seen:
                 skip += 1

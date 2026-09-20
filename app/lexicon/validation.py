@@ -2,15 +2,24 @@
 from app.lexicon.store import KIND_ALIAS, KIND_CONFUSABLE, KIND_SYNONYM
 
 _KINDS = (KIND_SYNONYM, KIND_ALIAS, KIND_CONFUSABLE)
-_EQUIV = (KIND_SYNONYM, KIND_ALIAS)
 
 
 def _split(variants: str) -> list[str]:
     return [v.strip() for v in (variants or "").split(",") if v.strip()]
 
 
-def validate_row(kind: str, canonical: str, variants: str, distinguish: str = "") -> tuple[dict | None, str | None]:
-    """校验并返回 (净数据 dict | None, 错误信息 | None)。"""
+def validate_row(kind: str, canonical: str, variants: str,
+                 distinguish: str = "") -> tuple[dict, None] | tuple[None, str]:
+    """校验并返回 (净数据 dict, None) 或 (None, 错误信息)。
+
+    返回类型写成**两种元组的联合**（而非 ``tuple[dict | None, str | None]``），
+    是为了把「data 与 err 互斥」这一契约编码进类型：调用点写
+    ``data, err = validate_row(...); if err: return`` 之后，类型检查器能据此
+    把 ``data`` 窄化为 ``dict``——否则全部 ~10 处 ``data["kind"]`` 都会被报
+    「可能为 None」，而那些报错在运行时并不成立。
+
+    契约由 ``tests/test_lexicon_validation.py`` 守护（该文件逐个覆盖每条错误路径）。
+    """
     kind = (kind or "").strip()
     canonical = (canonical or "").strip()
     if kind not in _KINDS:
