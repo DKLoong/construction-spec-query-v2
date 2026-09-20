@@ -42,6 +42,35 @@
 .rule-group-head button { margin:0; }
 .rule-group-body { padding:0.4rem 0.6rem; }
 .rule-group-body table { font-size:0.85rem; margin:0; }
+
+/* ── 「🤖 运行 AI 分类」的忙碌态：白色蒙版 + 转圈 + 禁用 ──
+   /classify/run 是**同步**接口（drain 模式跑完整个待处理队列才返回），所以请求时长
+   就等于分类时长。htmx 在请求期间给指示元素加 .htmx-request（由 hx-indicator="this"
+   指定为按钮自身），请求结束后自动摘掉——蒙版的生命周期正好覆盖分类过程，无需额外 JS。
+   hx-disabled-elt="this" 同时在请求期间置 disabled，防重复提交。 */
+.classify-run { position:relative; }
+/* color:transparent 让文字给转圈让位（否则转圈正落在居中的「AI」字样上，读起来是套了个环）。
+   文字只是变透明、仍在可访问性树里，屏幕阅读器照常读出按钮名；
+   !important 是必需的——按钮自带内联 style="color:white"，内联样式会压过普通类规则。 */
+.classify-run.htmx-request { cursor:progress; color:transparent !important; }
+/* 白色蒙版：盖住按钮底色，明确表示"正在跑"（而非仅仅是不可用） */
+.classify-run.htmx-request::after {
+    content:''; position:absolute; inset:0; border-radius:inherit;
+    background:rgba(255,255,255,0.78);
+}
+/* 蒙版之上的转圈：动效只用于"回应用户动作、说明状态变化"，并尊重减少动效偏好 */
+.classify-run.htmx-request::before {
+    content:''; position:absolute; top:50%; left:50%;
+    width:1rem; height:1rem; margin:-0.5rem 0 0 -0.5rem;
+    border:2px solid rgba(0,0,0,0.15);
+    border-top-color:var(--pico-primary-background);
+    border-radius:50%; z-index:1;
+    animation:classify-spin 0.7s linear infinite;
+}
+@keyframes classify-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+    .classify-run.htmx-request::before { animation:none; }
+}
 </style>
 <div x-data="rulesManager()" style="padding:1rem">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
@@ -80,7 +109,9 @@
     <!-- 操作按钮行 -->
     <div style="margin-bottom:1rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
         <button @click="openCreate()" class="secondary">➕ 新建规则</button>
-        <button hx-post="/classify/run" hx-target="#classify-result" class="secondary"
+        <button hx-post="/classify/run" hx-target="#classify-result"
+                hx-indicator="this" hx-disabled-elt="this"
+                class="classify-run secondary"
                 style="background:var(--pico-primary-background);border-color:var(--pico-primary-background);color:white">
             🤖 运行 AI 分类
         </button>

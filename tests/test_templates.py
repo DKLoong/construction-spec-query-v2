@@ -103,6 +103,31 @@ def test_rules_view_toggle_sits_in_filter_row_right_aligned():
     assert "setView('rules')" in right and "setView('label')" in right
 
 
+def test_rules_classify_button_has_busy_state():
+    """「运行 AI 分类」在分类期间须盖白色蒙版并置禁用，完成后自动复原
+
+    可行性依据：/classify/run 是**同步**接口（process_pending_batches(drain=True)
+    在请求内跑完才返回）→ 请求时长 == 分类时长，故 htmx 请求类的生命周期正好覆盖
+    分类过程。htmx 2.0.10 的 requestClass 确为 "htmx-request"（源码已核）。
+    显式写 hx-indicator="this" 指定蒙版挂在按钮自身，不依赖"默认指示器"的隐含规则。
+    hx-disabled-elt="this" 在请求期间置 disabled —— 防重复提交。
+    """
+    html = _read("rules_list.html")
+    assert 'hx-post="/classify/run"' in html
+    assert 'hx-indicator="this"' in html
+    assert 'hx-disabled-elt="this"' in html
+    assert 'class="classify-run secondary"' in html
+    # 白色蒙版 + 蒙版之上的转圈 + 尊重减少动效
+    assert ".classify-run.htmx-request::after" in html
+    assert "rgba(255,255,255,0.78)" in html
+    assert ".classify-run.htmx-request::before" in html
+    assert "classify-spin" in html
+    assert "prefers-reduced-motion: reduce" in html
+    # 忙碌时文字须透明让位给转圈（否则转圈正压在居中的「AI」字样上）。
+    # !important 必需：按钮自带内联 color:white，内联样式会压过普通类规则。
+    assert "color:transparent !important" in html
+
+
 def test_rules_create_dialog_handles_duplicate_conflict():
     """新建被「同维度同关键词已存在」拦下时，须显示冲突信息并给出「改为编辑该规则」出路"""
     html = _read("rules_list.html")
