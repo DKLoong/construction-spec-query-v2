@@ -59,33 +59,44 @@ def _fresh() -> list[LexiconRow]:
     return rows
 
 
-def _check_equiv_unique(rows: list[LexiconRow]) -> bool:
-    """同一词不得同时属于多个 equiv 组（canonical/variants 合计）。confusable 独立。
+def _split_conflicts(rows: list[LexiconRow]) -> tuple[list[LexiconRow], list[int], list[str]]:
+    """按「一个词只能属于一个等价组」把行集拆成 (保留行, 被剔除的行 id, 冲突词)。
 
-    通过时 equiv_conflict_word 置 None；冲突时记录冲突词并返回 False。
+    只有 synonym/alias 参与词面占用（与写入侧 `find_equiv_conflict` 同口径）；
+    confusable 是独立命名空间，永不冲突、永不被剔除。
+
+    **降级策略（2026-09-20 改）**：冲突簇内的行**全部**剔除，而不是丢弃整张表。
+    此前「发现任一冲突即整表作废」曾让一次数据瑕疵（76 个冲突词）造成 509 条等价组
+    + 211 条 confusable 全部失效 13 天。剔除是**对称**的（不依赖行序，不搞「保第一行」
+    那种任意取舍）；被剔除的组不可信，但其余组照常可用。
     """
     global equiv_conflict_word
-    equiv_conflict_word = None
     owner: dict[str, int] = {}
+    conflicting: set[int] = set()
+    words: list[str] = []
     for r in rows:
         if r.kind not in EQUIV_KINDS:
             continue
         for w in [r.canonical, *r.variants]:
             prev = owner.get(w)
             if prev is not None and prev != r.id:
-                equiv_conflict_word = w
-                return False
-            owner[w] = r.id
-    return True
+                conflicting.add(prev)
+                conflicting.add(r.id)
+                words.append(w)
+            else:
+                owner[w] = r.id
+    equiv_conflict_word = words[0] if words else None
+    return ([r for r in rows if r.id not in conflicting],
+            sorted(conflicting), words)
 
 
 def find_equiv_conflict(conn, words, exclude_id: int | None = None) -> str | None:
     """写入侧校验：这些词面是否已属于**别的** equiv 组？返回首个冲突词或 None。
 
-    **必须与读侧 `_check_equiv_unique` 同样严格**——读侧一旦发现同词跨组就整表
-    作废（fail-closed），若写入侧更宽松，就能写进读侧会整体拒绝的数据，
-    即「一次 CSV 导入搞死整个词库」（2026-09-19 事故）。故对齐三点：
-    canonical 与 variants 全算、跨 kind（alias/synonym 同一命名空间）、精确匹配。
+    **必须与读侧 `_split_conflicts` 同样严格**——两边口径不一致（写入侧更宽松）时，
+    就能写进读侧会拒绝的数据，即「一次 CSV 导入搞死整个词库」（2026-09-19 事故）。
+    故对齐三点：canonical 与 variants 全算、跨 kind（alias/synonym 同一命名空间）、
+    精确匹配。
 
     - `exclude_id`：编辑/合并时排除自身行（自己占自己的词面不算冲突）
     - confusable 是独立命名空间，不参与 equiv 词面占用
@@ -118,16 +129,15 @@ def _load_all() -> list[LexiconRow]:
     if _cache is not None and _cache_path == DATABASE_PATH and (now - _cache_ts) < _TTL:
         return _cache
     try:
-        if not os.path.exists(DATABASE_PATH):
-            rows: list[LexiconRow] = []
-        else:
-            rows = _fresh()
-        if _check_equiv_unique(rows):
-            _cache = rows
-        else:
-            logger.error("词库 equiv 词条冲突（同一词属多组），本次加载作废: %s",
-                         equiv_conflict_word)
-            _cache = []
+        rows: list[LexiconRow] = _fresh() if os.path.exists(DATABASE_PATH) else []
+        kept, dropped, words = _split_conflicts(rows)
+        if dropped:
+            # ERROR 级：这是「部分功能失效」，必须在日志管理界面可见（此前 WARNING
+            # 且不落库，导致 13 天无人发现）。detail 里带冲突词与剔除规模。
+            logger.error("词库同词跨组冲突：剔除 %d 组、保留 %d 组（冲突词：%s）",
+                         len(dropped), len(kept),
+                         "、".join(dict.fromkeys(words))[:120])
+        _cache = kept
     except Exception as e:
         logger.warning("词库加载失败，回退空列表: %s", e)
         _cache = []

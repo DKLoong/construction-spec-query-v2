@@ -51,20 +51,54 @@ def test_store_loads_from_db(monkeypatch, tmp_path):
     assert row.variants == ["W/C"]
 
 
-def test_equiv_conflict_word_blocks_load(monkeypatch, tmp_path):
-    """同一词分属两个 equiv 组 → load_equivalent_groups 返回空且记录冲突词"""
+def _seed_conflict_with_clean(monkeypatch, tmp_path, name="cc.db"):
+    """冲突对（混凝土/砼 与 钢筋/混凝土）+ 一个干净组（水灰比）+ 一条 confusable"""
     from app.database import get_db, init_db
-    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "c.db"))
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / name))
     invalidate_lexicon_caches()
     init_db()
     with get_db() as conn:
-        # init_db 已预置 alias 混凝土/砼，先清空使下方两行成为唯一数据（避免唯一键重复）
         conn.execute("DELETE FROM lexicon_entries")
         conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('alias','混凝土','砼')")
         conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('synonym','钢筋','混凝土')")
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('alias','水灰比','W/C')")
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants,distinguish) "
+                     "VALUES ('confusable','圈梁','构造柱','竖向构件不同')")
     invalidate_lexicon_caches()
-    assert load_equivalent_groups() == []
-    assert store.equiv_conflict_word == "混凝土"
+
+
+def test_conflict_drops_only_conflicting_groups(monkeypatch, tmp_path):
+    """同词跨组只剔除冲突组，其余组照常可用（不再整表作废）
+
+    降级策略：把「发现冲突即丢弃整张表」改为「只剔除冲突组」——一次数据瑕疵
+    不应让全部 509 条等价组 + 211 条 confusable 一起失效。
+    """
+    _seed_conflict_with_clean(monkeypatch, tmp_path)
+    eq = load_equivalent_groups()
+    names = {g.canonical for g in eq}
+    assert names == {"水灰比"}, "只应剔除冲突组，干净组必须保留"
+    assert store.equiv_conflict_word == "混凝土", "冲突词应记录（兼容字段）"
+
+
+def test_confusable_survives_equiv_conflict(monkeypatch, tmp_path):
+    """confusable 是独立命名空间，不受 equiv 冲突牵连"""
+    _seed_conflict_with_clean(monkeypatch, tmp_path, name="cc2.db")
+    pairs = load_confusable_pairs()
+    assert len(pairs) == 1 and pairs[0].canonical == "圈梁"
+
+
+def test_no_conflict_keeps_all(monkeypatch, tmp_path):
+    """无冲突时全量保留（降级不得误伤正常数据）"""
+    _seed_conflict_with_clean(monkeypatch, tmp_path, name="cc3.db")
+    from app.database import get_db
+    with get_db() as conn:
+        conn.execute("DELETE FROM lexicon_entries")
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('alias','混凝土','砼')")
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) VALUES ('alias','水灰比','W/C')")
+    invalidate_lexicon_caches()
+    assert {g.canonical for g in load_equivalent_groups()} == {"混凝土", "水灰比"}
+    assert store.equiv_conflict_word is None
+
 
 
 def _seed_conflict_db(monkeypatch, tmp_path, name="wc.db"):
