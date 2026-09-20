@@ -2,13 +2,13 @@ __pycache__/
 *.pyc
 .venv/
 .env
-data/spec_query.db
-data/uploads/*
-data/outputs/*
-data/workspace/*
 lance_db/
 .pytest_cache/
 models/
+
+# 运行期数据整体忽略：数据库、上传源文件、OCR 产物、工作区、**数据库备份**
+# 注：data/backups/ 存整库副本（含用户数据），此前未被忽略，属误提交风险
+data/
 
 # 本地运行产物（dev server 日志等）
 *.log
