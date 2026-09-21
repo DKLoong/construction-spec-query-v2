@@ -33,7 +33,7 @@ document.addEventListener('htmx:afterRequest', function () {
     }, 260);
 });
 </script>
-<div x-data="{ kind: 'alias' }" style="padding:1rem">
+<div x-data="{ kind: 'synonym' }" style="padding:1rem">
     <!-- 当前 kind 单一来源：供添加/导入表单 hx-include 与列表自动刷新带参 -->
     <input type="hidden" id="lexicon-kind-input" name="kind" :value="kind">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">

@@ -101,7 +101,7 @@ async def lexicon_template_download():
 
 
 @router.get("/lexicon/list")
-async def lexicon_list(request: Request, kind: str = "alias", active: str = ""):
+async def lexicon_list(request: Request, kind: str = "synonym", active: str = ""):
     from app.main import templates
     with get_db() as conn:
         if active in ("0", "1"):

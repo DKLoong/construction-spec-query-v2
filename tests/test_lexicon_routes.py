@@ -350,3 +350,29 @@ def test_lexicon_csv_import_chinese_headers(auth_client, monkeypatch, tmp_path):
             "SELECT kind, canonical, variants FROM lexicon_entries")}
     assert ("alias", "养护龄期") in rows and rows[("alias", "养护龄期")] == "养护期"
     assert ("confusable", "灌注桩") in rows
+
+
+def test_lexicon_default_tab_is_synonym(auth_client, monkeypatch, tmp_path):
+    """词库默认子 Tab 为同义词页：模板 Alpine 初值与路由 list 默认值必须同步为 synonym
+
+    两处默认值缺一不可：模板 x-data 决定 Tab 高亮与新增/导入表单的 kind；
+    /lexicon/list 的 kind 默认值是 hx-include 未带参（初始 load 时序异常、直接访问）时的兜底。
+    任一处留 alias，「默认进同义词」都会在相应路径下失效。
+    """
+    from app.database import init_db, get_db, DATABASE_PATH
+    from app import database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / "l_default.db"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO lexicon_entries(kind,canonical,variants) "
+                     "VALUES ('synonym','坍落度','塌落度')")
+
+    page = auth_client.get("/lexicon")
+    assert page.status_code == 200
+    assert "kind: 'synonym'" in page.text, "词库页 Alpine 初值须为 synonym"
+    assert "kind: 'alias'" not in page.text, "不得残留 alias 初值"
+
+    lst = auth_client.get("/lexicon/list")  # 不带 kind 参数：走路由默认值
+    assert lst.status_code == 200
+    assert "代表词" in lst.text and "等价词" in lst.text, "无 kind 时应返回 synonym 列头"
+    assert "规范词" not in lst.text, "不得返回 alias 列头"
