@@ -251,23 +251,37 @@ def t2_qa_button_opens_qa_page(page):
 
 
 def t2_sessions_panel_collapses_without_moving_composer(page):
-    """边界场景（核心）：折叠会话管理栏，输入框位置不变。
+    """边界场景（核心）：折叠会话管理栏后，输入框纵向不动、对话区横向延伸。
 
-    这是「输入框挪到结果栏底部」这条需求的验收点——折叠会话管理
-    绝不能把输入框一起带走。
+    两条缺一不可：
+      - 纵向不动：输入框贴在对话栏底部，不能随会话管理折叠被带走；
+      - 横向延伸：折叠让出的空间要回流给对话区（含消息区与输入框），
+        填满空白而不是留一条空缺。
+
+    几何已用最小复现实测确认（1600x900 视口下 842 → 1219，右边缘 +377）。
     """
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
-    before = page.locator(".qa-composer").bounding_box()
+    before = {s: page.locator(s).bounding_box()
+              for s in (".qa-composer", ".qa-messages", ".qa-thread")}
     page.click("#qa-session-toggle")
     page.wait_for_timeout(300)
-    after = page.locator(".qa-composer").bounding_box()
-    assert before and after
-    assert abs(before["y"] - after["y"]) < 2, \
-        f"折叠会话管理后输入框纵向位移 {after['y'] - before['y']}px，应保持不动"
-    assert after["x"] + after["width"] > before["x"] + before["width"], \
-        "折叠后对话区应变宽"
+    after = {s: page.locator(s).bounding_box()
+             for s in (".qa-composer", ".qa-messages", ".qa-thread")}
+    assert all(before.values()) and all(after.values())
+
+    assert abs(before[".qa-composer"]["y"] - after[".qa-composer"]["y"]) < 2, \
+        f"折叠后输入框纵向位移 {after['.qa-composer']['y'] - before['.qa-composer']['y']}px，应保持不动"
+
+    for sel, name in ((".qa-messages", "对话消息区"),
+                      (".qa-composer", "输入框"),
+                      (".qa-thread", "对话栏")):
+        assert after[sel]["width"] > before[sel]["width"], \
+            f"折叠后{name}应变宽以填充空白：{before[sel]['width']} -> {after[sel]['width']}"
+
+    # 会话管理栏必须真的收起（否则上面的变宽可能是布局重叠造成的假象）
+    assert page.locator(".qa-sessions").is_hidden(), "折叠后会话管理栏应不可见"
 
 
 def t2_qa_page_not_shown_on_other_pages(page):
@@ -425,6 +439,12 @@ async def qa_page(request: Request):
 /* ── QA 页：对话区（主） | 会话管理（右，可折叠） ──
    flex 分列而非新增 grid 列：视觉效果与三栏等价（20% | 50% | 30%），
    但避开 .app-layout 的 grid 改动与 .full-width（审查页）分支的连带影响。 */
+
+/* QA 页需要确定高度，否则 .qa-root 的 height:100% 解析不到父级高度而塌陷
+   （内部滚动区与「输入框贴底」都依赖它）。
+   用 :has() 把该规则限定在 QA 页，避免影响检索/规范/规则等其它页面的滚动行为。 */
+#main-content:has(.qa-root) { height: 100%; }
+
 .qa-root { display: flex; gap: 0.75rem; height: 100%; min-height: 0; }
 .qa-thread { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 .qa-thread-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; font-weight: 600; }
@@ -1323,4 +1343,5 @@ git commit -m "feat: QA 流式输出（SSE 读取 + 流式期间降级渲染）"
 
 - **CLI 后端取消**（设计文档 D11 提及）：3 个调用点 `classifier_ai.py:20`、`import_routes.py:113`、`qa_routes.py:264`。`APIBackend.classify_batch_sync` 已实现，功能上可覆盖。**不在本计划范围**，需另立计划。
 - **模型安装期可选化**（设计文档 D12）：属封装方案范畴，留待封装时统一设计。
-- **`.center-panel-v2` 的滚动与 QA 页高度**：QA 页用 `height:100%` + 内部 flex 滚动。若实际渲染发现双滚动条或高度塌陷，需给 `.center-panel-v2` 补 `display:flex; flex-direction:column` 或改用 `min-height:calc(100vh - X)`。T2 的探针只验证输入框位置不随折叠移动，未覆盖高度塌陷——实施时若发现，作为 T2 的补充修复。
+- **`.center-panel-v2` 的滚动与 QA 页高度**：已用最小复现实测确认——`#main-content:has(.qa-root) { height:100% }` 在 1600×900 下使 `.qa-root` 高度正确解析为 852px，内部滚动与贴底输入框均正常，且 `:has()` 收窄后不影响其它页面。**若将来浏览器不支持 `:has()`**（项目用 Chrome/Edge，已支持），退路是给 `.center-panel-v2` 补 `display:flex; flex-direction:column` + `#main-content { flex:1; min-height:0 }`。
+- **QA 页与检索结果的双滚动条**：`.center-panel-v2` 本身可滚，`.qa-messages` 也可滚。QA 页下 `.qa-root` 占满高度，`.center-panel-v2` 应不产生滚动；若实施时发现外层也滚，给 `#main-content:has(.qa-root)` 补 `overflow: hidden`。
