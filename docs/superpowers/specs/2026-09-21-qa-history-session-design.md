@@ -71,6 +71,8 @@ htmx.ajax('GET', `/search?${params}`, { target: '.center-panel-v2', swap: 'inner
 | D8 | QA 页内左栏筛选**只更新状态、不发检索** | 否则点分类树会把用户弹回检索页 |
 | D9 | 取消分类筛选的**静默放宽** | 改为显式提示 + 一键放宽 |
 | D10 | **不设"返回检索"按钮** | 检索页仅在手动检索时触发 |
+| D11 | 流式输出**只对 API 后端**实现 | 当前 QA 走 DeepSeek API（实测）；CLI 后端不做伪流式，后续可能整体取消 |
+| D12 | 模型降级的三项修正**并入本轮** | 第 3 级降级改按排名切分（修分层失效）+ 降级状态透出前端 + 挂健康检查 |
 
 ---
 
@@ -203,8 +205,12 @@ token 上限：`build_history` 内按 `max_turns` 截断；若单轮答案异常
 | GET | `/qa/sessions/{id}` | 该会话全部消息（含 sources/confusable） |
 | PATCH | `/qa/sessions/{id}` | 重命名 |
 | DELETE | `/qa/sessions/{id}` | 删除（前端二次确认） |
+| POST | `/qa/ask/stream` | **SSE 流式问答**（§4.11），独立路由不改动 `/qa/ask` |
+| GET | `/qa/sessions/{id}/export` | 导出 Markdown（§4.12） |
+| GET | `/qa/search` | 跨会话搜消息，`LIKE` 参数化（§4.12） |
 
-`QAResponse` 增字段 `session_id: int`。
+`QAResponse` 增字段：`session_id: int`、`rerank_used: str`（§4.13 缺口 2 的状态标记）、`filtered_out: int`、`effective_filters: dict`。
+`QaRequest` 增字段：`session_id: int | None`、`relaxed: bool = False`。
 
 **严格不跨会话**：服务端按 `session_id` 取历史，找不到或不属于该会话则视为新会话——不做任何"猜上一条"的兜底。
 
@@ -246,6 +252,168 @@ meta.append(_num(
 
 同步：`app/config.py` 的 `QA_CONFIG_DEFAULTS` 加 `"history.max_turns": 6`；`app/qa/config.py` 无需改动（读取链已是通用的）。
 
+### 4.10 会话切换与续聊
+
+**核心交互**：点击会话管理栏的某一项 → 该会话全部消息载入中栏问答区 → 用户输入新指令 → **追加到该会话并带入上下文续聊**（不是新建会话）。
+
+状态机：
+
+| 动作 | `currentSessionId` | 中栏显示 | 下次发送的行为 |
+|---|---|---|---|
+| 点左栏「🤖 AI 问答」 | `null`（草稿态） | 空对话区 | **创建**新会话 |
+| 点「＋ 新建会话」 | `null`（草稿态） | 清空 | **创建**新会话 |
+| **点会话列表某一项** | **该会话 id** | **载入该会话全部消息** | **追加到该会话，带上下文续聊** |
+| 草稿态首次发送 | 新 id | — | 创建 + 落库 |
+
+**配套三个必须实现的细节：**
+
+1. **`updated_at` 每次追加消息时刷新**——否则会话列表的"最近活跃"排序不动，用户会觉得列表是死的。
+2. **载入的历史消息必须能重建参考条文链接**——`GET /qa/sessions/{id}` 需返回每条消息的 `sources` / `confusable`（这正是 `qa_messages.sources_json` / `confusable_json` 的用途）。前端 `messages` 数组的字段结构与表字段一一对应，直接映射即可，无需变形。
+3. **「显示全部，注入只取最近 N 轮」**——载入时中栏显示该会话**全部**消息，但进模型上下文的只有最近 `history.max_turns` 轮。**这点必须显式实现并注释**，否则会被误解为"只能看 6 轮"或"全部 100 轮都塞进 prompt"。
+
+会话列表当前项需高亮；载入完成后滚动到底部。
+
+### 4.11 流式输出
+
+**诊断**：`ai.backend.qa = 'deepseek'`（DB 实测），QA 走 `APIBackend`。而 `api_client.py:47` 的调用是：
+
+```python
+resp = await client.post(f"{self.base_url}/chat/completions",
+                         json={"model": ..., "messages": ..., "max_tokens": 2048}, ...)
+```
+
+**无 `stream: True`，全量等待返回。** 生成 500 字答案的 8~20 秒里屏幕全黑——这就是"卡顿观感"的根因。
+
+**服务端**：新增 `POST /qa/ask/stream`，**独立路由，不改动现有 `/qa/ask`**（便于测试与回退）。
+
+| SSE 事件 | 载荷 | 用途 |
+|---|---|---|
+| `event: stage` | `{stage: "retrieving" \| "reranking" \| "generating"}` | 覆盖流式之前的死时间 |
+| `event: delta` | `{text: "..."}` | 增量文本 |
+| `event: done` | `{session_id, sources, confusable_hits, rerank_used, filtered_out}` | 收尾元数据 |
+| `event: error` | `{message}` | 错误 |
+
+- `APIBackend.ask_stream()`：`client.stream("POST", ...)` + `aiter_lines()` 解析 `data:` 行，遇 `[DONE]` 结束
+- **CLI 后端不在本轮投入**（见 D11）。前端按当前生效后端选择路径：API 后端走 `/qa/ask/stream`，CLI 后端走现有 `/qa/ask` 非流式。**不实现伪流式**——假装流式会掩盖真实的等待，且增加一条需要维护的渲染路径。
+
+**前端**：`fetch` + `ReadableStream` 读取 SSE。**不使用 `EventSource`**——它只支持 GET，而我们需要 POST body（问题 + 筛选 + session_id）。
+
+**⚠️ 渲染降级（本章最关键的技术约束）**
+
+现有完整管线是 `marked → DOMPurify → KaTeX + 孤上标修复 + 字面 \n→<br>`（`qa.js:74-115`）。流式下一旦每个 delta 都跑这条管线，会同时炸两件事：
+
+1. **性能**——一次回答几十上百个 delta，每次全量重渲染会卡死
+2. **正确性**——公式写到一半（如 `$$E = mc^`）未闭合，KaTeX 会渲染失败甚至抛错
+
+**分两段处理：**
+
+| 阶段 | 渲染策略 |
+|---|---|
+| 流式进行中 | **节流重渲染**（约 200ms 一次），管线**只用 `marked` + `DOMPurify`，不跑 KaTeX**。公式此刻以源码显示 |
+| 收到 `done` 后 | 跑**完整**管线（含 KaTeX）+ 参考条文超链接改写（`qa.js:92-113`）|
+
+结束时的跳变（公式由源码变为排版结果）是业界通例，可接受。**但必须在实现时注释说明，否则会被当作 bug 修掉。**
+
+**分阶段进度提示**：`stage` 事件驱动 QA 回答区顶部的一行状态文本：
+
+```
+🔍 检索中…  →  📊 已召回 30 条，精排中…  →  ✍️ 生成中…
+```
+
+流式救不了"第一个字吐出来之前"的那几秒——检索（`hybrid_search`）+ **CE 精排（跑模型，通常 1~3 秒）** 都发生在模型响应之前。这段死时间靠 `stage` 事件覆盖。项目在检索侧已有 `showRadar()` 的成熟经验（`search.js:19-38`）可借鉴。
+
+**降级兜底**：SSE 建连或读取失败 → 自动回退到现有 `/qa/ask` 非流式路径，功能不丢（用户看到的是"等一会儿出全部内容"，而非报错）。
+
+> **D11**：本轮流式只对 API 后端实现。CLI 后端（`claude` / `codex`）维持现状非流式。理由：CLI 启动本身有固定开销，流式救不了；且 CLI 后端后续可能整体取消（3 个调用点：`classifier_ai.py:20`、`import_routes.py:113`、`qa_routes.py:264`，其中 `APIBackend.classify_batch_sync` 已实现，功能上可覆盖）。
+
+### 4.12 导出与搜索
+
+**导出（Markdown）**
+
+`GET /qa/sessions/{id}/export` → `Response(media_type="text/markdown")` + `Content-Disposition: attachment; filename=...`。
+
+内容：会话名、创建/最后活跃时间、逐轮问答正文、每轮的参考条文清单。约 30 行，**零新依赖**。
+
+**只做 Markdown，不做 HTML**：项目已有完整 md 渲染管线，导出的 md 可直接丢回系统渲染；HTML 导出等于把渲染结果静态化，多一份维护面而不增加能力。
+
+**搜索（跨会话搜消息）**
+
+位于**会话管理栏顶部**的搜索框（`qa_sessions` 列表上方）。
+
+```sql
+SELECT m.id, m.session_id, m.role, m.content, s.title
+FROM qa_messages m JOIN qa_sessions s ON s.id = m.session_id
+WHERE m.content LIKE ?          -- '%kw%'
+ORDER BY m.session_id DESC, m.id DESC
+LIMIT 100
+```
+
+- **用 `LIKE`，不上 FTS**。项目现有 FTS 套路（`database.py:51,224`）是「独立 fts5 表 + jieba 预分词」。但 `qa_messages` 是**小表**（个人/团队使用，几千到几万行量级），全表扫完全够；且中文子串匹配对"找出我说过的那句话"**比分词更精确**。上 FTS 需额外维护索引同步（含级联删除），复杂度远超收益。
+- **不做「仅当前会话」勾选框**（会话内通常只有几轮，价值低）。
+- 命中项显示：消息摘要 + 所属会话名；点击 → 切换到该会话并**滚动定位 + 高亮**该条消息（需消息 id 作为 DOM 锚点）。
+- `LIKE` 参数必须走**参数化查询**，禁止字符串拼接（开发铁律 1.1）。
+
+### 4.13 模型降级与可观测性
+
+**现有降级链（QA 侧，`qa_routes.py:30-67`）——设计是完备的：**
+
+| 级别 | 触发条件 | 得分来源 | 使用的阈值集 |
+|---|---|---|---|
+| 1 | CrossEncoder 可用 | 模型输出 0~1 | `qa.rerank.*`（0.50 / 0.80） |
+| 2 | CE 不可用、embedding 可用 | 余弦相似度 -1~1 | `qa.vector.*`（0.30 / 0.55） |
+| 3 | **两者都不可用** | **全部 = 1.0** | 走 else → `qa.vector.*` |
+
+模型加载（`reranker.py` / `embedding.py` 同一套三态哨兵：`None` 未尝试 / 实例 / `False` 失败后不再重试）：优先本地 `models/BAAI/bge-*`，否则 HF 缓存且 **`local_files_only=True`——永不联网下载**。
+
+**阈值联动是已有的好设计**：降级时自动切换阈值集，不会出现"拿 CE 的 0.50 去卡余弦相似度"。
+
+**但有三个缺口：**
+
+**🔴 缺口 1（会真出问题）：第 3 级降级时强/弱分层彻底失效**
+
+```python
+_last_rerank_used = "none"
+return [(c, 1.0) for c in candidates]      # 全部 1.0
+```
+
+`tier_items`（`context.py:196`）判据是 `s = 1.0 >= high_threshold(0.55)` → **所有候选全部判为 high（强相关）** → 全部**全文**进上下文，`token.summary_chars` 摘要压缩完全不生效 → token 预算迅速耗尽，`dropped_overflow` 暴增。用户症状是"回答质量莫名变差 / 大量条文被丢弃"，日志里只有一行 warning。**这是无模型分享场景下必然踩到的。**
+
+**修法（**不走阈值路径，改按排名**）**
+
+> ⚠️ 不能简单"透传 RRF 原始分数"——已核实 `rrf.py:41` 的 `scores` **只用于排序，未写入返回的 dict**（候选项上只有 `_source`）。且 RRF 分数量纲极小（k=60 时双路第 1 名 ≈ 0.033），拿它比 `qa.vector.*` 的 0.30/0.55 阈值会**全部误杀**。
+
+第 3 级降级的本质是：**只有关键词召回 + RRF 排名，没有任何绝对相关度语义**——第 30 名的条文未必不相关。此时用阈值过滤本身就是错的。正确做法：
+
+1. **跳过 `filter_by_score`**（RRF 分数无绝对意义，不设丢弃线）
+2. 按 `dynamic_select` 取前 k 条（k 仍基于候选数，`min_results`/`max_results` 生效）
+3. **按 RRF 排名切分强弱**：前 1/3 → `high`（全文），后 2/3 → `low`（摘要）。排名保留了"相对更相关"的语义
+4. token 预算兜底照常生效（超预算丢整条，不截断单条内部）
+
+附带（可选，便于可观测）：在 `rrf_fusion` 里把分数写进 dict（`d["_rrf_score"] = scores[cid]`，1 行），供调试与埋点查看，但**不作为阈值依据**。
+
+**🟠 缺口 2：降级对用户完全不可见**
+
+`_last_rerank_used` 只落 `qa_request_logs` 与日志，前端看不到。分享后对方没装模型，用户会以为"这系统检索质量就这样"。
+
+**修法**（值已算出，成本十几行）：加进 `QAResponse`，QA 回答区显示状态标记：
+
+```
+⚡ CE 精排    /    ≈ 向量精排    /    ⚠️ 无精排（未装模型，按关键词排序）
+```
+
+**🟠 缺口 3：不能只考虑精排——向量召回同样依赖模型**
+
+`hybrid_search` 的**向量召回本身依赖 embedding 模型**（`hybrid_search.py:96-100`）：
+
+- 只缺 CrossEncoder → 降到第 2 级，质量尚可，**可接受**
+- **两个模型都缺 → 向量召回一并失效**，`hybrid_search` 退化为纯 LIKE/FTS → 检索质量**断崖式下降**
+
+这两件事**独立发生、各自只 warning**，叠加后果无人提示。
+
+**修法**：挂进项目已有的 `app/maintenance/health_check.py`，在维护页「健康检查」明确报告两个模型各自是否就绪、缺失的后果、安装指引。
+
+> **D12**：本三项修正**并入本轮**。缺口 1 不修，分享出去必然踩；缺口 2/3 成本极低，但决定"对方拿到系统后知不知道自己缺东西"。模型的**安装期可选化**（安装时提示、可选跳过）属封装方案范畴，本轮不做，留待封装时统一设计。
+
 ---
 
 ## 五、测试策略（TDD，覆盖三类场景）
@@ -254,29 +422,44 @@ meta.append(_num(
 - 新建会话 → 首轮发送 → 会话落库，标题 = 问题前 20 字
 - 同一 `session_id` 连续两轮 → 第二轮 prompt 的 history 段含第一轮 Q+A
 - 会话列表返回按 `updated_at` 倒序
+- **点历史会话 → 载入全部消息 → 继续提问仍追加到该会话**（§4.10）
+- **载入的历史消息带 `sources`，参考条文链接可重建**
 - 重命名 / 删除会话生效，删除后消息级联清除
+- 导出 Markdown 内容含会话名、逐轮问答、参考条文
+- 跨会话搜索命中，返回所属会话名与消息 id
 
 **边界场景**
 - `history.max_turns = 0` → history 段为空，行为等同单轮
 - 历史轮数 > N → 只保留最近 N 轮
+- **载入 20 轮会话 → 中栏显示全部 20 轮，但 prompt 只含最近 6 轮**
 - 单轮答案极长导致历史段超预算 → 逐轮丢弃最旧，不截断单条内部
 - 首轮问题极短（<20 字）→ 标题取全文
 - `session_id` 指向不存在的会话 → 视为新会话，不报错、不跨会话取历史
+- 搜索关键词含 `%` / `_` → **LIKE 通配符需转义**，不得退化为全表命中
+- 搜索无命中 → 空结果提示，不报错
 
 **异常场景**
 - 分类筛选候选不足 → 返回 `filtered_out` 提示，**不再静默放宽**
-- LLM 调用失败 → 失败消息是否入库（设计：**不入库**，仅返回错误提示，避免污染会话历史）
+- LLM 调用失败 → **不入库**，仅返回错误提示，避免污染会话历史
 - 并发两轮请求同一会话 → 消息按 id 顺序落库，不覆盖
+- **SSE 流中断** → 已生成的部分内容保留显示，并回退提示（不丢已渲染文本）
+- **第 3 级模型降级（无 CE 且无 embedding）** → 跳过阈值过滤、按排名切分强弱，**上下文不出现"全部全文"**（缺口 1 的回归守卫；测试用 monkeypatch 让 `get_reranker()`/`get_model()` 返回 `None` 来构造该状态）
 
 **回归**
 - `tests/test_qa_routes.py`、`test_qa_context.py`、`test_qa_status_filter.py` 全部保持通过
 - 检索侧 `test_search_*` 不受 swap 目标改动影响
+- `/qa/ask` 非流式路径行为不变（流式是新增独立路由，不得影响它）
+- 阈值联动不回退：`rerank_used == "crossencoder"` 用 `qa.rerank.*`，否则用 `qa.vector.*`
 
 ---
 
 ## 六、明确不做（YAGNI）
 
-- ❌ 会话内搜索 / 导出（markdown / HTML）
+- ❌ **HTML 导出**（只做 Markdown，理由见 §4.12）
+- ❌ **给 `qa_messages` 建 FTS 索引**（小表用 LIKE 足够，理由见 §4.12）
+- ❌ **「仅当前会话」搜索勾选框**（会话内通常只几轮，价值低）
+- ❌ **CLI 后端的伪流式**（D11：不假装流式，避免多维护一条渲染路径）
+- ❌ **模型安装期可选化**（D12：属封装方案范畴，留待封装时统一设计）
 - ❌ AI 摘要生成标题（首轮问题截断已足够，且零成本）
 - ❌ 折叠状态、滚动位置的服务端持久化
 - ❌ 会话绑定用户（D6：全局共享）
@@ -306,3 +489,8 @@ meta.append(_num(
 | 多轮下的引用幻觉 | AI 可能引用历史里出现过、但本轮未提供的条文 | prompt 硬约束（4.5）+ 前端只对 `sources` 内的条文转超链接（`qa.js:92-113` 已具备该保护） |
 | QA 页左栏筛选"静默不同步" | 用户切了筛选但看不到影响 | 输入框附近常驻小字显示本轮生效筛选（`effective_filters`） |
 | 首轮问题过短导致会话名无信息量 | 如"那检验批呢" | 可接受；配合可重命名 |
+| **流式结束时的渲染跳变被误当 bug** | 公式由源码变为排版结果是**有意设计**（§4.11） | 实现处必须注释说明；测试断言以 `done` 后的最终 HTML 为准 |
+| **SSE 与反向代理 buffering** | 若将来部署在 nginx 之后，`text/event-stream` 会被缓冲，表现为"不流式" | 现在直连 uvicorn 无此问题；封装/部署方案中需写明 `proxy_buffering off` |
+| **LIKE 通配符未转义** | 搜索词含 `%`/`_` 会退化为全表命中，且违反铁律 1.1 的参数化要求 | 参数化 + 显式转义，测试覆盖 |
+| **第 3 级降级路径难以自然触发** | 本机模型已装，正常跑不到该分支 | 必须用 monkeypatch 构造，否则该分支永远未被测试覆盖——**而分享场景下它恰恰是常态** |
+| 第 3 级降级是**行为变更** | 由"阈值过滤 + 全 high"改为"跳过阈值 + 排名切分"，会改变无模型环境下的答案构成 | 属 D12 修正目标；仅影响降级分支，第 1/2 级路径不受影响 |
