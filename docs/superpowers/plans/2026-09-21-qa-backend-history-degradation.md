@@ -583,7 +583,7 @@ def test_qa_messages_table_exists(qa_db):
     with get_db() as conn:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(qa_messages)")}
     assert {"id", "session_id", "role", "content", "sources_json",
-            "confusable_json", "mode", "created_at"} <= cols
+            "confusable_json", "filters_json", "mode", "created_at"} <= cols
 
 
 def test_qa_messages_index_exists(qa_db):
@@ -631,6 +631,7 @@ CREATE TABLE IF NOT EXISTS qa_messages (
     content         TEXT NOT NULL,
     sources_json    TEXT DEFAULT '[]',
     confusable_json TEXT DEFAULT '[]',
+    filters_json    TEXT DEFAULT '{}',
     mode            TEXT DEFAULT 'rag',
     created_at      TEXT DEFAULT (datetime('now','localtime'))
 );
@@ -719,6 +720,36 @@ def test_append_message_and_read_back(qa_db):
     msgs = S.get_messages(sid)
     assert [m["role"] for m in msgs] == ["user", "assistant"]
     assert msgs[1]["sources"][0]["code"] == "GB 50204"
+
+
+def test_append_message_records_filters(qa_db):
+    """正常场景：当轮生效筛选随助手消息落库，回看时可还原（D5）。
+
+    筛选不入库则该信息不可逆丢失——同一个问题按「混凝土」专业筛与不筛，
+    答案来源完全不同，事后无法推断。
+    """
+    sid = S.create_session("s")
+    S.append_message(sid, "assistant", "答案",
+                     filters={"dim4_specialty": ["混凝土"], "status_filter": "现行"})
+    msgs = S.get_messages(sid)
+    assert msgs[0]["filters"]["dim4_specialty"] == ["混凝土"]
+
+
+def test_get_messages_filters_default_empty_dict(qa_db):
+    """边界场景：未记录筛选时返回空 dict（而非 None 或缺失键），前端免判空。"""
+    sid = S.create_session("s")
+    S.append_message(sid, "assistant", "答案")
+    assert S.get_messages(sid)[0]["filters"] == {}
+
+
+def test_get_messages_tolerates_bad_filters_json(qa_db):
+    """异常场景：filters_json 脏数据退化为 {}，不抛异常中断整条会话。"""
+    sid = S.create_session("s")
+    S.append_message(sid, "assistant", "答案")
+    with get_db() as conn:
+        conn.execute("UPDATE qa_messages SET filters_json = ? WHERE session_id = ?",
+                     ("not-json", sid))
+    assert S.get_messages(sid)[0]["filters"] == {}
 
 
 def test_append_message_bumps_updated_at(qa_db):
@@ -892,7 +923,8 @@ def get_messages(session_id: int) -> list[dict]:
     """
     with get_db() as conn:
         rows = conn.execute(
-            """SELECT id, role, content, sources_json, confusable_json, mode, created_at
+            """SELECT id, role, content, sources_json, confusable_json,
+                      filters_json, mode, created_at
                FROM qa_messages WHERE session_id = ? ORDER BY id ASC""",
             (session_id,),
         ).fetchall()
@@ -902,7 +934,8 @@ def get_messages(session_id: int) -> list[dict]:
             "id": r[0], "role": r[1], "content": r[2],
             "sources": _loads_list(r[3]),
             "confusable": _loads_list(r[4]),
-            "mode": r[5], "created_at": r[6],
+            "filters": _loads_dict(r[5]),
+            "mode": r[6], "created_at": r[7],
         })
     return out
 
@@ -919,21 +952,40 @@ def _loads_list(raw) -> list:
     return val if isinstance(val, list) else []
 
 
+def _loads_dict(raw) -> dict:
+    """容错反序列化 JSON 对象（当轮筛选）；脏数据退化为空 dict。"""
+    if not raw:
+        return {}
+    try:
+        val = json.loads(raw)
+    except (TypeError, ValueError) as e:
+        logger.warning("会话消息筛选 JSON 解析失败，按空处理: %s", e)
+        return {}
+    return val if isinstance(val, dict) else {}
+
+
 def append_message(session_id: int, role: str, content: str,
                    sources: list | None = None, confusable: list | None = None,
+                   filters: dict | None = None,
                    mode: str = "rag") -> int:
     """追加一条消息，并刷新所属会话的 updated_at。
+
+    filters 记录**当轮实际生效的筛选**（D5）：回看历史时据此还原
+    「这条答案是在什么筛选下产生的」——筛选不入库则该信息不可逆丢失。
 
     失败消息不入库由调用方保证（见 qa_routes），本层不做判断。
     """
     sources_json = json.dumps(sources or [], ensure_ascii=False)
     confusable_json = json.dumps(confusable or [], ensure_ascii=False)
+    filters_json = json.dumps(filters or {}, ensure_ascii=False)
     with get_db() as conn:
         cur = conn.execute(
             """INSERT INTO qa_messages
-               (session_id, role, content, sources_json, confusable_json, mode)
-               VALUES (?,?,?,?,?,?)""",
-            (session_id, role, content, sources_json, confusable_json, mode),
+               (session_id, role, content, sources_json, confusable_json,
+                filters_json, mode)
+               VALUES (?,?,?,?,?,?,?)""",
+            (session_id, role, content, sources_json, confusable_json,
+             filters_json, mode),
         )
         conn.execute(
             "UPDATE qa_sessions SET updated_at = datetime('now','localtime') WHERE id = ?",
@@ -2560,6 +2612,49 @@ def test_non_stream_request_is_traced(auth_client, stream_env):
     assert n == 1
 
 
+def test_include_non_clause_flag_is_honored(auth_client, stream_env, monkeypatch):
+    """回归（静默 no-op）：左栏「包含前言·条文说明」必须真的到达检索层。
+
+    QaRequest 未声明该字段时，Pydantic 默认 extra='ignore' 会静默丢弃它——
+    前端传了也不生效，且没有任何报错。本用例捕获 SearchQuery 断言开关生效。
+    """
+    seen = {}
+
+    def fake_search(sq):
+        seen["inc"] = sq.include_non_clause
+        return [dict(_CAND)], 1
+
+    monkeypatch.setattr("app.search.hybrid_search.hybrid_search", fake_search)
+    auth_client.post("/qa/ask", json={"question": "q", "include_non_clause": True})
+    assert seen.get("inc") is True, "include_non_clause 未到达检索层（字段未声明？）"
+
+
+def test_question_text_fallback_still_releases_non_clause(auth_client, stream_env,
+                                                          monkeypatch):
+    """边界场景：问题文本含「条文说明」时隐式放行。
+
+    这是设计文档 §4.3 的兜底条款——新增显式开关后，文本兜底不得失效。
+    """
+    seen = {}
+
+    def fake_search(sq):
+        seen["inc"] = sq.include_non_clause
+        return [dict(_CAND)], 1
+
+    monkeypatch.setattr("app.search.hybrid_search.hybrid_search", fake_search)
+    auth_client.post("/qa/ask", json={"question": "条文说明里怎么写的"})
+    assert seen.get("inc") is True
+
+
+def test_effective_filters_recorded_with_assistant_message(auth_client, stream_env):
+    """正常场景：当轮生效筛选随助手消息落库（D5），回看可追溯。"""
+    auth_client.post("/qa/ask", json={"question": "q", "dim4_specialty": ["混凝土"]})
+    sid = S.list_sessions()[0]["id"]
+    msgs = S.get_messages(sid)
+    assert msgs[1]["role"] == "assistant"
+    assert msgs[1]["filters"]["dim4_specialty"] == ["混凝土"]
+
+
 def test_done_rerank_used_is_not_read_from_global(auth_client, stream_env, monkeypatch):
     """回归（竞态）：done 里的 rerank_used 必须是本请求的值。
 
@@ -2595,12 +2690,16 @@ Expected: FAIL — `test_stream_emits_stage_then_deltas_then_done` 返回 JSON �
 
 - [ ] **Step 3: 实现**
 
-**3a. `app/models.py`** —— `QaRequest` 增字段（放在 `relaxed` 之后）：
+**3a. `app/models.py`** —— `QaRequest` 增两个字段（放在 `relaxed` 之后）：
 
 ```python
     # 输出形态：False → 一次性 JSON（默认，保持既有契约）；
     # True → SSE 流式（stage/delta/done/error）。两种形态共用同一套检索准备。
     stream: bool = False
+    # 放行前言/条文说明等打标非条文（来自左栏「包含前言·条文说明」复选框）。
+    # ⚠️ 必须显式声明：Pydantic 默认 extra='ignore'，未声明的字段会被静默丢弃，
+    #    前端传了也不生效——这类"静默 no-op"极难排查。
+    include_non_clause: bool = False
 ```
 
 **3b. `app/routes/qa_routes.py`** —— 在 `_emit_trace` 之后新增数据类与共享准备函数：
@@ -2651,7 +2750,10 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
     )
 
     pool = get_qa_int("retrieve.candidate_pool")
-    mentions_non_clause = ("前言" in question) or ("条文说明" in question)
+    # 放行非条文：左栏复选框显式开关 **或** 问题文本兜底
+    # （「问题文本含前言/条文说明字样时隐式放行」是设计文档 §4.3 的兜底条款）
+    include_non_clause = body.include_non_clause or \
+        ("前言" in question) or ("条文说明" in question)
     # relaxed=True 时清空分类维度（D9 的「放宽到全部规范」）
     dims = {} if body.relaxed else {
         "dim1_hierarchy": body.dim1_hierarchy,
@@ -2667,7 +2769,7 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
     try:
         candidates, total = hybrid_search(SearchQuery(
             keyword=question, per_page=pool,
-            include_non_clause=mentions_non_clause, **dims))
+            include_non_clause=include_non_clause, **dims))
     except Exception as e:
         logger.error("QA hybrid_search failed: %s", e)
         candidates, total = [], 0
@@ -2680,7 +2782,7 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
         try:
             _, wide_total = hybrid_search(SearchQuery(
                 keyword=question, per_page=pool,
-                include_non_clause=mentions_non_clause))
+                include_non_clause=include_non_clause))
             filtered_out = wide_total
             logger.info("QA 分类筛选候选不足（%d 条），全局命中 %d 条",
                         len(candidates), wide_total)
@@ -2743,9 +2845,12 @@ def _finish_turn(ctx: QaContext, answer: str, persist_ok: bool,
             session_id = qa_sessions.create_session(
                 qa_sessions.derive_title(ctx.question))
         qa_sessions.append_message(session_id, "user", ctx.question)
-        qa_sessions.append_message(session_id, "assistant", answer,
-                                   sources=sources, confusable=confusable_hits,
-                                   mode=body.mode)
+        # 助手消息记录**当轮实际生效的筛选**（D5）——回看历史时据此还原
+        # 「这条答案是在什么筛选下产生的」。筛选不入库则该信息不可逆丢失。
+        qa_sessions.append_message(
+            session_id, "assistant", answer,
+            sources=sources, confusable=confusable_hits,
+            filters=_effective_filters(body), mode=body.mode)
     _emit_trace(ctx.trace)
     return sources, confusable_hits, session_id
 
@@ -2759,19 +2864,30 @@ def _confusable_hits(question: str) -> list[dict]:
 
 
 def _effective_filters(body: QaRequest) -> dict:
-    """本轮实际生效的分类筛选（放宽后返回空，供前端展示）。"""
-    if body.relaxed:
-        return {}
-    return {k: v for k, v in {
-        "dim1_hierarchy": body.dim1_hierarchy,
-        "dim1_industry": body.dim1_industry,
-        "dim1_nature": body.dim1_nature,
-        "dim2_stage": body.dim2_stage,
-        "dim3_usage": body.dim3_usage,
-        "dim4_specialty": body.dim4_specialty,
-        "dim5_location": body.dim5_location,
-        "dim6_material": body.dim6_material,
-    }.items() if v}
+    """本轮实际生效的筛选（分类维度 + 状态 + 前言放行）。
+
+    两个用途：① 随助手消息落库，供历史回看追溯（D5）；
+    ② 随响应返回，供前端显示「本轮生效筛选」（让"回复中切换只影响下一轮"可见）。
+    放宽（relaxed）时分类维度为空——那正是放宽的语义。
+    """
+    out: dict = {}
+    if not body.relaxed:
+        out = {k: v for k, v in {
+            "dim1_hierarchy": body.dim1_hierarchy,
+            "dim1_industry": body.dim1_industry,
+            "dim1_nature": body.dim1_nature,
+            "dim2_stage": body.dim2_stage,
+            "dim3_usage": body.dim3_usage,
+            "dim4_specialty": body.dim4_specialty,
+            "dim5_location": body.dim5_location,
+            "dim6_material": body.dim6_material,
+        }.items() if v}
+    # 状态过滤：None（缺参）时不记录，避免把默认白名单误当成用户显式选择
+    if body.status_filter is not None:
+        out["status_filter"] = body.status_filter
+    if body.include_non_clause:
+        out["include_non_clause"] = True
+    return out
 ```
 
 **3c.** 把 `/qa/ask` 整体替换为「一个入口、两种形态」：
@@ -2876,6 +2992,7 @@ async def _sse_stream(ctx: QaContext, body: QaRequest):
         "confusable_hits": confusable_hits,
         "rerank_used": ctx.rerank_used,      # 拷贝值，非全局
         "filtered_out": ctx.filtered_out,
+        "effective_filters": _effective_filters(body),   # 前端显示「本轮生效筛选」（D5）
     })
 ```
 

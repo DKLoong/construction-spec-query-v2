@@ -357,6 +357,11 @@ async def qa_page(request: Request):
                             </template>
                             <!-- 流式期间用 outerHTML 承载降级渲染结果；收尾后由 renderMarkdown 重渲染 -->
                             <div class="qa-answer" x-html="msg.html"></div>
+                            <!-- 当轮实际生效筛选（D5）：回看历史时据此还原
+                                 「这条答案是在什么筛选下产生的」 -->
+                            <template x-if="msg.filtersText">
+                                <div class="qa-msg-filters" x-text="'筛选：' + msg.filtersText"></div>
+                            </template>
                             <template x-if="msg.filteredOut > 0">
                                 <div class="qa-relax-hint">
                                     <span x-text="'⚠️ 当前分类筛选下仅命中 ' + msg.filteredOut + ' 条，回答可能不完整'"></span>
@@ -386,6 +391,13 @@ async def qa_page(request: Request):
             <div class="qa-stage" x-show="loading" x-text="stageText"></div>
         </div>
 
+        <!-- 本轮生效筛选（D5）：场景 2（回复中切换）只能影响下一轮，
+             这条常驻小字让「这次没生效」不再静默 -->
+        <div class="qa-effective-filters" x-show="effectiveFiltersText">
+            <span x-text="'本轮生效：' + effectiveFiltersText"></span>
+            <span x-show="filtersChanged()" class="qa-filters-pending"
+                  x-text="'· 已修改，将在下一轮生效'"></span>
+        </div>
         <div class="qa-composer">
             <textarea x-model="input" @keydown.enter.prevent="send()"
                       placeholder="输入问题并按 Enter 发送..." rows="3"></textarea>
@@ -468,6 +480,9 @@ async def qa_page(request: Request):
 .qa-session-ops button { background: none; border: none; cursor: pointer; padding: 0 0.15rem; font-size: 0.8rem; margin: 0; line-height: 1; }
 .qa-sessions-empty { color: var(--pico-muted-color); padding: 0.5rem 0.4rem; font-size: 0.8rem; }
 .qa-stage { color: var(--pico-muted-color); font-size: 0.8rem; padding: 0.3rem 0.1rem; }
+.qa-msg-filters { margin-top: 0.25rem; font-size: 0.72rem; color: var(--pico-muted-color); }
+.qa-effective-filters { margin-top: 0.35rem; font-size: 0.72rem; color: var(--pico-muted-color); }
+.qa-filters-pending { color: #a06500; }
 .qa-confusable { margin-bottom: 0.4rem; padding: 0.4rem 0.6rem; border: 1px solid #e0a800; border-radius: 6px; background: #fff8e1; font-size: 0.78rem; }
 .qa-relax-hint { margin-top: 0.4rem; padding: 0.35rem 0.6rem; border: 1px solid #e0a800; border-radius: 6px; background: #fff8e1; font-size: 0.78rem; }
 .qa-sources { margin-top: 0.4rem; padding-top: 0.3rem; border-top: 1px dashed var(--pico-muted-border-color); display: flex; flex-wrap: wrap; gap: 0.3rem; }
@@ -745,18 +760,29 @@ Expected: FAIL — `QA 面板内不应再有「仅现行」复选框`
             return this.$store.searchState.buildStatusFilter();
         },
 
-        // 组合请求体：分类维度 + 状态过滤 + 前言放行，全部来自共享 store
-        buildRequestBody(question) {
-            const filters = (this.$store && this.$store.searchState)
-                ? this.$store.searchState.filters : {};
-            const body = { question, mode: this.mode, ...filters };
-            const sf = this.statusFilter;
+        // 收集本轮筛选（**唯一来源**）：分类维度 + 状态 + 前言放行。
+        // buildRequestBody 与 filtersChanged 共用同一份，避免两处各拼一套而漂移。
+        collectFilters() {
+            const ss = this.$store.searchState;
+            const out = { ...ss.filters };
             // buildStatusFilter() 全不勾返回 null → 传空串（不过滤非现行），与既有语义一致
-            body.status_filter = sf === null ? '' : sf;
-            // 左栏「包含前言·条文说明」勾选状态，影响下一轮检索范围
-            body.include_non_clause = !!this.$store.searchState.includeNonClause;
+            const sf = this.statusFilter;
+            out.status_filter = (sf === null || sf === undefined) ? '' : sf;
+            if (ss.includeNonClause) out.include_non_clause = true;
+            return out;
+        },
+
+        buildRequestBody(question) {
+            const body = { question, mode: this.mode, ...this.collectFilters() };
             if (this.currentSessionId) body.session_id = this.currentSessionId;
             return body;
+        },
+
+        // 筛选已改但尚未生效（设计文档场景 2 的可见性）：
+        // 比较「当前选中」与「本轮实际生效」，不一致就提示——否则用户切了以为生效了。
+        filtersChanged() {
+            if (!this.effectiveFiltersText) return false;
+            return this.describeFilters(this.collectFilters()) !== this.effectiveFiltersText;
         },
 ```
 
@@ -845,6 +871,43 @@ def t5_continue_in_history_session_appends(page):
     n_after = len(page.locator(".qa-session-item").all())
     assert n_after == n_before, "在历史会话中追问不应新建会话"
     assert page.locator(".qa-msg").count() >= 4, "追问后应有四条消息"
+
+
+def t5_filters_recorded_and_shown(page):
+    """正常场景（D5）：答案下方显示当轮筛选，输入框上方显示本轮生效筛选。"""
+    page.goto(f"{BASE}/")
+    page.click("text=🤖 AI问答")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    page.click(".tree-label >> nth=0")          # 勾一个分类树筛选
+    page.wait_for_timeout(300)
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+    page.wait_for_selector(".qa-bot", timeout=60000)
+    page.wait_for_timeout(800)
+    assert page.locator(".qa-msg-filters").count() >= 1, \
+        "答案下方未显示当轮筛选（D5 落库/展示未生效）"
+    assert page.locator(".qa-effective-filters").count() == 1, \
+        "输入框上方未显示本轮生效筛选"
+
+
+def t5_pending_filter_change_is_visible(page):
+    """异常场景（设计文档场景 2 的可见性）：改动筛选后提示将在下一轮生效。
+
+    没有这条提示时，用户在回复中/回复后切换筛选会以为立即生效——静默失配。
+    """
+    page.goto(f"{BASE}/")
+    page.click("text=🤖 AI问答")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+    page.wait_for_selector(".qa-bot", timeout=60000)
+    page.wait_for_timeout(800)
+    assert page.locator(".qa-filters-pending").is_hidden(), \
+        "尚未改动筛选时不应出现「将在下一轮生效」提示"
+    page.click(".tree-label >> nth=0")          # 改动筛选
+    page.wait_for_timeout(300)
+    assert page.locator(".qa-filters-pending").is_visible(), \
+        "改了筛选但未提示「将在下一轮生效」——静默失配复现"
 ```
 
 - [ ] **Step 2: 运行探针确认失败**
@@ -874,6 +937,7 @@ document.addEventListener('alpine:init', () => {
         sessionsCollapsed: false,
         rerankUsed: '',
         stageText: '正在检索…',
+        effectiveFiltersText: '',    // 本轮实际生效的筛选，显示在输入框上方（D5）
 
         async init() {
             await this.loadSessions();
@@ -915,6 +979,8 @@ document.addEventListener('alpine:init', () => {
                         ? this.renderMarkdown(m.content, m.sources) : '',
                     sources: m.sources || [],
                     confusable: m.confusable || [],
+                    // 当轮筛选随消息持久化（D5），回看时据此还原答案的筛选背景
+                    filtersText: this.describeFilters(m.filters),
                     filteredOut: 0,
                 }));
                 this.currentSessionId = sid;
@@ -991,6 +1057,27 @@ document.addEventListener('alpine:init', () => {
                     setTimeout(() => el.classList.remove('qa-highlight'), 2000);
                 }
             });
+        },
+
+        // ── 筛选可读化 ──
+
+        // 把筛选 dict 渲染成一行可读文本；空对象返回空串（调用处据此隐藏）。
+        // 同时服务两处：历史消息的「筛选：…」与输入框上方的「本轮生效：…」。
+        describeFilters(f) {
+            const LABELS = {
+                dim1_hierarchy: '层级', dim1_industry: '行业', dim1_nature: '性质',
+                dim2_stage: '阶段', dim3_usage: '用途', dim4_specialty: '专业',
+                dim5_location: '地区', dim6_material: '材料',
+                status_filter: '状态', include_non_clause: '含前言说明',
+            };
+            if (!f || !Object.keys(f).length) return '';
+            return Object.entries(f).map(([k, v]) => {
+                const name = LABELS[k] || k;
+                if (v === true) return name;                       // 布尔开关只显示名字
+                if (v === false || v === '' || v == null) return '';  // 未启用/未选不显示
+                const val = Array.isArray(v) ? v.join('/') : String(v);
+                return val ? `${name}=${val}` : '';
+            }).filter(Boolean).join(' · ');
         },
 
         // ── 降级状态提示 ──
@@ -1260,6 +1347,11 @@ Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `
                 bot.filteredOut = data.filtered_out || 0;
                 this.rerankUsed = data.rerank_used || '';
                 this.currentSessionId = data.session_id || this.currentSessionId;
+                // 当轮筛选：既记在本条答案下（历史追溯），也更新输入框上方的
+                // 「本轮生效」——后者与 store 不一致时 filtersChanged() 会提示
+                const ft = this.describeFilters(data.effective_filters);
+                bot.filtersText = ft;
+                this.effectiveFiltersText = ft;
             } else if (event === 'error') {
                 throw new Error(data.message || 'AI 服务返回错误');
             }
@@ -1280,6 +1372,9 @@ Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `
                 bot.filteredOut = data.filtered_out || 0;
                 this.rerankUsed = data.rerank_used || '';
                 this.currentSessionId = data.session_id || this.currentSessionId;
+                const ft = this.describeFilters(data.effective_filters);
+                bot.filtersText = ft;
+                this.effectiveFiltersText = ft;
             } catch (e2) {
                 console.error('[qa] 非流式兜底同样失败:', e2);
                 bot.content = '请求失败，请稍后重试';

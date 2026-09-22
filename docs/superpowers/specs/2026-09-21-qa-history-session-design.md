@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS qa_messages (
     content       TEXT NOT NULL,
     sources_json  TEXT DEFAULT '[]',      -- 回看历史时重建参考条文链接
     confusable_json TEXT DEFAULT '[]',
+    filters_json  TEXT DEFAULT '{}',      -- 当轮实际生效的筛选（D5）
     mode          TEXT DEFAULT 'rag',
     created_at    TEXT DEFAULT (datetime('now','localtime'))
 );
