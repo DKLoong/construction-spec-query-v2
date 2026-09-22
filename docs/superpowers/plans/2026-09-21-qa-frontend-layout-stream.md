@@ -9,7 +9,7 @@
 **Tech Stack:** FastAPI + Jinja2 · htmx · Alpine.js · marked / DOMPurify / KaTeX · Playwright（验证）
 
 **Spec:** `docs/superpowers/specs/2026-09-21-qa-history-session-design.md`
-**前置计划:** `docs/superpowers/plans/2026-09-21-qa-backend-history-degradation.md`（**必须先完成并合入**——本计划依赖 `/qa/sessions*`、`/qa/search`、`/qa/ask/stream`、`rerank_used` 字段）
+**前置计划:** `docs/superpowers/plans/2026-09-21-qa-backend-history-degradation.md`（**必须先完成并合入**——本计划依赖 `/qa/sessions*`、`/qa/search`、`/qa/ask` 的 `stream` 开关、`rerank_used` 字段）
 
 ## Global Constraints
 
@@ -1054,7 +1054,7 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 - Test: `scripts/probe_qa_ui.py`
 
 **Interfaces:**
-- Consumes: `POST /qa/ask/stream`（后端计划 T15），事件 `stage` / `delta` / `done` / `error`
+- Consumes: `POST /qa/ask` 带 `stream=true`（后端计划 T15），事件 `stage` / `delta` / `done` / `error`
 - Produces: `window.mdRender.renderStreaming(md) -> string`——marked + DOMPurify，**不跑 KaTeX**
 - 行为契约：流式期间增量渲染用 `renderStreaming`；收到 `done` 后改用 `renderMarkdown`（完整管线含 KaTeX + 源链接改写）
 
@@ -1117,7 +1117,7 @@ def t6_stage_indicator_visible(page):
 - [ ] **Step 2: 运行探针确认失败**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t6`
-Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（仍在用非流式 `/qa/ask`）
+Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `stream` 标志）
 
 - [ ] **Step 3: 在 md-render.js 增加流式档**
 
@@ -1199,11 +1199,12 @@ Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（仍在用�
 
         // SSE 读取。不用 EventSource：它只支持 GET，而我们需要 POST body
         // （问题 + 筛选 + session_id）。
+        // 与兜底路径同一 URL，仅以 stream 标志区分响应形态（后端为单一入口）。
         async _streamAsk(body, bot) {
-            const resp = await fetch('/qa/ask/stream', {
+            const resp = await fetch('/qa/ask', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
+                body: JSON.stringify({ ...body, stream: true }),
             });
             if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
 
@@ -1264,13 +1265,13 @@ Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（仍在用�
             }
         },
 
-        // 流式失败兜底：回退到既有非流式接口，功能不丢
+        // 流式失败兜底：同一 URL 重发，只是不带 stream → 走一次性 JSON。功能不丢。
         async _fallbackAsk(body, bot, userMsg) {
             try {
                 const r = await fetch('/qa/ask', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
+                    body: JSON.stringify({ ...body, stream: false }),
                 });
                 const data = await r.json();
                 bot.content = data.answer || '(AI 未返回回答)';

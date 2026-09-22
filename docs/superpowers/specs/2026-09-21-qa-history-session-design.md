@@ -73,6 +73,7 @@ htmx.ajax('GET', `/search?${params}`, { target: '.center-panel-v2', swap: 'inner
 | D10 | **不设"返回检索"按钮** | 检索页仅在手动检索时触发 |
 | D11 | 流式输出**只对 API 后端**实现 | 当前 QA 走 DeepSeek API（实测）；CLI 后端不做伪流式，后续可能整体取消 |
 | D12 | 模型降级的三项修正**并入本轮** | 第 3 级降级改按排名切分（修分层失效）+ 降级状态透出前端 + 挂健康检查 |
+| D13 | 流式**不新增路由**，并入 `/qa/ask` 单一入口 | 独立路由会复制检索链路，已因此产生埋点缺失与全局变量竞态两个缺陷；单一入口下逻辑只有一份 |
 
 ---
 
@@ -199,7 +200,7 @@ token 上限：`build_history` 内按 `max_turns` 截断；若单轮答案异常
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/qa/ask` | 增字段 `session_id: int \| None`（为 None 时创建新会话，标题取首轮问题前 20 字，并在响应中返回其 id）与 `relaxed: bool = False`（§4.7 的「放宽到全部规范」重发用） |
+| POST | `/qa/ask` | **单一入口，两种响应形态**。增字段 `session_id: int \| None`（为 None 时创建新会话，标题取首轮问题前 20 字，并在响应中返回其 id）、`relaxed: bool = False`（§4.7 的「放宽到全部规范」重发用）、`stream: bool = False`（`true` → `text/event-stream`；默认 `False` → 原 JSON，既有契约不变） |
 | POST | `/qa/sessions` | 显式新建（「＋ 新建会话」按钮用；但主要走惰性创建） |
 | GET | `/qa/sessions` | 会话列表（id, title, updated_at, 消息数） |
 | GET | `/qa/sessions/{id}` | 该会话全部消息（含 sources/confusable） |
@@ -284,7 +285,15 @@ resp = await client.post(f"{self.base_url}/chat/completions",
 
 **无 `stream: True`，全量等待返回。** 生成 500 字答案的 8~20 秒里屏幕全黑——这就是"卡顿观感"的根因。
 
-**服务端**：新增 `POST /qa/ask/stream`，**独立路由，不改动现有 `/qa/ask`**（便于测试与回退）。
+**服务端**：`POST /qa/ask` 增加 `stream: bool = False`，**不新增路由**。
+
+> **为什么是单一入口**（评审决定 D3）：独立路由 `/qa/ask/stream` 必须复制整条检索链路
+> （检索→过滤→精排→选条→分层→组装，约 70 行）。首版设计已因此产生两个真实缺陷：
+> ① 流式版漏了 `_emit_trace`——走流式的问答（主路径）在日志 Tab 中完全不可观测；
+> ② 在 `done` 事件处**跨 `await` 读模块级全局** `_last_rerank_used`——并发请求互相覆盖。
+> 合并为单一入口后，检索准备抽为 `_prepare_qa_context()` 由两种形态共用，
+> 逻辑只有一份，两处缺陷自然消失，也不需要「按后端类型选路由」这条隐含分发逻辑。
+> 既有 `tests/test_qa_routes.py` 全部不带 `stream` → 默认 `False` → 行为不变，零改动。
 
 | SSE 事件 | 载荷 | 用途 |
 |---|---|---|
@@ -294,7 +303,7 @@ resp = await client.post(f"{self.base_url}/chat/completions",
 | `event: error` | `{message}` | 错误 |
 
 - `APIBackend.ask_stream()`：`client.stream("POST", ...)` + `aiter_lines()` 解析 `data:` 行，遇 `[DONE]` 结束
-- **CLI 后端不在本轮投入**（见 D11）。前端按当前生效后端选择路径：API 后端走 `/qa/ask/stream`，CLI 后端走现有 `/qa/ask` 非流式。**不实现伪流式**——假装流式会掩盖真实的等待，且增加一条需要维护的渲染路径。
+- **CLI 后端不做真流式**（见 D11）。但它**不需要前端另走一条路径**：单一入口下，`CLIBackend.ask_stream` 的默认实现就是「调 `ask()` 后一次性 yield 一个 delta + done」。SSE 里一次性吐出，前端渲染路径完全一致，`stage` 事件仍会在等待期间给出「生成中…」反馈。既无「假装流式」的误导，也无需维护第二条渲染路径。
 
 **前端**：`fetch` + `ReadableStream` 读取 SSE。**不使用 `EventSource`**——它只支持 GET，而我们需要 POST body（问题 + 筛选 + session_id）。
 

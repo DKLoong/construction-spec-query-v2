@@ -4,7 +4,7 @@
 
 **Goal:** 为 AI 问答补齐服务端能力——历史会话持久化与续聊、多轮上下文注入、Markdown 导出、跨会话搜索、SSE 流式输出，并修正无模型环境下的精排降级缺陷。
 
-**Architecture:** 在既有 QA 链路上做加法。会话内容落两张新表（`qa_sessions` / `qa_messages`），与既有埋点表 `qa_request_logs` 职责分离。`/qa/ask` 增加可选 `session_id` 实现惰性建会话与续聊；新增独立 `/qa/ask/stream` 走 SSE，**不改动**现有非流式路由。降级链保持三级不变，仅修正第 3 级的分数语义。
+**Architecture:** 在既有 QA 链路上做加法。会话内容落两张新表（`qa_sessions` / `qa_messages`），与既有埋点表 `qa_request_logs` 职责分离。`/qa/ask` 增加可选 `session_id` 实现惰性建会话与续聊。**流式不新增路由**——`/qa/ask` 加一个 `stream` 开关分派两种响应形态，检索准备逻辑抽为 `_prepare_qa_context` 由两者共用（评审决定 D3：独立路由会复制整条链路，已因此产生埋点缺失与全局变量竞态两个缺陷）。降级链保持三级不变，仅修正第 3 级的分数语义。
 
 **Tech Stack:** FastAPI · SQLite（`sqlite3` + `get_db()` 上下文管理器）· httpx（SSE 流式）· pytest
 
@@ -2176,7 +2176,7 @@ git commit -m "feat: 分类筛选候选不足改为显式提示 + 一键放宽�
 - Produces: `APIBackend.ask_stream(prompt, context="", system_prompt="", work_dir=None) -> AsyncIterator[dict]`
   - 逐条 yield `{"type": "delta", "text": str}`；结束 yield `{"type": "done"}`
   - 出错 yield `{"type": "error", "message": str}` 后 return
-- Produces: `CLIBackend.ask_stream` 默认实现 —— 调 `ask()` 后一次性 yield 一个 delta + done（**仅用于保持接口一致，不假装流式**；T15 的路由会据此判定是否走流式）
+- Produces: `CLIBackend.ask_stream` 默认实现 —— 调 `ask()` 后一次性 yield 一个 delta + done（CLI 后端不支持真流式，SSE 里就一次性吐出；`stage` 事件仍给进度反馈，无需前端另走一条路径）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -2275,16 +2275,17 @@ Expected: FAIL — `AttributeError: 'APIBackend' object has no attribute 'ask_st
 
 - [ ] **Step 3: 实现**
 
-在 `app/ai/cli_client.py` 的 `CLIBackend` 中新增默认实现（**非 API 后端不假装流式**，由路由层决定是否走 SSE）：
+在 `app/ai/cli_client.py` 的 `CLIBackend` 中新增默认实现（CLI 后端不支持真流式，整段返回即可；**不需要 `supports_stream` 之类的判定标志**——单一入口下路由层无需据此分流）：
 
 ```python
     async def ask_stream(self, prompt: str, context: str = "",
                          system_prompt: str = "",
                          work_dir: str | None = None):
-        """流式接口默认实现：不支持流式的后端整段返回。
+        """流式接口默认实现：不支持真流式的后端整段吐出。
 
-        API 后端覆盖此方法做真流式；CLI 后端沿用本实现，
-        路由层据 supports_stream 判定走非流式路径。
+        API 后端覆盖此方法做真流式；CLI 后端沿用本实现——
+        SSE 里一次性发一个 delta 再 done，前端无需第二条渲染路径，
+        stage 事件仍会在等待期间给出「生成中…」反馈。
         """
         resp = await self.ask(prompt, context=context,
                               system_prompt=system_prompt, work_dir=work_dir)
@@ -2294,20 +2295,11 @@ Expected: FAIL — `AttributeError: 'APIBackend' object has no attribute 'ask_st
             yield {"type": "done"}
         else:
             yield {"type": "error", "message": resp.error or "调用失败"}
-
-    @property
-    def supports_stream(self) -> bool:
-        """后端是否支持真流式（默认否，由 API 后端覆盖）。"""
-        return False
 ```
 
 在 `app/ai/api_client.py` 的 `APIBackend` 中新增：
 
 ```python
-    @property
-    def supports_stream(self) -> bool:
-        return True
-
     async def ask_stream(self, prompt: str, context: str = "",
                          system_prompt: str = "",
                          work_dir: str | None = None):
@@ -2395,25 +2387,39 @@ git commit -m "feat: API 后端 SSE 流式调用（ask_stream）"
 
 ---
 
-## Task 15: 流式问答路由
+## Task 15: 流式输出（并入 `/qa/ask` 单一入口）
 
 **Files:**
-- Modify: `app/routes/qa_routes.py`
+- Modify: `app/models.py`（`QaRequest.stream`）
+- Modify: `app/routes/qa_routes.py`（抽出 `_prepare_qa_context` + `/qa/ask` 增加流式分支）
 - Test: `tests/test_qa_stream.py`（追加）
 
 **Interfaces:**
 - Consumes: `APIBackend.ask_stream` / `CLIBackend.ask_stream`（T14）、`app.qa.sessions`（T5）、`app.qa.context.build_history`（T6）
-- Produces: `POST /qa/ask/stream` → `text/event-stream`，事件序列：若干 `stage` → 若干 `delta` → 一个 `done`（含 `session_id` / `sources` / `rerank_used` / `filtered_out`）或一个 `error`
+- Produces: `QaContext`（dataclass）与 `_prepare_qa_context(question: str, body: QaRequest) -> QaContext`（均模块级）
+- Produces: `QaRequest.stream: bool = False`
+- Produces: `POST /qa/ask` 在 `stream=True` 时返回 `text/event-stream`；事件序列 `stage`×N → `delta`×N → `done` | `error`
+
+> **为什么不新增 `/qa/ask/stream` 路由**（评审决定 D3）：
+> 独立路由会复制整条检索链路。首版设计已因此产生两个真实缺陷——
+> 流式版漏了 `_emit_trace`（流式问答在日志 Tab 中完全不可观测，而流式正是主路径），
+> 以及在 `done` 事件处**跨 `await` 读模块级全局** `_last_rerank_used`
+> （并发请求互相覆盖，前端显示的精排状态标记会标错）。
+> 合并为一个入口后逻辑只有一份，两处缺陷自然消失，也无需「按后端类型选路由」这条隐含逻辑。
+>
+> 既有 `tests/test_qa_routes.py` 全部不带 `stream` → 默认 `False` → 行为不变，**零改动**。
 
 - [ ] **Step 1: 写失败测试**
 
-追加到 `tests/test_qa_stream.py`：
+改写 `tests/test_qa_stream.py` 的 T15 部分（T14 的 API 后端用例保持不动）。把 T14 用到的 `_stream_backend`
+改为同时提供 `ask` 与 `ask_stream`，使同一 fixture 能覆盖两种输出形态：
 
 ```python
+import pytest
 from unittest.mock import AsyncMock
 
-import pytest
-
+from app.ai.cli_client import CLIResponse
+from app.database import get_db
 from app.qa import sessions as S
 
 _CAND = {"id": 1, "spec_code": "GB 50204", "clause_no": "8.2.1",
@@ -2421,6 +2427,7 @@ _CAND = {"id": 1, "spec_code": "GB 50204", "clause_no": "8.2.1",
 
 
 def _stream_backend(chunks=("混凝土", "强度")):
+    """同时支持流式与非流式的桩后端。"""
     b = AsyncMock()
     b.is_available = lambda: True
 
@@ -2430,6 +2437,8 @@ def _stream_backend(chunks=("混凝土", "强度")):
         yield {"type": "done"}
 
     b.ask_stream = _gen
+    b.ask = AsyncMock(return_value=CLIResponse(
+        success=True, content="".join(chunks)))
     return b
 
 
@@ -2447,7 +2456,7 @@ def _parse_sse(text: str) -> list[tuple[str, dict]]:
 
 @pytest.fixture()
 def stream_env(monkeypatch):
-    """打桩检索与流式后端：流式链路完全确定，且不加载模型。"""
+    """打桩检索与后端：两种输出形态都走同一套桩，且不加载模型。"""
     monkeypatch.setattr("app.search.hybrid_search.hybrid_search",
                         lambda sq: ([dict(_CAND)], 1))
     monkeypatch.setattr("app.routes.qa_routes._rerank_scored",
@@ -2456,9 +2465,19 @@ def stream_env(monkeypatch):
                         lambda name=None: _stream_backend())
 
 
+def test_default_is_non_streaming_json(auth_client, stream_env):
+    """回归（入口合并的核心契约）：不带 stream 时仍是原 JSON 响应。
+
+    既有 tests/test_qa_routes.py 全部依赖该行为，合并入口不得改变它。
+    """
+    r = auth_client.post("/qa/ask", json={"question": "q"})
+    assert "text/event-stream" not in r.headers["content-type"]
+    assert "answer" in r.json()
+
+
 def test_stream_emits_stage_then_deltas_then_done(auth_client, stream_env):
-    """正常场景：事件顺序为 stage → delta×N → done。"""
-    r = auth_client.post("/qa/ask/stream", json={"question": "q"})
+    """正常场景：stream=true 时事件顺序为 stage → delta×N → done。"""
+    r = auth_client.post("/qa/ask", json={"question": "q", "stream": True})
 
     assert r.status_code == 200
     assert "text/event-stream" in r.headers["content-type"]
@@ -2470,17 +2489,15 @@ def test_stream_emits_stage_then_deltas_then_done(auth_client, stream_env):
 
 def test_stream_done_carries_session_id_and_sources(auth_client, stream_env):
     """正常场景：done 事件携带会话 id 与参考条文，供前端收尾渲染。"""
-    r = auth_client.post("/qa/ask/stream", json={"question": "q"})
-
+    r = auth_client.post("/qa/ask", json={"question": "q", "stream": True})
     done = [d for e, d in _parse_sse(r.text) if e == "done"][0]
     assert done["session_id"] > 0
     assert done["sources"][0]["clause_no"] == "8.2.1"
 
 
 def test_stream_persists_messages_on_success(auth_client, stream_env):
-    """正常场景：流式成功后消息落库（与 /qa/ask 行为一致）。"""
-    r = auth_client.post("/qa/ask/stream", json={"question": "q"})
-
+    """正常场景：流式成功后消息落库（与非流式行为一致）。"""
+    r = auth_client.post("/qa/ask", json={"question": "q", "stream": True})
     sid = [d for e, d in _parse_sse(r.text) if e == "done"][0]["session_id"]
     assert [m["role"] for m in S.get_messages(sid)] == ["user", "assistant"]
 
@@ -2496,8 +2513,7 @@ def test_stream_error_event_when_backend_fails(auth_client, stream_env, monkeypa
     b.ask_stream = _gen
     monkeypatch.setattr("app.ai.cli_client.get_backend", lambda name=None: b)
 
-    r = auth_client.post("/qa/ask/stream", json={"question": "q"})
-
+    r = auth_client.post("/qa/ask", json={"question": "q", "stream": True})
     assert _parse_sse(r.text)[-1][0] == "error"
     assert S.list_sessions() == [], "失败轮次不得建库"
 
@@ -2505,8 +2521,8 @@ def test_stream_error_event_when_backend_fails(auth_client, stream_env, monkeypa
 def test_stream_continues_into_existing_session(auth_client, stream_env):
     """正常场景：带 session_id 的流式请求续聊同一会话。"""
     sid = S.create_session("s")
-    r = auth_client.post("/qa/ask/stream", json={"question": "q", "session_id": sid})
-
+    r = auth_client.post("/qa/ask",
+                         json={"question": "q", "session_id": sid, "stream": True})
     done = [d for e, d in _parse_sse(r.text) if e == "done"][0]
     assert done["session_id"] == sid
     assert len(S.get_messages(sid)) == 2
@@ -2514,187 +2530,403 @@ def test_stream_continues_into_existing_session(auth_client, stream_env):
 
 def test_stream_empty_question_returns_400(auth_client, stream_env):
     """异常场景：空问题返回 400，不建立 SSE 流。"""
-    r = auth_client.post("/qa/ask/stream", json={"question": "   "})
+    r = auth_client.post("/qa/ask", json={"question": "   ", "stream": True})
     assert r.status_code == 400
+
+
+def test_stream_request_is_traced(auth_client, stream_env):
+    """回归（评审修复项）：流式请求必须落 qa_request_logs。
+
+    首版设计的新增路由漏了 _emit_trace，导致走流式的问答（主路径）
+    在日志 Tab 中完全不可见。合并入口后，埋点在两条路径上都生效。
+    """
+    auth_client.post("/qa/ask", json={"question": "流式埋点检查", "stream": True})
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM qa_request_logs WHERE question LIKE ?",
+            ("%流式埋点检查%",),
+        ).fetchone()[0]
+    assert n == 1, "流式请求未落埋点表"
+
+
+def test_non_stream_request_is_traced(auth_client, stream_env):
+    """回归：非流式请求同样落埋点（合并入口不得丢失既有行为）。"""
+    auth_client.post("/qa/ask", json={"question": "非流式埋点检查"})
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM qa_request_logs WHERE question LIKE ?",
+            ("%非流式埋点检查%",),
+        ).fetchone()[0]
+    assert n == 1
+
+
+def test_done_rerank_used_is_not_read_from_global(auth_client, stream_env, monkeypatch):
+    """回归（竞态）：done 里的 rerank_used 必须是本请求的值。
+
+    首版设计在流式循环**之后**读模块级全局 _last_rerank_used——
+    期间任何并发请求都会覆盖它。本用例在流式进行中篡改该全局，
+    模拟并发干扰，断言 done 事件不受影响。
+    """
+    import app.routes.qa_routes as qr
+
+    async def _gen(prompt, context="", system_prompt="", work_dir=None):
+        yield {"type": "delta", "text": "第一段"}
+        # 模拟另一并发请求在本请求流式期间改写了全局
+        qr._last_rerank_used = "vector"
+        yield {"type": "delta", "text": "第二段"}
+        yield {"type": "done"}
+
+    b = AsyncMock()
+    b.is_available = lambda: True
+    b.ask_stream = _gen
+    monkeypatch.setattr("app.ai.cli_client.get_backend", lambda name=None: b)
+    monkeypatch.setattr(qr, "_last_rerank_used", "crossencoder")
+
+    r = auth_client.post("/qa/ask", json={"question": "q", "stream": True})
+    done = [d for e, d in _parse_sse(r.text) if e == "done"][0]
+    assert done["rerank_used"] == "crossencoder", \
+        "done 必须回报本请求的精排级别，不能被并发请求改写"
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -k stream_ -v`
-Expected: FAIL — `404 Not Found`
+Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -v`
+Expected: FAIL — `test_stream_emits_stage_then_deltas_then_done` 返回 JSON 而非 SSE（`stream` 字段尚不存在，被 Pydantic 忽略）
 
 - [ ] **Step 3: 实现**
 
-在 `app/routes/qa_routes.py` 中新增辅助函数（放在 `_emit_trace` 之后）：
+**3a. `app/models.py`** —— `QaRequest` 增字段（放在 `relaxed` 之后）：
+
+```python
+    # 输出形态：False → 一次性 JSON（默认，保持既有契约）；
+    # True → SSE 流式（stage/delta/done/error）。两种形态共用同一套检索准备。
+    stream: bool = False
+```
+
+**3b. `app/routes/qa_routes.py`** —— 在 `_emit_trace` 之后新增数据类与共享准备函数：
+
+```python
+@dataclass
+class QaContext:
+    """一次问答的检索准备结果（非流式与流式共用）。
+
+    抽出它是为了让两种输出形态共用同一份检索逻辑——重复一份必然漂移
+    （首版设计已因此漏掉埋点、并在错误位置读全局 rerank_used 造成竞态）。
+    """
+    question: str
+    context_str: str
+    picked: list
+    trace: QATrace
+    filtered_out: int
+    rerank_used: str          # 准备阶段立即拷贝，不随后续并发请求变化
+    history_str: str
+    session_id: int | None
+
+
+def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
+    """检索 → 元数据过滤 → 精排 → 阈值过滤 → 动态条数 → 分层 → 上下文组装。
+
+    纯准备阶段：不调用模型、不落库、不写埋点。
+    """
+    from app.qa.context import (
+        filter_by_metadata, filter_by_score, dynamic_select,
+        tier_items, build_context, build_history,
+    )
+    from app.qa.config import get_qa_float, get_qa_int, get_qa_str
+    from app.qa import sessions as qa_sessions
+    from app.search.hybrid_search import hybrid_search
+
+    trace = QATrace(question=question[:100], mode=body.mode,
+                    backend=body.backend or "", include_invalid=body.include_invalid)
+
+    # 会话解析：不存在的 id 一律视为新会话——严格不跨会话取历史（D3）
+    session_id = body.session_id
+    if session_id is not None and qa_sessions.get_session(session_id) is None:
+        logger.info("QA session_id=%s 不存在，按新会话处理", session_id)
+        session_id = None
+    history_messages = qa_sessions.get_messages(session_id) if session_id else []
+    history_str = build_history(
+        history_messages, get_qa_int("history.max_turns"),
+        get_qa_int("token.max_context_tokens"),
+    )
+
+    pool = get_qa_int("retrieve.candidate_pool")
+    mentions_non_clause = ("前言" in question) or ("条文说明" in question)
+    # relaxed=True 时清空分类维度（D9 的「放宽到全部规范」）
+    dims = {} if body.relaxed else {
+        "dim1_hierarchy": body.dim1_hierarchy,
+        "dim1_industry": body.dim1_industry,
+        "dim1_nature": body.dim1_nature,
+        "dim2_stage": body.dim2_stage,
+        "dim3_usage": body.dim3_usage,
+        "dim4_specialty": body.dim4_specialty,
+        "dim5_location": body.dim5_location,
+        "dim6_material": body.dim6_material,
+    }
+    has_dim = any(dims.values())
+    try:
+        candidates, total = hybrid_search(SearchQuery(
+            keyword=question, per_page=pool,
+            include_non_clause=mentions_non_clause, **dims))
+    except Exception as e:
+        logger.error("QA hybrid_search failed: %s", e)
+        candidates, total = [], 0
+    trace.rrf_total = total
+    trace.pool_size = len(candidates)
+
+    # 分类筛选候选不足：不再静默放宽（D9）——如实报告候选量供前端提示
+    filtered_out = 0
+    if not body.relaxed and has_dim and len(candidates) < get_qa_int("retrieve.qa_min_candidates"):
+        try:
+            _, wide_total = hybrid_search(SearchQuery(
+                keyword=question, per_page=pool,
+                include_non_clause=mentions_non_clause))
+            filtered_out = wide_total
+            logger.info("QA 分类筛选候选不足（%d 条），全局命中 %d 条",
+                        len(candidates), wide_total)
+        except Exception as e:
+            logger.error("QA 诊断性放宽检索失败: %s", e)
+
+    status_allow = tuple(
+        s.strip() for s in get_qa_str("meta.status_allow").split(",") if s.strip())
+    candidates = filter_by_metadata(candidates, body.include_invalid, status_allow=status_allow)
+    trace.after_meta = len(candidates)
+
+    ranked = _rerank_scored(question, candidates)
+    rerank_used = _last_rerank_used      # 立即拷贝：不随后续 await 期间的其他请求变化
+    trace.rerank_used = rerank_used
+    min_score, high_thr = resolve_thresholds(rerank_used, get_qa_float)
+    ranked = filter_by_score(ranked, min_score)
+    trace.after_threshold = len(ranked)
+
+    k = dynamic_select(
+        len(ranked),
+        top_ratio=get_qa_float("retrieve.top_ratio"),
+        min_results=get_qa_int("retrieve.min_results"),
+        max_results=get_qa_int("retrieve.max_results"),
+    )
+    trace.select_target = k
+    ranked = ranked[:k]
+
+    summary_limit = get_qa_int("token.summary_chars")
+    high, low = tier_items(ranked, high_thr, min_score, summary_limit)
+    trace.high_count, trace.low_count = len(high), len(low)
+
+    budget = get_qa_int("token.max_context_tokens")
+    context_str, used_tok, dropped, picked = build_context(
+        high, low, body.mode == "verbatim", budget)
+    trace.context_tokens, trace.budget = used_tok, budget
+    trace.dropped_overflow = dropped
+    trace.context_empty = not context_str.strip()
+
+    if history_str:
+        context_str = f"{history_str}\n\n{context_str}"
+
+    return QaContext(question=question, context_str=context_str, picked=picked,
+                     trace=trace, filtered_out=filtered_out, rerank_used=rerank_used,
+                     history_str=history_str, session_id=session_id)
+
+
+def _finish_turn(ctx: QaContext, answer: str, persist_ok: bool,
+                 body: QaRequest) -> tuple[list[dict], list[dict], int | None]:
+    """收尾（两条路径共用）：提取来源、检测易混淆、成功则落库、写埋点。
+
+    返回 (sources, confusable_hits, session_id)。失败轮次不入库（避免半截会话）。
+    """
+    from app.qa import sessions as qa_sessions
+
+    sources = _extract_sources([it.clause for it, _ in ctx.picked])
+    confusable_hits = _confusable_hits(ctx.question)
+    session_id = ctx.session_id
+    if persist_ok:
+        if session_id is None:
+            session_id = qa_sessions.create_session(
+                qa_sessions.derive_title(ctx.question))
+        qa_sessions.append_message(session_id, "user", ctx.question)
+        qa_sessions.append_message(session_id, "assistant", answer,
+                                   sources=sources, confusable=confusable_hits,
+                                   mode=body.mode)
+    _emit_trace(ctx.trace)
+    return sources, confusable_hits, session_id
+
+
+def _confusable_hits(question: str) -> list[dict]:
+    """易混淆术语命中：检测对象恒为用户问题原文（仅提示，不做任何改写）。"""
+    if not question:
+        return []
+    from app.lexicon import store, confusable
+    return confusable.detect_confusable(question, store.load_confusable_pairs())
+
+
+def _effective_filters(body: QaRequest) -> dict:
+    """本轮实际生效的分类筛选（放宽后返回空，供前端展示）。"""
+    if body.relaxed:
+        return {}
+    return {k: v for k, v in {
+        "dim1_hierarchy": body.dim1_hierarchy,
+        "dim1_industry": body.dim1_industry,
+        "dim1_nature": body.dim1_nature,
+        "dim2_stage": body.dim2_stage,
+        "dim3_usage": body.dim3_usage,
+        "dim4_specialty": body.dim4_specialty,
+        "dim5_location": body.dim5_location,
+        "dim6_material": body.dim6_material,
+    }.items() if v}
+```
+
+**3c.** 把 `/qa/ask` 整体替换为「一个入口、两种形态」：
+
+```python
+@router.post("/qa/ask")
+async def qa_ask(request: Request, body: QaRequest):
+    """AI 问答。
+
+    默认返回 JSON；body.stream=True 时返回 SSE（text/event-stream）。
+    两种输出形态共用 _prepare_qa_context，检索逻辑只有一份。
+    """
+    question = body.question.strip()
+    if not question:
+        return JSONResponse({"detail": "问题不能为空"}, status_code=400)
+
+    ctx = _prepare_qa_context(question, body)
+
+    if body.stream:
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(
+            _sse_stream(ctx, body),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    return await _qa_json(ctx, body)
+
+
+async def _qa_json(ctx: QaContext, body: QaRequest):
+    """非流式输出：一次推理 → 收尾落库/埋点 → 完整 JSON。"""
+    from app.ai.prompts import build_system_prompt
+    from app.config import WORKSPACE_DIR
+
+    backend, cli_used = _resolve_backend(body.backend, ctx.trace)
+    if not backend.is_available():
+        return JSONResponse({"detail": f"{cli_used} 不可用，请确认已配置"},
+                            status_code=503)
+
+    start = time.time()
+    resp = await backend.ask(
+        prompt=ctx.question, context=ctx.context_str,
+        system_prompt=build_system_prompt(body.mode, multi_turn=bool(ctx.history_str)),
+        work_dir=WORKSPACE_DIR,
+    )
+    ctx.trace.duration_ms = int((time.time() - start) * 1000)
+
+    persist_ok = bool(resp.success and resp.content.strip())
+    answer = _answer_text(resp, cli_used)
+    sources, confusable_hits, session_id = _finish_turn(ctx, answer, persist_ok, body)
+
+    return QAResponse(answer=answer, sources=sources, cli_used=cli_used,
+                      confusable_hits=confusable_hits,
+                      rerank_used=ctx.rerank_used, session_id=session_id or 0,
+                      filtered_out=ctx.filtered_out,
+                      effective_filters=_effective_filters(body))
+
+
+async def _sse_stream(ctx: QaContext, body: QaRequest):
+    """流式输出：stage×N → delta×N → done | error。
+
+    注意：rerank_used 取自 ctx（准备阶段已拷贝），**不得**在此处再读
+    模块级 _last_rerank_used——本函数跨多次 await，期间并发请求会改写它。
+    """
+    from app.ai.prompts import build_system_prompt
+    from app.config import WORKSPACE_DIR
+
+    yield _sse("stage", {"stage": "retrieving"})
+    yield _sse("stage", {"stage": "reranking"})
+
+    backend, cli_used = _resolve_backend(body.backend, ctx.trace)
+    if not backend.is_available():
+        yield _sse("error", {"message": f"{cli_used} 不可用，请确认已配置"})
+        return
+
+    yield _sse("stage", {"stage": "generating"})
+
+    parts: list[str] = []
+    start = time.time()
+    async for ev in backend.ask_stream(
+        prompt=ctx.question, context=ctx.context_str,
+        system_prompt=build_system_prompt(body.mode, multi_turn=bool(ctx.history_str)),
+        work_dir=WORKSPACE_DIR,
+    ):
+        if ev["type"] == "delta":
+            parts.append(ev["text"])
+            yield _sse("delta", {"text": ev["text"]})
+        elif ev["type"] == "error":
+            ctx.trace.duration_ms = int((time.time() - start) * 1000)
+            yield _sse("error", {"message": ev.get("message") or "AI 服务返回错误"})
+            _emit_trace(ctx.trace)      # 失败也埋点，供排查
+            return
+    ctx.trace.duration_ms = int((time.time() - start) * 1000)
+
+    answer = "".join(parts)
+    sources, confusable_hits, session_id = _finish_turn(
+        ctx, answer, bool(answer.strip()), body)
+
+    yield _sse("done", {
+        "session_id": session_id or 0,
+        "sources": sources,
+        "confusable_hits": confusable_hits,
+        "rerank_used": ctx.rerank_used,      # 拷贝值，非全局
+        "filtered_out": ctx.filtered_out,
+    })
+```
+
+**3d.** 新增三个小工具（放在 `_extract_sources` 之后）：
 
 ```python
 def _sse(event: str, data: dict) -> str:
     """构造一条 SSE 消息（event + data 各一行，以空行结束）。"""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-```
 
-新增流式路由（放在 `/qa/ask` 之后）：
 
-```python
-@router.post("/qa/ask/stream")
-async def qa_ask_stream(request: Request, body: QaRequest):
-    """AI 问答（SSE 流式）：stage → delta×N → done / error。
-
-    与 /qa/ask 的差别仅在于输出方式；检索、精排、上下文组装、
-    会话持久化逻辑完全一致。非流式后端（CLI）由前端走 /qa/ask。
-    """
-    from fastapi.responses import StreamingResponse
-    from app.qa.context import (
-        filter_by_metadata, filter_by_score, dynamic_select,
-        tier_items, build_context,
-    )
-    from app.qa.config import get_qa_float, get_qa_int, get_qa_str
-    from app.qa.context import build_history
-    from app.qa import sessions as qa_sessions
-    from app.ai.prompts import build_system_prompt
-    from app.search.hybrid_search import hybrid_search
+def _resolve_backend(backend_name: str | None, trace: QATrace):
+    """解析后端并回填可读名到埋点，返回 (backend, cli_used)。"""
     from app.ai.cli_client import get_backend
-    from app.config import WORKSPACE_DIR
+    backend = get_backend(backend_name)
+    if isinstance(backend, APIBackend):
+        from app.ai.provider_presets import PROVIDERS
+        preset = PROVIDERS.get(backend_name or "")
+        cli_used = preset["name"] if preset else "自定义"
+    else:
+        cli_used = (backend.command or "cli").replace("\\", "/").rsplit("/", 1)[-1]
+    if not trace.backend:
+        trace.backend = cli_used
+    return backend, cli_used
 
-    question = body.question.strip()
-    if not question:
-        return JSONResponse({"detail": "问题不能为空"}, status_code=400)
 
-    backend = get_backend(body.backend)
-
-    async def gen():
-        yield _sse("stage", {"stage": "retrieving"})
-
-        # 会话解析与历史段（与 /qa/ask 同一套规则，严格不跨会话）
-        session_id = body.session_id
-        if session_id is not None and qa_sessions.get_session(session_id) is None:
-            session_id = None
-        history_messages = qa_sessions.get_messages(session_id) if session_id else []
-        history_str = build_history(
-            history_messages, get_qa_int("history.max_turns"),
-            get_qa_int("token.max_context_tokens"),
-        )
-
-        pool = get_qa_int("retrieve.candidate_pool")
-        mentions_non_clause = ("前言" in question) or ("条文说明" in question)
-        dims = {} if body.relaxed else {
-            "dim1_hierarchy": body.dim1_hierarchy,
-            "dim1_industry": body.dim1_industry,
-            "dim1_nature": body.dim1_nature,
-            "dim2_stage": body.dim2_stage,
-            "dim3_usage": body.dim3_usage,
-            "dim4_specialty": body.dim4_specialty,
-            "dim5_location": body.dim5_location,
-            "dim6_material": body.dim6_material,
-        }
-        has_dim = any(dims.values())
-        try:
-            candidates, _ = hybrid_search(SearchQuery(
-                keyword=question, per_page=pool,
-                include_non_clause=mentions_non_clause, **dims))
-        except Exception as e:
-            logger.error("QA stream hybrid_search failed: %s", e)
-            candidates = []
-
-        filtered_out = 0
-        if not body.relaxed and has_dim and len(candidates) < get_qa_int("retrieve.qa_min_candidates"):
-            try:
-                _, wide_total = hybrid_search(SearchQuery(
-                    keyword=question, per_page=pool,
-                    include_non_clause=mentions_non_clause))
-                filtered_out = wide_total
-            except Exception as e:
-                logger.error("QA stream diagnostic search failed: %s", e)
-
-        yield _sse("stage", {"stage": "reranking"})
-        status_allow = tuple(
-            s.strip() for s in get_qa_str("meta.status_allow").split(",") if s.strip()
-        )
-        candidates = filter_by_metadata(
-            candidates, body.include_invalid, status_allow=status_allow)
-        ranked = _rerank_scored(question, candidates)
-        min_score, high_thr = resolve_thresholds(_last_rerank_used, get_qa_float)
-        ranked = filter_by_score(ranked, min_score)
-        k = dynamic_select(
-            len(ranked),
-            top_ratio=get_qa_float("retrieve.top_ratio"),
-            min_results=get_qa_int("retrieve.min_results"),
-            max_results=get_qa_int("retrieve.max_results"),
-        )
-        ranked = ranked[:k]
-        high, low = tier_items(ranked, high_thr, min_score,
-                               get_qa_int("token.summary_chars"))
-        context_str, _, _, picked = build_context(
-            high, low, body.mode == "verbatim", get_qa_int("token.max_context_tokens"))
-        if history_str:
-            context_str = f"{history_str}\n\n{context_str}"
-
-        if not backend.is_available():
-            yield _sse("error", {"message": "AI 后端不可用，请检查配置"})
-            return
-
-        yield _sse("stage", {"stage": "generating"})
-
-        answer_parts: list[str] = []
-        failed = False
-        async for ev in backend.ask_stream(
-            prompt=question, context=context_str,
-            system_prompt=build_system_prompt(body.mode, multi_turn=bool(history_str)),
-            work_dir=WORKSPACE_DIR,
-        ):
-            if ev["type"] == "delta":
-                answer_parts.append(ev["text"])
-                yield _sse("delta", {"text": ev["text"]})
-            elif ev["type"] == "error":
-                failed = True
-                yield _sse("error", {"message": ev.get("message") or "AI 服务返回错误"})
-                break
-
-        if failed:
-            return
-
-        answer = "".join(answer_parts)
-        sources = _extract_sources([it.clause for it, _ in picked])
-        confusable_hits = []
-        if question:
-            from app.lexicon import store, confusable
-            confusable_hits = confusable.detect_confusable(
-                question, store.load_confusable_pairs())
-
-        # 落库（仅成功轮次；失败不入库，与 /qa/ask 一致）
-        if session_id is None:
-            session_id = qa_sessions.create_session(
-                qa_sessions.derive_title(question))
-        qa_sessions.append_message(session_id, "user", question)
-        qa_sessions.append_message(session_id, "assistant", answer,
-                                   sources=sources, confusable=confusable_hits,
-                                   mode=body.mode)
-
-        yield _sse("done", {
-            "session_id": session_id, "sources": sources,
-            "confusable_hits": confusable_hits,
-            "rerank_used": _last_rerank_used,
-            "filtered_out": filtered_out,
-        })
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+def _answer_text(resp, cli_used: str) -> str:
+    """把后端响应归一为给用户看的文本（失败/空内容给可读提示）。"""
+    if resp.success and resp.content.strip():
+        return resp.content
+    if resp.success:
+        logger.warning("QA 后端返回空内容 (command=%s)", cli_used)
+        return "抱歉，AI 服务返回了空内容，请确认后端已正确配置。"
+    logger.warning("QA 后端错误 (command=%s): %s", cli_used, resp.error)
+    return "抱歉，AI 服务返回错误。" + ("（超时）" if "超时" in (resp.error or "") else "")
 ```
 
-> `X-Accel-Buffering: no` 用于避免反向代理缓冲导致"看起来不流式"（见设计文档 §8 风险表）。
+> **同步删除** T8 与 T13 引入的旧 `/qa/ask` 函数体——其逻辑已全部并入
+> `_prepare_qa_context` / `_qa_json` / `_finish_turn`。这是纯重构，
+> `tests/test_qa_routes.py`、`tests/test_qa_session_routes.py`、`tests/test_qa_relax.py`
+> 必须全部保持通过，用以证明抽取无行为变化。
 
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -v`
-Expected: PASS（10 passed）
+Expected: PASS（T14 的 4 条 + 本 Task 的 10 条）
 
 - [ ] **Step 5: 全量回归 + 类型检查**
 
 Run: `D:/Python/python.exe -m pytest tests/ -q`
-Expected: 全部 PASS（既有约 726 条 + 本计划新增约 60 条）
+Expected: 全部 PASS（既有约 726 条 + 本计划新增）
 
 Run: `D:/Python/python.exe -m pyright app/`
 Expected: 无新增 error
@@ -2702,20 +2934,20 @@ Expected: 无新增 error
 - [ ] **Step 6: 提交**
 
 ```bash
-git add app/routes/qa_routes.py tests/test_qa_stream.py
-git commit -m "feat: 流式问答路由 /qa/ask/stream（SSE）"
+git add app/models.py app/routes/qa_routes.py tests/test_qa_stream.py
+git commit -m "feat: /qa/ask 单一入口支持流式输出（SSE），消除检索链路重复"
 ```
-
----
 
 ## 完成标准
 
 - [ ] `tests/` 全量通过，无回归
 - [ ] `pyright app/` 无新增 error
 - [ ] 15 个 Task 各自单次提交，提交信息符合 `type: 描述` 规范
-- [ ] `GET /qa/sessions`、`GET /qa/sessions/{id}`、`PATCH`、`DELETE`、`export`、`/qa/search`、`/qa/ask/stream` 均可访问
+- [ ] `GET /qa/sessions`、`GET /qa/sessions/{id}`、`PATCH`、`DELETE`、`export`、`/qa/search` 均可访问
+- [ ] `POST /qa/ask` 带 `stream=true` 返回 `text/event-stream`，不带则返回 JSON（既有契约不变）
 - [ ] `/qa/ask` 非流式路径行为不变（既有用例通过）
 - [ ] 第 3 级降级不再产生"全 1.0 → 全 high"，有回归测试守卫
+- [ ] 流式与非流式两条路径都落 `qa_request_logs`（埋点不因输出形态而丢失）
 
 ## 后续（不在本计划内）
 
