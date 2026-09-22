@@ -366,7 +366,10 @@ function syncQaUrl() {
 并在 `qa.js` 顶部新增维度键常量（与后端 `dim1_hierarchy…dim6_material` 一一对应，禁止散落字面量）：
 
 ```js
-// 维度参数名（与 SearchQuery / QaRequest 的字段名一一对应）
+// 维度参数名。**必须与后端 app/models.py 的 QA_DIM_FIELDS 保持一致**
+// （前端无法跨语言复用该常量，只能镜像；后端有 test_qa_dim_fields_matches_request_model
+//  盯着常量与 QaRequest 的一致性，此处靠代码评审与 URL 回填探针发现漂移。
+//  T1 的 t1_filters_carry_into_qa_via_url 会在维度名漂移时失败。）
 const QA_DIM_KEYS = ['dim1_hierarchy', 'dim1_industry', 'dim1_nature',
                      'dim2_stage', 'dim3_usage', 'dim4_specialty',
                      'dim5_location', 'dim6_material'];

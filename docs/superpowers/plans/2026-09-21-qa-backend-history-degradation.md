@@ -2612,6 +2612,21 @@ def test_non_stream_request_is_traced(auth_client, stream_env):
     assert n == 1
 
 
+def test_qa_dim_fields_matches_request_model():
+    """一致性守卫：QA_DIM_FIELDS 必须与 QaRequest 的维度字段完全对应。
+
+    该常量是「检索条件构造」与「当轮筛选记录」的唯一来源。若将来新增维度
+    只改了 QaRequest 而漏改常量，检索会**静默忽略新维度**（筛选界面能选、
+    但不生效），极难排查。本用例把两者钉死，让漏改立刻失败。
+    """
+    from app.models import QA_DIM_FIELDS, QaRequest
+    model_dims = {k for k in QaRequest.model_fields if k.startswith("dim")}
+    assert set(QA_DIM_FIELDS) == model_dims, (
+        f"QA_DIM_FIELDS 与 QaRequest 维度字段不一致："
+        f"仅常量有 {set(QA_DIM_FIELDS) - model_dims}，仅模型有 {model_dims - set(QA_DIM_FIELDS)}"
+    )
+
+
 def test_include_non_clause_flag_is_honored(auth_client, stream_env, monkeypatch):
     """回归（静默 no-op）：左栏「包含前言·条文说明」必须真的到达检索层。
 
@@ -2690,7 +2705,7 @@ Expected: FAIL — `test_stream_emits_stage_then_deltas_then_done` 返回 JSON �
 
 - [ ] **Step 3: 实现**
 
-**3a. `app/models.py`** —— `QaRequest` 增两个字段（放在 `relaxed` 之后）：
+**3a. `app/models.py`** —— `QaRequest` 增两个字段（放在 `relaxed` 之后），并把维度字段名收敛为单一常量：
 
 ```python
     # 输出形态：False → 一次性 JSON（默认，保持既有契约）；
@@ -2702,7 +2717,21 @@ Expected: FAIL — `test_stream_emits_stage_then_deltas_then_done` 返回 JSON �
     include_non_clause: bool = False
 ```
 
-**3b. `app/routes/qa_routes.py`** —— 在 `_emit_trace` 之后新增数据类与共享准备函数：
+**3b.（接上）维度字段名收敛为单一常量——**新增维度时只改这一处**：
+
+```python
+# 维度筛选的请求字段名（dim1 含三个子维度，共 8 个字段）。
+# 检索条件构造与「当轮生效筛选」记录都从这里派生，避免同一个列表
+# 在 _prepare_qa_context / _effective_filters 里各写一遍而漏改。
+QA_DIM_FIELDS: tuple[str, ...] = (
+    "dim1_hierarchy", "dim1_industry", "dim1_nature",
+    "dim2_stage", "dim3_usage", "dim4_specialty",
+    "dim5_location", "dim6_material",
+)
+```
+
+**3c. `app/routes/qa_routes.py`** —— 顶部 `from app.models import ...` 追加 `QA_DIM_FIELDS`；
+在 `_emit_trace` 之后新增数据类与共享准备函数：
 
 ```python
 @dataclass
@@ -2754,18 +2783,12 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
     # （「问题文本含前言/条文说明字样时隐式放行」是设计文档 §4.3 的兜底条款）
     include_non_clause = body.include_non_clause or \
         ("前言" in question) or ("条文说明" in question)
-    # relaxed=True 时清空分类维度（D9 的「放宽到全部规范」）
+    # 分类维度：只取非空项（SearchQuery 的对应字段默认 []，语义等价）；
+    # relaxed=True 时清空（D9 的「放宽到全部规范」）。字段名来自单一常量。
     dims = {} if body.relaxed else {
-        "dim1_hierarchy": body.dim1_hierarchy,
-        "dim1_industry": body.dim1_industry,
-        "dim1_nature": body.dim1_nature,
-        "dim2_stage": body.dim2_stage,
-        "dim3_usage": body.dim3_usage,
-        "dim4_specialty": body.dim4_specialty,
-        "dim5_location": body.dim5_location,
-        "dim6_material": body.dim6_material,
+        k: getattr(body, k) for k in QA_DIM_FIELDS if getattr(body, k)
     }
-    has_dim = any(dims.values())
+    has_dim = bool(dims)
     try:
         candidates, total = hybrid_search(SearchQuery(
             keyword=question, per_page=pool,
@@ -2869,19 +2892,11 @@ def _effective_filters(body: QaRequest) -> dict:
     两个用途：① 随助手消息落库，供历史回看追溯（D5）；
     ② 随响应返回，供前端显示「本轮生效筛选」（让"回复中切换只影响下一轮"可见）。
     放宽（relaxed）时分类维度为空——那正是放宽的语义。
+    维度字段名取自 QA_DIM_FIELDS（单一来源），新增维度时不会漏记。
     """
     out: dict = {}
     if not body.relaxed:
-        out = {k: v for k, v in {
-            "dim1_hierarchy": body.dim1_hierarchy,
-            "dim1_industry": body.dim1_industry,
-            "dim1_nature": body.dim1_nature,
-            "dim2_stage": body.dim2_stage,
-            "dim3_usage": body.dim3_usage,
-            "dim4_specialty": body.dim4_specialty,
-            "dim5_location": body.dim5_location,
-            "dim6_material": body.dim6_material,
-        }.items() if v}
+        out = {k: getattr(body, k) for k in QA_DIM_FIELDS if getattr(body, k)}
     # 状态过滤：None（缺参）时不记录，避免把默认白名单误当成用户显式选择
     if body.status_filter is not None:
         out["status_filter"] = body.status_filter
@@ -2890,7 +2905,7 @@ def _effective_filters(body: QaRequest) -> dict:
     return out
 ```
 
-**3c.** 把 `/qa/ask` 整体替换为「一个入口、两种形态」：
+**3d.** 把 `/qa/ask` 整体替换为「一个入口、两种形态」：
 
 ```python
 @router.post("/qa/ask")
@@ -2996,7 +3011,7 @@ async def _sse_stream(ctx: QaContext, body: QaRequest):
     })
 ```
 
-**3d.** 新增三个小工具（放在 `_extract_sources` 之后）：
+**3e.** 新增三个小工具（放在 `_extract_sources` 之后）：
 
 ```python
 def _sse(event: str, data: dict) -> str:
