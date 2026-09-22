@@ -61,7 +61,7 @@ def test_something(auth_client):
 |---|---|---|
 | `hybrid_search` | `app.search.hybrid_search.hybrid_search` | ~~`app.routes.qa_routes.hybrid_search`~~ |
 | `get_backend` | `app.ai.cli_client.get_backend` | ~~`app.routes.qa_routes.get_backend`~~ |
-| `build_history` | `app.qa.history.build_history` | ~~`app.routes.qa_routes.build_history`~~ |
+| `build_history` | `app.qa.context.build_history` | ~~`app.routes.qa_routes.build_history`~~ |
 | `_rerank_scored` | `app.routes.qa_routes._rerank_scored` ✅ | （这个是模块级的，可以） |
 
 **4. `conftest.py` 已有 autouse 夹具**（`_mock_search_rerank`）把 `rerank_candidates` mock 成原序，
@@ -78,7 +78,7 @@ Task 4 起所有不走 HTTP 的单元测试直接使用它。
 |---|---|---|
 | `app/qa/degrade.py` | 精排降级级别的枚举与排名归一化分数 | **新建** |
 | `app/qa/sessions.py` | 会话/消息的持久化层（CRUD + 搜索 + 导出数据） | **新建** |
-| `app/qa/history.py` | 多轮历史段组装（`build_history`） | **新建** |
+| `app/qa/context.py` | 候选过滤 / 分层 / 上下文组装；**新增多轮历史段 `build_history`** | 修改 |
 | `app/qa/context.py` | 候选过滤/分层/上下文组装（既有） | 不改（见 T1 说明） |
 | `app/routes/qa_routes.py` | QA 路由与链路编排 | 修改 |
 | `app/ai/api_client.py` | API 后端（含新增流式） | 修改 |
@@ -1020,7 +1020,7 @@ git commit -m "feat: QA 会话持久化层（CRUD + 跨会话搜索）"
 ## Task 6: 多轮历史段组装
 
 **Files:**
-- Create: `app/qa/history.py`
+- Modify: `app/qa/context.py`（新增 `build_history` 与 `HISTORY_HEADER`）
 - Modify: `app/config.py`（`QA_CONFIG_DEFAULTS`）
 - Modify: `app/params/registry.py`
 - Test: `tests/test_qa_history.py`
@@ -1028,15 +1028,16 @@ git commit -m "feat: QA 会话持久化层（CRUD + 跨会话搜索）"
 **Interfaces:**
 - Consumes: `app.qa.sessions.get_messages` 的返回结构（T5）
 - Produces:
-  - `app.qa.history.build_history(messages: list[dict], max_turns: int, token_budget: int) -> str`
-  - `app.qa.history.HISTORY_HEADER: str`
+  - `app.qa.context.build_history(messages: list[dict], max_turns: int, token_budget: int) -> str`
+  - `app.qa.context.build_history(messages: list[dict], max_turns: int, token_budget: int) -> str`
+  - `app.qa.context.HISTORY_HEADER: str`
 
 - [ ] **Step 1: 写失败测试**
 
 ```python
 # tests/test_qa_history.py
 """多轮历史段组装（精简多轮：只带问答文本，绝不复用历史条文）。"""
-from app.qa.history import build_history, HISTORY_HEADER
+from app.qa.context import build_history, HISTORY_HEADER
 
 
 def _msgs(*pairs):
@@ -1112,34 +1113,26 @@ def test_build_history_skips_malformed_entries():
 - [ ] **Step 2: 运行测试确认失败**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_history.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'app.qa.history'`
+Expected: FAIL — `ImportError: cannot import name 'build_history' from 'app.qa.context'`
 
-- [ ] **Step 3: 实现 `app/qa/history.py`**
+- [ ] **Step 3: 实现**
+
+在 `app/qa/context.py` 末尾新增（该文件职责即「上下文组装」，`build_history` 天然属于它——不另立文件）：
 
 ```python
-"""多轮历史段组装（精简多轮策略）。
-
-核心不变量（设计文档 D1/D3）：
-1. 历史段**只含问答文本**，绝不复用历史条文上下文——条文每轮由
-   hybrid_search 重新召回。带历史条文会导致 token 平方级增长，
-   且旧条文可能与新问题矛盾。
-2. 上下文**严格限于当前会话**——调用方只传当前会话的消息。
-3. 超预算时**逐轮丢弃最旧**，不截断单条答案内部
-   （与 app/qa/context.py:build_context 的既有原则一致）。
-"""
-import logging
-
-logger = logging.getLogger(__name__)
+# ── 多轮历史段组装（精简多轮策略） ──
+#
+# 核心不变量（设计文档 D1/D3）：
+# 1. 历史段只含问答文本，绝不复用历史条文上下文——条文每轮由
+#    hybrid_search 重新召回。带历史条文会导致 token 平方级增长，
+#    且旧条文可能与新问题矛盾。
+# 2. 上下文严格限于当前会话——调用方只传当前会话的消息。
+# 3. 超预算时逐轮丢弃最旧，不截断单条答案内部
+#    （与同文件 build_context 的既有原则一致）。
+#
+# 复用本文件既有的 estimate_tokens()，不另造 token 估算。
 
 HISTORY_HEADER = "【历史对话】"
-
-# 字符/token 估算系数（与 qa.token.chars_per_token 默认值一致）
-_CHARS_PER_TOKEN = 2
-
-
-def _estimate_tokens(text: str) -> int:
-    """粗估 token 数（中文为主，len/2）。"""
-    return len(text or "") // _CHARS_PER_TOKEN
 
 
 def _turns(messages: list[dict]) -> list[tuple[str, str]]:
@@ -1182,9 +1175,9 @@ def build_history(messages: list[dict], max_turns: int,
     recent = turns[-max_turns:]
     # 从最近往前累积，超预算即停——保证丢的是最旧的轮次
     kept: list[tuple[str, str]] = []
-    used = _estimate_tokens(HISTORY_HEADER)
+    used = estimate_tokens(HISTORY_HEADER)
     for q, a in reversed(recent):
-        cost = _estimate_tokens(q) + _estimate_tokens(a)
+        cost = estimate_tokens(q) + estimate_tokens(a)
         if kept and used + cost > token_budget:
             break
         used += cost
@@ -1227,7 +1220,7 @@ Expected: 输出 `qa 6.0 0 50`（分组 `qa` 会自动渲染进「维护 → 参
 - [ ] **Step 6: 提交**
 
 ```bash
-git add app/qa/history.py app/config.py app/params/registry.py tests/test_qa_history.py
+git add app/qa/context.py app/config.py app/params/registry.py tests/test_qa_history.py
 git commit -m "feat: 多轮历史段组装 + qa.history.max_turns 参数"
 ```
 
@@ -1330,7 +1323,7 @@ git commit -m "feat: 多轮对话引用护栏（禁止引用本轮未提供的�
 - Test: `tests/test_qa_session_routes.py`
 
 **Interfaces:**
-- Consumes: `app.qa.sessions`（T5）、`app.qa.history.build_history`（T6）、`build_system_prompt(mode, multi_turn)`（T7）
+- Consumes: `app.qa.sessions`（T5）、`app.qa.context.build_history`（T6）、`build_system_prompt(mode, multi_turn)`（T7）
 - Produces: `QaRequest.session_id: int | None`、`QaRequest.relaxed: bool = False`、`QAResponse.session_id: int`
 
 - [ ] **Step 1: 写失败测试**
@@ -1477,7 +1470,7 @@ Expected: FAIL — `KeyError: 'session_id'`
 在 `app/routes/qa_routes.py` 的 `/qa/ask` 中，import 段追加：
 
 ```python
-    from app.qa.history import build_history
+    from app.qa.context import build_history
     from app.qa import sessions as qa_sessions
 ```
 
@@ -2409,7 +2402,7 @@ git commit -m "feat: API 后端 SSE 流式调用（ask_stream）"
 - Test: `tests/test_qa_stream.py`（追加）
 
 **Interfaces:**
-- Consumes: `APIBackend.ask_stream` / `CLIBackend.ask_stream`（T14）、`app.qa.sessions`（T5）、`app.qa.history.build_history`（T6）
+- Consumes: `APIBackend.ask_stream` / `CLIBackend.ask_stream`（T14）、`app.qa.sessions`（T5）、`app.qa.context.build_history`（T6）
 - Produces: `POST /qa/ask/stream` → `text/event-stream`，事件序列：若干 `stage` → 若干 `delta` → 一个 `done`（含 `session_id` / `sources` / `rerank_used` / `filtered_out`）或一个 `error`
 
 - [ ] **Step 1: 写失败测试**
@@ -2556,7 +2549,7 @@ async def qa_ask_stream(request: Request, body: QaRequest):
         tier_items, build_context,
     )
     from app.qa.config import get_qa_float, get_qa_int, get_qa_str
-    from app.qa.history import build_history
+    from app.qa.context import build_history
     from app.qa import sessions as qa_sessions
     from app.ai.prompts import build_system_prompt
     from app.search.hybrid_search import hybrid_search
