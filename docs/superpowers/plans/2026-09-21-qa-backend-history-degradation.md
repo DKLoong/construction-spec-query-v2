@@ -752,6 +752,37 @@ def test_get_messages_tolerates_bad_filters_json(qa_db):
     assert S.get_messages(sid)[0]["filters"] == {}
 
 
+def test_concurrent_appends_same_session_do_not_lose_or_mix(qa_db):
+    """异常场景（并发）：同一会话并发追加消息不重不漏、不错位。
+
+    开启多轮与流式后，一次问答可持续数秒到数十秒；同一会话可能被两个
+    标签页（或手快连点两次）同时写入。本用例验证上层已依赖的不变量：
+    **消息按 id 顺序落库、互不覆盖**。
+
+    注：`get_db()` 的 `sqlite3.connect(..., timeout=30)` 负责把并发写
+    串行化，本用例同时是那个 timeout 的守卫（取消它会让此测试报
+    "database is locked"）。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    sid = S.create_session("并发")
+
+    def write(i: int) -> None:
+        S.append_message(sid, "user", f"q{i}")
+        S.append_message(sid, "assistant", f"a{i}")
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        list(ex.map(write, range(8)))
+
+    msgs = S.get_messages(sid)
+    assert len(msgs) == 16, f"并发写入丢消息或多消息（实际 {len(msgs)} 条）"
+    assert {m["content"] for m in msgs} == (
+        {f"q{i}" for i in range(8)} | {f"a{i}" for i in range(8)}
+    ), "并发写入内容错乱或被覆盖"
+    assert [m["id"] for m in msgs] == sorted(m["id"] for m in msgs), \
+        "消息未按 id 升序返回"
+
+
 def test_append_message_bumps_updated_at(qa_db):
     """边界场景：追加消息必须刷新 updated_at，否则列表排序不反映活跃度。"""
     sid = S.create_session("s")
@@ -775,6 +806,18 @@ def test_list_sessions_reports_message_count(qa_db):
     S.append_message(sid, "user", "q")
     S.append_message(sid, "assistant", "a")
     assert S.list_sessions()[0]["msg_count"] == 2
+
+
+def test_list_sessions_includes_empty_sessions(qa_db):
+    """边界场景：零消息的会话仍出现在列表里，计数为 0。
+
+    守卫 LEFT JOIN 的语义——写成 INNER JOIN 会静默丢掉所有空会话，
+    而「草稿态会话」正是靠列表可见性管理的。
+    """
+    S.create_session("空会话")
+    rows = S.list_sessions()
+    assert len(rows) == 1
+    assert rows[0]["msg_count"] == 0
 
 
 def test_rename_session(qa_db):
@@ -849,6 +892,8 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'app.qa.sessions'`
 
 约定：
 - 所有 SQL 一律参数化（开发铁律 1.1）
+- 并发安全依赖 `get_db()` 的 `sqlite3.connect(..., timeout=30)` 把写入串行化；
+  有测试守护该不变量（`test_concurrent_appends_same_session_do_not_lose_or_mix`）
 - 删除会话时**应用层显式删消息**，不依赖 ON DELETE CASCADE
   （SQLite 默认 PRAGMA foreign_keys=OFF，见 tests/test_qa_sessions.py 的
    test_qa_tables_cascade_delete 对实际状态的断言）
@@ -904,12 +949,18 @@ def get_session(session_id: int) -> dict | None:
 
 
 def list_sessions() -> list[dict]:
-    """会话列表，按最近活跃倒序；带消息数。"""
+    """会话列表，按最近活跃倒序；带消息数。
+
+    用 LEFT JOIN + GROUP BY 一次算出全部计数，避免逐行的关联子查询（N+1）——
+    开发铁律 1.3「循环内部禁止执行数据库查询」在 SQL 层的等价约束。
+    LEFT JOIN 保证零消息的会话仍出现在列表里（COUNT(m.id) 为 0）。
+    """
     with get_db() as conn:
         rows = conn.execute(
-            """SELECT s.id, s.title, s.updated_at,
-                      (SELECT COUNT(*) FROM qa_messages m WHERE m.session_id = s.id)
+            """SELECT s.id, s.title, s.updated_at, COUNT(m.id)
                FROM qa_sessions s
+               LEFT JOIN qa_messages m ON m.session_id = s.id
+               GROUP BY s.id, s.title, s.updated_at
                ORDER BY s.updated_at DESC, s.id DESC"""
         ).fetchall()
     return [{"id": r[0], "title": r[1], "updated_at": r[2], "msg_count": r[3]}
