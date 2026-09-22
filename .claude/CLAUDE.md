@@ -93,3 +93,24 @@ async with async_playwright() as p:
 - **工具分工**：常规浏览/QA 走 gstack `/browse`（你可以自行调用）；性能分析（Performance Trace / Lighthouse / 内存）用 `mcp__chrome-devtools__*` 工具。
 - Windows 下 bun 位于 `D:\bun-windows-x64\bun.exe`（该目录仅有 bun.exe、无 bunx shim；需 `bun x` 时自行包装）。
 - 装好后 `/gstack-upgrade` 可随时升级；`./setup` 重跑可刷新技能文件。
+
+---
+
+## 五、Skill routing
+
+When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
+
+Key routing rules:
+- Product ideas/brainstorming → invoke /office-hours
+- Strategy/scope → invoke /plan-ceo-review
+- Architecture → invoke /plan-eng-review
+- Design system/plan review → invoke /design-consultation or /plan-design-review
+- Full review pipeline → invoke /autoplan
+- Bugs/errors → invoke /investigate
+- QA/testing site behavior → invoke /qa or /qa-only
+- Code review/diff check → invoke /review
+- Visual polish → invoke /design-review
+- Ship/deploy/PR → invoke /ship or /land-and-deploy
+- Save progress → invoke /context-save
+- Resume context → invoke /context-restore
+- Author a backlog-ready spec/issue → invoke /spec
