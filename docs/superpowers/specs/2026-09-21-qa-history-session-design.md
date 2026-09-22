@@ -74,6 +74,7 @@ htmx.ajax('GET', `/search?${params}`, { target: '.center-panel-v2', swap: 'inner
 | D11 | 流式输出**只对 API 后端**实现 | 当前 QA 走 DeepSeek API（实测）；CLI 后端不做伪流式，后续可能整体取消 |
 | D12 | 模型降级的三项修正**并入本轮** | 第 3 级降级改按排名切分（修分层失效）+ 降级状态透出前端 + 挂健康检查 |
 | D13 | 流式**不新增路由**，并入 `/qa/ask` 单一入口 | 独立路由会复制检索链路，已因此产生埋点缺失与全局变量竞态两个缺陷；单一入口下逻辑只有一份 |
+| D14 | QA 走**整页导航**，筛选经 **URL** 携带 | htmx 局部替换的唯一收益（筛选携带）本就非需求，代价却是三项（改检索页 swap 目标 / Alpine-in-swap 无先例 / 后退键失效）；整页导航与 `/rules` 同形，筛选改由 URL 承担 |
 
 ---
 
@@ -83,41 +84,58 @@ htmx.ajax('GET', `/search?${params}`, { target: '.center-panel-v2', swap: 'inner
 
 两个**平级界面**，各自独立入口：
 
-| 界面 | 中栏 | 右栏 | 入口 |
+| 界面 | 页面形态 | 内容区 | 入口 |
 |---|---|---|---|
-| 检索页 | 检索结果 | — | 输关键词回车 / 点分类树 |
-| QA 页 | 对话区 + 输入框（贴底） | 会话管理（可向右折叠 ▸） | 点左栏「🤖 AI 问答」 |
+| 检索页 | 首页（`/`） | 检索结果 | 输关键词回车 / 点分类树 |
+| QA 页 | **独立整页**（`/qa`） | 对话区 + 输入框（贴底）｜会话管理（可向右折叠 ▸） | 点左栏「🤖 AI 问答」（携带当前筛选的链接） |
 
-> 「右栏」的物理落地方式见 §4.2——由中栏内部 flex 分列实现，视觉与三栏等价，不新增 grid 列。
+> QA 页与 `/specs`、`/rules`、`/lexicon` 同形：都是 `base.html` 渲染的独立页面，左栏分类树照常在位。
+> 「问答区 | 会话管理」的落地方式见 §4.2——QA 页内部 flex 分两列，不新增 grid 列。
 
 - QA 输入框的提问会在后端做 RAG 召回，但**不是检索页的那次检索**——不填搜索框、不切回结果页
 - 不设「返回检索」：换界面即手动检索
 
-### 4.2 容器与 htmx 契约（**关键实现约束**）
+### 4.2 页面形态与容器（**关键实现约束**）
 
-**问题**：QA 页要放中栏，而中栏 `.center-panel-v2` 是 htmx 的 `innerHTML` 替换目标（见 2.2），输入框会被每次检索冲掉。
+**QA 是整页导航的独立页面**，与 `/specs`、`/rules`、`/lexicon` **完全同形**：
 
-**解法**：在中栏内引入稳定壳层。
-
+```python
+@router.get("/qa")
+async def qa_page(request: Request):
+    from app.main import templates
+    return templates.TemplateResponse(request, "base.html", {
+        "left_content": "partials/tree_panel.html",
+        "center_content": "partials/qa_page.html",
+    })
 ```
-<main class="center-panel-v2">          ← 栏壳，永不替换
-  <div id="main-content">               ← 新增：唯一的 htmx swap 目标
-      ...检索结果 或 QA 页...
-  </div>
-</main>
-```
 
-- `search.js` / `tree.js` 的 `target` 由 `.center-panel-v2` 改为 `#main-content`
-- QA 入口：`htmx.ajax('GET', '/qa', { target: '#main-content', swap: 'innerHTML' })`
-- `#main-content` 元素本身不被替换（innerHTML swap 只换子节点），因此其内部的输入框、滚动状态稳定
-- 翻页的 `hx-target="#search-results" hx-swap="outerHTML"`（`result_content.html:39,44`）不受影响，`#search-results` 变为 `#main-content` 的子节点
+- 左栏分类树照常在位（`base.html` 的 `left_content` 渲染）
+- Alpine 走 DOMContentLoaded 初始化——本项目所有页面都是这个路径，**无需任何新机制**
+- 入口按钮是普通链接（与 📚规范 / 📋规则 / 📖词库 同形）
 
-**关于「三栏」的落地方式**：会话管理栏**不新增 grid 列**，而是在 `#main-content` 内部用 flex 分两列（对话区 | 会话管理）。
+**为何不沿用 htmx 局部替换**（评审决定 D14）：首版设计让 QA 走 `htmx.ajax` 换进 `.center-panel-v2`，
+唯一理由是「把检索页已选的筛选带过去」，但该需求从未被提出，代价却是三项：
 
-理由：视觉效果与约定的三栏完全等价——`20% | 80%×62.5% | 80%×37.5%` ≡ `20% | 50% | 30%`；但避免了改 `.app-layout` 的 grid、处理右栏内容残留、以及 `hide_tree`（审查页 `.full-width`）分支的连带影响。
+1. 需要在中栏引入 `#main-content` 稳定壳层，并改动**正在工作的** `search.js`/`tree.js` 的 swap 目标
+   （牵动翻页、回顶、翻页建议三条逻辑）
+2. QA 会成为本项目**首个「被 htmx 揳进中栏的 Alpine 组件」**——`.center-panel-v2` 是 `innerHTML` 替换目标
+   （见 §2.2），而「Alpine 在 swap 场景下能否接管」在本项目**无既有先例可依**；失败时页面外观正常但完全无响应，无报错
+3. htmx 方案下浏览器**后退按钮回不到检索页**（`htmx.ajax` 不推历史）
 
-> ⚠️ 此为实现路径与字面「三栏」的差异点，视觉等价。若你要求物理上独立成列，需额外处理 `.full-width` 分支与栏间状态清理。
+改用整页导航后上述三项全部消失；原本想靠 htmx 拿到的「筛选携带」改由 **URL** 承担，
+顺带获得可分享链接与正常的前进后退：
 
+| 场景 | 行为 |
+|---|---|
+| 检索页 → QA 页 | 入口 `href` 由 `buildQaUrl()` 按当前筛选拼出（`/qa?dim4_specialty=混凝土&status_filter=现行`） |
+| QA 页载入 | `seedFiltersFromUrl()` 读 URL 回填共享 store |
+| QA 页内改筛选 | `history.replaceState` 同步 URL（不新增历史记录） |
+| 刷新 / 分享链接 | 筛选完整还原 |
+
+**「问答区 | 会话管理」的落地方式**：会话管理栏**不新增 grid 列**，而是 QA 页内部用 flex 分两列。
+
+理由：视觉上就是三栏（`20% | 50% | 30%`），但不需要改 `.app-layout` 的 grid，
+也避开 `hide_tree`（审查页 `.full-width`）分支的连带影响。
 ### 4.3 筛选统一
 
 | 控件 | 改为 | 生效时机 |
@@ -128,20 +146,39 @@ htmx.ajax('GET', `/search?${params}`, { target: '.center-panel-v2', swap: 'inner
 | 问题文本含「前言/条文说明」 | 保留为兜底（`qa_routes.py:167` 不动） | 本轮 |
 | CE 精排 | 加 `title` 提示：<br>「CE 精排仅作用于检索结果排序；AI 问答走独立精排链，不受此开关影响」 | — |
 
-**D8 的实现**：`tree.js` 的 `selectFilter()`、`search.js` 的 `onStatusChange()` / `onCeChange()` 在触发 `dispatchSearch()`/`search()` 前先判断当前视图。
+**D8 的实现**：`tree.js` 的 `selectFilter()`、`search.js` 的 `onStatusChange()` / `onCeChange()`
+在触发 `dispatchSearch()`/`search()` 前先判断当前视图。
 
-引入 `$store.searchState.view`（`'search'` | `'qa'`），由 `qaView` 组件生命周期维护：`init()` 置 `'qa'`，Alpine `destroy()` 置 `'search'`。切换界面时 htmx 替换 `#main-content` 的子节点会销毁 `qaView` 组件，`destroy()` 随之触发——**必须验证 `destroy()` 在 htmx swap 场景下确实被调用**，若未触发则退回用 `#qa-root` 的 DOM 存在性判断（`document.getElementById('qa-root')`）。
+判据用**共享的 `isQaView()`**（定义在 `tree.js`，供两处调用）：
+
+```js
+// 以 DOM 存在性判断，不用 Alpine 生命周期钩子——
+// destroy() 是否触发未被官方文档化，DOM 判据零风险且同样准确
+function isQaView() {
+    return !!document.getElementById('qa-root');
+}
+```
 
 ```js
 selectFilter(dimension, value) {
     // ...更新 filters（QA 页与检索页都需要）
     this.$store.searchState.filters = next;
-    if (this.$store.searchState.view === 'qa') return;  // QA 页：只更新状态
+    if (isQaView()) {
+        syncQaUrl();   // QA 页：只更新状态 + 同步 URL，不发起检索
+        return;
+    }
     this.dispatchSearch();
 }
 ```
 
-保留 `search()` 的回车触发——在 QA 页按回车搜索即切回检索页，这是符合直觉的显式动作。
+保留 `search()` 的回车触发——在 QA 页按回车搜索即切回检索页，这是符合直觉的显式动作
+（与从 `/specs`、`/rules` 返回检索页的方式一致）。
+
+**筛选状态的可见性与可追溯**（缺陷 2 的修补，见 D5）：
+- 助手消息落库时记录**当轮实际生效的筛选**，回看历史时显示「筛选：专业=混凝土 · 状态=现行」
+- 输入框上方常驻显示「本轮生效：…」；当左栏筛选与本轮生效不一致时追加
+  「· 已修改，将在下一轮生效」——这是设计文档**场景 2**（AI 回复中切换筛选）的可见性保证，
+  否则用户切了会以为立即生效
 
 ### 4.4 会话数据模型
 
@@ -169,16 +206,19 @@ CREATE INDEX IF NOT EXISTS idx_qa_messages_session ON qa_messages(session_id, id
 
 - 迁移方式沿用 `database.py` 既有模式（`CREATE TABLE IF NOT EXISTS` + 迁移段）
 - **`qa_request_logs` 保持不动**，两表职责分离：前者是**请求级埋点**（调参用），后者是**会话内容**（用户可见）
-- 删除会话时级联删消息；`ON DELETE CASCADE` 需确认 `PRAGMA foreign_keys` 已开启，否则在应用层显式删
+- 删除会话时**在应用层显式删消息**——SQLite 默认 `PRAGMA foreign_keys=OFF`，`ON DELETE CASCADE` 不可依赖。
+  `ON DELETE CASCADE` 仍写在 schema 里（若将来开启外键则自动生效），并有测试记录当前外键状态作为提醒
 
 ### 4.5 多轮上下文（精简多轮）
 
 在 `app/qa/context.py` 新增：
 
 ```python
-def build_history(messages: list[dict], max_turns: int) -> str:
-    """取最近 max_turns 轮「问+答」纯文本拼为历史段。
+def build_history(messages: list[dict], max_turns: int, token_budget: int) -> str:
+    """取最近 max_turns 轮「问+答」纯文本拼为历史段；超预算逐轮丢弃最旧。
+
     不含任何历史条文上下文——条文每轮由 hybrid_search 重新召回。
+    复用本文件既有的 estimate_tokens()，不另造 token 估算。
     """
 ```
 

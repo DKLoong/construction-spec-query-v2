@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把 AI 问答从弹窗改为中栏内的右侧常驻界面，接入会话列表与续聊，让分类树筛选对检索页与 QA 页同时生效，并把流式输出渲染到界面。
+**Goal:** 把 AI 问答从弹窗改为独立的整页（左侧分类树照常在位），接入会话列表与续聊，让分类树筛选对检索页与 QA 页同时生效，并把流式输出渲染到界面。
 
-**Architecture:** 先在中栏引入稳定壳层 `#main-content` 并把 htmx swap 目标迁进去（否则输入框每次检索都被冲掉），再在其内部用 flex 分两列承载「对话区 | 会话管理（可折叠）」。筛选统一靠一个共享的 `view` 状态：在 QA 页时左栏筛选只更新状态、不发检索，从而让「下一轮生效」成立。流式渲染全程降级——流式期间不跑 KaTeX，收尾时跑一次完整管线。
+**Architecture:** QA 是**整页导航**的独立页面（`GET /qa` → `base.html`，与 `/rules`、`/lexicon` 同形），中栏内部用 flex 分两列承载「对话区 | 会话管理（可折叠）」。筛选经 **URL** 跨页携带（整页导航会重置 Alpine store），筛选统一靠一个共享的 DOM 判据 `isQaView()`：在 QA 页时左栏筛选只更新状态并同步 URL、不发检索，从而让「下一轮生效」成立。流式渲染全程降级——流式期间不跑 KaTeX，收尾时跑一次完整管线。
 
 **Tech Stack:** FastAPI + Jinja2 · htmx · Alpine.js · marked / DOMPurify / KaTeX · Playwright（验证）
 
@@ -55,31 +55,46 @@ with sync_playwright() as p:
 
 | 文件 | 职责 | 动作 |
 |---|---|---|
-| `app/templates/base.html` | 页壳、脚本标签、弹窗容器 | 修改 |
+| `app/routes/qa_routes.py` | `GET /qa` 整页路由（T1）+ JSON 接口 | 修改 |
 | `app/templates/partials/qa_page.html` | QA 页（对话区 + 会话管理） | **新建** |
-| `app/templates/partials/qa_panel.html` | QA 面板（原弹窗内容） | **删除**（T2 后无引用） |
-| `app/templates/partials/tree_panel.html` | 左栏（QA 入口按钮、CE tooltip） | 修改 |
-| `app/templates/partials/result_list.html` | 检索结果包装 | 不改（`#search-results` 语义保持） |
-| `static/components/qa.js` | QA 组件（会话、筛选、流式渲染） | 重写 |
-| `static/components/tree.js` | 分类树（`view` 判断） | 修改 |
+| `app/templates/partials/qa_panel.html` | 旧弹窗内容 | **删除**（T1 后无引用） |
+| `app/templates/base.html` | 页壳、脚本标签；移除 QA 弹窗 overlay | 修改 |
+| `app/templates/partials/tree_panel.html` | 左栏（QA 入口、CE tooltip） | 修改 |
+| `static/components/qa.js` | QA 组件（会话、筛选、URL 携带、流式渲染） | 重写 |
+| `static/components/tree.js` | 分类树（`view` 判断 / `isQaView`） | 修改 |
 | `static/components/search.js` | 搜索框（`view` 判断） | 修改 |
 | `static/components/md-render.js` | 渲染管线（新增无 KaTeX 的流式档） | 修改 |
 | `static/app.css` | QA 页布局与折叠 | 修改 |
-| `app/routes/qa_routes.py` | 新增 `GET /qa` 页面路由 | 修改 |
 | `scripts/probe_qa_ui.py` | Playwright 验证探针（一次性，验证完删） | **新建** |
+
+> **本计划不改** `search.js`/`tree.js` 的 htmx swap 目标，`result_list.html` 与 `#search-results` 语义完全不动——
+> 这是选择整页导航换来的收益（检索页零结构改动）。
 
 ---
 
-## Task 1: 中栏稳定壳层 `#main-content`
+## Task 1: `/qa` 整页路由 + 入口链接 + 筛选进 URL
 
 **Files:**
-- Modify: `app/templates/base.html:23-25`
-- Modify: `static/components/search.js:117-120`、`static/components/tree.js:95-98`
+- Modify: `app/routes/qa_routes.py`（新增 `GET /qa`）
+- Create: `app/templates/partials/qa_page.html`（本 Task 先放骨架，T2 填布局）
+- Modify: `app/templates/partials/tree_panel.html:115-117`（入口按钮 → 链接）
+- Modify: `static/components/qa.js`（`buildQaUrl()` / `seedFiltersFromUrl()` / `syncQaUrl()`）
+- Modify: `static/components/tree.js`（`selectFilter` 触发 URL 同步）
+- Modify: `static/components/search.js`（状态/CE 变更触发 URL 同步）
 - Test: `scripts/probe_qa_ui.py`
 
 **Interfaces:**
-- Produces: DOM 容器 `#main-content`（`.center-panel-v2` 的**唯一子元素**，htmx swap 目标）
-- 不变量：`.center-panel-v2` 本身**永不**被替换；`#search-results` 语义不变（翻页仍 `hx-target="#search-results"`）
+- Produces: 路由 `GET /qa` → `base.html` + `left_content=partials/tree_panel.html` + `center_content=partials/qa_page.html`（与 `/rules`、`/lexicon` 完全同形）
+- Produces: 全局函数 `buildQaUrl() -> str`（由共享 store 生成 `/qa?...`）、`seedFiltersFromUrl()`、`syncQaUrl()`（三者均定义在 `qa.js`，供 `tree.js`/`search.js` 延迟调用——项目已有此模式，参见 `search.js` 的 `resetCeSuggest()` 被 `tree.js` 调用）
+- 行为契约：QA 页是**整页导航**，Alpine 走 DOMContentLoaded 初始化；筛选经 URL 携带（store 在整页导航时必然重置）
+
+> **为什么是整页导航**（评审决定 D4）：
+> 首版设计让 QA 走 htmx 局部替换，唯一理由是「把检索页已选的筛选带过去」——但该需求从未被提出，
+> 代价却是：① 需要 `#main-content` 稳定壳层并改动**正在工作的** `search.js`/`tree.js` 的 swap 目标
+> （牵动翻页、回顶、翻页建议三条逻辑）；② QA 成为本项目首个「被 htmx 揳进中栏的 Alpine 组件」，
+> 而 Alpine 在 swap 场景下能否接管**无既有先例可依**；③ htmx 方案下浏览器后退按钮回不到检索页。
+> 改用整页导航后：与 `/specs`、`/rules`、`/lexicon` 同形（本项目已验证过无数次），
+> 上述三项代价全部消失，而「筛选携带」改由 URL 承担——顺带得到可分享链接与正常的前进后退。
 
 - [ ] **Step 1: 写失败探针**
 
@@ -97,51 +112,113 @@ from playwright.sync_api import sync_playwright
 BASE = "http://127.0.0.1:8123"
 
 
-def t1_main_content_survives_search(page):
-    """正常场景：检索后 #main-content 元素本身仍在（只换子节点）。
-
-    这是输入框不被冲掉的前提——若 swap 目标仍是 .center-panel-v2，
-    该元素会被整体替换，其内部所有状态（含输入框内容）丢失。
-    """
+def t1_qa_entry_is_a_page_link(page):
+    """正常场景：QA 是整页导航（URL 变为 /qa），不是弹窗也不是局部替换。"""
     page.goto(f"{BASE}/")
-    assert page.locator("#main-content").count() == 1, "缺少 #main-content 壳层"
-    page.fill("input[type=search]", "混凝土")
-    page.press("input[type=search]", "Enter")
-    page.wait_for_selector("#search-results", timeout=10000)
-    assert page.locator("#main-content").count() == 1, \
-        "#main-content 被替换了：swap 目标仍在 .center-panel-v2"
+    page.click("text=🤖 AI问答")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    assert page.url.endswith("/qa") or "/qa?" in page.url, \
+        f"未导航到 /qa，当前 URL：{page.url}"
+    assert page.locator("#qa-modal-overlay").count() == 0, "旧弹窗应已移除"
 
 
-def t1_pagination_still_works(page):
-    """边界场景：翻页仍作用于 #search-results（不能连带换掉壳层）。"""
-    page.goto(f"{BASE}/")
-    page.fill("input[type=search]", "混凝土")
-    page.press("input[type=search]", "Enter")
-    page.wait_for_selector("#search-results", timeout=10000)
-    assert page.locator("#search-results").count() == 1
+def t1_left_panel_present_on_qa_page(page):
+    """正常场景：QA 页的左栏分类树照常在位（整页导航下由 base.html 渲染）。"""
+    page.goto(f"{BASE}/qa")
+    assert page.locator("input[type=search]").count() == 1, "左栏搜索框缺失"
+    assert page.locator(".tree-container").count() == 1, "左栏分类树缺失"
 
 
-def t1_scroll_resets_on_new_search(page):
-    """异常场景（回归）：换词搜索后滚动条回到顶部。
+def t1_filters_carry_into_qa_via_url(page):
+    """正常场景（D4 的核心）：检索页已选筛选经 URL 带入 QA 页。
 
-    search.js 的 afterSettle 回顶逻辑依赖滚动容器，改动 swap 目标时
-    容易连带改坏这一条。
+    整页导航会重置 Alpine store，筛选必须靠 URL 携带才不丢。
     """
     page.goto(f"{BASE}/")
     page.fill("input[type=search]", "混凝土")
     page.press("input[type=search]", "Enter")
+    page.wait_for_selector("#search-results", timeout=10000)
+    page.click(".tree-label >> nth=0")          # 选中一个分类树条目
+    page.wait_for_timeout(500)
+    page.click("text=🤖 AI问答")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    assert "?" in page.url, f"QA URL 未携带筛选参数：{page.url}"
+    active = page.locator(".tree-label.active").count()
+    assert active >= 1, "QA 页未回填筛选（分类树无选中项）"
+
+
+def t1_qa_page_filters_survive_reload(page):
+    """边界场景：QA 页刷新后筛选仍在（URL 持久化的意义所在）。"""
+    page.goto(f"{BASE}/")
+    page.fill("input[type=search]", "混凝土")
+    page.press("input[type=search]", "Enter")
+    page.wait_for_selector("#search-results", timeout=10000)
+    page.click(".tree-label >> nth=0")
+    page.wait_for_timeout(500)
+    page.click("text=🤖 AI问答")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    n_before = page.locator(".tree-label.active").count()
+    page.reload()
+    page.wait_for_selector("#qa-root", timeout=10000)
+    assert page.locator(".tree-label.active").count() == n_before, \
+        "刷新后筛选丢失——URL 回填未生效"
+
+
+def t1_search_page_unaffected(page):
+    """异常场景（回归）：检索页三条路径不受影响。
+
+    本 Task **不改** search.js/tree.js 的 htmx swap 目标——这是选择整页导航
+    换来的好处之一：检索页零改动。
+    """
+    page.goto(f"{BASE}/")
+    page.fill("input[type=search]", "混凝土")
+    page.press("input[type=search]", "Enter")
+    page.wait_for_selector("#search-results", timeout=10000)
+    page.click(".tree-label >> nth=0")          # 分类树立即重搜（检索页语义）
     page.wait_for_selector("#search-results", timeout=10000)
     page.evaluate("document.querySelector('.center-panel-v2').scrollTop = 500")
     page.fill("input[type=search]", "钢筋")
     page.press("input[type=search]", "Enter")
     page.wait_for_timeout(1200)
-    top = page.evaluate("document.querySelector('.center-panel-v2').scrollTop")
-    assert top == 0, f"新搜索后未回顶，scrollTop={top}"
+    assert page.evaluate(
+        "document.querySelector('.center-panel-v2').scrollTop") == 0, \
+        "换词搜索后未回顶（检索页回顶逻辑被改坏）"
 
 
-CASES = {"t1": [t1_main_content_survives_search,
-                t1_pagination_still_works,
-                t1_scroll_resets_on_new_search]}
+def t1_tree_click_in_qa_page_does_not_navigate(page):
+    """正常场景（D8 核心）：QA 页内点分类树不跳回检索页。
+
+    这是「切换筛选只影响下一轮问答检索」成立的前提——若仍触发检索，
+    用户会被弹回检索结果页。
+    """
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    page.click(".tree-label >> nth=0")
+    page.wait_for_timeout(800)
+    assert page.locator("#qa-root").count() == 1, \
+        "点分类树后 QA 页消失了——说明仍触发了检索"
+    assert "/qa" in page.url, f"被弹回检索页：{page.url}"
+
+
+def t1_tree_click_in_search_page_still_searches(page):
+    """异常场景（回归）：检索页内点分类树仍要立即重搜。"""
+    page.goto(f"{BASE}/")
+    page.fill("input[type=search]", "混凝土")
+    page.press("input[type=search]", "Enter")
+    page.wait_for_selector("#search-results", timeout=10000)
+    page.click(".tree-label >> nth=0")
+    page.wait_for_selector("#search-results", timeout=10000)
+    assert page.locator("#qa-root").count() == 0
+    assert page.locator("#search-results").count() == 1
+
+
+CASES = {"t1": [t1_qa_entry_is_a_page_link,
+                t1_left_panel_present_on_qa_page,
+                t1_filters_carry_into_qa_via_url,
+                t1_qa_page_filters_survive_reload,
+                t1_search_page_unaffected,
+                t1_tree_click_in_qa_page_does_not_navigate,
+                t1_tree_click_in_search_page_still_searches]}
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "t1"
@@ -157,83 +234,232 @@ if __name__ == "__main__":
 - [ ] **Step 2: 运行探针确认失败**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t1`
-Expected: FAIL — `AssertionError: 缺少 #main-content 壳层`
+Expected: FAIL — `/qa` 尚未存在（按钮仍是 `$dispatch('open-qa-modal')`，弹窗已无接收方）
 
-- [ ] **Step 3: 实现**
+- [ ] **Step 3: 实现路由与骨架模板**
 
-`app/templates/base.html`，把 `<main>` 块改为：
+在 `app/routes/qa_routes.py` 新增（放在会话管理接口之前）：
+
+```python
+@router.get("/qa")
+async def qa_page(request: Request):
+    """QA 页（整页导航，与 /rules、/lexicon 同形）。
+
+    选整页而非 htmx 局部替换的取舍见设计文档 D4：左栏分类树照常在位，
+    Alpine 走 DOMContentLoaded 初始化（与项目其它页面一致，无需额外机制）。
+    """
+    from app.main import templates
+    return templates.TemplateResponse(request, "base.html", {
+        "left_content": "partials/tree_panel.html",
+        "center_content": "partials/qa_page.html",
+    })
+```
+
+创建 `app/templates/partials/qa_page.html` 骨架（T2 填入完整布局）：
 
 ```html
-        <main class="center-panel-v2">
-            <!-- 稳定壳层：htmx 的 swap 目标。仅子节点被替换，壳层本身永不被换，
-                 故其内部（检索结果 / QA 页）的输入框等状态不会随检索丢失 -->
-            <div id="main-content">
-                {% if center_content %}{% include center_content %}{% endif %}
-            </div>
-        </main>
+<!-- AI 问答页（整页导航，与规范/规则/词库同形）
+     布局在 T2 填入；此处先给探针所需的最小结构 -->
+<div id="qa-root" x-data="qaView()" class="qa-root">
+    <div class="qa-thread">
+        <div class="qa-thread-header">
+            <span>🤖 AI 智能问答</span>
+            <button type="button" class="outline" id="qa-session-toggle"
+                    style="font-size:0.75rem;padding:0.1rem 0.4rem;margin:0"
+                    @click="sessionsCollapsed = !sessionsCollapsed"
+                    x-text="sessionsCollapsed ? '◂ 会话' : '会话 ▸'">会话 ▸</button>
+        </div>
+        <div class="qa-messages" x-ref="msgBox"></div>
+        <div class="qa-composer">
+            <textarea x-model="input" rows="3" style="flex:1"></textarea>
+            <button type="button" @click="send()">发送</button>
+        </div>
+    </div>
+    <aside class="qa-sessions" x-show="!sessionsCollapsed" x-cloak>会话管理</aside>
+</div>
 ```
 
-`static/components/search.js`，把 `search()` 的 htmx 调用改为：
+- [ ] **Step 4: 入口按钮改为链接**
+
+`app/templates/partials/tree_panel.html`，把 QA 按钮改为：
+
+```html
+        <!-- QA 页是整页导航（与 📚规范 / 📋规则 / 📖词库 同形）。
+             href 由 buildQaUrl() 在点击时按当前筛选拼出，使 QA 页继承检索条件 -->
+        <button type="button" class="outline" style="width:100%;font-size:0.8rem"
+                onclick="window.location.href = buildQaUrl()">
+            🤖 AI问答
+        </button>
+```
+
+同时删除 `base.html` 的 QA 弹窗相关：`@open-qa-modal="openQA()"` 属性、`openQA()` / `closeQA()` 方法、
+整个 `<div id="qa-modal-overlay"> … </div>` 块，以及 **`partials/qa_panel.html` 文件本身**（删除前确认无残留引用）：
+
+```bash
+grep -rn "qa_panel.html" app/ static/ | grep -v "__pycache__"
+```
+Expected: 无输出。若有输出，先改掉那些引用再删。
+
+**保留** `#clause-modal-overlay`（条文详情弹窗，本次明确不改）与 `partials/settings_dialog.html`。
+
+- [ ] **Step 5: 实现 URL 筛选携带**
+
+在 `static/components/qa.js` 顶部（模块级，供 `tree.js`/`search.js` 调用）新增：
 
 ```js
-            htmx.ajax('GET', `/search?${params.toString()}`, {
-                target: '#main-content',
-                swap: 'innerHTML'
-            });
+// ── QA 页 URL 筛选携带（D4）──
+// 整页导航会重置 Alpine store，筛选靠 URL 携带才不丢；顺带得到可分享链接。
+
+// 由共享 store 生成 QA 页 URL；无筛选时退化为裸 /qa
+function buildQaUrl() {
+    const ss = window.Alpine && window.Alpine.store && Alpine.store('searchState');
+    if (!ss) return '/qa';
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(ss.filters || {})) {
+        if (Array.isArray(v)) v.forEach(x => p.append(k, x));
+        else p.append(k, v);
+    }
+    const sf = ss.buildStatusFilter();
+    if (sf) p.append('status_filter', sf);
+    if (ss.includeNonClause) p.append('include_non_clause', '1');
+    const qs = p.toString();
+    return qs ? `/qa?${qs}` : '/qa';
+}
+
+// 在 QA 页内同步 URL（replaceState：不污染历史栈，避免每次勾选都多一条记录）
+function syncQaUrl() {
+    if (typeof isQaView === 'function' && isQaView()) {
+        history.replaceState(null, '', buildQaUrl());
+    }
+}
 ```
 
-`static/components/tree.js`，把 `dispatchSearch()` 的 htmx 调用改为：
+在 `qaView` 组件中新增 `seedFiltersFromUrl()` 并在 `init()` 首行调用：
 
 ```js
-                htmx.ajax('GET', `/search?${params.toString()}`, {
-                    target: '#main-content',
-                    swap: 'innerHTML'
-                });
+        async init() {
+            this.seedFiltersFromUrl();
+            await this.loadSessions();
+            this.scrollToBottom();
+        },
+
+        // 从 URL 回填共享筛选状态。维度用 getAll（同维多选）。
+        seedFiltersFromUrl() {
+            const ss = this.$store.searchState;
+            const p = new URLSearchParams(window.location.search);
+            const filters = {};
+            for (const k of QA_DIM_KEYS) {
+                const vals = p.getAll(k).filter(Boolean);
+                if (vals.length) filters[k] = vals;
+            }
+            ss.filters = filters;
+            const sf = p.get('status_filter');
+            if (sf !== null) {
+                // 与 buildStatusFilter() 的取值域对称：'现行' / '现行,修订中' / '修订中'
+                ss.statusCurrent = sf.includes('现行');
+                ss.statusRevising = sf.includes('修订中');
+            }
+            ss.includeNonClause = p.get('include_non_clause') === '1';
+        },
 ```
 
-> **不要改** `search.js` 的 afterSettle 回顶逻辑——滚动容器仍是 `.center-panel-v2`（它有 `overflow-y:auto`），
-> `#main-content` 不是滚动容器。把 `document.querySelector('.center-panel-v2').scrollTop = 0` 原样保留。
+并在 `qa.js` 顶部新增维度键常量（与后端 `dim1_hierarchy…dim6_material` 一一对应，禁止散落字面量）：
 
-- [ ] **Step 4: 提升静态资源版本号并重启服务**
+```js
+// 维度参数名（与 SearchQuery / QaRequest 的字段名一一对应）
+const QA_DIM_KEYS = ['dim1_hierarchy', 'dim1_industry', 'dim1_nature',
+                     'dim2_stage', 'dim3_usage', 'dim4_specialty',
+                     'dim5_location', 'dim6_material'];
+```
 
-`base.html` 中 `app.css?v=19` → `?v=20`；`search.js?v=9` → `?v=10`；`tree.js?v=6` → `?v=7`。
+- [ ] **Step 6: 接上筛选变更时的 URL 同步**
+
+`static/components/tree.js`：新增 `isQaView()` 判据，并在 `selectFilter()` 中据此分流。
+
+```js
+// 当前是否处于 QA 视图：以 DOM 存在性判断。
+// 不用 Alpine 生命周期钩子——htmx/DOM 替换场景下 destroy() 是否触发未被官方文档化，
+// 用 DOM 判据零风险且同样准确（项目其它地方也按 DOM 状态判断）。
+function isQaView() {
+    return !!document.getElementById('qa-root');
+}
+```
+
+```js
+        selectFilter(dimension, value) {
+            const next = { ...this.$store.searchState.filters };
+            const arr = Array.isArray(next[dimension]) ? next[dimension].slice() : [];
+            const idx = arr.indexOf(value);
+            if (idx >= 0) arr.splice(idx, 1); else arr.push(value);
+            if (arr.length) next[dimension] = arr; else delete next[dimension];
+            this.$store.searchState.filters = next;
+            // QA 页：筛选只更新共享状态（影响下一轮问答检索）+ 同步 URL，
+            // 不发起检索——否则点分类树会把用户弹回检索页（设计文档 D8）
+            if (isQaView()) {
+                if (typeof syncQaUrl === 'function') syncQaUrl();
+                return;
+            }
+            this.dispatchSearch();
+        },
+```
+
+`static/components/search.js` 的 `onStatusChange()` / `onCeChange()` 同样在早期返回前调用 `syncQaUrl()`：
+
+```js
+        onCeChange() {
+            if (this.ceRerank) {
+                showSearchToast('CE精排已开启，请耐心等待搜索结果');
+            }
+            if (isQaView()) { syncQaUrl(); return; }
+            this.search();
+        },
+
+        onStatusChange() {
+            if (!this.statusCurrent && !this.statusRevising) {
+                showSearchToast('注意：当前展示结果未过滤非现行规范', 4000);
+            }
+            if (isQaView()) { syncQaUrl(); return; }
+            this.search();
+        },
+```
+
+> `isQaView()` 已在上一步定义于 `tree.js`（单一实现，供 `tree.js`/`search.js`/`qa.js` 共用）。
+> **不要**在 `qa.js` 里另写一份 DOM 判据——那会让两处判据将来可能漂移。
+
+- [ ] **Step 7: 提升静态资源版本号并重启**
+
+`base.html`：`qa.js?v=18` → `?v=19`；`tree.js?v=6` → `?v=7`；`search.js?v=9` → `?v=10`。
 
 按项目 CLAUDE.md 三·1~4 重启 8123 实例（全杀残留进程）。
 
-- [ ] **Step 5: 运行探针确认通过**
+- [ ] **Step 8: 运行探针确认通过**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t1`
-Expected: 3 行 `PASS`
+Expected: 5 行 `PASS`
 
-- [ ] **Step 6: 手工复核另两条入口**
-
-浏览器访问 `http://127.0.0.1:8123`，强刷（Ctrl+F5），确认：
-1. 点分类树任一节点 → 结果区更新，**输入框所在栏未闪烁/未重建**
-2. 勾选「启用 CE 精排」→ 结果重排，雷达动画正常显示与消失
-
-- [ ] **Step 7: 提交**
+- [ ] **Step 9: 提交**
 
 ```bash
-git add app/templates/base.html static/components/search.js static/components/tree.js scripts/probe_qa_ui.py
-git commit -m "refactor: 中栏引入 #main-content 稳定壳层，htmx swap 目标迁入"
+git add app/routes/qa_routes.py app/templates/partials/qa_page.html \
+        app/templates/partials/tree_panel.html app/templates/base.html \
+        static/components/qa.js static/components/tree.js static/components/search.js \
+        scripts/probe_qa_ui.py
+git rm app/templates/partials/qa_panel.html
+git commit -m "feat: QA 改为整页导航（/qa），筛选经 URL 携带"
 ```
 
 ---
 
-## Task 2: `/qa` 页面路由与 QA 页布局
+## Task 2: QA 页布局与折叠
 
 **Files:**
-- Modify: `app/routes/qa_routes.py`（新增 `GET /qa`）
-- Create: `app/templates/partials/qa_page.html`
-- Modify: `app/templates/partials/tree_panel.html:115-117`（入口按钮）
-- Modify: `app/templates/base.html`（移除 QA 弹窗 overlay）
+- Modify: `app/templates/partials/qa_page.html`（把 T1 的骨架换成完整布局）
 - Modify: `static/app.css`
 - Test: `scripts/probe_qa_ui.py`
 
 **Interfaces:**
-- Consumes: `#main-content`（T1）
-- Produces: 路由 `GET /qa` → 渲染 `partials/qa_page.html` 进 `#main-content`
-- Produces: DOM 结构 `#qa-root > (.qa-thread > (.qa-messages, .qa-composer), .qa-sessions)`，其中 `.qa-sessions` 可折叠
+- Consumes: `GET /qa` 路由与骨架模板（T1）
+- Produces: DOM 结构 `#qa-root > (.qa-thread > (.qa-thread-header, .qa-messages, .qa-effective-filters, .qa-composer), .qa-sessions)`，其中 `.qa-sessions` 可折叠
 - 不变量：`.qa-messages` 是消息滚动容器、`.qa-composer` 贴其底部；`.qa-sessions` 折叠**不得**影响 `.qa-composer` 位置
 
 - [ ] **Step 1: 写失败探针**
@@ -241,13 +467,12 @@ git commit -m "refactor: 中栏引入 #main-content 稳定壳层，htmx swap 目
 追加到 `scripts/probe_qa_ui.py`（同时把新用例登记进 `CASES["t2"]`）：
 
 ```python
-def t2_qa_button_opens_qa_page(page):
-    """正常场景：点左栏「AI问答」→ 中栏换成 QA 页（不是弹窗）。"""
-    page.goto(f"{BASE}/")
-    page.click("text=🤖 AI问答")
+def t2_layout_structure_present(page):
+    """正常场景：完整布局就位（对话区 / 消息区 / 输入区 / 会话管理四块）。"""
+    page.goto(f"{BASE}/qa")
     page.wait_for_selector("#qa-root", timeout=10000)
-    assert page.locator("#qa-modal-overlay").count() == 0, "弹窗应已移除"
-    assert page.locator("#main-content").count() == 1, "QA 页必须装在壳层内"
+    for sel in (".qa-thread", ".qa-messages", ".qa-composer", ".qa-sessions"):
+        assert page.locator(sel).count() == 1, f"缺少 {sel}"
 
 
 def t2_sessions_panel_collapses_without_moving_composer(page):
@@ -285,11 +510,7 @@ def t2_sessions_panel_collapses_without_moving_composer(page):
 
 
 def t2_qa_page_not_shown_on_other_pages(page):
-    """异常场景（回归）：其它页面不得冒出 QA 界面。
-
-    .center-panel-v2 是全站共用的，若 QA 误放进栏壳而非 #main-content，
-    会在规范/规则/词库等页面凭空出现。
-    """
+    """异常场景（回归）：其它页面不得冒出 QA 界面。"""
     for path in ("/specs", "/rules", "/lexicon"):
         page.goto(f"{BASE}{path}")
         assert page.locator("#qa-root").count() == 0, f"{path} 不该出现 QA 界面"
@@ -298,26 +519,14 @@ def t2_qa_page_not_shown_on_other_pages(page):
 - [ ] **Step 2: 运行探针确认失败**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t2`
-Expected: FAIL — `#qa-root` 未出现（按钮仍是弹窗）
+Expected: FAIL — 骨架缺少 `.qa-thread` / `.qa-messages` 等完整结构
 
-- [ ] **Step 3: 实现路由**
+- [ ] **Step 3: 实现 QA 页模板**
 
-在 `app/routes/qa_routes.py` 中新增（放在会话管理接口之前）：
-
-```python
-@router.get("/qa")
-async def qa_page(request: Request):
-    """QA 页：渲染进中栏 #main-content（与检索结果平级的独立界面）。"""
-    from app.main import templates
-    return templates.TemplateResponse(request, "partials/qa_page.html", {})
-```
-
-- [ ] **Step 4: 实现 QA 页模板**
-
-创建 `app/templates/partials/qa_page.html`：
+把 T1 建立的骨架 `app/templates/partials/qa_page.html` 换成完整布局：
 
 ```html
-<!-- AI 问答页（中栏内，与检索结果平级的独立界面）
+<!-- AI 问答页（整页导航，与规范/规则/词库同形）
      布局：对话区（主，输入框贴底） | 会话管理（右，可向右折叠）
      注意：会话管理折叠只收走自己一列，输入框位置不受影响 -->
 <div id="qa-root" x-data="qaView()" class="qa-root">
@@ -443,19 +652,18 @@ async def qa_page(request: Request):
 </div>
 ```
 
-- [ ] **Step 5: 实现样式**
+- [ ] **Step 4: 实现样式**
 
-在 `static/app.css` 的 QA 区块（`.qa-modal-*` 之后）追加：
+在 `static/app.css` 追加：
 
 ```css
 /* ── QA 页：对话区（主） | 会话管理（右，可折叠） ──
-   flex 分列而非新增 grid 列：视觉效果与三栏等价（20% | 50% | 30%），
-   但避开 .app-layout 的 grid 改动与 .full-width（审查页）分支的连带影响。 */
+   flex 分列：视觉上就是三栏（20% | 50% | 30%），但不需要改 .app-layout 的 grid。 */
 
 /* QA 页需要确定高度，否则 .qa-root 的 height:100% 解析不到父级高度而塌陷
    （内部滚动区与「输入框贴底」都依赖它）。
    用 :has() 把该规则限定在 QA 页，避免影响检索/规范/规则等其它页面的滚动行为。 */
-#main-content:has(.qa-root) { height: 100%; }
+.center-panel-v2:has(.qa-root) { height: 100%; }
 
 .qa-root { display: flex; gap: 0.75rem; height: 100%; min-height: 0; }
 .qa-thread { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
@@ -494,194 +702,32 @@ async def qa_page(request: Request):
 .qa-hit-body { color: var(--pico-muted-color); font-size: 0.75rem; }
 ```
 
-- [ ] **Step 6: 改造入口按钮 + 移除弹窗**
+- [ ] **Step 5: 提升版本号并重启**
 
-`app/templates/partials/tree_panel.html`，把 QA 按钮改为：
+`base.html`：`app.css?v=19` → `?v=20`。
 
-```html
-        <button type="button" class="outline" style="width:100%;font-size:0.8rem"
-                hx-get="/qa" hx-target="#main-content" hx-swap="innerHTML">
-            🤖 AI问答
-        </button>
-```
+按项目 CLAUDE.md 三·1~4 重启实例（全杀残留进程）。
 
-`app/templates/base.html`：
-- **删除** `@open-qa-modal="openQA()"` 属性、`openQA()` / `closeQA()` 方法，以及整个 `<div id="qa-modal-overlay"> ... </div>` 块（含其中 `{% include "partials/qa_panel.html" %}`）
-- **保留** `#clause-modal-overlay`（条文详情弹窗，本计划明确不改）
-- **保留** `{% include "partials/settings_dialog.html" %}`
-
-**同时删除 `app/templates/partials/qa_panel.html`。** 它是弹窗内容模板，`base.html` 的 include 移除后即无引用；新模板 `qa_page.html` 是自包含的（设计上不再拆分）。删除前先确认无残留引用：
-
-```bash
-grep -rn "qa_panel.html" app/ static/ | grep -v "__pycache__"
-```
-Expected: 无输出。若有输出，先改掉那些引用再删。
-
-- [ ] **Step 7: 提升版本号并重启**
-
-`base.html`：`app.css?v=20` → `?v=21`。删除 `qa.js` 标签里的 `?v=18` 引用（T5 会重写 qa.js 后再加回），或暂改为 `?v=19`。
-
-按项目 CLAUDE.md 三·1~4 重启实例。
-
-- [ ] **Step 8: 运行探针**
+- [ ] **Step 6: 运行探针**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t2`
 Expected: 3 行 `PASS`
 
-> 若 `t2` 因 `qaView()` 尚未实现而报 `Alpine Expression Error`，属预期——T3 补齐组件。
-> 此时先确认 `#qa-root`、`.qa-composer`、`#qa-session-toggle` 三个选择器都已渲染出来即可。
+> 若 `t2` 因 `qaView()` 尚未实现而报 `Alpine Expression Error`，属预期——T3 重写组件。
+> 此时先确认 `.qa-thread`、`.qa-messages`、`.qa-composer`、`.qa-sessions`、`#qa-session-toggle`
+> 都已渲染出来即可。
 
-- [ ] **Step 9: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
-git add app/routes/qa_routes.py app/templates/partials/qa_page.html \
-        app/templates/partials/tree_panel.html app/templates/base.html \
-        static/app.css scripts/probe_qa_ui.py
-git commit -m "feat: QA 从弹窗改为中栏内右侧常驻界面（会话管理可折叠）"
+git add app/templates/partials/qa_page.html static/app.css app/templates/base.html \
+        scripts/probe_qa_ui.py
+git commit -m "feat: QA 页布局（对话区 + 可折叠会话管理）"
 ```
 
 ---
 
-## Task 3: `view` 状态与「QA 页筛选不发检索」
-
-**Files:**
-- Modify: `static/components/tree.js`
-- Modify: `static/components/search.js`
-- Test: `scripts/probe_qa_ui.py`
-
-**Interfaces:**
-- Produces: `$store.searchState.view`（`'search'` | `'qa'`），初值 `'search'`
-- Consumes: `#qa-root`（T2）的存在性作为 QA 视图判据
-- 行为契约：`view === 'qa'` 时，`selectFilter()` / `onStatusChange()` / `onCeChange()` **只更新状态、不发检索**；`search()`（回车）不受限，用于从 QA 页切回检索页
-
-> **为何用 DOM 存在性而非 Alpine 生命周期**：`qaView` 的 `destroy()` 在 htmx swap 场景下是否触发未经验证（设计文档 §4.3 已标注为待验证项）。用 `#qa-root` 存在性判断零风险且同样准确。
-
-- [ ] **Step 1: 写失败探针**
-
-追加到 `scripts/probe_qa_ui.py`：
-
-```python
-def t3_tree_click_in_qa_page_does_not_navigate(page):
-    """正常场景（核心）：QA 页内点分类树，不跳回检索结果页。
-
-    这是「切换筛选影响下一轮检索」成立的前提——若仍触发 dispatchSearch，
-    用户会被弹回检索页。
-    """
-    page.goto(f"{BASE}/")
-    page.click("text=🤖 AI问答")
-    page.wait_for_selector("#qa-root", timeout=10000)
-    page.click(".tree-label >> nth=0")
-    page.wait_for_timeout(800)
-    assert page.locator("#qa-root").count() == 1, \
-        "点分类树后 QA 页消失了——说明仍触发了检索"
-
-
-def t3_tree_click_in_search_page_still_searches(page):
-    """异常场景（回归）：检索页内点分类树仍要立即重搜。"""
-    page.goto(f"{BASE}/")
-    page.fill("input[type=search]", "混凝土")
-    page.press("input[type=search]", "Enter")
-    page.wait_for_selector("#search-results", timeout=10000)
-    page.click(".tree-label >> nth=0")
-    page.wait_for_selector("#search-results", timeout=10000)
-    assert page.locator("#qa-root").count() == 0
-    assert page.locator("#search-results").count() == 1
-
-
-def t3_status_checkbox_in_qa_page_no_search(page):
-    """边界场景：QA 页内勾「仅现行」只改状态，不触发检索。"""
-    page.goto(f"{BASE}/")
-    page.click("text=🤖 AI问答")
-    page.wait_for_selector("#qa-root", timeout=10000)
-    page.click("text=仅现行")
-    page.wait_for_timeout(800)
-    assert page.locator("#qa-root").count() == 1, "勾选状态过滤不应把用户弹出 QA 页"
-```
-
-- [ ] **Step 2: 运行探针确认失败**
-
-Run: `D:/Python/python.exe scripts/probe_qa_ui.py t3`
-Expected: FAIL — `点分类树后 QA 页消失了`
-
-- [ ] **Step 3: 实现**
-
-`static/components/tree.js`，在 `Alpine.store('searchState', {...})` 中新增字段：
-
-```js
-        // 当前视图：'search' 检索页 | 'qa' QA 页。
-        // QA 页内左栏筛选只更新状态、不发检索（让「下一轮生效」成立）
-        view: 'search',
-```
-
-新增模块级判据函数（放在 `document.addEventListener('alpine:init', ...)` 之前）：
-
-```js
-// 当前是否处于 QA 视图：以 DOM 存在性判断，不依赖 Alpine 生命周期钩子
-// （htmx swap 场景下 destroy() 是否触发未经验证，用 DOM 判据零风险）
-function isQaView() {
-    return !!document.getElementById('qa-root');
-}
-```
-
-`tree.js` 的 `selectFilter()`，在更新 filters 之后、`dispatchSearch()` 之前插入判断：
-
-```js
-        selectFilter(dimension, value) {
-            const next = { ...this.$store.searchState.filters };
-            const arr = Array.isArray(next[dimension]) ? next[dimension].slice() : [];
-            const idx = arr.indexOf(value);
-            if (idx >= 0) arr.splice(idx, 1); else arr.push(value);
-            if (arr.length) next[dimension] = arr; else delete next[dimension];
-            this.$store.searchState.filters = next;
-            // QA 页内：筛选只更新共享状态，影响下一轮问答检索，不发起检索请求
-            if (isQaView()) return;
-            this.dispatchSearch();
-        },
-```
-
-`static/components/search.js` 的 `onStatusChange()` 与 `onCeChange()` 各加一行前置判断：
-
-```js
-        onCeChange() {
-            if (this.ceRerank) {
-                showSearchToast('CE精排已开启，请耐心等待搜索结果');
-            }
-            // QA 页内 CE 开关对问答无效（问答走独立精排链），不触发检索
-            if (isQaView()) return;
-            this.search();
-        },
-
-        onStatusChange() {
-            if (!this.statusCurrent && !this.statusRevising) {
-                showSearchToast('注意：当前展示结果未过滤非现行规范', 4000);
-            }
-            // QA 页内：状态过滤只更新共享状态，影响下一轮问答检索
-            if (isQaView()) return;
-            this.search();
-        },
-```
-
-> `search()` 本身（回车触发）**不加**判断——在 QA 页按回车搜索即切回检索页，这是符合直觉的显式动作（设计文档 §4.3）。
-
-- [ ] **Step 4: 提升版本号并重启**
-
-`base.html`：`tree.js?v=7` → `?v=8`；`search.js?v=10` → `?v=11`。
-
-- [ ] **Step 5: 运行探针**
-
-Run: `D:/Python/python.exe scripts/probe_qa_ui.py t3`
-Expected: 3 行 `PASS`
-
-- [ ] **Step 6: 提交**
-
-```bash
-git add static/components/tree.js static/components/search.js app/templates/base.html scripts/probe_qa_ui.py
-git commit -m "feat: QA 页内左栏筛选只更新状态不发检索"
-```
-
----
-
-## Task 4: 筛选统一（QA 读 store）+ CE tooltip
+## Task 3: 筛选统一（QA 读 store）+ CE tooltip
 
 **Files:**
 - Modify: `app/templates/partials/tree_panel.html:14-18`（CE tooltip）
@@ -694,14 +740,14 @@ git commit -m "feat: QA 页内左栏筛选只更新状态不发检索"
 - 行为契约：QA 面板内**没有**独立的状态过滤复选框；状态/前言筛选一律来自左栏共享 store
 
 > 模板侧无需改动：T2 的全新 `qa_page.html` 从一开始就没有重复的状态复选框
-> （旧的 `qa_panel.html` 已在 T2 删除）。本 Task 只补 CE tooltip 与 `qa.js` 的取数逻辑。
+> （旧的 `qa_panel.html` 已在 T1 删除）。本 Task 只补 CE tooltip 与 `qa.js` 的取数逻辑。
 
 - [ ] **Step 1: 写失败探针**
 
-追加到 `scripts/probe_qa_ui.py`：
+追加到 `scripts/probe_qa_ui.py`（登记进 `CASES["t3"]`）：
 
 ```python
-def t4_qa_page_has_no_duplicate_status_checkboxes(page):
+def t3_qa_page_has_no_duplicate_status_checkboxes(page):
     """正常场景：QA 页内不再有独立的状态过滤复选框（统一到左栏）。"""
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
@@ -710,7 +756,7 @@ def t4_qa_page_has_no_duplicate_status_checkboxes(page):
     assert in_qa == 0, "QA 面板内不应再有「仅现行」复选框，应统一读左栏"
 
 
-def t4_ce_rerank_has_tooltip(page):
+def t3_ce_rerank_has_tooltip(page):
     """正常场景：CE 精排复选框有说明性 tooltip（防误解，不锁功能）。"""
     page.goto(f"{BASE}/")
     label = page.locator("label:has-text('启用 CE 精排')")
@@ -718,7 +764,7 @@ def t4_ce_rerank_has_tooltip(page):
     assert "问答" in title or "AI" in title, f"CE 复选框缺少问答相关说明: {title!r}"
 
 
-def t4_ce_rerank_not_disabled_in_qa_page(page):
+def t3_ce_rerank_not_disabled_in_qa_page(page):
     """异常场景（防回退）：QA 页内 CE 复选框不得被置灰。
 
     历史上的方案是「QA 界面里 CE 置灰」，但那会锁死检索侧的 CE 功能
@@ -788,7 +834,7 @@ Expected: FAIL — `QA 面板内不应再有「仅现行」复选框`
 
 - [ ] **Step 4: 提升版本号并重启**
 
-`base.html`：`tree.js?v=8` → `?v=9`；`qa.js` 版本号在 T5 统一处理。
+`base.html`：`tree.js?v=8` → `?v=9`；`qa.js` 版本号在 T4 统一处理。
 
 - [ ] **Step 5: 运行探针**
 
@@ -805,7 +851,7 @@ git commit -m "feat: QA 筛选统一读共享 store + CE 精排加 tooltip 说�
 
 ---
 
-## Task 5: 会话列表、切换载入与续聊
+## Task 4: 会话列表、切换载入与续聊
 
 **Files:**
 - Modify: `static/components/qa.js`
@@ -822,10 +868,10 @@ git commit -m "feat: QA 筛选统一读共享 store + CE 精排加 tooltip 说�
 
 - [ ] **Step 1: 写失败探针**
 
-追加到 `scripts/probe_qa_ui.py`：
+追加到 `scripts/probe_qa_ui.py`（登记进 `CASES["t4"]`）：
 
 ```python
-def t5_ask_creates_session_and_lists_it(page):
+def t4_ask_creates_session_and_lists_it(page):
     """正常场景：提问后会话出现在列表，且标题为首轮问题截断。"""
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
@@ -839,7 +885,7 @@ def t5_ask_creates_session_and_lists_it(page):
     assert any(q[:20] in t for t in titles), f"会话列表未见新会话: {titles}"
 
 
-def t5_history_shows_full_conversation(page):
+def t4_history_shows_full_conversation(page):
     """正常场景：点历史会话 → 中栏载入该会话全部消息。"""
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
@@ -855,7 +901,7 @@ def t5_history_shows_full_conversation(page):
     assert page.locator(".qa-msg").count() >= 2, "载入历史后应出现问答两条"
 
 
-def t5_continue_in_history_session_appends(page):
+def t4_continue_in_history_session_appends(page):
     """异常场景（核心）：在历史会话里继续提问，追加到同一会话而非新建。"""
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
@@ -873,7 +919,7 @@ def t5_continue_in_history_session_appends(page):
     assert page.locator(".qa-msg").count() >= 4, "追问后应有四条消息"
 
 
-def t5_filters_recorded_and_shown(page):
+def t4_filters_recorded_and_shown(page):
     """正常场景（D5）：答案下方显示当轮筛选，输入框上方显示本轮生效筛选。"""
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
@@ -890,7 +936,7 @@ def t5_filters_recorded_and_shown(page):
         "输入框上方未显示本轮生效筛选"
 
 
-def t5_pending_filter_change_is_visible(page):
+def t4_pending_filter_change_is_visible(page):
     """异常场景（设计文档场景 2 的可见性）：改动筛选后提示将在下一轮生效。
 
     没有这条提示时，用户在回复中/回复后切换筛选会以为立即生效——静默失配。
@@ -1133,7 +1179,7 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 
 ---
 
-## Task 6: 流式渲染（SSE + 降级渲染）
+## Task 5: 流式渲染（SSE + 降级渲染）
 
 **Files:**
 - Modify: `static/components/md-render.js`（新增无 KaTeX 的流式档）
@@ -1149,10 +1195,10 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 
 - [ ] **Step 1: 写失败探针**
 
-追加到 `scripts/probe_qa_ui.py`：
+追加到 `scripts/probe_qa_ui.py`（登记进 `CASES["t5"]`）：
 
 ```python
-def t6_streaming_renders_progressively(page):
+def t5_streaming_renders_progressively(page):
     """正常场景：首字节早于完整回答，内容渐进出现。"""
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
@@ -1168,7 +1214,7 @@ def t6_streaming_renders_progressively(page):
     assert partial.strip(), "流式首帧应有文本"
 
 
-def t6_streaming_avoids_katex_mid_stream(page):
+def t5_streaming_avoids_katex_mid_stream(page):
     """异常场景（关键约束）：流式进行中不得出现 KaTeX 渲染产物。
 
     流式期间跑 KaTeX 会因公式未闭合而报错，且性能不可接受。
@@ -1190,7 +1236,7 @@ def t6_streaming_avoids_katex_mid_stream(page):
             "流式进行中出现了 KaTeX 渲染，应延迟到 done 之后"
 
 
-def t6_stage_indicator_visible(page):
+def t5_stage_indicator_visible(page):
     """正常场景：等待期间显示阶段进度，覆盖流式之前的死时间。"""
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
@@ -1425,13 +1471,14 @@ git commit -m "feat: QA 流式输出（SSE 读取 + 流式期间降级渲染）"
 
 ## 完成标准
 
-- [ ] `scripts/probe_qa_ui.py` 全部用例通过（t1~t6）
+- [ ] `scripts/probe_qa_ui.py` 全部用例通过（t1~t5）
 - [ ] 手工复核：QA 页折叠/展开会话管理、切换历史会话续聊、重命名、删除二次确认、**导出 Markdown 下载**、搜索跳转高亮、流式渐进渲染 + 收尾公式排版
+- [ ] 手工复核：QA 页 URL 可复制分享，粘贴到新标签能还原同一筛选与页面
 - [ ] **回归**：检索页的翻页、换词、分类树筛选、CE 精排、状态过滤五条路径均正常
 - [ ] **回归**：规范 / 规则 / 词库 / 维护 / 审核 各页均**不出现** QA 界面
 - [ ] **回归**：条文详情弹窗（回复中的超链接）行为**不变**
 - [ ] **回归**：AI 后端设置（⚙️）可从 QA 页头部打开；原文摘抄 / 综合问答模式切换正常
-- [ ] 6 个 Task 各自单次提交，提交信息符合 `type: 描述` 规范
+- [ ] 5 个 Task 各自单次提交，提交信息符合 `type: 描述` 规范
 - [ ] 清理：删除 `data/_probe_qa.db` 与 `scripts/probe_qa_ui.py`（一次性探针，开发铁律七·3）
 - [ ] 还原临时改动：若验证时改过 `DATABASE_PATH` 指向副本库，务必还原
 
@@ -1439,5 +1486,6 @@ git commit -m "feat: QA 流式输出（SSE 读取 + 流式期间降级渲染）"
 
 - **CLI 后端取消**（设计文档 D11 提及）：3 个调用点 `classifier_ai.py:20`、`import_routes.py:113`、`qa_routes.py:264`。`APIBackend.classify_batch_sync` 已实现，功能上可覆盖。**不在本计划范围**，需另立计划。
 - **模型安装期可选化**（设计文档 D12）：属封装方案范畴，留待封装时统一设计。
-- **`.center-panel-v2` 的滚动与 QA 页高度**：已用最小复现实测确认——`#main-content:has(.qa-root) { height:100% }` 在 1600×900 下使 `.qa-root` 高度正确解析为 852px，内部滚动与贴底输入框均正常，且 `:has()` 收窄后不影响其它页面。**若将来浏览器不支持 `:has()`**（项目用 Chrome/Edge，已支持），退路是给 `.center-panel-v2` 补 `display:flex; flex-direction:column` + `#main-content { flex:1; min-height:0 }`。
-- **QA 页与检索结果的双滚动条**：`.center-panel-v2` 本身可滚，`.qa-messages` 也可滚。QA 页下 `.qa-root` 占满高度，`.center-panel-v2` 应不产生滚动；若实施时发现外层也滚，给 `#main-content:has(.qa-root)` 补 `overflow: hidden`。
+- **`.center-panel-v2` 的滚动与 QA 页高度**：已用最小复现实测确认——`.center-panel-v2:has(.qa-root) { height:100% }` 在 1600×900 下使 `.qa-root` 高度正确解析为 852px，内部滚动与贴底输入框均正常，且 `:has()` 收窄后不影响其它页面。（实测时锚点曾是 `#main-content`；改为整页导航后该壳层不存在，锚点变为 `.center-panel-v2`——规则本身不变。）**若将来浏览器不支持 `:has()`**（项目用 Chrome/Edge，已支持），退路是给 `.center-panel-v2` 补 `display:flex; flex-direction:column` + 其直接子元素 `flex:1; min-height:0`。
+- **QA 页与检索结果的双滚动条**：`.center-panel-v2` 本身可滚，`.qa-messages` 也可滚。QA 页下 `.qa-root` 占满高度，`.center-panel-v2` 应不产生滚动；若实施时发现外层也滚，给 `.center-panel-v2:has(.qa-root)` 补 `overflow: hidden`。
+- **QA 页的 Alpine 初始化**：整页导航走 DOMContentLoaded，与 `/specs`、`/rules`、`/lexicon` 完全同形——本项目已验证过无数次，故 T1 的 `t1_qa_entry_is_a_page_link` 探针即是这一条的守卫（若 Alpine 未接管，`.qa-sessions` 的 `x-show` 不会生效、点击树标签不会走 `isQaView()` 分支）。
