@@ -50,8 +50,11 @@ def _now_ts() -> str:
     实测复现：期望 A(id=1) 居首，实际拿到 B(id=2)）。
     微秒精度下两次写入落到同一时刻的概率可忽略，排序恢复确定性。
 
-    注意：本模块所有时间戳都用**同一个**格式写入（含 created_at），
-    保证列内格式统一、字符串比较无歧义。
+    注意：本模块写出的**每一个**时间戳都走本函数，包括
+    `qa_sessions.created_at/updated_at` 与 `qa_messages.created_at`——
+    DDL 的列默认值只到秒，一旦漏走本函数就会在列内混进秒精度字符串，
+    与微秒字符串比较时同秒内的先后会被判错。新增写时间戳的代码路径时，
+    请一并走 `_now_ts()`。
     """
     return datetime.now().strftime(_TS_FORMAT)
 
@@ -168,30 +171,38 @@ def _loads_dict(raw) -> dict:
 
 def append_message(session_id: int, role: str, content: str,
                    sources: list | None = None, confusable: list | None = None,
-                   filters: dict | None = None,
-                   mode: str = "rag") -> int:
+                   mode: str = "rag",
+                   filters: dict | None = None) -> int:
     """追加一条消息，并刷新所属会话的 updated_at。
 
     filters 记录**当轮实际生效的筛选**（D5）：回看历史时据此还原
     「这条答案是在什么筛选下产生的」——筛选不入库则该信息不可逆丢失。
+    **位置约定**：filters 只能追加在 mode 之后（尾巴），不得插到 confusable
+    与 mode 之间——否则按位置调用的老写法 `append_message(sid, role, text,
+    sources, confusable, mode)` 会把 mode 字符串静默绑进 filters（
+    `json.dumps("text")` 得到合法 JSON，`_loads_dict` 再折成 {}，错得不响）。
+
+    created_at 与 updated_at 用**同一个** `_now_ts()` 时间戳显式写入，
+    与 create_session 保持同一格式（见 `_now_ts`）。
 
     失败消息不入库由调用方保证（见 qa_routes），本层不做判断。
     """
     sources_json = json.dumps(sources or [], ensure_ascii=False)
     confusable_json = json.dumps(confusable or [], ensure_ascii=False)
     filters_json = json.dumps(filters or {}, ensure_ascii=False)
+    ts = _now_ts()
     with get_db() as conn:
         cur = conn.execute(
             """INSERT INTO qa_messages
                (session_id, role, content, sources_json, confusable_json,
-                filters_json, mode)
-               VALUES (?,?,?,?,?,?,?)""",
+                filters_json, mode, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (session_id, role, content, sources_json, confusable_json,
-             filters_json, mode),
+             filters_json, mode, ts),
         )
         conn.execute(
             "UPDATE qa_sessions SET updated_at = ? WHERE id = ?",
-            (_now_ts(), session_id),
+            (ts, session_id),
         )
         # INSERT 成功后 lastrowid 恒非 None；出口断言守住该不变量，同时便于类型检查窄化
         assert cur.lastrowid is not None

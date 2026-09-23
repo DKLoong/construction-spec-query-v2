@@ -1,4 +1,4 @@
-"""会话与消息表结构。"""
+"""会话与消息：表结构（T4）+ 持久化层 app.qa.sessions（T5）。"""
 from app.database import get_db
 from app.qa import sessions as S
 
@@ -146,12 +146,35 @@ def test_concurrent_appends_same_session_do_not_lose_or_mix(qa_db):
 
 
 def test_append_message_bumps_updated_at(qa_db):
-    """边界场景：追加消息必须刷新 updated_at，否则列表排序不反映活跃度。"""
+    """边界场景：追加消息必须刷新 updated_at，否则列表排序不反映活跃度。
+
+    断言用**严格大于**：微秒精度下追加必然晚于建会话，相等即说明
+    append_message 根本没碰 updated_at（用 `>=` 会让本用例对
+    「不刷时间戳」这个它名字里的缺陷也能通过）。
+    """
     sid = S.create_session("s")
-    before = S.get_session(sid)["updated_at"]
+    before = S.get_session(sid)
+    assert before is not None
     S.append_message(sid, "user", "q")
-    after = S.get_session(sid)["updated_at"]
-    assert after >= before  # 同秒内可能相等，但不得回退
+    after = S.get_session(sid)
+    assert after is not None
+    assert after["updated_at"] > before["updated_at"]
+
+
+def test_touch_session_bumps_updated_at_without_adding_message(qa_db):
+    """正常场景：无新消息时也能把会话顶上去（会话管理栏的置顶/续聊依赖它）。
+
+    守卫两点：时间戳确实被刷新（排序生效），且不产生任何消息（它不是
+    「写一条空消息」的假刷新）。
+    """
+    sid = S.create_session("s")
+    before = S.get_session(sid)
+    assert before is not None
+    S.touch_session(sid)
+    after = S.get_session(sid)
+    assert after is not None
+    assert after["updated_at"] > before["updated_at"]
+    assert S.get_messages(sid) == []
 
 
 def test_list_sessions_orders_by_recent_activity(qa_db):
@@ -186,7 +209,9 @@ def test_rename_session(qa_db):
     """正常场景：重命名生效。"""
     sid = S.create_session("旧名")
     assert S.rename_session(sid, "新名") is True
-    assert S.get_session(sid)["title"] == "新名"
+    got = S.get_session(sid)
+    assert got is not None
+    assert got["title"] == "新名"
 
 
 def test_rename_missing_session_returns_false(qa_db):
@@ -240,13 +265,24 @@ def test_search_messages_across_sessions(qa_db):
 
 
 def test_search_messages_escapes_like_wildcards(qa_db):
-    """异常场景：% 和 _ 必须转义，否则退化为全表命中。"""
+    """异常场景：%、_、\\ 三个 LIKE 元字符都必须转义，否则退化为全表命中。"""
     sid = S.create_session("s")
     S.append_message(sid, "user", "普通内容")
     S.append_message(sid, "user", "含 100% 的内容")
     assert len(S.search_messages("普通内容")) == 1
     # 裸 % 若未转义会命中全部；转义后应命中 0 条
     assert S.search_messages("不存在的%串") == []
+    # 反向验证「转义是精确转义」：含元字符的字面量本身仍必须能搜到
+    assert [m["content"] for m in S.search_messages("100%")] == ["含 100% 的内容"]
+
+    # _ 若不转义会匹配任意单字符：搜 a_b 将同时命中「aXb 干扰项」
+    S.append_message(sid, "user", "a_b 字面下划线")
+    S.append_message(sid, "user", "aXb 干扰项")
+    assert [m["content"] for m in S.search_messages("a_b")] == ["a_b 字面下划线"]
+
+    # \ 是 ESCAPE 字符本身：不先转义它，`c\d` 会被解析成「转义后的 d」而非字面反斜杠
+    S.append_message(sid, "user", r"c\d 字面反斜杠")
+    assert [m["content"] for m in S.search_messages(r"c\d")] == [r"c\d 字面反斜杠"]
 
 
 def test_search_messages_empty_keyword_returns_empty(qa_db):
