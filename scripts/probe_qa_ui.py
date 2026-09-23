@@ -36,10 +36,18 @@ def login(page):
 #   locator resolved to <span class="tree-label">… element is not visible）。
 # 故补一个「先展开第一个维度、再点第一个分类项」的辅助函数；用例语义不变。
 def click_first_tree_label(page):
-    """展开第一个维度后点击其第一个分类项（模拟用户操作）。"""
+    """展开第一个维度后点击其第一个分类项（模拟用户操作）。
+
+    「展开完成」用**有界可见性等待**收口，不用固定 sleep：`.tree-label` 在折叠的
+    `<details>` 内**不可见**（见 `wait_tree_filter_seeded` 的注释），故「DOM 中第一个
+    `.tree-label` 变为可见」恰好等价于「第一个维度已展开」——正是下面那次 click
+    能成立的前置条件本身。
+    原写法 `wait_for_timeout(250)`：快机器上白等，慢机器上不够（只是被 Playwright
+    click 自身的 actionability 等待兜住才没红）。
+    """
     page.wait_for_selector(".tree-container details", state="attached", timeout=10000)
     page.click(".tree-container details > summary >> nth=0")   # 折叠 → 展开
-    page.wait_for_timeout(250)
+    page.locator(".tree-label").first.wait_for(state="visible", timeout=10000)
     page.click(".tree-label >> nth=0")
 
 
@@ -120,7 +128,12 @@ def t1_filters_carry_into_qa_via_url(page):
     page.press("input[type=search]", "Enter")
     page.wait_for_selector("#search-results", timeout=10000)
     click_first_tree_label(page)                # 选中一个分类树条目
-    page.wait_for_timeout(500)
+    # 原写法 `wait_for_timeout(500)`。这里要等的条件 = **store 里已记下这次选择**
+    # （`buildQaUrl()` 读的是 `Alpine.store('searchState').filters`，不是地址栏；见 qa.js:15-28）。
+    # `.tree-label.active` 由 `:class` 直接绑定同一个 store 字段（tree.js:66 同步写入，
+    # 就在 selectFilter 里、先于 dispatchSearch），故「出现 active 节点」是该条件的忠实代理。
+    # 用同文件已有的 helper，不新造机制。
+    wait_tree_filter_seeded(page)
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
     # ⚠️ 不要写成 `assert "?" in page.url`——那是**恒真**的：`buildQaUrl()` 总会带上
@@ -142,7 +155,7 @@ def t1_qa_page_filters_survive_reload(page):
     page.press("input[type=search]", "Enter")
     page.wait_for_selector("#search-results", timeout=10000)
     click_first_tree_label(page)
-    page.wait_for_timeout(500)
+    wait_tree_filter_seeded(page)   # 条件同上条用例：等 store 记下这次选择（替代固定 sleep 500ms）
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
     wait_tree_filter_seeded(page)
@@ -167,11 +180,21 @@ def t1_search_page_unaffected(page):
     click_first_tree_label(page)                # 分类树立即重搜（检索页语义）
     page.wait_for_selector("#search-results", timeout=10000)
     page.evaluate("document.querySelector('.center-panel-v2').scrollTop = 500")
+    seen = track_search_requests(page)      # 登记必须在**回车之前**（Playwright 不补发注册前的请求）
+    n_before = len(seen)
     page.fill("input[type=search]", "钢筋")
     page.press("input[type=search]", "Enter")
-    page.wait_for_timeout(1200)
-    assert page.evaluate(
-        "document.querySelector('.center-panel-v2').scrollTop") == 0, \
+    # 原写法 `wait_for_timeout(1200)`。拆成**一个前置条件 + 一个有界等待**：
+    # ① 前置：换词回车必须真的新发起一次 /search——否则"回顶"无从谈起，
+    #    且能把「搜索没触发」与「回顶逻辑坏」两种红区分开（本文件的核心方法论：请求计数）；
+    # ② 有界等待：等回顶真正发生（htmx:afterSettle 里 `panel.scrollTop = 0`，search.js:168）。
+    #    超时即报红且信息明确；固定 sleep 则是"睡够就算过"，慢机器上 scrollTop 仍为 500 ⇒ 假红。
+    assert poll_until(page, lambda: len(seen) > n_before, timeout_ms=5000), \
+        f"换词回车后未新发起 /search 请求（回车前 {n_before} 次，回车后 {len(seen)} 次）"
+    assert poll_until(
+        page,
+        lambda: page.evaluate("document.querySelector('.center-panel-v2').scrollTop") == 0,
+        timeout_ms=3000), \
         "换词搜索后未回顶（检索页回顶逻辑被改坏）"
 
 
@@ -269,7 +292,13 @@ def t2_sessions_panel_collapses_without_moving_composer(page):
     before = {s: page.locator(s).bounding_box()
               for s in (".qa-composer", ".qa-messages", ".qa-thread")}
     page.click("#qa-session-toggle")
-    page.wait_for_timeout(300)
+    # 折叠也是**异步生效**（Alpine 响应式：`x-show` 改 inline display 在下一微任务才落地）。
+    # 原写法 `wait_for_timeout(300)` 是「固定 sleep 当同步」：慢机器上 300ms 不够 ⇒ `after` 会采到
+    # **旧几何** ⇒ 宽度判据**假红**（与上面 `before` 的竞态同源、方向相反）。
+    # 改为**有界轮询**，把"等待"与"判据"分离：等待条件不成立 ⇒ **在此处以 timeout 形式报红**
+    # （信息明确：折叠未生效），绝不会让下面的几何判据在旧值上给出误导性的失败信息。
+    assert poll_until(page, lambda: page.locator(".qa-sessions").is_hidden(), timeout_ms=3000), \
+        "点击折叠按钮后会话管理栏仍未收起（折叠未生效）"
     after = {s: page.locator(s).bounding_box()
              for s in (".qa-composer", ".qa-messages", ".qa-thread")}
     assert all(before.values()) and all(after.values())
