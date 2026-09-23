@@ -30,10 +30,16 @@
 ```bash
 cd /d/CC-Workspace/construction-spec-query-v2
 cp data/spec_query.db data/_probe_qa.db                      # 副本库，验证完删除
+export DATABASE_PATH="$PWD/data/_probe_qa.db"                 # ← 只走环境变量，见下注
 D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8123
 ```
 
-> 库路径通过 `app.database.DATABASE_PATH` 决定；副本验证时用环境变量或临时改常量指向 `data/_probe_qa.db`（**验证完必须还原**）。
+> **库路径只走环境变量，禁止改源码常量**：`app/config.py:16` 已是
+> `DATABASE_PATH = os.getenv("DATABASE_PATH", str(BASE_DIR / "data" / "spec_query.db"))`，
+> `app/database.py:4` 从它导入 ⇒ 上面那条 `export` 就够（实测有效）。
+> **首版计划写的「或临时改常量」是陷阱**：改源码去指向副本库，既有**误提交**风险（一次 `git add .` 就带上），
+> 又有**还原遗漏**风险（忘了改回就指向测试库）——两个风险都比它省下的那点麻烦大。
+> 另注：`uvicorn` **不加 `--reload`**（单进程；避免 Windows 下 reloader+worker 双进程导致"改了没生效"，见项目 CLAUDE.md 三）。
 > **Task 全部完成后删除** `data/_probe_qa.db` 与临时脚本（开发铁律七·3：清理临时文件）。
 
 Playwright 探针脚本统一用项目 CLAUDE.md 二·1 的同步 API：
