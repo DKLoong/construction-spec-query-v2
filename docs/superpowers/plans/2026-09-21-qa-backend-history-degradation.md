@@ -561,7 +561,7 @@ git commit -m "feat: 健康检查增加 AI 模型就绪项（分享场景告知�
 
 **Interfaces:**
 - Consumes: 夹具 `qa_db`（T3 已写入 `tests/conftest.py`）
-- Produces: 表 `qa_sessions(id, title, created_at, updated_at)`、`qa_messages(id, session_id, role, content, sources_json, confusable_json, mode, created_at)`、索引 `idx_qa_messages_session`
+- Produces: 表 `qa_sessions(id, title, created_at, updated_at)`、`qa_messages(id, session_id, role, content, sources_json, confusable_json, filters_json, mode, created_at)`、索引 `idx_qa_messages_session`
 
 - [ ] **Step 1: 写失败测试**
 

@@ -1,7 +1,7 @@
-# AI 问答：历史会话管理 + 界面右置 + 筛选统一 设计文档
+# AI 问答：历史会话管理 + 独立整页 + 筛选统一 设计文档
 
 - 日期：2026-09-21
-- 范围：AI 问答模块（`app/qa/`、`app/routes/qa_routes.py`、`static/components/qa.js`、`app/templates/partials/qa_panel.html`、左栏筛选联动）
+- 范围：AI 问答模块（`app/qa/`、`app/routes/qa_routes.py`、`static/components/qa.js`、`app/templates/partials/qa_page.html`、左栏筛选联动）
 - 前置文档：`2026-08-24-qa-optimization-design.md`（本设计在其之上扩展，不改动其检索/精排链路）
 
 ---
@@ -18,7 +18,7 @@
 本次目标：
 
 1. 增加**历史会话管理**（保存/切换/命名/删除/回看）
-2. 界面从**弹窗改为中栏内右侧显示**，与检索结果、分类树同屏协同，复用筛选逻辑
+2. 界面从**弹窗改为独立整页**（`/qa`，与 `/specs`、`/rules`、`/lexicon` 同形），左栏分类树照常在位，复用筛选逻辑
 3. 支持**多轮对话**，且 token 成本可控、上下文严格不跨会话
 
 ---
@@ -242,12 +242,10 @@ token 上限：`build_history` 内按 `max_turns` 截断；若单轮答案异常
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/qa/ask` | **单一入口，两种响应形态**。增字段 `session_id: int \| None`（为 None 时创建新会话，标题取首轮问题前 20 字，并在响应中返回其 id）、`relaxed: bool = False`（§4.7 的「放宽到全部规范」重发用）、`stream: bool = False`（`true` → `text/event-stream`；默认 `False` → 原 JSON，既有契约不变） |
-| POST | `/qa/sessions` | 显式新建（「＋ 新建会话」按钮用；但主要走惰性创建） |
 | GET | `/qa/sessions` | 会话列表（id, title, updated_at, 消息数） |
 | GET | `/qa/sessions/{id}` | 该会话全部消息（含 sources/confusable） |
 | PATCH | `/qa/sessions/{id}` | 重命名 |
 | DELETE | `/qa/sessions/{id}` | 删除（前端二次确认） |
-| POST | `/qa/ask/stream` | **SSE 流式问答**（§4.11），独立路由不改动 `/qa/ask` |
 | GET | `/qa/sessions/{id}/export` | 导出 Markdown（§4.12） |
 | GET | `/qa/search` | 跨会话搜消息，`LIKE` 参数化（§4.12） |
 
@@ -278,7 +276,7 @@ token 上限：`build_history` 内按 `max_turns` 截断；若单轮答案异常
 | KaTeX / marked / DOMPurify 渲染 | `qa.js:74-115` | 原样保留 |
 | 参考条文链接 + 废止警示 | `qa.js:92-113` | 原样保留 |
 | 条文详情弹窗 | `clause-modal.js`，`view-clause` 事件 | **完全不动**（本次明确不改回复结果的超链接弹窗方式） |
-| QA 埋点 | `_emit_trace` → `qa_request_logs` | 保留，增 `session_id` 列便于按会话分析 |
+| QA 埋点 | `_emit_trace` → `qa_request_logs` | 保留不动。**注意：该表无 `session_id` 列**，因此埋点与会话无法关联（按会话分析不可用）——本次不做，已记入 YAGNI |
 
 ### 4.9 参数注册表
 
@@ -328,7 +326,7 @@ resp = await client.post(f"{self.base_url}/chat/completions",
 
 **服务端**：`POST /qa/ask` 增加 `stream: bool = False`，**不新增路由**。
 
-> **为什么是单一入口**（评审决定 D3）：独立路由 `/qa/ask/stream` 必须复制整条检索链路
+> **为什么是单一入口**（评审决定 D13）：独立路由 `/qa/ask/stream` 必须复制整条检索链路
 > （检索→过滤→精排→选条→分层→组装，约 70 行）。首版设计已因此产生两个真实缺陷：
 > ① 流式版漏了 `_emit_trace`——走流式的问答（主路径）在日志 Tab 中完全不可观测；
 > ② 在 `done` 事件处**跨 `await` 读模块级全局** `_last_rerank_used`——并发请求互相覆盖。
@@ -506,9 +504,11 @@ return [(c, 1.0) for c in candidates]      # 全部 1.0
 ## 六、明确不做（YAGNI）
 
 - ❌ **HTML 导出**（只做 Markdown，理由见 §4.12）
+- ❌ **`qa_request_logs` 增 `session_id` 列**（埋点与会话的关联分析）。会话内容已在 `qa_messages`；
+  按会话分析检索质量确有价值，但本轮不加列，避免动既有埋点表结构（见 §4.8 的说明）
 - ❌ **给 `qa_messages` 建 FTS 索引**（小表用 LIKE 足够，理由见 §4.12）
 - ❌ **「仅当前会话」搜索勾选框**（会话内通常只几轮，价值低）
-- ❌ **CLI 后端的伪流式**（D11：不假装流式，避免多维护一条渲染路径）
+- ✅ CLI 后端走 `CLIBackend.ask_stream` 的默认实现（一次性 delta + done）——**这不是「伪流式」而是单一入口下的自然结果**：前端渲染路径完全一致，`stage` 事件仍给进度反馈（见 §4.11）
 - ❌ **模型安装期可选化**（D12：属封装方案范畴，留待封装时统一设计）
 - ❌ AI 摘要生成标题（首轮问题截断已足够，且零成本）
 - ❌ 折叠状态、滚动位置的服务端持久化
