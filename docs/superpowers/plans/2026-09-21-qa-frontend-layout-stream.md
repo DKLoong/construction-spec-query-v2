@@ -1165,17 +1165,25 @@ document.addEventListener('alpine:init', () => {
 
         // ── 降级状态提示 ──
 
+        // ⚠️ 必须显式判 'crossencoder' / 'vector' / 'none' 三态。
+        // 后端 QAResponse.rerank_used 的缺省是空串——那是**契约外的第四态**
+        // （后端未上报），不是 RERANK_NONE。用 `else → 无精排` 的写法会在
+        // 字段只是没上报时谎报降级（Task 2 实现者发现的跨计划问题）。
         rerankBadge() {
             if (this.rerankUsed === 'crossencoder') return '⚡ CE 精排';
             if (this.rerankUsed === 'vector') return '≈ 向量精排';
-            return '⚠️ 无精排';
+            if (this.rerankUsed === 'none') return '⚠️ 无精排';
+            return '';   // 未上报 → 不显示标记（模板的 x-show="rerankUsed" 会隐藏它）
         },
 
         rerankTip() {
             if (this.rerankUsed === 'crossencoder') return 'CrossEncoder 精排生效';
             if (this.rerankUsed === 'vector') return 'CE 模型不可用，已降级为向量精排';
-            return '未检测到精排模型，当前按关键词排序；'
-                 + '请在维护页「健康检查」查看缺失的模型';
+            if (this.rerankUsed === 'none') {
+                return '未检测到精排模型，当前按关键词排序；'
+                     + '请在维护页「健康检查」查看缺失的模型';
+            }
+            return '';   // 未上报 → 无提示
         },
 
         scrollToBottom() {
@@ -1276,6 +1284,28 @@ def t5_streaming_shows_plain_text_not_markdown(page):
             "生成期间出现了 Markdown 解析产物，应只显示转义纯文本"
         assert ans.locator(".katex").count() == 0, \
             "生成期间出现了 KaTeX 渲染产物"
+
+
+def t5_rerank_badge_handles_unreported_state(page):
+    """异常场景（防谎报）：后端未上报精排级别时不得显示降级标记。
+
+    `QAResponse.rerank_used` 的缺省是空串——那是**契约外的第四态**（未上报），
+    不是 `RERANK_NONE`。若把 `rerankBadge()` 写成 `else → 无精排`，会在字段
+    缺失时谎报「系统已降级」。本用例直接钉住三态 + 未上报态的返回值契约。
+    """
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    got = page.evaluate("""() => {
+        const d = window.Alpine.$data(document.getElementById('qa-root'));
+        const probe = (v) => { d.rerankUsed = v; return d.rerankBadge(); };
+        return {unreported: probe(''), none: probe('none'),
+                vector: probe('vector'), ce: probe('crossencoder')};
+    }""")
+    assert got["unreported"] == "", \
+        f"未上报（空串）时应无任何标记，实得 {got['unreported']!r} —— 谎报降级"
+    assert got["none"].strip(), "none 态必须有标记"
+    assert got["vector"].strip(), "vector 态必须有标记"
+    assert got["ce"].strip(), "crossencoder 态必须有标记"
 
 
 def t5_stage_indicator_visible(page):
