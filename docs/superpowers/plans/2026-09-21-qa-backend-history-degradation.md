@@ -2795,24 +2795,36 @@ async def test_ask_stream_skips_malformed_lines(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_api_backend_emits_context_header(monkeypatch):
-    """正常场景：API 路径的提示词带条文段表头（首版 API 路径**根本没有表头**）。"""
+@pytest.mark.parametrize("via_stream", [True, False])
+async def test_api_backend_emits_context_header(monkeypatch, via_stream):
+    """正常场景：API 路径的提示词带条文段表头（首版 API 路径**根本没有表头**）。
+
+    **参数化两条路径是有意的**：本 Task 要求 `ask()` 与 `ask_stream()` 共用
+    `_build_messages`（否则「共用同一套构造」是假话）。若只测流式，把 `ask()` 改回
+    自己拼串（不看表头常量）也能全绿——那条路径就会悄悄漂移。
+    """
     from app.ai.prompts import CONTEXT_HEADER
 
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, content=_sse("ok"))
+        if via_stream:
+            return httpx.Response(200, content=_sse("ok"))
+        return httpx.Response(200, content=json.dumps(
+            {"choices": [{"message": {"content": "ok"}}]}).encode("utf-8"))
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(httpx, "AsyncClient",
                         lambda **kw: httpx.AsyncClient(transport=transport, **kw))
     backend = APIBackend("https://x/v1", "k", "m")
-    _ = [e async for e in backend.ask_stream("q", context="条文正文")]
+    if via_stream:
+        _ = [e async for e in backend.ask_stream("q", context="条文正文")]
+    else:
+        await backend.ask("q", context="条文正文")
 
     user_msg = captured["body"]["messages"][1]["content"]
-    # 删掉 _build_messages 里的表头拼接 → 本断言失败
+    # 删掉 _build_messages 里的表头拼接 → 本断言失败（两条路径都要红）
     assert user_msg.startswith(CONTEXT_HEADER)
     assert "条文正文" in user_msg
     assert "参考上下文" not in user_msg, "旧标签必须彻底消失"
@@ -3013,7 +3025,7 @@ def _extract_delta(payload: str) -> str:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -v`
-Expected: PASS（**8 passed** = 4 条流式 + 1 条 API 表头 + 2 条 CLI 表头（参数化两个类）+ 1 条护栏一致性守卫）
+Expected: PASS（**9 passed** = 4 条流式 + 2 条 API 表头（参数化 stream/非 stream 两条路径）+ 2 条 CLI 表头（参数化两个类）+ 1 条护栏一致性守卫）
 并跑 `pyright app/ai/api_client.py app/ai/cli_client.py app/ai/prompts.py tests/test_qa_stream.py` —— **0 error**。
 另需 grep 自证旧标签已彻底消失：`grep -rn "参考上下文" app/ tests/` 应**无输出**。
 
@@ -3303,6 +3315,13 @@ obscuring 且足以掩盖 T3 的三态语义。
 
 **3d. `app/routes/qa_routes.py`** —— `QaContext` 去掉 T8 留下的两个默认值（`filtered_out` 由 T13 填、
 `rerank_used` 由本 Task 填；去掉默认值后「忘接线」会变成构造期的硬错误，而不是静默的 `0`/`""`）：
+
+> 📌 **`QaContext.rerank_used` 的注释要一并更新**：T13 落地后该字段的 docstring 写着
+> 「本字段目前**无人读写**，保留仅为兼容 T8 的接口形状」（这是 T13 当时的事实）——
+> **本 Task 起它有了两个读者**（`_qa_json` 的 `QAResponse.rerank_used`、`_sse_stream` 的 `done` 载荷），
+> 那句话就变成假话了。请改成如实描述：它是**准备阶段从 `_last_rerank_used` 立即拷贝**的值，
+> 供两条输出路径使用；**拷贝必须与 `trace.rerank_used` 同源同值**（两者都从同一个局部变量赋值），
+> 否则响应与落库埋点会各说一套。
 
 > ⚠️ 下方 `_prepare_qa_context` 是**结构抄本**（便于看清改完后的全貌）。实现时**以 T8 既有函数为准**，
 > 本 Task 对它只有**三处增量**，其余一律不动；若抄本与既有代码有任何差异，**以既有代码为准**
@@ -3668,10 +3687,10 @@ def _answer_text(resp, cli_used: str) -> str:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -v`
-Expected: PASS（**21 passed** = T14 的 8 条 + 本 Task 的 13 条）
+Expected: PASS（**22 passed** = T14 的 9 条 + 本 Task 的 13 条）
 
 > 计数更正（2026-09-23，控制器）：本行原写「T14 的 4 条 + 本 Task 的 10 条」，两处都陈旧——
-> T14 的 Step 1 已补到 8 条（4 条流式 + 1 条 API 表头 + 2 条 CLI 表头参数化 + 1 条护栏一致性守卫）；
+> T14 的 Step 1 已补到 **9 条**（4 条流式 + 2 条 API 表头参数化 + 2 条 CLI 表头参数化 + 1 条护栏守卫）；
 > 本 Task 的用例经实数为 **13 条**（控制器一度改成 9 条，那也是错的——**没数就写**，已在此更正）。
 > 另：`test_qa_dim_fields_matches_request_model` 已随 `QA_DIM_FIELDS` 前移至 T13，不在本 Task 内。
 
