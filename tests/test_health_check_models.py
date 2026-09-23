@@ -15,6 +15,9 @@ def test_model_ready_ok_when_both_models_available(qa_db):
     item = next(c for c in result["checks"] if c["key"] == "model_ready")
     assert item["severity"] == "ok"
     assert item["count"] == 0
+    # 状态列留空：模板对 severity=="ok" 且 status_text 为空的行渲染「✅ 正常」，
+    # 故此处断言空串即可钉住「未误挂缺失文案」。
+    assert item["status_text"] == ""
 
 
 def test_model_ready_warns_when_reranker_missing(qa_db):
@@ -25,6 +28,11 @@ def test_model_ready_warns_when_reranker_missing(qa_db):
     item = next(c for c in result["checks"] if c["key"] == "model_ready")
     assert item["severity"] == "warn"
     assert "精排" in item["hint"]
+    # 状态列不得是通用的「⚠️ 可修复」：缺模型文件只能由用户放进 models/BAAI/，
+    # 系统无法代劳——宣称"可修复"会直接误导分享场景下的使用者。
+    assert item["status_text"] == "⚠️ 功能降级"
+    assert "可修复" not in item["status_text"]
+    assert item["fixable"] is False
 
 
 def test_health_check_does_not_instantiate_models(qa_db):
@@ -53,6 +61,10 @@ def test_model_ready_errors_when_embedding_missing(qa_db):
     item = next(c for c in result["checks"] if c["key"] == "model_ready")
     assert item["severity"] == "error"
     assert "向量召回" in item["hint"]
+    # 同 warn 档：须为需人工处理的显式文案，而非系统代劳不了的「可修复」。
+    assert item["status_text"] == "⛔ 需人工处理"
+    assert "可修复" not in item["status_text"]
+    assert item["fixable"] is False
 
 
 # ---------------------------------------------------------------- is_ready()

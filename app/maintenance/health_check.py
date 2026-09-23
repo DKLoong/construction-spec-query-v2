@@ -160,9 +160,19 @@ def run_health_check(username: str = "system") -> dict:
         item = {"key": key, "label": label, "count": count,
                 "severity": severity, "fixable": fixable}
         if key == "model_ready":
-            item.update(severity=model_severity, count=0,
-                        count_text="✅ 就绪" if model_severity == "ok" else "⚠️ 缺失",
-                        status_text="", hint=model_hint)
+            # 状态列由 status_text 显式给定（模板优先渲染它，并按 severity 上色）。
+            # 不能沿用通用的「⚠️ 可修复」：缺模型文件只能由用户把文件放进 models/BAAI/，
+            # 系统无法代劳——而 warn/error 两档正是本 Task 存在的全部理由，
+            # 在这里宣称"可修复"会直接误导分享场景下的使用者。
+            # fixable=False：缺模型文件只能由用户放进 models/BAAI/，系统无法代劳。
+            item.update(
+                severity=model_severity, count=0,
+                count_text="✅ 就绪" if model_severity == "ok" else "⚠️ 缺失",
+                status_text={"ok": "",                   # 落模板的 ✅ 正常 分支
+                             "warn": "⚠️ 功能降级",       # 精排缺失，检索可用但降级
+                             "error": "⛔ 需人工处理"}[model_severity],
+                fixable=False,
+                hint=model_hint)
             checks.append(item)
             continue
         if key == "vector_missing":
