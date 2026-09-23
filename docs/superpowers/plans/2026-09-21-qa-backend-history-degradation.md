@@ -22,6 +22,9 @@
 - 统一分级日志，禁止用 `print` 输出业务日志（开发铁律 1.3）
 - TDD：先写测试再实现；每个 Task 覆盖正常/边界/异常三类场景
 - 每个 Task 完成后跑**增量测试**（本 Task 关联用例）+ `pyright`（不得新增 error），再 commit
+- **类型检查命令是 `pyright <路径>`（npm 全局版 1.1.410），必须在仓库根执行**以套用 `pyrightconfig.json`。
+  `D:/Python/python.exe -m pyright` **不可用**——该包未装在 Python 侧（实测 `No module named pyright`）。
+  按项目规则不得自行安装依赖
 - 提交信息格式 `type: 描述`，type ∈ `feat / fix / test / docs / refactor / chore`，单 Task 单提交
 - Python 一律用 `D:/Python/python.exe`（禁用 `python3`）；测试命令 `D:/Python/python.exe -m pytest`
 - 模型加载**永不联网**（`local_files_only=True`），不得引入自动下载
@@ -320,7 +323,7 @@ def _rerank_scored(question: str, candidates: list[dict]) -> list[tuple[dict, fl
 Run: `D:/Python/python.exe -m pytest tests/test_qa_degrade.py tests/test_qa_routes.py tests/test_qa_context.py -v`
 Expected: 全部 PASS（既有 QA 用例不得回归）
 
-Run: `D:/Python/python.exe -m pyright app/qa/degrade.py app/routes/qa_routes.py`
+Run: `pyright app/qa/degrade.py app/routes/qa_routes.py`（**npm 全局版，在仓库根执行以套用 pyrightconfig.json**；`D:/Python/python.exe -m pyright` 不可用——该包未装在 Python 侧）
 Expected: 无新增 error
 
 - [ ] **Step 7: 提交**
@@ -1699,7 +1702,7 @@ Expected: PASS（6 passed）
 Run: `D:/Python/python.exe -m pytest tests/test_qa_routes.py tests/test_qa_status_filter.py tests/test_qa_context.py -v`
 Expected: 全部 PASS
 
-Run: `D:/Python/python.exe -m pyright app/routes/qa_routes.py app/models.py`
+Run: `pyright app/routes/qa_routes.py app/models.py`
 Expected: 无新增 error
 
 - [ ] **Step 6: 提交**
@@ -3178,7 +3181,7 @@ Expected: PASS（T14 的 4 条 + 本 Task 的 10 条）
 Run: `D:/Python/python.exe -m pytest tests/ -q`
 Expected: 全部 PASS（既有约 726 条 + 本计划新增）
 
-Run: `D:/Python/python.exe -m pyright app/`
+Run: `pyright app/`
 Expected: 无新增 error
 
 - [ ] **Step 6: 提交**
