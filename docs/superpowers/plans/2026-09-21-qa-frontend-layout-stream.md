@@ -55,6 +55,74 @@ with sync_playwright() as p:
     browser.close()
 ```
 
+### 前置 A：**每个探针都必须先登录**（不做的话 RED 是假红）
+
+全站受 `AuthMiddleware` 保护（`app/main.py:110-129`）：除 `/login`、`/static`、`/health` 外，
+无 `access_token` cookie 一律 `302 → /login`。**探针不登录时，`page.goto` 之后看到的是登录页**——
+`page.click("text=🤖 AI问答")` 会因为元素不存在而失败，**代码一行未改也会红** ⇒ RED 失去意义
+（T1 施工时实际踩到：首跑 RED 的失败原因是登录页，不是「`/qa` 尚不存在」）。
+
+⇒ **runner 必须先在 `page` 上登录**，再跑各用例（**不要**在每个用例函数体里各写一遍）：
+
+```python
+import os
+
+def login(pg):
+    """探针前置：登录隔离实例（站点受 AuthMiddleware 保护）。
+    默认取 create_admin 的默认账号（见 scripts/create_admin.py 的 CLI 默认值），
+    可用环境变量覆盖——**不要**把口令散写进各用例。"""
+    pg.goto(f"{BASE}/login")
+    pg.fill("input[name=username]", os.getenv("PROBE_USER", "admin"))
+    pg.fill("input[name=password]", os.getenv("PROBE_PASS", "admin123"))
+    pg.press("input[name=password]", "Enter")
+    pg.wait_for_selector(".left-panel", timeout=10000)      # 登录后才有页壳
+```
+
+### 前置 B：**点分类树条目必须先展开 `<details>`**（否则 30s 超时）
+
+分类项位于**默认折叠**的 `<details>` 内（`app/templates/partials/tree_panel.html:126-149`，无 `open` 属性、
+无自动展开逻辑）⇒ `page.click(".tree-label")` 会因 **element is not visible** 超时（实测 call log 明确如此）。
+且分类树是 `await fetch('/tree/all')` **异步渲染**的，与 `#qa-root` 可交互之间存在竞态。
+
+⇒ 统一用两个 helper（同样放 runner 层，各用例共用）：
+
+```python
+def click_first_tree_label(pg):
+    """展开第一个折叠分类组，再点其中的条目（details 未展开时 .tree-label 不可见）。"""
+    pg.locator("details").first.click()                      # 展开
+    pg.locator(".tree-label").first.click()
+
+def wait_tree_filter_seeded(pg):
+    """等分类树渲染完（异步 fetch）。注意用 state='attached'：
+    折叠 details 内的元素等 visible 会必然超时。"""
+    pg.wait_for_selector(".tree-label", state="attached", timeout=10000)
+```
+
+> **后续 Task（T2~T5）追加探针时**：凡需点击分类树条目，一律 `wait_tree_filter_seeded(pg)` 后用
+> `click_first_tree_label(pg)`。**不要**在用例里直接写 `page.click(".tree-label >> nth=0")`
+> ——那在本项目必然 30s 超时（首版 8 条探针里有 5 条踩了这个坑）。
+
+### 前置 C：需要「AI 有回答」的 Task（T4/T5）用 **mock LLM**，不要用真实模型
+
+T4/T5 的探针要断回答区渲染、续聊、流式渐进，**必须**有稳定可预期的回答。用真实模型既耗配额、
+内容又不可控。控制器已备好 mock（**临时工具，不入仓**）：`%TEMP%/qa_mock_llm.py`，
+监听 `127.0.0.1:8199`，`POST /v1/chat/completions` 非流式返回一次性 JSON、流式逐帧 SSE
+（帧间 sleep，故意留出可观测的"生成中"窗口）。
+
+配置**只改隔离库副本**（QA 经 `body.backend` → `get_backend(None)` → settings 的 `ai.backend`；
+**不存在** `ai.backend.qa` 这个键）：
+
+```sql
+-- 在 data/_probe_qa.db 上执行（不要动 dev 库）
+INSERT OR REPLACE INTO settings (key, value) VALUES
+  ('ai.backend',         'custom'),
+  ('ai.custom.base_url', 'http://127.0.0.1:8199/v1'),
+  ('ai.custom.api_key',  'mock'),
+  ('ai.custom.model',    'mock-model');
+```
+
+mock 的固定回答含**加粗 Markdown** 与 **《GB 50204》8.2.1** 条文引用 ⇒ 顺带可验证渲染管线与超链接改写。
+
 ---
 
 ## 文件结构
@@ -87,7 +155,12 @@ with sync_playwright() as p:
 - Modify: `static/components/qa.js`（`buildQaUrl()` / `seedFiltersFromUrl()` / `syncQaUrl()`）
 - Modify: `static/components/tree.js`（`selectFilter` 触发 URL 同步）
 - Modify: `static/components/search.js`（状态/CE 变更触发 URL 同步）
+- Modify: `app/templates/base.html`（移除 QA 弹窗 overlay 与 `openQA`/`closeQA`；三个脚本版本号递增）
+- Modify: `app/qa/sessions.py`（**仅 1 条注释**：删掉指向已删模板的行号引用，零业务逻辑）
 - Test: `scripts/probe_qa_ui.py`
+
+> ⚠️ 首版 Files **漏列**了 `base.html` 与 `app/qa/sessions.py`，而 Step 9 的 `git add` 里两者都在
+> ⇒ 与 T14 同类（Files 漏列 = 漏检）。已补。
 
 **Interfaces:**
 - Produces: 路由 `GET /qa` → `base.html` + `left_content=partials/tree_panel.html` + `center_content=partials/qa_page.html`（与 `/rules`、`/lexicon` 完全同形）
@@ -343,6 +416,16 @@ Expected: **仅剩注释级引用**——实测 `app/qa/sessions.py:302` 的一�
 
 **保留** `#clause-modal-overlay`（条文详情弹窗，本次明确不改）与 `partials/settings_dialog.html`。
 
+> ⚠️ **「无残留」的判据必须写对**（首版给错了）：`settings_dialog.html:6` **复用了 CSS 类**
+> `class="qa-modal-overlay"`，而该文件要保留 ⇒ 对 `qa-modal-overlay` 的 grep **必然有输出**
+> （3 行：`settings_dialog.html:6`、`app.css:66`、`app.css:215`）。正确的判据按**事件名/方法名/id** 查：
+> ```bash
+> grep -rn 'open-qa-modal\|openQA\|id="qa-modal-overlay"' app/ static/ | grep -v "__pycache__"
+> ```
+> Expected: **无输出**（这三样才是真正被删除的东西；CSS 类名与 `#qa-modal-overlay` 是两回事）。
+> **顺带**：`static/app.css:215` 的注释「必须高于 QA 弹窗」已过时（该类现仅服务设置弹窗）
+> ——该文件不在 T1 的 Files 内，故**由 T2 一并订正**（T2 本来就改 `app.css`）。
+
 - [ ] **Step 5: 实现 URL 筛选携带**
 
 在 `static/components/qa.js` 顶部（模块级，供 `tree.js`/`search.js` 调用）新增：
@@ -511,6 +594,7 @@ Expected: 全部 `PASS` —— **条数由脚本自报，不要在计划里写�
 ```bash
 git add app/routes/qa_routes.py app/templates/partials/qa_page.html \
         app/templates/partials/tree_panel.html app/templates/base.html \
+        app/qa/sessions.py \
         static/components/qa.js static/components/tree.js static/components/search.js \
         scripts/probe_qa_ui.py
 git rm app/templates/partials/qa_panel.html
