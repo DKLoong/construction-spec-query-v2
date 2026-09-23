@@ -1,6 +1,15 @@
 // 分类树组件 + 全局搜索状态
 // searchState 是搜索框 / 分类树 / AI 问答共享的单一事实源：
 //   { keyword, filters } — keyword 为搜索词，filters 为分类维度选中项（dim1~dim6）
+
+// 当前是否处于 QA 视图：以 DOM 存在性判断。**全站唯一实现**（qa.js / search.js 复用），
+// 不要在别处另写判据——两处判据将来会漂移。
+// 不用 Alpine 生命周期钩子——htmx/DOM 替换场景下 destroy() 是否触发未被官方文档化，
+// 用 DOM 判据零风险且同样准确（项目其它地方也按 DOM 状态判断）。
+function isQaView() {
+    return !!document.getElementById('qa-root');
+}
+
 document.addEventListener('alpine:init', () => {
     Alpine.store('searchState', {
         keyword: '',
@@ -55,6 +64,12 @@ document.addEventListener('alpine:init', () => {
             if (idx >= 0) arr.splice(idx, 1); else arr.push(value);
             if (arr.length) next[dimension] = arr; else delete next[dimension];
             this.$store.searchState.filters = next;
+            // QA 页：筛选只更新共享状态（影响下一轮问答检索）+ 同步 URL，
+            // 不发起检索——否则点分类树会把用户弹回检索页（设计文档 D8）
+            if (isQaView()) {
+                if (typeof syncQaUrl === 'function') syncQaUrl();
+                return;
+            }
             this.dispatchSearch();
         },
 

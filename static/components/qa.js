@@ -1,4 +1,39 @@
 // AI 问答组件
+
+// ── QA 页 URL 筛选携带（D4）──
+// 整页导航会重置 Alpine store，筛选靠 URL 携带才不丢；顺带得到可分享链接。
+
+// 维度参数名。**必须与后端 app/models.py 的 QA_DIM_FIELDS 保持一致**
+// （前端无法跨语言复用该常量，只能镜像；后端有 test_qa_dim_fields_matches_request_model
+//  盯着常量与 QaRequest 的一致性，此处靠代码评审与 URL 回填探针发现漂移。
+//  T1 的 t1_filters_carry_into_qa_via_url 会在维度名漂移时失败。）
+const QA_DIM_KEYS = ['dim1_hierarchy', 'dim1_industry', 'dim1_nature',
+                     'dim2_stage', 'dim3_usage', 'dim4_specialty',
+                     'dim5_location', 'dim6_material'];
+
+// 由共享 store 生成 QA 页 URL；无筛选时退化为裸 /qa
+function buildQaUrl() {
+    const ss = window.Alpine && window.Alpine.store && Alpine.store('searchState');
+    if (!ss) return '/qa';
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(ss.filters || {})) {
+        if (Array.isArray(v)) v.forEach(x => p.append(k, x));
+        else p.append(k, v);
+    }
+    const sf = ss.buildStatusFilter();
+    if (sf) p.append('status_filter', sf);
+    if (ss.includeNonClause) p.append('include_non_clause', '1');
+    const qs = p.toString();
+    return qs ? `/qa?${qs}` : '/qa';
+}
+
+// 在 QA 页内同步 URL（replaceState：不污染历史栈，避免每次勾选都多一条记录）
+function syncQaUrl() {
+    if (typeof isQaView === 'function' && isQaView()) {
+        history.replaceState(null, '', buildQaUrl());
+    }
+}
+
 document.addEventListener('alpine:init', () => {
     Alpine.data('qaView', () => ({
         messages: [],
@@ -8,6 +43,33 @@ document.addEventListener('alpine:init', () => {
         // 状态过滤：默认仅勾「现行」（与检索侧 tree.js 语义一致，全不勾=不过滤非现行）
         statusCurrent: true,
         statusRevising: false,
+        // 会话栏折叠态：T1 骨架的「◂ 会话」按钮已引用它；完整会话栏由 T4 填充
+        sessionsCollapsed: false,
+
+        async init() {
+            this.seedFiltersFromUrl();   // T1：URL → store 回填
+            // await this.loadSessions();  ← T4 引入 loadSessions() 后在此启用
+            this.scrollToBottom();
+        },
+
+        // 从 URL 回填共享筛选状态。维度用 getAll（同维多选）。
+        seedFiltersFromUrl() {
+            const ss = this.$store.searchState;
+            const p = new URLSearchParams(window.location.search);
+            const filters = {};
+            for (const k of QA_DIM_KEYS) {
+                const vals = p.getAll(k).filter(Boolean);
+                if (vals.length) filters[k] = vals;
+            }
+            ss.filters = filters;
+            const sf = p.get('status_filter');
+            if (sf !== null) {
+                // 与 buildStatusFilter() 的取值域对称：'现行' / '现行,修订中' / '修订中'
+                ss.statusCurrent = sf.includes('现行');
+                ss.statusRevising = sf.includes('修订中');
+            }
+            ss.includeNonClause = p.get('include_non_clause') === '1';
+        },
 
         toggleMode() {
             this.mode = (this.mode === 'rag') ? 'verbatim' : 'rag';

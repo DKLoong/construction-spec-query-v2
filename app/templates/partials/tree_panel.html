@@ -112,7 +112,10 @@
         <a href="/maintenance" style="text-decoration:none">
             <button class="outline" style="width:100%;font-size:0.8rem">🛠 维护</button>
         </a>
-        <button class="outline" style="width:100%;font-size:0.8rem" @click="$dispatch('open-qa-modal')">
+        <!-- QA 页是整页导航（与 📚规范 / 📋规则 / 📖词库 同形）。
+             href 由 buildQaUrl() 在点击时按当前筛选拼出，使 QA 页继承检索条件 -->
+        <button type="button" class="outline" style="width:100%;font-size:0.8rem"
+                onclick="window.location.href = buildQaUrl()">
             🤖 AI问答
         </button>
     </div>

@@ -621,6 +621,22 @@ async def _sse_stream(question: str, body: QaRequest):
     })
 
 
+# ── 页面路由 ──
+
+@router.get("/qa")
+async def qa_page(request: Request):
+    """QA 页（整页导航，与 /rules、/lexicon 同形）。
+
+    选整页而非 htmx 局部替换的取舍见设计文档 D4：左栏分类树照常在位，
+    Alpine 走 DOMContentLoaded 初始化（与项目其它页面一致，无需额外机制）。
+    """
+    from app.main import templates
+    return templates.TemplateResponse(request, "base.html", {
+        "left_content": "partials/tree_panel.html",
+        "center_content": "partials/qa_page.html",
+    })
+
+
 # ── 会话管理接口 ──
 
 @router.get("/qa/sessions")

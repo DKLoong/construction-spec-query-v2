@@ -1,0 +1,19 @@
+<!-- AI 问答页（整页导航，与规范/规则/词库同形）
+     布局在 T2 填入；此处先给探针所需的最小结构 -->
+<div id="qa-root" x-data="qaView()" class="qa-root">
+    <div class="qa-thread">
+        <div class="qa-thread-header">
+            <span>🤖 AI 智能问答</span>
+            <button type="button" class="outline" id="qa-session-toggle"
+                    style="font-size:0.75rem;padding:0.1rem 0.4rem;margin:0"
+                    @click="sessionsCollapsed = !sessionsCollapsed"
+                    x-text="sessionsCollapsed ? '◂ 会话' : '会话 ▸'">会话 ▸</button>
+        </div>
+        <div class="qa-messages" x-ref="msgBox"></div>
+        <div class="qa-composer">
+            <textarea x-model="input" rows="3" style="flex:1"></textarea>
+            <button type="button" @click="send()">发送</button>
+        </div>
+    </div>
+    <aside class="qa-sessions" x-show="!sessionsCollapsed" x-cloak>会话管理</aside>
+</div>

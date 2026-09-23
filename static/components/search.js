@@ -78,6 +78,7 @@ document.addEventListener('alpine:init', () => {
             if (this.ceRerank) {
                 showSearchToast('CE精排已开启，请耐心等待搜索结果');
             }
+            if (isQaView()) { syncQaUrl(); return; }
             this.search();
         },
 
@@ -86,6 +87,7 @@ document.addEventListener('alpine:init', () => {
             if (!this.statusCurrent && !this.statusRevising) {
                 showSearchToast('注意：当前展示结果未过滤非现行规范', 4000);
             }
+            if (isQaView()) { syncQaUrl(); return; }
             this.search();
         },
 
@@ -118,6 +120,11 @@ document.addEventListener('alpine:init', () => {
                 target: '.center-panel-v2',
                 swap: 'innerHTML'
             });
+            // 若刚才在 QA 页，换入结果后把地址栏推回检索页，避免"内容已是检索页、URL 还是 /qa"
+            // （项目没有「整页导航到检索结果」这条路径：GET /search 只返回片段，GET / 不收关键词，
+            //  故 htmx 换入是唯一形态；换入后 #qa-root 随 .center-panel-v2 一起消失，
+            //  之后 isQaView() 自然为 false，左栏点击回到检索页语义）
+            if (typeof isQaView === 'function' && isQaView()) history.pushState(null, '', '/');
             this.loading = false;
         },
     }));

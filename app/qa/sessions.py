@@ -290,8 +290,8 @@ def build_markdown(sess: dict, messages: list[dict]) -> str:
             if sources:
                 # 参考条文格式「《规范编号》条文号」是**项目惯例**，与全站采用同一格式的
                 # 渲染处保持一致：app/ai/prompts.py:11,23（【《规范编号》条文X】）、
-                # app/qa/context.py:92、app/templates/partials/qa_panel.html:49、
-                # static/components/qa.js:93,111（**均含条文号**）。
+                # app/qa/context.py:92、QA 界面消息区底部的参考条文行（原 QA 弹窗面板，
+                # 已随「QA 改整页导航」删除）、static/components/qa.js:93,111（**均含条文号**）。
                 # （`result_content.html:25` 的「已被《code》替代」不带条文号，不是同一格式，
                 # 不在本枚举内。）
                 # 故此处**不得**改成空格分隔的写法。
