@@ -219,6 +219,13 @@ class QaRequest(BaseModel):
     # 「放宽分类筛选」重发标记：True 时**只**忽略分类维度重新检索，
     # 状态过滤与前言设置仍生效（见设计文档 §4.7）
     relaxed: bool = False
+    # 输出形态：False → 一次性 JSON（默认，保持既有契约）；
+    # True → SSE 流式（stage/delta/done/error）。两种形态共用同一套检索准备。
+    stream: bool = False
+    # 放行前言/条文说明等打标非条文（来自左栏「包含前言·条文说明」复选框）。
+    # ⚠️ 必须显式声明：Pydantic 默认 extra='ignore'，未声明的字段会被静默丢弃，
+    #    前端传了也不生效——这类"静默 no-op"极难排查。
+    include_non_clause: bool = False
     backend: str | None = None
     # 问答模式：rag 综合问答（默认） / verbatim 原文摘抄
     mode: str = "rag"
