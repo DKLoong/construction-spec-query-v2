@@ -31,10 +31,25 @@ PROMPT_MODES = {
     "verbatim": SYSTEM_PROMPT_VERBATIM,
 }
 
+# 多轮护栏：历史段只含问答文本、不含条文上下文，
+# 因此必须禁止 AI 凭「历史里见过」去引用本轮未提供的条文。
+MULTI_TURN_GUARD = """
 
-def build_system_prompt(mode: str) -> str:
-    """按模式返回 system prompt；未知模式回退 RAG。"""
-    return PROMPT_MODES.get(mode, SYSTEM_PROMPT_RAG)
+【多轮对话附加约束】
+本轮为连续对话，上方可能附有【历史对话】段。请注意：
+1. 你**只能引用本轮【参考上下文】中实际提供的条文**。
+2. 历史对话中出现过的规范编号或条文号，若本轮【参考上下文】中未提供，
+   不得作为引用来源，也不得凭记忆复述其内容。
+3. 若本轮上下文不足以回答，请如实说明「当前未检索到相关条文」，禁止编造。"""
+
+
+def build_system_prompt(mode: str, multi_turn: bool = False) -> str:
+    """按模式返回 system prompt；未知模式回退 RAG。
+
+    multi_turn=True 时追加多轮引用护栏（见 MULTI_TURN_GUARD）。
+    """
+    base = PROMPT_MODES.get(mode, SYSTEM_PROMPT_RAG)
+    return base + MULTI_TURN_GUARD if multi_turn else base
 
 
 def build_version_check_prompt(code: str, title: str) -> str:

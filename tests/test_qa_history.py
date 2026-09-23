@@ -1,4 +1,5 @@
 """多轮历史段组装（精简多轮：只带问答文本，绝不复用历史条文）。"""
+from app.ai.prompts import build_system_prompt
 from app.qa.context import build_history, HISTORY_HEADER
 
 
@@ -100,3 +101,26 @@ def test_build_history_ignores_unanswered_trailing_user():
     out = build_history(msgs, 6, 6000)
     assert "老答案" in out
     assert "悬空新问题" not in out
+
+
+def test_single_turn_prompt_unchanged():
+    """回归：默认（单轮）prompt 不含多轮护栏，既有行为不受影响。"""
+    assert "历史对话" not in build_system_prompt("rag")
+
+
+def test_multi_turn_prompt_forbids_citing_history_clauses():
+    """正常场景：多轮护栏必须禁止引用历史条文（护栏是 D1 的配套）。"""
+    p = build_system_prompt("rag", multi_turn=True)
+    assert "本轮" in p
+    assert "历史" in p
+
+
+def test_multi_turn_prompt_applies_to_verbatim_mode():
+    """边界场景：原文摘抄模式同样需要护栏。"""
+    assert "本轮" in build_system_prompt("verbatim", multi_turn=True)
+
+
+def test_unknown_mode_multi_turn_falls_back_to_rag():
+    """异常场景：未知模式回退 RAG，且仍带护栏。"""
+    p = build_system_prompt("不存在", multi_turn=True)
+    assert "本轮" in p
