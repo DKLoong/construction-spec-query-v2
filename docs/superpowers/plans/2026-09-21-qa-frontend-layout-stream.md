@@ -892,7 +892,12 @@ Expected: FAIL —— **但不要拿"骨架缺结构"当 RED 证据**：`.qa-thr
 
 - [ ] **Step 5: 提升版本号并重启**
 
-`base.html`：`app.css?v=19` → `?v=20`。
+`base.html` 两处：
+
+- `app.css?v=19` → `?v=20`（本 Task 改 `app.css`）
+- **`search.js?v=10` → `?v=11`**（**T1 修复轮的欠账**：T1-R1 改了 `static/components/search.js`
+  （两处裸调用补 `isQaView` 的 `typeof` 守卫），但当时 `base.html` 不在该轮的允许文件清单内，
+  故按项目 CLAUDE.md 三·5 欠下的版本号递增，由本 Task 一并补上。）
 
 按项目 CLAUDE.md 三·1~4 重启实例（全杀残留进程）。
 
