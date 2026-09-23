@@ -3,6 +3,7 @@
 用法：先起隔离实例（本计划「前置」节），再
   D:/Python/python.exe scripts/probe_qa_ui.py t1
 """
+import json
 import os
 import re
 import sys
@@ -519,7 +520,13 @@ def t3_ce_rerank_not_disabled_in_qa_page(page):
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
-    box = page.locator(".left-panel input[type=checkbox]").nth(1)
+    # ⚠️ 选择器由 `.left-panel input[type=checkbox]` + `nth(1)` 改为**稳定 id**
+    # （T3 实现者上报的隐患）：`nth(1)` 依赖复选框的**排列顺序**，将来在 CE 之前
+    # 插入任何复选框（例如又一个筛选开关）都会让它**静默失效**——那时 nth(1) 仍能
+    # 命中某个复选框、`is_disabled()` 仍为 False ⇒ 用例恒绿却已不再守 CE。
+    # T4 已给该复选框加 `id="ce-rerank-toggle"`（tree_panel.html）。
+    box = page.locator("#ce-rerank-toggle")
+    assert box.count() == 1, "左栏未找到 #ce-rerank-toggle（CE 精排复选框 id 丢失？）"
     assert not box.is_disabled(), "CE 精排复选框在 QA 页被置灰了，应仅用 tooltip 说明"
 
 
@@ -576,6 +583,295 @@ CASES = {"t1": [t1_qa_entry_is_a_page_link,
                 t3_ce_rerank_not_disabled_in_qa_page,
                 t3_left_panel_status_unchecked_sends_empty_status_filter,
                 t3_pending_filter_hint_appears_after_change]}
+
+
+# ── T4：会话列表、切换载入与续聊 ─────────────────────────────────────────────
+# 本组全部用例都要「AI 真的回答」（会话列表/续聊都以成功轮次落库为前提）
+# ⇒ 必须按计划「前置 C」配 mock LLM（见文件头与本 Task 简报顶部指针）。
+# 等待一律「有界轮询 + 内容判据」，无固定 sleep（本文件方法论，见 poll_until 注释）。
+
+
+def _qa_open(page):
+    """进 QA 页并等 Alpine 初始化完成。
+
+    `.qa-sessions` 由 x-cloak + x-show 控制（x-cloak 在 Alpine 启动该组件时摘除），
+    故「它可见」等价于「组件已初始化且 x-show 已求值」——与 T2 折叠用例同一判据。
+    """
+    page.goto(f"{BASE}/")
+    page.click("text=🤖 AI问答")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    page.wait_for_selector(".qa-sessions", state="visible", timeout=10000)
+
+
+def _qa_ask(page, question, expect_msgs=2, timeout_ms=90000):
+    """发送一个问题，等**回答真的渲染出来**。
+
+    判据两条（缺一不可）：
+      · `.qa-msg` 条数达标 —— 等这一轮收尾（用户消息 + 助手消息都入列）；
+      · 最后一条 `.qa-bot .qa-answer` **有非空正文** —— 只等 `.qa-bot` 存在是不够的：
+        新模板用 `x-html="msg.html"` 渲染回答，`send()` 不写 `html` 时 `.qa-bot` 照样出现
+        （那正是 52a3aa2 热修前的「空气泡」），固定 sleep 或存在性等待都会把它判成 PASS。
+    """
+    page.fill(".qa-composer textarea", question)
+    page.press(".qa-composer textarea", "Enter")
+    # 在页面内一次性判定，避免 Python 侧多次取节点时遭遇 render 中途的失效句柄
+    probe = """(n) => {
+        const msgs = document.querySelectorAll('.qa-msg');
+        if (msgs.length < n) return false;
+        const ans = document.querySelectorAll('.qa-bot .qa-answer');
+        if (!ans.length) return false;
+        return (ans[ans.length - 1].textContent || '').trim() !== '';
+    }"""
+    assert poll_until(page, lambda: page.evaluate(probe, expect_msgs), timeout_ms=timeout_ms), \
+        (f"提问「{question}」后未等到渲染完成的回答（当前 .qa-msg="
+         f"{page.locator('.qa-msg').count()}，期望 >= {expect_msgs}；最后一条答案正文为空"
+         "即「空气泡」）")
+
+
+def _active_session_title(page):
+    """当前「激活」会话的标题（空串 = 无激活项，即草稿态）。"""
+    titles = page.locator(".qa-session-item.active .qa-session-title").all_inner_texts()
+    return titles[0].strip() if titles else ""
+
+
+def t4_ask_creates_session_and_lists_it(page):
+    """正常场景：提问后会话出现在列表，且标题为首轮问题截断。"""
+    _qa_open(page)
+    q = "混凝土强度等级如何评定"
+    _qa_ask(page, q)
+    # 答案必须真的过了渲染管线：mock 的固定回答含 `**混凝土强度等级**`，
+    # 渲染出来必有 <strong>（钉住 send() 写 html + renderMarkdown 这条链）
+    assert page.evaluate(
+        "() => document.querySelectorAll('.qa-bot .qa-answer strong').length") >= 1, \
+        "回答未渲染出 Markdown 加粗（send() 未写 msg.html，或渲染管线未跑）"
+    assert poll_until(
+        page,
+        lambda: any(q[:20] in t for t in page.locator(".qa-session-title").all_inner_texts()),
+        timeout_ms=5000), \
+        f"会话列表未见新会话: {page.locator('.qa-session-title').all_inner_texts()}"
+    # 新会话必须成为「当前会话」（否则续聊无从谈起）
+    assert _active_session_title(page) == q, \
+        f"新建的会话未被标记为当前会话: {_active_session_title(page)!r}"
+
+
+def t4_history_shows_full_conversation(page):
+    """正常场景：点历史会话 → 中栏载入该会话全部消息。"""
+    _qa_open(page)
+    _qa_ask(page, "第一个问题")
+    assert poll_until(page, lambda: page.locator(".qa-session-item").count() >= 1,
+                      timeout_ms=5000), \
+        "首轮提问后会话列表仍为空（send() 未刷新会话列表）"
+    page.click("text=＋ 新会话")          # 清空到草稿态
+    assert poll_until(page, lambda: page.locator(".qa-msg").count() == 0, timeout_ms=3000), \
+        f"新会话应清空对话区（当前 {page.locator('.qa-msg').count()} 条）"
+    # 清空后当前会话必须回到草稿态（无激活项）——否则下面的点击不是「从零载入」
+    assert _active_session_title(page) == "", "点新会话后仍停留在他会话（未回到草稿态）"
+    page.click(".qa-session-item >> nth=0")   # 点回历史会话
+    assert poll_until(page, lambda: page.locator(".qa-msg").count() >= 2, timeout_ms=10000), \
+        f"载入历史后应出现问答两条（当前 {page.locator('.qa-msg').count()} 条）"
+    # 内容精确性：载入的必须是**那次**提问（防「载入了别的会话」也判绿）
+    assert page.locator(".qa-msg.qa-user").first.inner_text().strip() == "第一个问题", \
+        f"载入的历史会话内容与提问不一致: {page.locator('.qa-msg.qa-user').first.inner_text()!r}"
+
+
+def t4_mode_switch_reaches_request_body(page):
+    """正常场景（§4.8「必须保留的既有功能」）：模式切换必须真的进入请求体。
+
+    为什么必须有这条：模式切换控件在本计划首版的新模板里**被漏掉了**，而当时**没有任何探针会报警**
+    （完成标准却写着"模式切换正常"）⇒ 功能静默消失。本探针把「控件存在 + 切换生效 + 值到达请求体」
+    三件事一次性钉住：删控件 → `page.check` 找不到元素即红；`toggleMode` 不写 mode / `buildRequestBody`
+    不带 mode → 断言红。T4 重写了 `send()`（改走 `buildRequestBody()`），这条同时是那次重写的回归判据。
+    """
+    _qa_open(page)
+
+    captured = {}
+
+    def _on_request(req):
+        if req.method == "POST" and req.url.endswith("/qa/ask"):
+            captured["body"] = req.post_data_json
+
+    page.on("request", _on_request)
+    page.check(".qa-mode-switch input[type=checkbox]")     # 切到「原文摘抄」
+    assert page.locator(".qa-mode-switch input[type=checkbox]").is_checked(), \
+        "模式切换的勾选框未被勾上（toggleMode / :checked 绑定坏）"
+    _qa_ask(page, "混凝土强度等级如何评定")
+
+    assert captured.get("body", {}).get("mode") == "verbatim", \
+        f"模式切换未进入请求体（mode 应为 verbatim）: {captured.get('body')}"
+
+
+def t4_continue_in_history_session_appends(page):
+    """异常场景（核心）：在历史会话里继续提问，追加到同一会话而非新建。
+
+    三条判据（互相独立，避免单判据假绿）：
+      ① 追问前**确有**当前会话（标题非空）—— 否则 ②③ 都可能在"两边都空"上恒真；
+      ② 会话条数**不得增加**（有界观察窗：一旦新建立即判红）；
+      ③ 追问后当前会话仍是**同一标题**（钉「追加到该会话」而不只是「没多开一个」）。
+    """
+    _qa_open(page)
+    _qa_ask(page, "第一个问题")
+    assert poll_until(page, lambda: page.locator(".qa-session-item").count() >= 1,
+                      timeout_ms=5000), "首轮提问后会话列表仍为空（send() 未刷新会话列表）"
+    before_title = _active_session_title(page)
+    assert before_title == "第一个问题", \
+        f"首轮提问后未定位到当前会话（应为『第一个问题』，实得 {before_title!r}）"
+    n_before = page.locator(".qa-session-item").count()
+
+    _qa_ask(page, "继续追问", expect_msgs=4)
+
+    # 判据 ②：负断言的有界观察窗（等待与判据分离；违反即提前判红，不是"睡够就算过"）
+    grew = poll_until(
+        page, lambda: page.locator(".qa-session-item").count() != n_before, timeout_ms=1500)
+    n_after = page.locator(".qa-session-item").count()
+    assert not grew, f"在历史会话中追问不应新建会话（追问前 {n_before} 条，追问后 {n_after} 条）"
+    assert page.locator(".qa-msg").count() >= 4, \
+        f"追问后应有四条消息（当前 {page.locator('.qa-msg').count()} 条）"
+    # 判据 ③：仍在同一个会话里（只"没多开"不等于"追问落到了原会话"）
+    assert _active_session_title(page) == before_title, \
+        (f"追问后当前会话变了：{before_title!r} -> {_active_session_title(page)!r}"
+         "（追问应追加到原会话，session_id 未随请求携带？）")
+
+
+def t4_filters_recorded_and_shown(page):
+    """正常场景（D5）：答案下方显示当轮筛选，输入框上方显示本轮生效筛选，
+    且**载入历史会话后答案下方的筛选仍在**（这才真正走落库→回填那条路径）。
+
+    ⚠️ 只断言「当前这条答案下有 `.qa-msg-filters`」是不够的：那来自本轮内存里的消息对象，
+    即便 `filters_json` **完全没落库**、`GET /qa/sessions/{id}` 的 `filters` 恒为空，
+    它也照样通过 ⇒ 恰漏掉本用例声称覆盖的 D5 落库路径。故末尾补一段
+    「新会话 → 点回历史会话 → 再断言」，把回填路径钉死。
+    """
+    _qa_open(page)
+    # ⚠️ 顺序是「先点、再等 active」——简报给的是反的（`wait_tree_filter_seeded(); click_...`）：
+    # 全新页面里**一个筛选都没选**，那一行会直接等 10s 超时判红（实测：
+    # Page.wait_for_selector: Timeout 10000ms exceeded —— waiting for ".tree-label.active"）。
+    # 正确顺序与 T1/T2 既有用例一致（click_first_tree_label 的 docstring 即为此而写）。
+    click_first_tree_label(page)                                          # 勾一个分类树筛选
+    wait_tree_filter_seeded(page)         # 等 store 记下这次选择（active 由绑定同一 store 字段的 :class 控制）
+    _qa_ask(page, "混凝土强度等级如何评定")
+    assert poll_until(page, lambda: page.locator(".qa-msg-filters").count() >= 1,
+                      timeout_ms=5000), \
+        "答案下方未显示当轮筛选（D5 落库/展示未生效）"
+    assert page.locator(".qa-effective-filters").count() == 1, \
+        "输入框上方未显示本轮生效筛选"
+    # `.qa-effective-filters` 的**计数**是结构性判据（x-show 只改 display、节点恒在）
+    # ⇒ 必须再断言其文本非空，否则「本轮生效」可以是空白一条
+    assert page.evaluate(
+        "() => (document.querySelector('.qa-effective-filters').textContent || '').trim()") != "", \
+        "输入框上方的「本轮生效筛选」是空文本"
+
+    # ── 落库回填路径（D5 的真正判据）──
+    # 清空到草稿态再点回该历史会话：消息改为从 GET /qa/sessions/{id} 重新映射，
+    # 此处的 `.qa-msg-filters` 只能来自 `qa_messages.filters_json`
+    page.click("text=＋ 新会话")
+    assert poll_until(page, lambda: page.locator(".qa-msg").count() == 0, timeout_ms=3000), \
+        "新会话应清空对话区"
+    page.click(".qa-session-item >> nth=0")
+    assert poll_until(page, lambda: page.locator(".qa-msg-filters").count() >= 1,
+                      timeout_ms=10000), \
+        "载入历史会话后答案下方的当轮筛选消失——filters 未随消息落库或未回填（D5 路径坏）"
+
+
+def t4_pending_filter_change_is_visible(page):
+    """异常场景（设计文档场景 2 的可见性）：改动筛选后提示将在下一轮生效。
+
+    没有这条提示时，用户在回复中/回复后切换筛选会以为立即生效——静默失配。
+    """
+    _qa_open(page)
+    _qa_ask(page, "混凝土强度等级如何评定")
+    assert poll_until(
+        page,
+        lambda: page.evaluate(
+            "() => (document.querySelector('.qa-effective-filters').textContent || '').trim()") != "",
+        timeout_ms=5000), \
+        "输入框上方未显示本轮生效筛选（effectiveFiltersText 未写入）"
+    assert page.locator(".qa-filters-pending").is_hidden(), \
+        "尚未改动筛选时不应出现「将在下一轮生效」提示"
+    # 顺序同前一条用例：先点、再等（简报给的反了，理由见 t4_filters_recorded_and_shown）
+    click_first_tree_label(page)                                          # 改动筛选
+    wait_tree_filter_seeded(page)         # 等 store 记下这次改动
+    assert poll_until(page, lambda: page.locator(".qa-filters-pending").is_visible(),
+                      timeout_ms=3000), \
+        "改了筛选但未提示「将在下一轮生效」——静默失效复现"
+
+
+def t4_session_ops_reach_the_right_routes(page):
+    """正常场景（补简报缺项）：会话的「重命名 / 删除 / 导出」三个入口真的可用。
+
+    ⚠️ 为什么补这条：本 Task 的交付物明写含「rename/delete/export 的入口」，而上述五条
+    用例一个都不碰它们 ⇒ 三个按钮即便是纯装饰（`onclick` 为空、指向错路由）也无任何报警。
+    「按钮在」与「按钮能用」是两件事，必须分别钉住。
+
+    判据落在**请求本身**（方法 + 路由形状 + PATCH 体里的 title），不看列表文本：
+    列表刷新是异步的，文本判据要配轮询；而请求判据天然精确、天然无竞态。
+    导出走 `window.location.href` ⇒ 用 `page.route(..., abort)` 拦下这次导航
+    （既证明「点导出确实请求了导出路由」，又不让探针页被下载响应带走）。
+    """
+    _qa_open(page)
+    _qa_ask(page, "第一个问题")
+    assert poll_until(page, lambda: page.locator(".qa-session-item").count() >= 1,
+                      timeout_ms=5000), "首轮提问后会话列表仍为空"
+
+    seen = []
+
+    def _on_request(req):
+        if "/qa/sessions/" in req.url:
+            seen.append({"method": req.method, "url": req.url, "data": req.post_data})
+
+    page.on("request", _on_request)
+
+    # 重命名：window.prompt（prefill 当前标题）→ PATCH /qa/sessions/{id}
+    def _on_dialog(d):
+        d.accept("改名后的标题" if d.type == "prompt" else None)
+
+    page.on("dialog", _on_dialog)
+    page.click(".qa-session-item >> nth=0 >> .qa-session-ops button[title='重命名']")
+    assert poll_until(page, lambda: any(x["method"] == "PATCH" for x in seen),
+                      timeout_ms=5000), \
+        f"点「重命名」未发出 PATCH /qa/sessions/{{id}}（已见请求 {seen}）"
+    patch = next(x for x in seen if x["method"] == "PATCH")
+    assert re.search(r"/qa/sessions/\d+$", patch["url"]), \
+        f"重命名打到了错误的路由: {patch['url']}"
+    assert json.loads(patch["data"] or "{}").get("title") == "改名后的标题", \
+        f"PATCH 请求体未携带新标题: {patch['data']!r}"
+
+    # 删除：window.confirm 二次确认后 → DELETE /qa/sessions/{id}
+    page.click(".qa-session-item >> nth=0 >> .qa-session-ops button[title='删除']")
+    assert poll_until(page, lambda: any(x["method"] == "DELETE" for x in seen),
+                      timeout_ms=5000), \
+        f"点「删除」未发出 DELETE /qa/sessions/{{id}}（已见请求 {seen}）"
+    dele = next(x for x in seen if x["method"] == "DELETE")
+    assert re.search(r"/qa/sessions/\d+$", dele["url"]), \
+        f"删除打到了错误的路由: {dele['url']}"
+
+    # 导出：window.location.href → GET /qa/sessions/{id}/export（用 route 拦下导航）
+    exported = []
+
+    def _abort_export(route):
+        exported.append(route.request.url)
+        route.abort()
+
+    page.route("**/qa/sessions/*/export", _abort_export)
+    try:
+        page.click(".qa-session-item >> nth=0 >> .qa-session-ops button[title='导出 Markdown']")
+        assert poll_until(page, lambda: bool(exported), timeout_ms=5000), \
+            f"点「导出 Markdown」未请求导出路由（已见请求 {seen}）"
+        assert re.search(r"/qa/sessions/\d+/export$", exported[0]), \
+            f"导出打到了错误的路由: {exported[0]}"
+    finally:
+        page.unroute("**/qa/sessions/*/export", _abort_export)
+
+
+# 登记进本 Task 的键：**键名 = Task 编号本身**（不是 t5）。
+CASES["t4"] = [t4_ask_creates_session_and_lists_it,
+               t4_history_shows_full_conversation,
+               t4_mode_switch_reaches_request_body,
+               t4_continue_in_history_session_appends,
+               t4_filters_recorded_and_shown,
+               t4_pending_filter_change_is_visible,
+               # 本 Agent 补（简报缺项）：rename/delete/export 入口无任何用例覆盖。
+               # 放最后：它会对会话执行 rename/delete（改变列表），且拦了一次导航。
+               t4_session_ops_reach_the_right_routes]
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "t1"

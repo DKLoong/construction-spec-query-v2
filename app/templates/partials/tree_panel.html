@@ -17,7 +17,7 @@
              tooltip 说明其作用域，避免用户误以为 AI 问答也受此开关影响 -->
         <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1"
                title="CE 精排仅作用于检索结果排序；AI 问答走独立精排链（CrossEncoder → 向量 → 原序降级），不受此开关影响">
-            <input type="checkbox" x-model="ceRerank" @change="onCeChange()"
+            <input type="checkbox" id="ce-rerank-toggle" x-model="ceRerank" @change="onCeChange()"
                    style="width:0.875rem;height:0.875rem;flex:none;margin:0;padding:0">
             <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">启用 CE 精排</span>
         </label>

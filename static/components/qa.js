@@ -35,17 +35,26 @@ function syncQaUrl() {
 }
 
 document.addEventListener('alpine:init', () => {
+    // 消息唯一 id：x-for 的 key 需要稳定，避免每次增量渲染重建 DOM 丢滚动位置
+    let _uid = 0;
+
     Alpine.data('qaView', () => ({
         messages: [],
+        sessions: [],
+        searchHits: [],
+        searchKeyword: '',
         input: '',
         loading: false,
-        mode: 'rag',            // rag 综合问答（默认） / verbatim 原文摘抄
-        // 会话栏折叠态：T1 骨架的「◂ 会话」按钮已引用它；完整会话栏由 T4 填充
+        mode: 'rag',                 // rag 综合问答（默认） / verbatim 原文摘抄
+        currentSessionId: null,      // null = 草稿态（首次发送才落库建会话）
+        // 会话栏折叠态：T1 骨架的「◂ 会话」按钮已引用它
         sessionsCollapsed: false,
+        rerankUsed: '',              // 后端上报的精排级别（'' = 未上报，不显示标记）
+        stageText: '正在检索…',
 
         // 本轮实际生效的筛选（D5）：回复中改筛选只影响下一轮，靠它与当前选中比对出提示。
-        // **本 Task 就要有**：filtersChanged() 第一行读它，留到 T4 才定义会让
-        // 「将在下一轮生效」提示在整个 T3/T4 阶段恒不出现（静默失效）。
+        // **T3 已定义**（连同 describeFilters()/filtersChanged()），此处原样保留：
+        // 删掉会让 filtersChanged() 第一行短路 ⇒ 「将在下一轮生效」恒不出现（静默失效）。
         effectiveFiltersText: '',
 
         // 状态过滤改为读左栏共享 store（统一操作逻辑）：
@@ -55,8 +64,11 @@ document.addEventListener('alpine:init', () => {
         },
 
         async init() {
-            this.seedFiltersFromUrl();   // T1：URL → store 回填
-            // await this.loadSessions();  ← T4 引入 loadSessions() 后在此启用
+            // ⚠️ 首行**必须**是 seedFiltersFromUrl()，顺序也不能换（先回填 URL → 再拉会话列表）：
+            //    删掉它 ⇒ 筛选无法经 URL 带入 QA 页 / 刷新后丢失
+            //    （T1 的 t1_filters_carry_into_qa_via_url、t1_qa_page_filters_survive_reload 回归失败）。
+            this.seedFiltersFromUrl();
+            await this.loadSessions();
             this.scrollToBottom();
         },
 
@@ -79,64 +91,225 @@ document.addEventListener('alpine:init', () => {
             ss.includeNonClause = p.get('include_non_clause') === '1';
         },
 
+        // ── 会话管理 ──
+
+        async loadSessions() {
+            try {
+                const r = await fetch('/qa/sessions');
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const data = await r.json();
+                this.sessions = data.sessions || [];
+            } catch (e) {
+                console.error('[qa] 加载会话列表失败:', e);
+            }
+        },
+
+        newSession() {
+            // 回到草稿态：首次发送才创建会话（避免空会话堆积）
+            this.currentSessionId = null;
+            this.messages = [];
+            this.input = '';
+            this.rerankUsed = '';
+        },
+
+        async openSession(sid) {
+            if (this.loading) return;
+            try {
+                const r = await fetch(`/qa/sessions/${sid}`);
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const data = await r.json();
+                // 字段结构与 qa_messages 一一对应，直接映射。
+                // ⚠️ role 值域是后端的 {user, assistant}（qa_messages.role），**不要**在本地另造
+                //    'bot' 之类的别名：模板的助手分支判的就是 `msg.role === 'assistant'`，
+                //    写成 'bot' 会让历史会话只显示提问、不显示任何回答。
+                // html 必须走完整渲染管线（含 KaTeX/超链接改写），因为流式期间的降级渲染不跑公式。
+                this.messages = (data.messages || []).map(m => ({
+                    uid: ++_uid,
+                    role: m.role,
+                    content: m.content,
+                    html: m.role === 'assistant'
+                        ? this.renderMarkdown(m.content, m.sources || []) : '',
+                    sources: m.sources || [],
+                    confusable: m.confusable || [],
+                    // 当轮筛选由后端落库（qa_messages.filters_json），此处回填
+                    // 「这条答案是在什么筛选下产生的」——筛选不入库则该信息不可逆丢失。
+                    filtersText: this.describeFilters(m.filters),
+                    filteredOut: 0,
+                    streaming: false,
+                }));
+                this.currentSessionId = sid;
+                this.scrollToBottom();
+            } catch (e) {
+                console.error('[qa] 载入会话失败:', e);
+            }
+        },
+
+        // 导出 Markdown：后端返回带 Content-Disposition 的附件响应，
+        // 交给浏览器直接下载，前端无需拼内容
+        exportSession(s) {
+            window.location.href = `/qa/sessions/${s.id}/export`;
+        },
+
+        async renameSession(s) {
+            const next = window.prompt('新的会话名称：', s.title);
+            if (next === null) return;
+            const title = next.trim();
+            if (!title) return;
+            try {
+                const r = await fetch(`/qa/sessions/${s.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title }),
+                });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                await this.loadSessions();
+            } catch (e) {
+                console.error('[qa] 重命名失败:', e);
+            }
+        },
+
+        async deleteSession(s) {
+            // 删除不可撤销，必须二次确认（开发铁律 1.5）
+            if (!window.confirm(`确认删除会话「${s.title}」？该操作不可撤销。`)) return;
+            try {
+                const r = await fetch(`/qa/sessions/${s.id}`, { method: 'DELETE' });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                if (this.currentSessionId === s.id) this.newSession();
+                await this.loadSessions();
+            } catch (e) {
+                console.error('[qa] 删除失败:', e);
+            }
+        },
+
+        // ── 跨会话搜索 ──
+
+        async runSearch() {
+            const q = this.searchKeyword.trim();
+            if (!q) { this.searchHits = []; return; }
+            try {
+                const r = await fetch(`/qa/search?q=${encodeURIComponent(q)}`);
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const data = await r.json();
+                this.searchHits = data.hits || [];
+            } catch (e) {
+                console.error('[qa] 搜索失败:', e);
+            }
+        },
+
+        async jumpToHit(hit) {
+            await this.openSession(hit.session_id);
+            this.searchHits = [];
+            this.searchKeyword = '';
+            // 定位到命中消息：等 DOM 渲染完成后滚动 + 短暂高亮
+            this.$nextTick(() => {
+                const idx = this.messages.findIndex(m => m.content === hit.content);
+                if (idx < 0) return;
+                const nodes = this.$refs.msgBox.querySelectorAll('.qa-msg');
+                const el = nodes[idx];
+                if (el) {
+                    el.scrollIntoView({ block: 'center' });
+                    el.classList.add('qa-highlight');
+                    setTimeout(() => el.classList.remove('qa-highlight'), 2000);
+                }
+            });
+        },
+
         toggleMode() {
             this.mode = (this.mode === 'rag') ? 'verbatim' : 'rag';
         },
 
-        async send() {
-            const q = this.input.trim();
+        // 生成期间的渲染辅助：只做 HTML 转义，不解析 Markdown。
+        // 换行由 CSS 的 white-space: pre-wrap 呈现（见 app.css 的 .qa-answer.streaming）。
+        _streamingHtml(text) {
+            return String(text ?? '').replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+            }[c]));
+        },
+
+        // ── 提问 ──
+
+        // opts.relaxed：本次为「放宽分类筛选」的重发（只忽略分类维度）
+        // opts.question：重发时用的原问题（不传则读输入框）
+        async send(opts = {}) {
+            const fromInput = opts.question === undefined;
+            const q = (fromInput ? this.input : String(opts.question)).trim();
             if (!q || this.loading) return;
-            this.messages.push({ role: 'user', content: q });
-            this.input = '';
+            this.messages.push({ uid: ++_uid, role: 'user', content: q, html: '',
+                                 sources: [], confusable: [], filtersText: '',
+                                 filteredOut: 0, streaming: false });
+            if (fromInput) this.input = '';
             this.loading = true;
+            this.stageText = '正在检索…';
             this.scrollToBottom();
 
             try {
-                // 携带当前筛选（分类维度 + 状态 + 前言放行），收窄检索范围提升精确度。
-                // 统一由 buildRequestBody() 组合（读共享 store），QA 面板内不再自持状态。
+                // 统一由 buildRequestBody() 组合请求体（读共享 store；QA 面板内不再自持筛选状态），
+                // 并携带 currentSessionId ⇒ 在历史会话里追问会**追加到同一会话**。
+                const body = this.buildRequestBody(q);
+                if (opts.relaxed) body.relaxed = true;
                 const resp = await fetch('/qa/ask', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.buildRequestBody(q)),
+                    body: JSON.stringify(body),
                 });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 // 写入本轮生效筛选：否则 .qa-filters-pending（「将在下一轮生效」）恒不出现
                 // （后端 /qa/ask 的 JSON 响应已带 effective_filters）
                 this.effectiveFiltersText = this.describeFilters(data.effective_filters);
+                if (data.rerank_used) this.rerankUsed = data.rerank_used;
+                // 落库后的会话 id（草稿态首轮发送即在此创建会话）
+                if (data.session_id) this.currentSessionId = data.session_id;
+                // 先刷新会话列表再补消息：列表项与消息同帧可见，探针/用户不会看到
+                // 「回答已出现但会话还没进列表」的中间态
+                await this.loadSessions();
+
                 const answer = data.answer || '(AI 未返回回答)';
                 // role 值域是后端的 {user, assistant}（qa_messages.role），**不要**在本地另造 'bot' 别名：
                 // 新模板的助手分支判的就是 `msg.role === 'assistant'`，写成 'bot' 会让每条回答都渲染成空气泡。
                 // 同时必须给 `html`（模板用 x-html="msg.html" 渲染回答）。
                 this.messages.push({
+                    uid: ++_uid,
                     role: 'assistant',
                     content: answer,
                     html: this.renderMarkdown(answer, data.sources || []),
                     sources: data.sources || [],
                     confusable: data.confusable_hits || [],
+                    filtersText: this.describeFilters(data.effective_filters),
+                    filteredOut: data.filtered_out || 0,
+                    streaming: false,
                 });
             } catch (e) {
                 console.error('[qa] 提问失败:', e);
                 // 失败提示同样要给 html（固定字面量、无用户内容，无需转义）
-                this.messages.push({ role: 'assistant', content: '请求失败，请稍后重试',
-                                     html: '请求失败，请稍后重试' });
+                this.messages.push({ uid: ++_uid, role: 'assistant',
+                                     content: '请求失败，请稍后重试',
+                                     html: '请求失败，请稍后重试',
+                                     sources: [], confusable: [], filtersText: '',
+                                     filteredOut: 0, streaming: false });
             } finally {
                 this.loading = false;
                 this.scrollToBottom();
             }
         },
 
-        clearChat() {
-            this.messages = [];
-            this.input = '';
+        // 「放宽分类筛选」：用同一个问题重发一次（只忽略分类维度，状态/前言设置仍生效）。
+        // 必须复用 send()，不另开一条取数路径——否则两条路径的收尾逻辑必然漂移。
+        relax() {
+            const lastUser = [...this.messages].reverse().find(m => m.role === 'user');
+            if (!lastUser) return;
+            this.send({ relaxed: true, question: lastUser.content });
         },
+
+        // ── 筛选可读化 ──
+
+        // describeFilters(f) / collectFilters() / buildRequestBody(question) / filtersChanged()
+        // 四个方法**定义在 T3**（唯一定义点，含完整实现与 LABELS 常量表），此处原样保留：
+        // 删掉/改写会让 T3 的 t3_pending_filter_hint_appears_after_change 与
+        // T4 的 t4_filters_recorded_and_shown 一起红。
 
         // 把筛选 dict 渲染成一行可读文本；空对象返回空串（调用处据此隐藏）。
         // 同时服务两处：历史消息的「筛选：…」与输入框上方的「本轮生效：…」。
-        //
-        // ⚠️ 本方法**定义在 T3**（纯展示逻辑，无任何依赖，提前定义不影响任何东西）；
-        //    T4 重写组件时**必须原样保留**，删掉它会连带让 filtersChanged() 与
-        //    历史消息的「筛选：…」一起失效（本 Task 的 t3_pending_filter_hint_appears_after_change
-        //    与 T4 的 t4_filters_recorded_and_shown 都会红）。
         describeFilters(f) {
             const LABELS = {
                 dim1_hierarchy: '层级', dim1_industry: '行业', dim1_nature: '性质',
@@ -168,6 +341,7 @@ document.addEventListener('alpine:init', () => {
 
         buildRequestBody(question) {
             const body = { question, mode: this.mode, ...this.collectFilters() };
+            // 续聊语义：带上当前会话 ⇒ 后端把本轮追加到该会话而不是新建
             if (this.currentSessionId) body.session_id = this.currentSessionId;
             return body;
         },
@@ -177,6 +351,28 @@ document.addEventListener('alpine:init', () => {
         filtersChanged() {
             if (!this.effectiveFiltersText) return false;
             return this.describeFilters(this.collectFilters()) !== this.effectiveFiltersText;
+        },
+
+        // ── 降级状态提示 ──
+
+        // ⚠️ 必须显式判 'crossencoder' / 'vector' / 'none' 三态。
+        // 后端 QAResponse.rerank_used 的缺省是空串——那是**契约外的第四态**（后端未上报），
+        // 不是 RERANK_NONE。用 `else → 无精排` 的写法会在字段只是没上报时谎报降级。
+        rerankBadge() {
+            if (this.rerankUsed === 'crossencoder') return '⚡ CE 精排';
+            if (this.rerankUsed === 'vector') return '≈ 向量精排';
+            if (this.rerankUsed === 'none') return '⚠️ 无精排';
+            return '';   // 未上报 → 不显示标记（模板的 x-show="rerankUsed" 会隐藏它）
+        },
+
+        rerankTip() {
+            if (this.rerankUsed === 'crossencoder') return 'CrossEncoder 精排生效';
+            if (this.rerankUsed === 'vector') return 'CE 模型不可用，已降级为向量精排';
+            if (this.rerankUsed === 'none') {
+                return '未检测到精排模型，当前按关键词排序；'
+                     + '请在维护页「健康检查」查看缺失的模型';
+            }
+            return '';   // 未上报 → 无提示
         },
 
         scrollToBottom() {
