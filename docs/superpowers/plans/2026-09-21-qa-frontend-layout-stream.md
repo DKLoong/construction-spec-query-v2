@@ -1223,6 +1223,10 @@ git commit -m "feat: QA 筛选统一读共享 store + CE 精排加 tooltip 说�
 
 **Files:**
 - Modify: `static/components/qa.js`
+- Modify: `app/templates/base.html`（本 Task 改 `qa.js` ⇒ `qa.js?v=21 → ?v=22`；Global Constraints 要求此时必须把 base.html 列入清单）
+- Modify: `app/templates/partials/tree_panel.html`（**仅加一个稳定 id**：给「启用 CE 精排」复选框加 `id="ce-rerank-toggle"`，
+  并把探针 `t3_ce_rerank_not_disabled_in_qa_page` 里的 `.left-panel input[type=checkbox]` + `nth(1)` 换成该 id
+  ——`nth(1)` 依赖复选框的**排列顺序**，将来在 CE 之前插入任何复选框都会让它**静默失效**，由 T3 实现者上报）
 - Test: `scripts/probe_qa_ui.py`
 
 **Interfaces:**
@@ -1389,6 +1393,14 @@ Expected: FAIL — `.qa-session-title` 未出现（会话列表未加载）
 - [ ] **Step 3: 实现**
 
 重写 `static/components/qa.js`。**必须保留**：模式切换（`toggleMode`）、`renderMarkdown`、`openClause`、`scrollToBottom`。以下是新增/改写部分：
+
+> ⚠️ **必须保留（T3 的交付，删掉会连带红掉已有探针）**：
+> - `describeFilters(f)` 与 `effectiveFiltersText` —— T3 已把它们提前落地（见 `qa.js` 里该方法的注释与 T3 的
+>   `t3_pending_filter_hint_appears_after_change`）。删掉/改写会让 **T3 那条与 T4 自己的
+>   `t4_filters_recorded_and_shown` 一起红**。
+> - `sessionsCollapsed`（T1 加、T2 的折叠探针依赖）。
+> - **`send()` 的消息构造**：`role: 'assistant'` + `html`（正常回答走 `renderMarkdown`）+ catch 里的 `console.error`
+>   —— 这是控制器为修「新模板下回答渲染成空气泡」做的 P0 热修（`52a3aa2`），本 Task 重写 `send()` 时要**保留这些语义**。
 
 > ⚠️ **`send()` 的归属必须在本 Task 明确处理（本计划首版漏了，会直接炸）**：
 > 模板用的是 `@keydown.enter.prevent="send()"` 与 `@click="send()"`（plan 模板 `qa-composer`），
