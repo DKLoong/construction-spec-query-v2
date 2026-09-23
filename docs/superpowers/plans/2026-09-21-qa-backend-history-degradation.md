@@ -2651,6 +2651,14 @@ def test_qa_ask_reports_wide_total_when_dim_filter_sparse(auth_client, monkeypat
     assert query_log[1].dim5_location == []
 ```
 
+**3g. `tests/test_qa_routes.py` 第二条既有用例（措辞对齐，**不要改名**）** ——
+`test_qa_ask_no_dim_no_wide_fallback`（`tests/test_qa_routes.py:304`）的 docstring 写「未携带分类筛选时
+不触发放宽分支」。取消放宽后「放宽」这个词确实已不指称任何行为，但其**用例名仍然准确**：
+「wide fallback」指的是那次**诊断性全局检索**（代码里就叫 `wide_sq`/`wide_total`），它**依然存在**；
+本用例断言「无分类筛选时只有一次检索」也**依然为真**。
+⇒ 只把 docstring 里的「放宽分支」改成「诊断性全局检索分支」，**用例名与断言都不要动**
+（改名反而会丢掉「这说的是同一个概念」这条线索）。T13 复核已确认它不是「名字说谎的绿用例」。
+
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_relax.py tests/test_qa_session_routes.py tests/test_qa_routes.py tests/test_qa_status_filter.py -v`

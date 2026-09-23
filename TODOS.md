@@ -179,3 +179,15 @@
 - **Pros**：对方拿到系统后知道缺什么、要不要装；降低分享门槛（可不装精排模型先跑起来）。
 - **Cons**：需设计安装脚本/文档；embedding 模型缺失会让向量召回一并失效（比精排更严重），可选化的边界要分清。
 - **Blocked by**：封装方案立项之后（用户 2026-09-21：“等封装的时候再谈”）。
+
+## T15 — 维度名硬编码第三处：检索缓存键 `_cache_key`（2026-09-23 由 T13 复核发现并登记）
+
+- **What**：`app/search/hybrid_search.py:37-44` 的 `_cache_key()` 把 8 个维度名**逐个硬编码**（`tuple(query.dim1_hierarchy or ())` … `tuple(query.dim6_material or ())`）。这是同一组维度名在仓库里的**第三处**（另两处：`app/models.py` 的 `QA_DIM_FIELDS`、以及 QA 路由的维度构造，均已收敛到常量）。
+- **Why**：**静默错误风险**——将来若新增第 9 个维度，而有人只改了 `SearchQuery`/`QA_DIM_FIELDS`/QA 路由、漏改 `_cache_key`，那么**两组不同筛选会算出同一个缓存键**，第二次请求会命中第一次的缓存并返回**另一组筛选的结果**。它不报错、不告警，只是安静地给错结果（本项目已有「缓存键漏项 → 跨库污染」的先例，见 `hybrid_search.py:28` 的注释）。
+- **Context**：QA 侧已有守卫用例 `tests/test_qa_relax.py::test_qa_dim_fields_matches_request_model`（钉 `QA_DIM_FIELDS` ↔ `QaRequest` 字段集一致），但**检索侧没有任何守卫**。本项超出 QA 计划范围（该计划不新增维度），故登记而非顺手改。
+- **建议修法**（择一）：
+  1. 让 `_cache_key` 从**单一来源**派生维度项（例如从 `SearchQuery` 的 dataclass 字段中筛出 `dim*` 前缀字段生成元组），彻底消除手工列举；
+  2. 或加一条一致性守卫用例：`SearchQuery` 的 `dim*` 字段集合 == `_cache_key` 实际纳入的字段集合（需让后者可被测试观察到，例如抽出一个 `_cache_dim_items(query)` 纯函数）。
+- **Pros**：消除一类"加维度即静默串味"的隐患；把三处硬编码收敛到一处。
+- **Cons**：动检索层核心路径，需跑检索相关全量用例；修法 1 会改变 key 的构成（缓存键变化只会导致一次冷启动，无正确性风险）。
+- **Blocked by**：无。与本轮 QA 计划解耦，可独立立项。
