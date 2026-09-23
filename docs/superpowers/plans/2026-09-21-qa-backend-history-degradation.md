@@ -2319,14 +2319,25 @@ git commit -m "feat: 跨会话搜索消息接口"
 
 ## Task 13: 取消静默放宽，改显式提示
 
+> **计划修订（2026-09-23，控制器）**：T8 已把整条检索链抽进模块级 `_prepare_qa_context(question, body)`，
+> 故本条 Files 首版写的 `qa_routes.py:190-200` **已失效**——「放宽段」现位于该函数内部
+> （现文本为 `# 兜底：分类筛选使候选过少时放宽为全局检索`），`dims`/`has_dim` 构造也在该函数内。
+> 同时本 Task **新增 `QA_DIM_FIELDS` 常量**（原属 T15），理由见下方 Interfaces 注。
+
 **Files:**
-- Modify: `app/routes/qa_routes.py:190-200`（放宽段）、返回体
-- Modify: `app/models.py`（`QAResponse`）
+- Modify: `app/routes/qa_routes.py`（`_prepare_qa_context` 内的放宽段 + 维度构造；新增 `_effective_filters`；`/qa/ask` 返回体）
+- Modify: `app/models.py`（`QAResponse` 增两字段；新增 `QA_DIM_FIELDS` 常量）
 - Test: `tests/test_qa_relax.py`
 
 **Interfaces:**
 - Consumes: `app.qa.config.get_qa_int`（既有）
-- Produces: `QAResponse.filtered_out: int`、`QAResponse.effective_filters: dict`；`QaRequest.relaxed`（T8 已加字段）
+- Produces: `QAResponse.filtered_out: int`、`QAResponse.effective_filters: dict`；`app.models.QA_DIM_FIELDS`
+- Produces: `_effective_filters(body: QaRequest) -> dict`（模块级；T15 在其上追加「前言放行」一项）
+- 说明：`QaRequest.relaxed` 由 T8 已加，本 Task 不重复；`QaRequest.include_non_clause` 由 T15 声明，
+  故 `_effective_filters` 的「前言放行」一项**留给 T15 追加**（本 Task 不引用该字段，避免跨 Task 依赖）。
+- **为什么 `QA_DIM_FIELDS` 提前到本 Task**：本 Task 要写的筛选字典**两处**（`_prepare_qa_context` 构造
+  `SearchQuery` 的维度、`_effective_filters` 收集生效筛选）都得列这 8 个字段名——两处各写一遍正是
+  「业务常量集中管理，禁止魔法数字散落」（铁律 1.3）要防的漏改源（新增维度时漏改一处即静默失效）。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -2409,6 +2420,50 @@ def test_no_filter_no_relax_hint(auth_client, qa_env):
     body = auth_client.post("/qa/ask", json={"question": "q"}).json()
     assert body["filtered_out"] == 0
     assert body["effective_filters"] == {}
+
+
+def test_effective_filters_records_explicit_status(auth_client, qa_env):
+    """正常场景：**显式**状态过滤要记入 effective_filters（前端「本轮生效」要用）。
+
+    设计文档 §4.7 给该字段的定义是「分类维度 + 状态 + 前言放行」——上面三条用例
+    只覆盖了「分类维度」这一半，状态那一半若无人断言，就是「测试锁不住自己名字里
+    承诺的行为」（本项目复发率最高的缺陷类）。删掉实现里的 status_filter 两行，
+    本条必须失败。
+    """
+    body = auth_client.post("/qa/ask",
+                            json={"question": "q", "status_filter": "现行"}).json()
+    assert body["effective_filters"]["status_filter"] == "现行"
+
+
+def test_effective_filters_omits_default_status(auth_client, qa_env):
+    """边界场景：status_filter 缺参（None）时**不记录**，避免把默认白名单误当用户显式选择。
+
+    缺参语义是「旧客户端没带」→ 走 settings 默认白名单（见 `_prepare_qa_context` 的三分支）。
+    把默认值记进「用户设了哪些筛选」会让前端常驻显示一行用户从未选择的筛选。
+    注意：显式空串 `""`（全不勾 → 放行非现行）**是**用户选择，必须记录——故实现判的是
+    `is not None` 而不是真值，本条与上一条一起把这两种语义钉开。
+    """
+    body = auth_client.post("/qa/ask", json={"question": "q"}).json()
+    assert "status_filter" not in body["effective_filters"]
+    # 显式空串是另一种语义：记录，且值为 ""
+    body = auth_client.post("/qa/ask",
+                            json={"question": "q", "status_filter": ""}).json()
+    assert body["effective_filters"]["status_filter"] == ""
+
+
+def test_qa_dim_fields_matches_request_model():
+    """一致性守卫：QA_DIM_FIELDS 必须与 QaRequest 的维度字段完全对应。
+
+    该常量是「检索条件构造」与「当轮筛选记录」的唯一来源。若将来新增维度
+    只改了 QaRequest 而漏改常量，检索会**静默忽略新维度**（筛选界面能选、
+    但不生效），极难排查。本用例把两者钉死，让漏改立刻失败。
+    """
+    from app.models import QA_DIM_FIELDS, QaRequest
+    model_dims = {k for k in QaRequest.model_fields if k.startswith("dim")}
+    assert set(QA_DIM_FIELDS) == model_dims, (
+        f"QA_DIM_FIELDS 与 QaRequest 维度字段不一致："
+        f"仅常量有 {set(QA_DIM_FIELDS) - model_dims}，仅模型有 {model_dims - set(QA_DIM_FIELDS)}"
+    )
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -2441,55 +2496,87 @@ Expected: FAIL — `KeyError: 'filtered_out'`
             include_non_clause=keyword_mentions_non_clause,
         )
         try:
-            wide_candidates, wide_total = hybrid_search(wide_sq)
+            _, wide_total = hybrid_search(wide_sq)
             filtered_out = wide_total
             logger.info("QA 分类筛选候选不足（%d 条），已如实报告全局命中 %d 条",
                         len(candidates), wide_total)
         except Exception as e:
-            logger.error("QA hybrid_search (diagnostic) failed: %s", e)
+            logger.error("QA 分类筛选候选不足的诊断检索失败: %s", e)
 ```
 
-在返回处补齐字段：
+**3a. `app/models.py`** —— `QAResponse` 于 `session_id` 之后新增两个字段：
 
 ```python
-    effective_filters = {
-        k: v for k, v in {
-            "dim1_hierarchy": body.dim1_hierarchy,
-            "dim1_industry": body.dim1_industry,
-            "dim1_nature": body.dim1_nature,
-            "dim2_stage": body.dim2_stage,
-            "dim3_usage": body.dim3_usage,
-            "dim4_specialty": body.dim4_specialty,
-            "dim5_location": body.dim5_location,
-            "dim6_material": body.dim6_material,
-        }.items() if v
-    }
-    return QAResponse(answer=answer, sources=sources, cli_used=cli_used,
-                      confusable_hits=confusable_hits,
-                      rerank_used=trace.rerank_used, session_id=session_id or 0,
-                      filtered_out=filtered_out,
-                      effective_filters={} if body.relaxed else effective_filters)
+    # 分类筛选候选不足时的全局命中数（>0 表示被筛选挡住，前端提示可放宽）
+    filtered_out: int = 0
+    # 本轮实际生效的筛选（前端展示「当前生效筛选」；T15 起随助手消息落库追溯）
+    effective_filters: dict = {}
 ```
 
-把 `has_dim` 与 `SearchQuery` 的构造改为在 `relaxed` 时清空维度：
+**3b. `app/models.py`** —— 新增维度字段名常量（**本 Task 新增**，原属 T15）：
 
 ```python
-    dims = {} if body.relaxed else {
-        "dim1_hierarchy": body.dim1_hierarchy,
-        "dim1_industry": body.dim1_industry,
-        "dim1_nature": body.dim1_nature,
-        "dim2_stage": body.dim2_stage,
-        "dim3_usage": body.dim3_usage,
-        "dim4_specialty": body.dim4_specialty,
-        "dim5_location": body.dim5_location,
-        "dim6_material": body.dim6_material,
-    }
+# 维度筛选的请求字段名（dim1 含三个子维度，共 8 个字段）。
+# 检索条件构造与「当轮生效筛选」记录都从这里派生，避免同一个列表
+# 在 _prepare_qa_context / _effective_filters 里各写一遍而漏改。
+QA_DIM_FIELDS: tuple[str, ...] = (
+    "dim1_hierarchy", "dim1_industry", "dim1_nature",
+    "dim2_stage", "dim3_usage", "dim4_specialty",
+    "dim5_location", "dim6_material",
+)
+```
+
+**3c. `app/routes/qa_routes.py`（模块级新增）** —— `_effective_filters`：
+
+```python
+def _effective_filters(body: QaRequest) -> dict:
+    """本轮实际生效的筛选（分类维度 + **显式**状态过滤）。
+
+    用途：① 随响应返回，供前端显示「本轮生效筛选」——「回复中切换筛选只影响下一轮」
+    这件事必须可见，否则用户切了会以为立即生效；② T15 起随助手消息落库追溯（D5）。
+
+    放宽（relaxed）时分类维度为空——那正是放宽的语义。
+    维度字段名取自 QA_DIM_FIELDS（单一来源），新增维度时不会漏记。
+    状态过滤判 `is not None` 而非真值，两种语义必须分开：
+      None（缺参，旧客户端）→ 走 settings 默认白名单，**不记录**（记了等于把默认值冒充用户选择）；
+      ""（显式全不勾）      → 放行非现行，**是**用户选择，记录为 ""。
+    「前言放行」（body.include_non_clause）由 T15 追加——该字段在 T15 才声明，此处不引用。
+    """
+    out: dict = {}
+    if not body.relaxed:
+        out = {k: getattr(body, k) for k in QA_DIM_FIELDS if getattr(body, k)}
+    if body.status_filter is not None:
+        out["status_filter"] = body.status_filter
+    return out
+```
+
+**3d. `_prepare_qa_context` 内** —— 维度构造收敛到常量、并在 `relaxed` 时清空：
+
+```python
+    dims = {} if body.relaxed else {k: getattr(body, k) for k in QA_DIM_FIELDS if getattr(body, k)}
     has_dim = any(dims.values())
     sq = SearchQuery(
         keyword=question, per_page=pool,
         include_non_clause=keyword_mentions_non_clause, **dims,
     )
 ```
+
+并把上一步放宽段里的局部 `filtered_out` 带进返回的 `QaContext`：该函数末尾构造
+`QaContext(...)` 时传 `filtered_out=filtered_out`（`QaContext.filtered_out` 由 T8 已留默认值）。
+
+**3e. `/qa/ask` 返回处** —— 补齐两个字段（现状见 `qa_routes.py:404-406`）：
+
+```python
+    return QAResponse(answer=answer, sources=sources, cli_used=cli_used,
+                      confusable_hits=confusable_hits,
+                      rerank_used=trace.rerank_used, session_id=session_id or 0,
+                      filtered_out=ctx.filtered_out,
+                      effective_filters=_effective_filters(body))
+```
+
+> 注意 `effective_filters` **不需要**再写 `{} if body.relaxed else ...`——`_effective_filters`
+> 内部已按 `relaxed` 清空维度，重复判会变成两处各说一套的漂移源。
+> 另需在 `app/routes/qa_routes.py` 的 `app.models` 导入行追加 `QA_DIM_FIELDS`。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -2508,8 +2595,15 @@ git commit -m "feat: 分类筛选候选不足改为显式提示 + 一键放宽�
 ## Task 14: API 后端流式调用
 
 **Files:**
-- Modify: `app/ai/api_client.py`
-- Test: `tests/test_qa_stream.py`
+- Modify: `app/ai/api_client.py`（`ask_stream` + `_DEFAULT_SYSTEM` + `_extract_delta` + `full_prompt` 改用表头常量）
+- Modify: `app/ai/cli_client.py`（新增 `CLIBackend.ask_stream` 默认实现；**两处**上下文表头改用常量）
+- Modify: `app/ai/prompts.py`（新增 `CONTEXT_HEADER` 常量，`MULTI_TURN_GUARD` 引用它）
+- Test: `tests/test_qa_stream.py`（新建）
+
+> **计划修订（2026-09-23，控制器）**：首版 Files 只列了 `api_client.py`，**漏了 `cli_client.py` 与 `prompts.py`**——
+> 而 Step 5 的 `git add` 里本来就写着 `cli_client.py`。Global Constraints 要求 pyright 覆盖本 Task 改动的
+> **全部**文件，Files 行漏列即等于漏检（T5 已因此漏掉测试文件里的 3 个 error）。
+> 另：Step 5 里的 `requirements.txt` **已删**——`pytest-asyncio 1.4.0` 本机已装（实测），无需改动依赖。
 
 **Interfaces:**
 - Consumes: `httpx.AsyncClient`
@@ -2528,9 +2622,15 @@ git commit -m "feat: 分类筛选候选不足改为显式提示 + 一键放宽�
 > 护栏的全部作用就是**精确地**限制「只能引用本轮提供的条文」，而它引用的标签不存在，正是
 > 这类护栏最该避免的含糊。护栏里另一处 `【历史对话】` 是准确的（`app/qa/context.py:267` 真的产出它）。
 >
-> 要求：给**两条路径**的条文段加同一个稳定的表头常量（建议 `【参考条文】`，放在
-> `app/qa/context.py` 或 `app/ai/prompts.py` 集中定义，禁止两处字面量），并让 `MULTI_TURN_GUARD`
-> 引用它。改完跑一遍 T8 的「护栏效力」人工验收。
+> **要求（已具体化，见 Step 1 的两条新用例与 Step 3 的 3a / 3c / 3d）**：
+>
+> | 项 | 定论 |
+> |---|---|
+> | 表头常量 | `CONTEXT_HEADER = "【参考条文】"` |
+> | 归属 | **`app/ai/prompts.py`**（**不放** `app/qa/context.py`——`api_client.py`/`cli_client.py` 是通用 AI 层，反向依赖 QA 模块会造成层次倒置，且 `prompts.py` 正是 `MULTI_TURN_GUARD` 的家，同处定义才能让护栏直接引用它） |
+> | 消费点 | ① `api_client.ask/ask_stream` 的 `full_prompt`；② `cli_client.py` 的 **两处** `[参考上下文]`（`ClaudeCodeCLI` 与 `CodexCLI` 各一处，**别只改一处**）；③ `prompts.py` 的 `MULTI_TURN_GUARD` 改成 f-string 引用 |
+> | 禁止 | 任何地方再出现 `参考上下文` / `【参考条文】` 的**字面量**（除常量定义本身）；改完用 grep 自证 |
+> | 验收 | 跑 T8 的「护栏效力」人工验收（表头变了，护栏的指向也变） |
 
 - [ ] **Step 1: 写失败测试**
 
@@ -2618,9 +2718,77 @@ async def test_ask_stream_skips_malformed_lines(monkeypatch):
 
     out = [e async for e in backend.ask_stream("q")]
     assert [e["text"] for e in out if e["type"] == "delta"] == ["ok"]
+
+
+@pytest.mark.asyncio
+async def test_api_backend_emits_context_header(monkeypatch):
+    """正常场景：API 路径的提示词带条文段表头（首版 API 路径**根本没有表头**）。"""
+    from app.ai.prompts import CONTEXT_HEADER
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, content=_sse("ok"))
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda **kw: httpx.AsyncClient(transport=transport, **kw))
+    backend = APIBackend("https://x/v1", "k", "m")
+    _ = [e async for e in backend.ask_stream("q", context="条文正文")]
+
+    user_msg = captured["body"]["messages"][1]["content"]
+    # 删掉 _build_messages 里的表头拼接 → 本断言失败
+    assert user_msg.startswith(CONTEXT_HEADER)
+    assert "条文正文" in user_msg
+    assert "参考上下文" not in user_msg, "旧标签必须彻底消失"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cls_name", ["ClaudeCodeCLI", "CodexCLI"])
+async def test_cli_backends_emit_context_header(monkeypatch, cls_name):
+    """正常场景：**两个** CLI 后端的提示词都带同一条文段表头。
+
+    参数化两个类是有意的：`cli_client.py` 里这段拼装是**两份副本**，
+    只改一处时另一处必须红——否则「两处副本同步」这件事没有任何用例守着。
+    """
+    from app.ai import cli_client
+    from app.ai.prompts import CONTEXT_HEADER
+
+    seen: dict = {}
+
+    def fake_run(prompt, work_dir=None, timeout=60):
+        seen["p"] = prompt
+        return CLIResponse(success=True, content="ok")
+
+    backend = getattr(cli_client, cls_name)()
+    monkeypatch.setattr(backend, "_run_cli", fake_run)
+    await backend.ask("q", context="条文正文")
+
+    assert f"{CONTEXT_HEADER}\n条文正文" in seen["p"]
+    assert "参考上下文" not in seen["p"]
+
+
+def test_guard_references_context_header():
+    """一致性守卫：护栏引用的标签**就是**两条路径实际产出的那个表头。
+
+    T7 的坑：护栏写的是【参考上下文】（全角），而 QA 实际走的 API 路径根本没有表头、
+    CLI 路径用的是半角 `[参考上下文]` —— 护栏指向一个不存在的东西，退化为含糊约束。
+    本用例钉住「常量 == 护栏引用的标签」：改常量不改护栏、或把护栏改回字面量，都必须红。
+    """
+    from app.ai.prompts import CONTEXT_HEADER, MULTI_TURN_GUARD
+    assert CONTEXT_HEADER in MULTI_TURN_GUARD
+    assert "参考上下文" not in MULTI_TURN_GUARD
 ```
 
-同时在 `requirements.txt` 确认已有 `pytest-asyncio`；若无，追加 `pytest-asyncio>=0.23.0` 并在 `pyproject.toml`/`pytest.ini` 设 `asyncio_mode = auto`。
+> **pytest-asyncio**：本机**已装 1.4.0**（实测 `pip show`），**不要**改 `requirements.txt`，
+> 也**不要**新建 `pytest.ini`/`pyproject.toml` 去设 `asyncio_mode = auto`——上面每条用例都带显式
+> `@pytest.mark.asyncio`，strict 模式（默认）即可正常工作；为它引入全局配置会波及整个测试套件。
+>
+> ⚠️ 但**本项目此前没有任何异步用例**（`grep -rl "pytest.mark.asyncio" tests/` 为空），这是第一条。
+> 因此 Step 2 必须确认这些用例**真的被执行**（`-v` 逐条列出 PASSED/FAILED），
+> 而不是「no tests ran」或 skip —— 异步用例未被执行却报绿，是本项目「测试锁不住自己名字里的行为」
+> 之外更隐蔽的一类假通过。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -2629,7 +2797,26 @@ Expected: FAIL — `AttributeError: 'APIBackend' object has no attribute 'ask_st
 
 - [ ] **Step 3: 实现**
 
-在 `app/ai/cli_client.py` 的 `CLIBackend` 中新增默认实现（CLI 后端不支持真流式，整段返回即可；**不需要 `supports_stream` 之类的判定标志**——单一入口下路由层无需据此分流）：
+**3a. `app/ai/prompts.py`** —— 新增表头常量，并让 `MULTI_TURN_GUARD` **引用它**（同文件内，杜绝字面量漂移）：
+
+```python
+# 条文段的稳定表头：两条后端路径（API / CLI）都给上下文加这个前缀，
+# 且 MULTI_TURN_GUARD 引用它——护栏靠「精确指出哪一段是参考条文」生效，
+# 标签与实际产出一旦不一致，护栏就退化成含糊的口头约束（这正是 T7 移交本项的原因）。
+CONTEXT_HEADER = "【参考条文】"
+```
+
+把 `MULTI_TURN_GUARD` 里两处 `【参考上下文】` 改成引用该常量（f-string），**其余文字一字不动**：
+
+```python
+MULTI_TURN_GUARD = (
+    f"1. 你**只能引用本轮{CONTEXT_HEADER}中实际提供的条文**。\n"
+    f"2. 历史对话中出现过的规范编号或条文号，若本轮{CONTEXT_HEADER}中未提供，\n"
+    # ...（原文其余部分保持原样，仅把两处标签换成 {CONTEXT_HEADER}）
+)
+```
+
+**3b. `app/ai/cli_client.py`** —— 新增 `CLIBackend.ask_stream` 默认实现（CLI 后端不支持真流式，整段返回即可；**不需要 `supports_stream` 之类的判定标志**——单一入口下路由层无需据此分流）：
 
 ```python
     async def ask_stream(self, prompt: str, context: str = "",
@@ -2651,7 +2838,14 @@ Expected: FAIL — `AttributeError: 'APIBackend' object has no attribute 'ask_st
             yield {"type": "error", "message": resp.error or "调用失败"}
 ```
 
-在 `app/ai/api_client.py` 的 `APIBackend` 中新增：
+**3c. `app/ai/cli_client.py`（接上，同一文件）** —— **两处**上下文表头改用常量：
+
+`ClaudeCodeCLI.ask`（约 :198）与 `CodexCLI.ask`（约 :215）各有一行
+`parts.append(f"[参考上下文]\n{context}")`，两处都改为 `parts.append(f"{CONTEXT_HEADER}\n{context}")`，
+并在文件顶部补 `from app.ai.prompts import CONTEXT_HEADER`（该文件已有 prompts 导入则合并）。
+**别只改一处**——两处是同一功能的两个副本，只改一处就是制造新的不一致。改完 `grep 参考上下文 app/` 应为 **0 命中**。
+
+**3d. `app/ai/api_client.py`** 的 `APIBackend` 中新增：
 
 ```python
     async def ask_stream(self, prompt: str, context: str = "",
@@ -2659,20 +2853,14 @@ Expected: FAIL — `AttributeError: 'APIBackend' object has no attribute 'ask_st
                          work_dir: str | None = None):
         """SSE 流式调用，逐块 yield {type: delta|done|error}。
 
-        与 ask() 共用同一套 messages 构造，保证两种路径行为一致。
+        与 ask() 共用同一套 messages 构造（`_build_messages`），保证两种路径行为一致。
         """
         import httpx
 
-        full_prompt = prompt
-        if context:
-            full_prompt = f"{context}\n\n---\n\n请基于以上上下文回答：{prompt}"
-        messages = [
-            {"role": "system", "content": system_prompt or _DEFAULT_SYSTEM},
-            {"role": "user", "content": full_prompt},
-        ]
+        messages = _build_messages(prompt, context, system_prompt)
         try:
             async with httpx.AsyncClient(timeout=60) as client:
-                async with auth_client.stream(
+                async with client.stream(
                     "POST", f"{self.base_url}/chat/completions",
                     json={"model": self.model, "messages": messages,
                           "temperature": 0.3, "max_tokens": 2048, "stream": True},
@@ -2705,11 +2893,24 @@ Expected: FAIL — `AttributeError: 'APIBackend' object has no attribute 'ask_st
 在 `app/ai/api_client.py` 顶部（`APIBackend` 之外）新增两个模块级常量/函数：
 
 ```python
-# 默认 system prompt（与非流式 ask() 保持一致）
+# 默认 system prompt（ask / ask_stream 共用，禁止两处各写一份）
 _DEFAULT_SYSTEM = (
     "你是建筑施工规范查询助手。只根据提供的上下文回答，不要编造规范条文。"
     "如果上下文中没有相关信息，请如实告知。回答请使用中文。"
 )
+
+
+def _build_messages(prompt: str, context: str, system_prompt: str) -> list[dict]:
+    """两条路径（ask / ask_stream）**共用**的 messages 构造——复制一份必然漂移。"""
+    full_prompt = prompt
+    if context:
+        full_prompt = (
+            f"{CONTEXT_HEADER}\n{context}\n\n---\n\n请基于以上上下文回答：{prompt}"
+        )
+    return [
+        {"role": "system", "content": system_prompt or _DEFAULT_SYSTEM},
+        {"role": "user", "content": full_prompt},
+    ]
 
 
 def _extract_delta(payload: str) -> str:
@@ -2725,18 +2926,28 @@ def _extract_delta(payload: str) -> str:
         return ""
 ```
 
-> 同时把 `APIBackend.ask()` 里硬编码的那段默认 system prompt 替换为引用 `_DEFAULT_SYSTEM`，避免两处漂移。
+> **3d-i.** `APIBackend.ask()` 里那段**硬编码的默认 system prompt** 与 `full_prompt` 拼接，**改为调用
+> `_build_messages(prompt, context, system_prompt)`**——否则「两条路径共用同一套 messages 构造」是假话：
+> 它们会各自演化，表头统一也就无从保证（这正是本 Task 要修的漂移类问题）。
+> **3d-ii.** 文件顶部补 `from app.ai.prompts import CONTEXT_HEADER`。
+>
+> ⚠️ **首版此处有硬 bug（已修）**：抄本写的是 `async with auth_client.stream(...)`，而 `auth_client`
+> 这个符号在 `api_client.py` 里**不存在**——`ask()` 用的是 `async with httpx.AsyncClient(timeout=60) as client:`
+> （见 `api_client.py:47`）。照抄会直接 `NameError`。已改为 `client.stream(...)`。
+> 教训同型：抄本里的符号名**必须与源文件核对**，不能凭印象写。
 
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -v`
-Expected: PASS（4 passed）
+Expected: PASS（**8 passed** = 4 条流式 + 1 条 API 表头 + 2 条 CLI 表头（参数化两个类）+ 1 条护栏一致性守卫）
+并跑 `pyright app/ai/api_client.py app/ai/cli_client.py app/ai/prompts.py tests/test_qa_stream.py` —— **0 error**。
+另需 grep 自证旧标签已彻底消失：`grep -rn "参考上下文" app/ tests/` 应**无输出**。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add app/ai/api_client.py app/ai/cli_client.py requirements.txt tests/test_qa_stream.py
-git commit -m "feat: API 后端 SSE 流式调用（ask_stream）"
+git add app/ai/api_client.py app/ai/cli_client.py app/ai/prompts.py tests/test_qa_stream.py
+git commit -m "feat: API 后端 SSE 流式调用 + 统一条文段表头"
 ```
 
 ---
@@ -2914,21 +3125,6 @@ def test_non_stream_request_is_traced(auth_client, stream_env):
     assert n == 1
 
 
-def test_qa_dim_fields_matches_request_model():
-    """一致性守卫：QA_DIM_FIELDS 必须与 QaRequest 的维度字段完全对应。
-
-    该常量是「检索条件构造」与「当轮筛选记录」的唯一来源。若将来新增维度
-    只改了 QaRequest 而漏改常量，检索会**静默忽略新维度**（筛选界面能选、
-    但不生效），极难排查。本用例把两者钉死，让漏改立刻失败。
-    """
-    from app.models import QA_DIM_FIELDS, QaRequest
-    model_dims = {k for k in QaRequest.model_fields if k.startswith("dim")}
-    assert set(QA_DIM_FIELDS) == model_dims, (
-        f"QA_DIM_FIELDS 与 QaRequest 维度字段不一致："
-        f"仅常量有 {set(QA_DIM_FIELDS) - model_dims}，仅模型有 {model_dims - set(QA_DIM_FIELDS)}"
-    )
-
-
 def test_include_non_clause_flag_is_honored(auth_client, stream_env, monkeypatch):
     """回归（静默 no-op）：左栏「包含前言·条文说明」必须真的到达检索层。
 
@@ -3007,7 +3203,7 @@ Expected: FAIL — `test_stream_emits_stage_then_deltas_then_done` 返回 JSON �
 
 - [ ] **Step 3: 实现**
 
-**3a. `app/models.py`** —— `QaRequest` 增两个字段（放在 `relaxed` 之后），并把维度字段名收敛为单一常量：
+**3a. `app/models.py`** —— `QaRequest` 增两个字段（放在 `relaxed` 之后）：
 
 ```python
     # 输出形态：False → 一次性 JSON（默认，保持既有契约）；
@@ -3019,40 +3215,31 @@ Expected: FAIL — `test_stream_emits_stage_then_deltas_then_done` 返回 JSON �
     include_non_clause: bool = False
 ```
 
-**3b.（接上）维度字段名收敛为单一常量——**新增维度时只改这一处**：
+**3b.（**已前移至 T13，本 Task 无动作**）** `QA_DIM_FIELDS` 常量及其一致性守卫用例
+`test_qa_dim_fields_matches_request_model` 均已在 **Task 13** 落地（该常量是 T13 的
+`_effective_filters` 与本 Task 共同的前提）。本 Task 直接使用，**不要重复定义**——重复定义会让
+「新增维度只改一处」的单一来源失效，且 `models.py` 里同名常量重复赋值会静默覆盖。
 
-```python
-# 维度筛选的请求字段名（dim1 含三个子维度，共 8 个字段）。
-# 检索条件构造与「当轮生效筛选」记录都从这里派生，避免同一个列表
-# 在 _prepare_qa_context / _effective_filters 里各写一遍而漏改。
-QA_DIM_FIELDS: tuple[str, ...] = (
-    "dim1_hierarchy", "dim1_industry", "dim1_nature",
-    "dim2_stage", "dim3_usage", "dim4_specialty",
-    "dim5_location", "dim6_material",
-)
-```
+**3c.（**已由 T3 完成，本 Task 无动作**）** `app/ai/reranker.py` / `app/ai/embedding.py` 的
+`is_ready()` 与 `app/maintenance/health_check.py` 的 `model_ready` 检查项是 **Task 3 的交付物**
+（已落地并复核通过）。本 Task **不要**再写一遍——`is_ready()` 重复定义会让 pyright 报
+obscuring 且足以掩盖 T3 的三态语义。
 
-**3c. `app/ai/reranker.py` / `app/ai/embedding.py`** —— 各新增一个**不触发加载**的就绪探测：
 
-```python
-def is_ready() -> bool:
-    """模型是否就绪：已加载成功，或本地模型文件存在。**不触发加载**。
 
-    供健康检查使用。get_reranker()/get_model() 在未加载时会真的实例化模型
-    （数秒），而健康检查在维护页每次打开都跑，不能带这种副作用。
-    """
-    if _model is False:
-        return False          # 曾尝试加载且失败，不会重试
-    if _model is not None:
-        return True           # 已成功加载
-    return any((p / "config.json").exists() for p in _LOCAL_MODEL_PATHS)
-```
+**3d. `app/routes/qa_routes.py`** —— `QaContext` 去掉 T8 留下的两个默认值（`filtered_out` 由 T13 填、
+`rerank_used` 由本 Task 填；去掉默认值后「忘接线」会变成构造期的硬错误，而不是静默的 `0`/`""`）：
 
-> 两个模块的三态哨兵与 `_LOCAL_MODEL_PATHS` 结构一致（见 `app/ai/reranker.py:11-16`、
-> `app/ai/embedding.py:10-17`），因此函数体逐字相同——**但各自定义一份**，
-> 不抽公共工具：它们读的是各自的模块级私有状态，抽出去反而要传参。
-
-**3d. `app/maintenance/health_check.py`** —— 挂上检查项：
+> ⚠️ 下方 `_prepare_qa_context` 是**结构抄本**（便于看清改完后的全貌）。实现时**以 T8 既有函数为准**，
+> 本 Task 对它只有**三处增量**，其余一律不动；若抄本与既有代码有任何差异，**以既有代码为准**
+> （本计划早期版本在此整段重抄时曾丢掉 T8 的两项行为，照抄会直接造成回归）：
+>
+> 1. `include_non_clause` 从「仅文本兜底」改为「左栏复选框 **或** 文本兜底」：
+>    `include_non_clause = body.include_non_clause or ("前言" in question) or ("条文说明" in question)`
+> 2. 维度构造用 `QA_DIM_FIELDS`（**T13 已完成，本 Task 跳过**）
+> 3. `_rerank_scored` 之后**立即**把 `_last_rerank_used` 拷进局部变量，同时写入 `trace`，
+>    并以此局部值调用 `resolve_thresholds`；后续一律用这个拷贝值（`ctx.rerank_used`），
+>    **不得**在跨 `await` 的函数里再读模块级全局（下方抄本已体现：`rerank_used = _last_rerank_used`）
 
 ```python
 @dataclass
@@ -3079,25 +3266,37 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
     """
     from app.qa.context import (
         filter_by_metadata, filter_by_score, dynamic_select,
-        tier_items, build_context, build_history,
+        tier_items, build_context, build_history, estimate_tokens,
     )
     from app.qa.config import get_qa_float, get_qa_int, get_qa_str
     from app.qa import sessions as qa_sessions
     from app.search.hybrid_search import hybrid_search
-
-    trace = QATrace(question=question[:100], mode=body.mode,
-                    backend=body.backend or "", include_invalid=body.include_invalid)
 
     # 会话解析：不存在的 id 一律视为新会话——严格不跨会话取历史（D3）
     session_id = body.session_id
     if session_id is not None and qa_sessions.get_session(session_id) is None:
         logger.info("QA session_id=%s 不存在，按新会话处理", session_id)
         session_id = None
+    # 历史段必须在落库本轮消息之前读取，否则本轮问答会被算进自己的历史
     history_messages = qa_sessions.get_messages(session_id) if session_id else []
+
+    trace = QATrace(question=question[:100], mode=body.mode,
+                    backend=body.backend or "", include_invalid=body.include_invalid)
+
+    # ⓪ 历史段组装（纯函数无 IO）
+    history_budget = get_qa_int("token.max_history_tokens")
     history_str = build_history(
-        history_messages, get_qa_int("history.max_turns"),
-        get_qa_int("token.max_history_tokens"),
+        history_messages, get_qa_int("history.max_turns"), history_budget,
     )
+    # 可观测性：超预算在服务端日志可见（build_history 逐轮丢弃最旧，但**最新一轮无条件保留**，
+    # 故单轮自身超预算时历史段会突破预算——这是有意取舍，需要数据来定夺默认值）
+    trace.history_tokens = estimate_tokens(history_str)
+    trace.history_budget = history_budget
+    if trace.history_tokens > history_budget:
+        logger.warning(
+            "QA 历史段超预算：history_tokens=%d > history_budget=%d",
+            trace.history_tokens, trace.history_budget,
+        )
 
     pool = get_qa_int("retrieve.candidate_pool")
     # 放行非条文：左栏复选框显式开关 **或** 问题文本兜底
@@ -3128,14 +3327,34 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
                 keyword=question, per_page=pool,
                 include_non_clause=include_non_clause))
             filtered_out = wide_total
-            logger.info("QA 分类筛选候选不足（%d 条），全局命中 %d 条",
+            logger.info("QA 分类筛选候选不足（%d 条），已如实报告全局命中 %d 条",
                         len(candidates), wide_total)
         except Exception as e:
-            logger.error("QA 诊断性放宽检索失败: %s", e)
+            logger.error("QA 分类筛选候选不足的诊断检索失败: %s", e)
 
-    status_allow = tuple(
-        s.strip() for s in get_qa_str("meta.status_allow").split(",") if s.strip())
-    candidates = filter_by_metadata(candidates, body.include_invalid, status_allow=status_allow)
+    # ② 元数据过滤（RRF 后、CrossEncoder 前；默认过滤废止/已替代规范）
+    # status_filter 三分支（**T8 已落地，不得塌缩成单一分支**）：
+    #   None（缺参，旧客户端）→ settings 默认白名单 + include_invalid（旧语义，过滤废止）
+    #   ""（显式全不勾）    → 放行非现行（eff_include_invalid=True）
+    #   非空                 → 覆盖默认白名单 + include_invalid
+    if body.status_filter is None:
+        status_allow = tuple(
+            s.strip() for s in get_qa_str("meta.status_allow").split(",") if s.strip()
+        )
+        eff_include_invalid = body.include_invalid
+    elif body.status_filter.strip():
+        status_allow = tuple(
+            s.strip() for s in body.status_filter.split(",") if s.strip()
+        )
+        eff_include_invalid = body.include_invalid
+    else:
+        status_allow = tuple(
+            s.strip() for s in get_qa_str("meta.status_allow").split(",") if s.strip()
+        )
+        eff_include_invalid = True  # 显式全不勾 → 不过滤状态
+    candidates = filter_by_metadata(
+        candidates, eff_include_invalid, status_allow=status_allow,
+    )
     trace.after_meta = len(candidates)
 
     ranked = _rerank_scored(question, candidates)
@@ -3208,12 +3427,12 @@ def _confusable_hits(question: str) -> list[dict]:
 
 
 def _effective_filters(body: QaRequest) -> dict:
-    """本轮实际生效的筛选（分类维度 + 状态 + 前言放行）。
+    """本轮实际生效的筛选（分类维度 + 显式状态过滤 + 前言放行）。
 
-    两个用途：① 随助手消息落库，供历史回看追溯（D5）；
-    ② 随响应返回，供前端显示「本轮生效筛选」（让"回复中切换只影响下一轮"可见）。
-    放宽（relaxed）时分类维度为空——那正是放宽的语义。
-    维度字段名取自 QA_DIM_FIELDS（单一来源），新增维度时不会漏记。
+    ⚠️ 本函数**主体已在 T13 落地**（分类维度 + 显式状态过滤，含 `is not None` 的语义区分）。
+    本 Task **只追加「前言放行」这一项**，不要重写整个函数——重写极易把 T13 的
+    `if body.status_filter is not None:` 改成真值判断，那会让**显式空串 `""`**
+    （= 全不勾 → 放行非现行，是用户选择）被静默丢掉，而 T13 的用例正是钉这一点的。
     """
     out: dict = {}
     if not body.relaxed:
@@ -3221,12 +3440,13 @@ def _effective_filters(body: QaRequest) -> dict:
     # 状态过滤：None（缺参）时不记录，避免把默认白名单误当成用户显式选择
     if body.status_filter is not None:
         out["status_filter"] = body.status_filter
+    # ↓↓ 本 Task 追加的**唯一**一行逻辑（body.include_non_clause 在本 Task 才声明）↓↓
     if body.include_non_clause:
         out["include_non_clause"] = True
     return out
 ```
 
-**3d.** 把 `/qa/ask` 整体替换为「一个入口、两种形态」：
+**3e.** 把 `/qa/ask` 整体替换为「一个入口、两种形态」：
 
 ```python
 @router.post("/qa/ask")
@@ -3332,7 +3552,7 @@ async def _sse_stream(ctx: QaContext, body: QaRequest):
     })
 ```
 
-**3e.** 新增三个小工具（放在 `_extract_sources` 之后）：
+**3f.** 新增三个小工具（放在 `_extract_sources` 之后）：
 
 ```python
 def _sse(event: str, data: dict) -> str:
@@ -3374,7 +3594,8 @@ def _answer_text(resp, cli_used: str) -> str:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -v`
-Expected: PASS（T14 的 4 条 + 本 Task 的 10 条）
+Expected: PASS（T14 的 4 条 + 本 Task 的 9 条——原写 10 条，其中 `test_qa_dim_fields_matches_request_model`
+随 `QA_DIM_FIELDS` 前移至 T13，此处已移出）
 
 - [ ] **Step 5: 全量回归 + 类型检查**
 
