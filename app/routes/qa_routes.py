@@ -518,7 +518,18 @@ async def _sse_stream(question: str, body: QaRequest):
     from app.config import WORKSPACE_DIR
 
     yield _sse("stage", {"stage": "retrieving"})   # 必须先发：这一帧才是「覆盖死时间」的那一帧
-    ctx = _prepare_qa_context(question, body)      # 检索 + 精排都在这里（1~3 秒）
+    try:
+        ctx = _prepare_qa_context(question, body)  # 检索 + 精排都在这里（1~3 秒）
+    except Exception as e:
+        # 准备阶段是**本 Task 移进生成器内部**的（首版在 qa_ask 里先 prepare 再返回
+        # StreamingResponse）——移动带来一处新的暴露面：此时 200 与首帧 stage 都已发出，
+        # 异常若逃逸，客户端收到的是**截断的流**（没有 error 帧，只能靠连接结束来猜），
+        # 而修复前同一异常会得到一个干净的 HTTP 错误。故与生成阶段用同一条尺子兜底。
+        # 此路径**无埋点可写**：trace 对象由 `_prepare_qa_context` 内部构造，异常时可能尚不
+        # 存在——不为此硬造一个 trace（与非流式准备失败给干净错误响应的语义对齐）。
+        logger.error("QA 准备阶段异常: %s", e, exc_info=True)   # 保留原始错误堆栈
+        yield _sse("error", {"message": _GENERIC_ERROR})
+        return
 
     backend, cli_used = _resolve_backend(body.backend, ctx.trace)
     if not backend.is_available():
@@ -565,8 +576,19 @@ async def _sse_stream(question: str, body: QaRequest):
         # 注意：**落库仍按原始内容判定**（下方 persist_ok 传 bool(answer.strip())）——
         # 非流式在同一状态下同样不建会话，两条路径的持久化语义必须一致。
         yield _sse("delta", {"text": _EMPTY_ANSWER})
-    sources, confusable_hits, session_id = _finish_turn(
-        ctx, answer, bool(answer.strip()), body)
+    try:
+        sources, confusable_hits, session_id = _finish_turn(
+            ctx, answer, bool(answer.strip()), body)
+    except Exception as e:
+        # 与上一段**同一类**暴露面：收尾抛异常时 delta 已全部发出，客户端正在等 done；
+        # 不兜底则连接静默结束——前端既拿不到 done（无法收尾渲染/刷新会话列表），
+        # 也拿不到任何错误文案。同样不让异常冲出生成器。
+        # 此处 trace 一定存在（`_prepare_qa_context` 已成功返回），故照相邻两条失败分支
+        # 的「失败也埋点」规则补写，不留下一条在日志 Tab 里查不到的失败请求。
+        logger.error("QA 流式收尾异常 (command=%s): %s", cli_used, e, exc_info=True)
+        yield _sse("error", {"message": _GENERIC_ERROR})
+        _emit_trace(ctx.trace)
+        return
 
     yield _sse("done", {
         "session_id": session_id or 0,

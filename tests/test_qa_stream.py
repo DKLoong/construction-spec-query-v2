@@ -583,6 +583,71 @@ def test_stream_backend_exception_emits_error_frame_and_traces(auth_client, stre
     assert n == 1, "抛异常的流式轮次未落埋点（try/except 只做了一半）"
 
 
+def test_stream_prepare_failure_emits_error_frame_and_no_session(auth_client, stream_env,
+                                                                 monkeypatch):
+    """异常场景：**准备阶段**（检索 + CE 精排）抛异常 → 必须补 error 帧，而非截断的流。
+
+    这是本 Task 带出的**新暴露面**：`_prepare_qa_context` 现在跑在 `_sse_stream` 内部
+    （`qa_ask` 里先 prepare 再返回 StreamingResponse 的老写法被刻意改掉了，理由见
+    `test_first_stage_frame_precedes_retrieval_and_rerank`），于是它抛异常时 200 与首帧
+    stage **已经发出**——异常若逃逸，客户端收到的是一条没有 error 帧的截断流，只能靠
+    连接结束来猜；而改动前同一异常发生在 `qa_ask` 里，会得到一个干净的 HTTP 错误。
+    把这段 try/except 删掉，本用例即红（异常冲出 TestClient，连 `_parse_sse` 都到不了）。
+
+    此路径**不写埋点**：trace 对象由 `_prepare_qa_context` 内部构造，异常时可能尚不存在
+    （不为它硬造一个 trace，与非流式准备失败给干净错误响应的语义对齐）。
+    """
+    import app.routes.qa_routes as qr
+
+    def _boom(question, body):
+        raise RuntimeError("检索层炸了")
+
+    monkeypatch.setattr(qr, "_prepare_qa_context", _boom)
+
+    r = auth_client.post("/qa/ask", json={"question": "准备阶段异常检查", "stream": True})
+    frames = _parse_sse(r.text)
+    assert [e for e, _ in frames] == ["stage", "error"]
+    assert frames[0][1] == {"stage": "retrieving"}
+    assert frames[1][1] == {"message": "AI 服务返回错误"}
+    assert S.list_sessions() == [], "准备失败轮次不得建会话"
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM qa_request_logs WHERE question LIKE ?",
+            ("%准备阶段异常检查%",),
+        ).fetchone()[0]
+    assert n == 0, "准备阶段失败时 trace 尚不存在，不硬造埋点"
+
+
+def test_stream_finish_failure_emits_error_frame_without_done(auth_client, stream_env,
+                                                              monkeypatch):
+    """异常场景：**收尾阶段**（`_finish_turn`）抛异常 → delta 不丢，且必须以 error 收尾。
+
+    与准备阶段同一类暴露面：`_finish_turn`（落库 + 埋点）跑在生成循环之后，抛异常时
+    delta **已全部发给客户端**，客户端正在等 `done`。不兜底则连接静默结束——前端既拿不到
+    done（无法收尾渲染 / 刷新会话列表），也拿不到任何错误文案。
+    此处 trace 一定存在（准备阶段已成功返回），故按相邻两条失败分支的「失败也埋点」规则
+    补写，不留下一条在日志 Tab 里查不到的失败请求。
+    """
+    import app.routes.qa_routes as qr
+
+    def _boom(ctx, answer, persist_ok, body):
+        raise RuntimeError("收尾炸了")
+
+    monkeypatch.setattr(qr, "_finish_turn", _boom)
+
+    r = auth_client.post("/qa/ask", json={"question": "收尾异常检查", "stream": True})
+    frames = _parse_sse(r.text)
+    assert [e for e, _ in frames] == ["stage", "stage", "delta", "delta", "error"], \
+        "已发出的 delta 不得丢，且必须以 error 收尾（不得静默截断）"
+    assert frames[-1][1] == {"message": "AI 服务返回错误"}
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM qa_request_logs WHERE question LIKE ?",
+            ("%收尾异常检查%",),
+        ).fetchone()[0]
+    assert n == 1, "收尾异常的流式轮次仍须落埋点（trace 存在，失败也埋点）"
+
+
 def test_non_stream_error_answer_wraps_generic_text(auth_client, stream_env, monkeypatch):
     """回归（裁决 4）：非流式错误回答的包裹文案必须逐字为「抱歉，AI 服务返回错误。」。
 
