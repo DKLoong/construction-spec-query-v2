@@ -249,10 +249,23 @@ def t2_sessions_panel_collapses_without_moving_composer(page):
         填满空白而不是留一条空缺。
 
     几何已用最小复现实测确认（1600x900 视口下 842 → 1219，右边缘 +377）。
+
+    ⚠️ `before` 采样前**必须**先等 `.qa-sessions` 可见（见下面那行 wait_for_selector 的注释）：
+    否则采到的是"Alpine 尚未初始化"的中间态，会让宽度判据**假红**，而它的数值签名与真 RED
+    一模一样（`1236.8125 -> 1236.8125`），会掩盖真因。
     """
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
+    # 竞态修复：`#qa-root` 在**首屏 HTML 里就有**，而 Alpine 是 defer 加载
+    # （app/templates/base.html:12）⇒ 只等 `#qa-root` 不保证 Alpine 已初始化。
+    # 初始化之前 `.qa-sessions` 仍带 x-cloak（`[x-cloak]{display:none!important}`，app.css:257）
+    # 而**不占宽度**，此时 `.qa-thread`/`.qa-composer` 量到的是"会话栏缺席"的**宽值**；
+    # 折叠后宽度不变 ⇒ 宽度判据假红，且签名（宽 -> 同宽）与真 RED（宽 -> 未变宽）无法区分。
+    # 等 `.qa-sessions` **可见**即等价于"Alpine 已初始化且 x-show 已求值"：x-cloak 由 Alpine
+    # 在启动该组件时移除、x-show="!sessionsCollapsed" 在同一步求值，二者同步完成
+    # ⇒ 可见性一旦成立，本次要测量的两处几何（会话栏占宽、composer 位置）都已定型。
+    page.wait_for_selector(".qa-sessions", state="visible", timeout=10000)
     before = {s: page.locator(s).bounding_box()
               for s in (".qa-composer", ".qa-messages", ".qa-thread")}
     page.click("#qa-session-toggle")
@@ -274,8 +287,111 @@ def t2_sessions_panel_collapses_without_moving_composer(page):
     assert page.locator(".qa-sessions").is_hidden(), "折叠后会话管理栏应不可见"
 
 
+def t2_composer_input_shares_row_with_buttons(page):
+    """正常场景（I-1 的直接判据）：输入框与按钮列**同行**，且模式切换仍独占上一行。
+
+    为什么必须单开一条：原 t2 用例 2 只量 `.qa-composer` 这个**外层盒子**的宽/y，
+    不量它的内部构成 ⇒ 结构性漏检。pico 有全局规则
+      `button[type=submit],input:not([type=checkbox],[type=radio]),select,textarea{width:100%}`
+    故 `.qa-composer textarea{flex:1 1 auto}` 的 `flex-basis:auto` 会解析成 **100%**；
+    而 flex 换行发生在收缩**之前**（`.qa-composer` 带 `flex-wrap:wrap`）
+    ⇒ textarea 独占第 2 行、`.qa-composer-btns` 被整列挤到**第 3 行**。
+    此时 `.qa-composer` 自己的几何完全正常（实测折叠后 842 -> 1219 仍成立）⇒ 旧判据全绿。
+
+    判据三条（几何，互相独立）：
+      1. 纵向：textarea 与 `.qa-composer-btns` 顶边之差 < 2px（flex-start 下同行即顶边对齐；
+         错位时两者相隔一个 textarea 高度 ~79px，判别度极高）；
+      2. 横向：textarea **未占满整行**——`textarea 宽 < composer 宽 - 按钮列宽 + 容差`。
+         basis 解析成 100% 时 textarea 宽 ≈ composer 宽（等式右侧还差一个按钮列宽 ~75px）
+         ⇒ 专门钉住"独占整行"这一形态；
+      3. 模式切换独占了输入框**上方**那一行（label 底边 <= textarea 顶边）——它是靠
+         `flex-wrap:wrap` + `flex:0 0 100%` 实现的，把它连同 wrap 一起删掉虽能让 1/2 通过，
+         却会让 label 退回"textarea 左侧的一列"（设计不允许）⇒ 必须一并锁住。
+    """
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    page.wait_for_selector(".qa-composer", state="visible", timeout=10000)
+    composer = page.locator(".qa-composer").bounding_box()
+    ta = page.locator(".qa-composer textarea").bounding_box()
+    btns = page.locator(".qa-composer-btns").bounding_box()
+    mode = page.locator(".qa-mode-switch").bounding_box()
+    assert all((composer, ta, btns, mode)), "输入区四块几何量测不全"
+
+    # 判据 1：同行
+    dy = abs(ta["y"] - btns["y"])
+    assert dy < 2, (f"输入框与按钮列不在同一行（顶边相差 {dy:.2f}px）："
+                    f"textarea y={ta['y']:.2f}, 按钮列 y={btns['y']:.2f}"
+                    "——flex-basis 被 pico 的 width:100% 撑成整行、按钮被换到下一行")
+
+    # 判据 2：textarea 不独占整行
+    tol = 4.0
+    assert ta["width"] < composer["width"] - btns["width"] + tol, (
+        f"输入框占满了整行（textarea 宽 {ta['width']:.2f}，"
+        f"composer 宽 {composer['width']:.2f}，按钮列宽 {btns['width']:.2f}，容差 {tol}）"
+        "——按钮列没有与它分享同一行")
+
+    # 判据 3：模式切换独占上一行
+    assert mode["y"] + mode["height"] <= ta["y"] + 1, (
+        f"模式切换未独占输入框上方一行（label 底边 {mode['y'] + mode['height']:.2f} "
+        f"> textarea 顶边 {ta['y']:.2f}）")
+
+
+def t2_mode_checkbox_survives_narrow_viewport(page):
+    """边界场景：窄视口下模式切换的勾选框不被 flex-shrink 压扁。
+
+    已有的第一道防护是 label 内 checkbox 的 inline `width:1rem;height:1rem`，
+    它只挡「`appearance:none` + `width:auto` 塌缩成 4px」那一类，
+    **挡不住 flex-shrink**：`.qa-mode-switch` 是 nowrap flex 行、三个子项都可收缩，
+    可用宽度不足时（实测收缩在视口 850→800px 之间开始）勾选框会按其 1rem 基准被等比压小
+    ⇒ 「11.8px 症状」经另一条路径复现（实测视口 750px 时恰好 11.766px ≈ 11.8px）。
+    修法是 `.qa-mode-switch input{flex:0 0 auto}`。
+
+    判据：窄视口下勾选框宽度 >= 1rem 的 95%，且 >= 14px。
+    1rem 的实值**从页面读**（`getComputedStyle(document.documentElement).fontSize`），
+    不硬编码 16px——pico 与本项目样式都可能改根字号（实测该根字号是 14.4px）。
+
+    **量两个宽度（800 + 700），不是凑数**：收缩是**渐变**的（收缩量按各子项基准宽度占比分摊），
+    实测（去掉 `.qa-mode-switch input{flex:0 0 auto}` 后逐宽度量得，composer 宽随视口线性收缩）：
+
+        vw=900 -> 14.391px   vw=850 -> 14.391px   vw=800 -> 13.547px（收缩刚发生）
+        vw=750 -> 11.766px   vw=700 ->  9.984px   vw=650 ->  8.219px
+
+    800 是"收缩刚发生"的临界点，判据裕度只有 ~0.13px——只靠它，未来任何字号/字体度量变化都
+    可能让这条守卫**静默失效**（不再收缩 ⇒ 断言恒真）。700 的裕度是 ~3.7px（低于阈值 27%），
+    是**决定性**的那一条。GREEN 侧无假红风险：`flex: 0 0 auto` 下勾选框宽度恒等于 1rem
+    （与文字宽度无关），实测 900~700 各宽度均为 14.391px。
+    """
+    try:
+        page.goto(f"{BASE}/qa")
+        page.wait_for_selector("#qa-root", timeout=10000)
+        page.wait_for_selector(".qa-mode-switch", state="visible", timeout=10000)
+        # 800 = 控制器指定的临界宽度；700 = 决定性宽度（裕度 ~3.7px）
+        for width in (800, 700):
+            page.set_viewport_size({"width": width, "height": 900})
+            rem = page.evaluate(
+                "parseFloat(getComputedStyle(document.documentElement).fontSize)")
+            box = page.locator(".qa-mode-switch input[type=checkbox]").bounding_box()
+            assert box is not None, f"视口 {width}px 下模式切换的勾选框量不到几何"
+            assert box["width"] >= rem * 0.95, (
+                f"窄视口({width}px)下勾选框被 flex-shrink 压扁：{box['width']:.3f}px，"
+                f"应 >= {rem * 0.95:.3f}px（1rem={rem}px 的 95%）")
+            assert box["width"] >= 14, (
+                f"窄视口({width}px)下勾选框宽度 {box['width']:.3f}px 低于 14px 下限")
+    finally:
+        # 用例在 runner 的**同一个 page** 上顺序执行，视口必须还原（本用例排在最后仍还原，防追加）
+        page.set_viewport_size({"width": 1600, "height": 900})
+
+
 def t2_qa_page_not_shown_on_other_pages(page):
-    """异常场景（回归）：其它页面不得冒出 QA 界面。"""
+    """异常场景（回归）：其它页面不得冒出 QA 界面。
+
+    ⚠️ **本用例是路由隔离哨兵（守 T1 的 `/qa` 整页路由），不构成 T2 交付物的验收证据。**
+    理由：它唯一的失败模式要求改动**本 Task 文件清单之外**的东西（例如把 qa_page.html
+    并入 base.html、或在检索页也渲染 `#qa-root`）——T2 改动的任何文件都无法让它变红，
+    故它对 T2 的交付物**零信息量**。保留它是因为它作为**跨 Task 回归哨兵**有价值
+    （防后续 Task 把 QA 界面误挂到其它页面）；不挪进 `CASES["t1"]`，以免打乱已被复核记录的
+    t1 计数。
+    """
     for path in ("/specs", "/rules", "/lexicon"):
         page.goto(f"{BASE}{path}")
         assert page.locator("#qa-root").count() == 0, f"{path} 不该出现 QA 界面"
@@ -307,9 +423,13 @@ CASES = {"t1": [t1_qa_entry_is_a_page_link,
                 t1_tree_click_in_qa_page_does_not_navigate,
                 t1_tree_click_in_search_page_still_searches,
                 t1_qa_enter_search_returns_to_search_page],
+         # ⚠️ 窄视口用例**排在最后**：它会改 page 的视口（虽在 finally 里还原），
+         #    放最后可保证它失败时不吞掉其它用例的 PASS 行。
          "t2": [t2_layout_structure_present,
+                t2_composer_input_shares_row_with_buttons,
                 t2_sessions_panel_collapses_without_moving_composer,
-                t2_qa_page_not_shown_on_other_pages]}
+                t2_qa_page_not_shown_on_other_pages,
+                t2_mode_checkbox_survives_narrow_viewport]}
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "t1"

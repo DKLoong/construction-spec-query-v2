@@ -396,7 +396,14 @@
     border-radius: 6px; background: var(--pico-card-background-color);
 }
 .qa-composer { margin-top: 0.5rem; display: flex; gap: 0.25rem; align-items: flex-start; flex-wrap: wrap; }
-.qa-composer textarea { flex: 1 1 auto; font-size: 0.85rem; margin: 0; }
+/* 输入框与按钮同行（而不是各占一行）——**flex-basis 必须是 0，不能是 auto**：
+   pico 有全局规则 `button[type=submit],input:not([type=checkbox],[type=radio]),select,textarea{width:100%}`，
+   故 `flex: 1 1 auto`（basis=auto）会解析成 basis=100%；而 flex 换行发生在收缩**之前**
+   ⇒ 配合 .qa-composer 的 flex-wrap:wrap，textarea 会独占一整行、把按钮列挤到第三行
+   （实测：输入框 x=341.6 w=909.2 独占第 2 行，按钮列落到第 3 行）。
+   basis:0 让它与按钮列先落到同一行，再按 grow 分配剩余宽度（min-width:0 解除 min-content 下限）。
+   回归判据：scripts/probe_qa_ui.py::t2_composer_input_shares_row_with_buttons。 */
+.qa-composer textarea { flex: 1 1 0; min-width: 0; font-size: 0.85rem; margin: 0; }
 .qa-composer-btns { display: flex; flex-direction: column; gap: 0.25rem; }
 .qa-composer-btns button { font-size: 0.75rem; padding: 0.25rem 0.5rem; white-space: nowrap; margin: 0; }
 /* 问答模式切换独占一行（落在输入框上方）：flex 布局下 flex-basis 优先于 width，
@@ -409,6 +416,12 @@
    旧面板把状态文字放在 <label> **之外**（其后元素是 label 而非 input），所以没踩到；
    本布局把它挪进 label 内，必须显式退回「随内容定宽的行内小字」。 */
 .qa-mode-switch > small { display: inline; width: auto; margin: 0; }
+/* 勾选框防压缩（第二道）：inline 的 `width:1rem` 只挡「width:auto 塌缩成 4px」那一类，
+   **挡不住 flex-shrink**——`.qa-mode-switch` 是 nowrap flex 行，三个子项都可收缩，
+   可用宽度不足时（估算视口 < ~830px）勾选框会按其 1rem 基准被压到 ~11px（实测），
+   即「11.8px 症状」经另一条路径复现。`flex: 0 0 auto` = 不伸不缩、基准取 width(1rem)。
+   回归判据：scripts/probe_qa_ui.py::t2_mode_checkbox_survives_narrow_viewport。 */
+.qa-mode-switch input { flex: 0 0 auto; }
 /* 会话管理栏：固定宽度，折叠时整体隐藏（不挤压输入框所在列） */
 .qa-sessions { flex: 0 0 22rem; max-width: 22rem; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--pico-muted-border-color); padding-left: 0.75rem; }
 .qa-sessions-search { margin-bottom: 0.4rem; }
