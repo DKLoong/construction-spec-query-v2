@@ -1592,7 +1592,8 @@ Expected: FAIL — `KeyError: 'session_id'`
 ```python
     # 会话 id：None → 惰性新建会话；指向不存在的会话 → 同样视为新建（不跨会话取历史）
     session_id: Optional[int] = None
-    # 「放宽到全部规范」重发标记：True 时忽略分类维度重新检索（见设计文档 §4.7）
+    # 「放宽分类筛选」重发标记：True 时**只**忽略分类维度重新检索，
+    # 状态过滤与前言设置仍生效（见设计文档 §4.7）
     relaxed: bool = False
 ```
 
@@ -2900,7 +2901,7 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
     include_non_clause = body.include_non_clause or \
         ("前言" in question) or ("条文说明" in question)
     # 分类维度：只取非空项（SearchQuery 的对应字段默认 []，语义等价）；
-    # relaxed=True 时清空（D9 的「放宽到全部规范」）。字段名来自单一常量。
+    # relaxed=True 时清空（D9 的「放宽分类筛选」）。字段名来自单一常量。
     dims = {} if body.relaxed else {
         k: getattr(body, k) for k in QA_DIM_FIELDS if getattr(body, k)
     }

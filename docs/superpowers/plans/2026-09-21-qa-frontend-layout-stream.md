@@ -578,10 +578,12 @@ Expected: FAIL — 骨架缺少 `.qa-thread` / `.qa-messages` 等完整结构
                             </template>
                             <template x-if="msg.filteredOut > 0">
                                 <div class="qa-relax-hint">
-                                    <span x-text="'⚠️ 当前分类筛选下候选不足，放宽后全局命中 ' + msg.filteredOut + ' 条；回答可能不完整'"></span>
+                                    <span x-text="'⚠️ 当前分类筛选下候选不足（全局命中 ' + msg.filteredOut + ' 条）'"></span>
+                                    <!-- 文案只说「分类筛选」：relaxed 只清分类维度，
+                                         状态过滤与前言设置仍然生效（评审 D13） -->
                                     <button type="button" class="outline"
                                             style="font-size:0.75rem;padding:0.1rem 0.4rem;margin:0 0 0 0.4rem"
-                                            @click="relax()">放宽到全部规范</button>
+                                            @click="relax()">放宽分类筛选</button>
                                 </div>
                             </template>
                             <template x-if="msg.sources && msg.sources.length">

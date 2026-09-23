@@ -242,7 +242,7 @@ token 上限：`build_history` 内按 `max_turns` 截断；若单轮答案异常
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/qa/ask` | **单一入口，两种响应形态**。增字段 `session_id: int \| None`（为 None 时创建新会话，标题取首轮问题前 20 字，并在响应中返回其 id）、`relaxed: bool = False`（§4.7 的「放宽到全部规范」重发用）、`stream: bool = False`（`true` → `text/event-stream`；默认 `False` → 原 JSON，既有契约不变） |
+| POST | `/qa/ask` | **单一入口，两种响应形态**。增字段 `session_id: int \| None`（为 None 时创建新会话，标题取首轮问题前 20 字，并在响应中返回其 id）、`relaxed: bool = False`（§4.7 的「放宽分类筛选」重发用）、`stream: bool = False`（`true` → `text/event-stream`；默认 `False` → 原 JSON，既有契约不变） |
 | GET | `/qa/sessions` | 会话列表（id, title, updated_at, 消息数） |
 | GET | `/qa/sessions/{id}` | 该会话全部消息（含 sources/confusable） |
 | PATCH | `/qa/sessions/{id}` | 重命名 |
@@ -262,10 +262,16 @@ token 上限：`build_history` 内按 `max_turns` 截断；若单轮答案异常
 改为：
 
 - **不再静默放宽**
-- 回答区顶部提示：「⚠️ 当前分类筛选下仅命中 N 条，回答可能不完整」+ 按钮「[放宽到全部规范]」
-- 点按钮 → 以 `relaxed=true` 重发本问（不带分类维度），结果追加为新的助手消息
+- 回答区顶部提示：「⚠️ 当前分类筛选下候选不足（全局命中 N 条）」+ 按钮「[放宽分类筛选]」
+- 点按钮 → 以 `relaxed=true` 重发本问（**只清分类维度**；状态过滤与前言设置仍生效——
+  按钮文案因此只说「分类筛选」而不说「全部规范」），结果追加为新的助手消息
 
-`QAResponse` 增 `filtered_out: int`（被筛选掉前的候选数）与 `effective_filters`（本轮实际生效的筛选，供 4.3 的可见性提示）。
+`QAResponse` 增两个字段：
+
+- `filtered_out: int` —— **不带分类维度**重新检索时的全局命中数（0 表示未触发诊断检索）。
+  注意它**不是**「被筛掉的条数」，而是「放宽后能拿到多少」——这正是提示文案里那个 N。
+- `effective_filters: dict` —— 本轮实际生效的筛选（分类维度 + 状态 + 前言放行），
+  供 §4.3 的可见性提示与随消息落库的追溯（D5）。
 
 ### 4.8 必须保留的既有功能（**不得改动**）
 
