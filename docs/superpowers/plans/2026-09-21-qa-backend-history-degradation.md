@@ -22,6 +22,14 @@
 - 统一分级日志，禁止用 `print` 输出业务日志（开发铁律 1.3）
 - TDD：先写测试再实现；每个 Task 覆盖正常/边界/异常三类场景
 - 每个 Task 完成后跑**增量测试**（本 Task 关联用例）+ `pyright`（不得新增 error），再 commit
+- **类型检查要覆盖本 Task 改动的全部文件**，不只是新增的模块——`pyright <该 Task 的 Files 全部路径>`。
+  Task 5 的教训：只跑 `pyright app/qa/sessions.py` 报 0 error，但漏掉了同期改动的测试文件里的 3 个 error
+- **`qa_sessions.created_at` / `updated_at` 由应用层写入，格式为带微秒的
+  `YYYY-MM-DD HH:MM:SS.ffffff`**（Task 5 定，见其 `_now_ts()`）。
+  **不要用 SQL 的 `datetime('now','localtime')`** —— 它只到秒，同一秒内的「新建会话」与「追加消息」
+  会拿到相同时间串，使 `ORDER BY updated_at DESC, id DESC` 退化为 id 降序（刚追问过的旧会话反被
+  新建空会话压后）。所有时间戳读写一律走 `app.qa.sessions._now_ts()` 的同一格式，保证列内可字符串比较。
+  展示时用 `[:16]` 切片即可；**严格 `strptime(s, "%Y-%m-%d %H:%M:%S")` 会抛异常**
 - **类型检查命令是 `pyright <路径>`（npm 全局版 1.1.410），必须在仓库根执行**以套用 `pyrightconfig.json`。
   `D:/Python/python.exe -m pyright` **不可用**——该包未装在 Python 侧（实测 `No module named pyright`）。
   按项目规则不得自行安装依赖
@@ -729,7 +737,7 @@ git commit -m "feat: 新增 qa_sessions / qa_messages 表"
   - `create_session(title: str) -> int`
   - `list_sessions() -> list[dict]` — 键：`id, title, updated_at, msg_count`，按 `updated_at DESC, id DESC`
   - `get_session(session_id: int) -> dict | None` — 键：`id, title, created_at, updated_at`
-  - `get_messages(session_id: int) -> list[dict]` — 键：`id, role, content, sources, confusable, mode, created_at`（`sources`/`confusable` 已反序列化为 list）
+  - `get_messages(session_id: int) -> list[dict]` — 键：`id, role, content, sources, confusable, filters, mode, created_at`（`sources`/`confusable`/`filters` 已反序列化为 list/dict）
   - `append_message(session_id: int, role: str, content: str, sources=None, confusable=None, mode="rag") -> int`
   - `rename_session(session_id: int, title: str) -> bool`
   - `delete_session(session_id: int) -> bool`
@@ -855,7 +863,13 @@ def test_append_message_bumps_updated_at(qa_db):
 
 
 def test_list_sessions_orders_by_recent_activity(qa_db):
-    """正常场景：列表按最近活跃倒序。"""
+    """正常场景：列表按最近活跃倒序。
+
+    ⚠️ 本用例是**时间戳精度**的守门人：建 A、建 B、给 A 追加消息三步若在同一秒内完成，
+    而时间戳只有秒精度，则 A 与 B 的 `updated_at` 完全相同，`ORDER BY updated_at DESC, id DESC`
+    退化为 id 降序 → 返回 B 而非 A，用例失败。Task 5 实测复现过，故时间戳改用微秒精度
+    （见 Global Constraints 的 `_now_ts()` 条）。**不要**把时间戳退回 `datetime('now','localtime')`。
+    """
     a = S.create_session("A")
     b = S.create_session("B")
     S.append_message(a, "user", "让 A 变活跃")
@@ -1199,7 +1213,7 @@ def _escape_like(text: str) -> str:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_sessions.py -v`
-Expected: PASS（18 passed）
+Expected: PASS（26 passed —— T4 的 4 条 + 本 Task 的 22 条。原写 18 为陈旧值，Task 5 实测 26）
 
 - [ ] **Step 5: 提交**
 
