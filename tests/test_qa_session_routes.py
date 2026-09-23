@@ -171,5 +171,13 @@ def test_get_session_detail_returns_messages_with_sources(auth_client):
 
 
 def test_get_missing_session_returns_404(auth_client):
-    """异常场景：不存在的会话返回 404，而非空对象。"""
-    assert auth_client.get("/qa/sessions/999999").status_code == 404
+    """异常场景：不存在的会话返回 404，而非空对象。
+
+    必须**同时断言 body**：404 是框架在「路由未注册」时也会产生的状态码
+    （body 为 `{"detail": "Not Found"}`），只断状态码的用例在裸 FastAPI 应用上
+    同样会通过 —— 那样的断言对它名字里的行为无法失败。只有 body 才能区分
+    「我们的 404」与「框架的 404」。
+    """
+    r = auth_client.get("/qa/sessions/999999")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "会话不存在"
