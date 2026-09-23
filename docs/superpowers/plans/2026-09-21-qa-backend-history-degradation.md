@@ -3062,7 +3062,7 @@ def _extract_delta(payload: str) -> str:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -v`
-Expected: PASS（**9 passed** = 4 条流式 + 2 条 API 表头（参数化 stream/非 stream 两条路径）+ 2 条 CLI 表头（参数化两个类）+ 1 条护栏一致性守卫）
+Expected: PASS（**11 passed** = 4 条流式 + 2 条 API 表头（参数化 stream/非 stream）+ 2 条 CLI 表头（参数化两个类）+ 1 条护栏一致性守卫 + **R1 的 2 条**（常量字面值钉点 / `[DONE]` 后置帧不进入结果））
 并跑 `pyright app/ai/api_client.py app/ai/cli_client.py app/ai/prompts.py tests/test_qa_stream.py` —— **0 error**。
 另需 grep 自证旧标签已彻底消失：`grep -rn "参考上下文" app/ tests/` 应**无输出**。
 
@@ -3072,6 +3072,35 @@ Expected: PASS（**9 passed** = 4 条流式 + 2 条 API 表头（参数化 strea
 git add app/ai/api_client.py app/ai/cli_client.py app/ai/prompts.py tests/test_qa_stream.py
 git commit -m "feat: API 后端 SSE 流式调用 + 统一条文段表头"
 ```
+
+### R1（修复轮，2026-09-23，实测记录）
+
+实现者在实现轮**主动上报**了 5 项简报问题（其中缺陷 E 见 Step 1 的 `_patch_async_client` 说明）与 **2 项覆盖缺口**；
+控制器批准后形成修复轮 R1（`fb59a5d`，+46 行，既有 9 条用例逐字节未动），本 Task 的用例数因此为 **11**：
+
+```python
+def test_context_header_value_is_pinned():
+    """契约守卫：表头的字面值就是任务定论表规定的那个。
+
+    其余用例全部用**符号** `CONTEXT_HEADER` 比较（比值更健壮），代价是没有人钉住这个值本身——
+    实测把它改成任意别的标签，其余 10 条**全绿**：护栏是 f-string，常量一改护栏跟着漂，
+    **所有比值型断言结构上不可能发现这种漂移**；只有字面值钉点能发现（变异 A 已实证）。
+    """
+    from app.ai.prompts import CONTEXT_HEADER
+    assert CONTEXT_HEADER == "【参考条文】"
+
+
+@pytest.mark.asyncio
+async def test_ask_stream_ignores_frames_after_done(monkeypatch):
+    """异常场景：`[DONE]` 之后的帧**不得**进入结果。
+
+    守的是 `ask_stream` 里那句 `if payload == "[DONE]": break` —— 实测删掉它（改成 continue）
+    会把 `[DONE]` 之后的帧泄漏进答案（变异 B 实证：`['before','AFTER-DONE'] != ['before']`），
+    即**用户会看到不该出现的内容**。上游合规时不会在 `[DONE]` 后发帧，故这是防御性代码；
+    用例的价值是**让它从「无覆盖」变「有覆盖」**——将来若有人以「死代码清理」为由删它，会红并给出理由。
+    """
+```
+
 
 ---
 
@@ -3724,7 +3753,7 @@ def _answer_text(resp, cli_used: str) -> str:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -v`
-Expected: PASS（**22 passed** = T14 的 9 条 + 本 Task 的 13 条）
+Expected: PASS（**24 passed** = T14 的 11 条 + 本 Task 的 13 条）
 
 > 计数更正（2026-09-23，控制器）：本行原写「T14 的 4 条 + 本 Task 的 10 条」，两处都陈旧——
 > T14 的 Step 1 已补到 **9 条**（4 条流式 + 2 条 API 表头参数化 + 2 条 CLI 表头参数化 + 1 条护栏守卫）；
