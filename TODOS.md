@@ -191,3 +191,12 @@
 - **Pros**：消除一类"加维度即静默串味"的隐患；把三处硬编码收敛到一处。
 - **Cons**：动检索层核心路径，需跑检索相关全量用例；修法 1 会改变 key 的构成（缓存键变化只会导致一次冷启动，无正确性风险）。
 - **Blocked by**：无。与本轮 QA 计划解耦，可独立立项。
+
+## T16 — `_finish_turn` 的事务边界（2026-09-23 由 T15 收尾轮实现者发现并登记）
+
+- **What**：`_finish_turn`（`app/routes/qa_routes.py`）是「`create_session` → append 用户消息 → append 助手消息 → `_emit_trace`」四步。若在**半途**抛异常（会话已建、用户消息已落库、助手消息写失败），当前会发 `error` 帧并落一条埋点，但**库里留下一条只有用户消息的半截会话**。
+- **Why**：这是注释里那条「失败轮次不入库」在**异常路径**上的反例——正常失败路径（`persist_ok=False`）确实不入库，但**异常**路径会留下半截数据，且用户回看历史时会看到一条「只有提问、没有回答」的会话。SQLite + `get_db()` 每次新连接 ⇒ **无嵌套事务**，故三次写不在一个事务里。
+- **Context**：来源为 Task 15 收尾轮实现者的上报（不在该轮裁决范围内，故未处理）。相关代码：`app/routes/qa_routes.py` 的 `_finish_turn`、`app/qa/sessions.py` 的 `create_session`/`append_message`、`app/database.py` 的 `get_db()`。
+- **Pros**：消除半截会话脏数据；让「失败轮次不入库」在异常路径上也成立。
+- **Cons**：要给 `get_db()` 或该调用点引入显式事务（`BEGIN`/`COMMIT`/`ROLLBACK`）语义，牵动既有连接管理；需评估与既有 `with get_db()` 用法的一致性。
+- **Blocked by**：无。属独立小项，但会动到持久化层，建议单独立项、单独评测。
