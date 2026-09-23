@@ -402,6 +402,18 @@ git commit -m "feat: QA 响应透出实际生效的精排级别"
 
 ## Task 3: 健康检查增加模型就绪项
 
+> ⚠️ **测试的 patch 目标是 `is_ready`，不是 `get_reranker`/`get_model`**（首版计划此处自相矛盾，已修）：
+> 本 Task 的核心约束是「`is_ready()` 只探测、不加载」，即它**不得调用** `get_reranker()`/`get_model()`。
+> 而 patch 那两个函数的返回值**不会**改变三态哨兵 `_model`，也不会改变磁盘文件——于是「两个模型都在」
+> 与「缺 CrossEncoder」在**实现可见的状态上完全相同**。若测试 patch 那两函数，它们在同一个状态上
+> 要求 `ok` 与 `warn` 两个不同结论，**任何无副作用的实现都无法同时满足**；唯一能过的写法是
+> `is_ready() = get_reranker() is not None`，正是被禁止且会导致维护页每次打开真实例化模型的写法。
+> 故断言值全部保留，patch 目标改为真正的接缝 `is_ready`。
+>
+> **另需补测**：下面的「副作用守卫」用例把 `is_ready` 也 patch 掉了，因此实际从未执行**真的** `is_ready()`——
+> 追不出「`is_ready` 自身不加载」这一性质。实现时须补若干条以**真实** `is_ready()` 为对象的用例
+> （用「调用即抛」桩钉住 `get_reranker`/`get_model`，同时不 patch `is_ready`），覆盖三态哨兵 × 磁盘文件的有无组合。
+
 **Files:**
 - Modify: `app/maintenance/health_check.py`（`LABELS`、`run_health_check`）
 - Modify: `app/ai/reranker.py`、`app/ai/embedding.py`（各新增 `is_ready()`）
@@ -450,8 +462,8 @@ from app.maintenance.health_check import run_health_check
 
 def test_model_ready_ok_when_both_models_available(qa_db):
     """正常场景：两个模型都在 → ok，且无 hint。"""
-    with patch("app.ai.reranker.get_reranker", return_value=object()), \
-         patch("app.ai.embedding.get_model", return_value=object()):
+    with patch("app.ai.reranker.is_ready", return_value=True), \
+         patch("app.ai.embedding.is_ready", return_value=True):
         result = run_health_check()
     item = next(c for c in result["checks"] if c["key"] == "model_ready")
     assert item["severity"] == "ok"
@@ -460,8 +472,8 @@ def test_model_ready_ok_when_both_models_available(qa_db):
 
 def test_model_ready_warns_when_reranker_missing(qa_db):
     """边界场景：仅缺 CrossEncoder → warn，提示精排降级。"""
-    with patch("app.ai.reranker.get_reranker", return_value=None), \
-         patch("app.ai.embedding.get_model", return_value=object()):
+    with patch("app.ai.reranker.is_ready", return_value=False), \
+         patch("app.ai.embedding.is_ready", return_value=True):
         result = run_health_check()
     item = next(c for c in result["checks"] if c["key"] == "model_ready")
     assert item["severity"] == "warn"
@@ -485,8 +497,8 @@ def test_health_check_does_not_instantiate_models(qa_db):
 
 def test_model_ready_errors_when_embedding_missing(qa_db):
     """异常场景：缺 embedding → 向量召回一并失效，严重度高于仅缺精排。"""
-    with patch("app.ai.reranker.get_reranker", return_value=None), \
-         patch("app.ai.embedding.get_model", return_value=None):
+    with patch("app.ai.reranker.is_ready", return_value=False), \
+         patch("app.ai.embedding.is_ready", return_value=False):
         result = run_health_check()
     item = next(c for c in result["checks"] if c["key"] == "model_ready")
     assert item["severity"] == "error"
@@ -574,7 +586,8 @@ Expected: 全部 PASS
 - [ ] **Step 5: 提交**
 
 ```bash
-git add app/maintenance/health_check.py tests/test_health_check_models.py
+git add app/maintenance/health_check.py app/ai/reranker.py app/ai/embedding.py \
+        tests/conftest.py tests/test_health_check_models.py
 git commit -m "feat: 健康检查增加 AI 模型就绪项（分享场景告知缺什么）"
 ```
 
