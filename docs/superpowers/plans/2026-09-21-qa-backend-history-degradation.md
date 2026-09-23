@@ -2130,7 +2130,11 @@ def test_build_markdown_contains_title_and_turns():
     md = S.build_markdown(sess, msgs)
     assert "# 混凝土强度" in md
     assert "如何评定" in md
-    assert "GB 50204 8.2.1" in md
+    # 《编号》条文号 是本项目的既有渲染惯例（见 app/ai/prompts.py:11 的
+    # 【《规范编号》条文X】、app/qa/context.py:92、qa_panel.html:49 等 7 处）。
+    # 首版此处写 "GB 50204 8.2.1"（空格分隔）是笔误——它与实现侧的
+    # 《GB 50204》8.2.1 互斥（子串关系不成立），会使本用例必失败。
+    assert "《GB 50204》8.2.1" in md
 
 
 def test_build_markdown_handles_session_without_messages():
