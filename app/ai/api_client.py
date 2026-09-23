@@ -25,6 +25,23 @@ def _build_messages(prompt: str, context: str, system_prompt: str) -> list[dict]
     ]
 
 
+def _request_payload(model: str, messages: list[dict], stream: bool = False) -> dict:
+    """两条路径（ask / ask_stream）**共用**的请求体构造——此前两处各写一份，仅 `stream` 键不同。
+
+    `stream` 键只在真流式时附加，且置于末尾（与既有请求体的 JSON 字段顺序逐字一致）；
+    非流式请求体里不得出现它——部分兼容网关见到 `stream` 就会改走 SSE。
+    """
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.3,
+        "max_tokens": 2048,
+    }
+    if stream:
+        payload["stream"] = True
+    return payload
+
+
 def _extract_delta(payload: str) -> str:
     """从 SSE 单行 JSON 中取出增量文本；脏数据返回空串（跳过该行）。"""
     import json as _json
@@ -65,12 +82,7 @@ class APIBackend(CLIBackend):
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(
                     f"{self.base_url}/chat/completions",
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "temperature": 0.3,
-                        "max_tokens": 2048,
-                    },
+                    json=_request_payload(self.model, messages),
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
@@ -101,8 +113,10 @@ class APIBackend(CLIBackend):
                 error=f"API 返回错误 (HTTP {status_code})",
                 duration_ms=duration,
             )
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as e:
             duration = (time.time() - start) * 1000
+            # 与紧邻的 HTTPError 分支同规格：失败必须落日志（保留原始错误对象）
+            logger.error("API 调用超时: %s", e)
             return CLIResponse(
                 success=False, content="",
                 error="API 调用超时",
@@ -131,8 +145,7 @@ class APIBackend(CLIBackend):
             async with httpx.AsyncClient(timeout=60) as client:
                 async with client.stream(
                     "POST", f"{self.base_url}/chat/completions",
-                    json={"model": self.model, "messages": messages,
-                          "temperature": 0.3, "max_tokens": 2048, "stream": True},
+                    json=_request_payload(self.model, messages, stream=True),
                     headers={"Authorization": f"Bearer {self.api_key}",
                              "Content-Type": "application/json"},
                 ) as resp:
@@ -152,7 +165,9 @@ class APIBackend(CLIBackend):
                         if text:
                             yield {"type": "delta", "text": text}
             yield {"type": "done"}
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as e:
+            # 与紧邻的 HTTPError 分支同规格：失败必须落日志（保留原始错误对象）
+            logger.error("API 流式调用超时: %s", e)
             yield {"type": "error", "message": "API 调用超时"}
         except httpx.HTTPError as e:
             logger.error("API 流式调用异常: %s", e)

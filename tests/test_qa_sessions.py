@@ -161,22 +161,6 @@ def test_append_message_bumps_updated_at(qa_db):
     assert after["updated_at"] > before["updated_at"]
 
 
-def test_touch_session_bumps_updated_at_without_adding_message(qa_db):
-    """正常场景：无新消息时也能把会话顶上去（会话管理栏的置顶/续聊依赖它）。
-
-    守卫两点：时间戳确实被刷新（排序生效），且不产生任何消息（它不是
-    「写一条空消息」的假刷新）。
-    """
-    sid = S.create_session("s")
-    before = S.get_session(sid)
-    assert before is not None
-    S.touch_session(sid)
-    after = S.get_session(sid)
-    assert after is not None
-    assert after["updated_at"] > before["updated_at"]
-    assert S.get_messages(sid) == []
-
-
 def test_list_sessions_orders_by_recent_activity(qa_db):
     """正常场景：列表按最近活跃倒序。"""
     a = S.create_session("A")

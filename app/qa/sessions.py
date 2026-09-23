@@ -9,7 +9,7 @@
 - 并发安全依赖 `get_db()` 的 `sqlite3.connect(..., timeout=30)` 把写入串行化；
   有测试守护该不变量（`test_concurrent_appends_same_session_do_not_lose_or_mix`）
 - 删除会话时**仍应用层显式删消息**，但理由与首版计划所述不同：
-  本项目在 `get_connection()` 里开着 `PRAGMA foreign_keys=ON`（`app/database.py:205`，
+  本项目在 `get_connection()` 里开着 `PRAGMA foreign_keys=ON`（`app/database.py:207`，
   `get_db()` 只是其调用方），**级联删除实际是生效的**。显式删除保留为防御性写法——
   它让行为不依赖那条 PRAGMA，且在更早的 SQLite 版本或将来关掉外键时仍然正确。
 - 级联的保护由**两侧**测试合起来构成（T4 已落前提侧）：
@@ -209,15 +209,6 @@ def append_message(session_id: int, role: str, content: str,
         return int(cur.lastrowid)
 
 
-def touch_session(session_id: int) -> None:
-    """仅刷新 updated_at（用于无新消息但要提升排序的场景）。"""
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE qa_sessions SET updated_at = ? WHERE id = ?",
-            (_now_ts(), session_id),
-        )
-
-
 def rename_session(session_id: int, title: str) -> bool:
     """重命名；会话不存在返回 False。"""
     clean = (title or "").strip()
@@ -297,11 +288,12 @@ def build_markdown(sess: dict, messages: list[dict]) -> str:
             lines += ["## 答", "", content, ""]
             sources = m.get("sources") or []
             if sources:
-                # 参考条文格式「《规范编号》条文号」是**项目惯例**，与全站其余 7 处
-                # 渲染保持一致：app/ai/prompts.py:11,23（【《规范编号》条文X】）、
+                # 参考条文格式「《规范编号》条文号」是**项目惯例**，与全站采用同一格式的
+                # 渲染处保持一致：app/ai/prompts.py:11,23（【《规范编号》条文X】）、
                 # app/qa/context.py:92、app/templates/partials/qa_panel.html:49、
-                # static/components/qa.js:93,111、result_content.html:25。
-                # 导出的 md 会被丢回系统渲染（qa.js 的 `【《code》clause】` 正则转链接），
+                # static/components/qa.js:93,111（**均含条文号**）。
+                # （`result_content.html:25` 的「已被《code》替代」不带条文号，不是同一格式，
+                # 不在本枚举内。）
                 # 故此处**不得**改成空格分隔的写法。
                 refs = "、".join(
                     f"《{s.get('code', '')}》{s.get('clause_no', '')}"

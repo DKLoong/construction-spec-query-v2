@@ -143,7 +143,13 @@ def test_trace_records_history_tokens_and_budget(auth_client, qa_env):
 
 
 def test_list_sessions_endpoint(auth_client):
-    """正常场景：列表接口返回会话数组，按最近活跃倒序。"""
+    """正常场景：列表接口返回会话数组，元素含 id。
+
+    本用例**只建一个会话**，故它钉的是「接口形状」（键名 `sessions`、元素能被
+    路由原样透出），而不是排序——「按最近活跃倒序」由 store 层用例
+    `tests/test_qa_sessions.py::test_list_sessions_orders_by_recent_activity` 锁定
+    （排序是 `list_sessions` 的职责，此处再建一个会话只是把同一件事测第二遍）。
+    """
     a = S.create_session("A")
     S.append_message(a, "user", "q")
     r = auth_client.get("/qa/sessions")
@@ -184,13 +190,30 @@ def test_get_missing_session_returns_404(auth_client):
 
 
 def test_rename_session_endpoint(auth_client):
-    """正常场景：重命名生效。"""
+    """正常场景：重命名生效，且响应**回传新标题**（前端不必再拉一次列表）。"""
     sid = S.create_session("旧名")
     r = auth_client.patch(f"/qa/sessions/{sid}", json={"title": "新名"})
-    assert r.status_code == 200 and r.json()["ok"] is True
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "title": "新名"}
     got = S.get_session(sid)
     assert got is not None
     assert got["title"] == "新名"
+
+
+def test_rename_uses_update_rowcount_not_precheck(auth_client, monkeypatch):
+    """异常场景（TOCTOU）：以 UPDATE 的影响行数为准，不靠前置存在性查询。
+
+    路由此前先 `get_session` 判存在、再 `rename_session` 并**丢弃返回值**：
+    两次调用之间会话被并发删除时，UPDATE 影响 0 行却仍回 200 —— 前端显示
+    「已重命名」而库里什么都没改，且白查一次库。
+    本用例把 `rename_session` 固定为「影响 0 行」（等价于那个窗口内被删），
+    断言路由据此回 404。**把返回值判断去掉（恢复丢弃返回值），本用例即红。**
+    """
+    sid = S.create_session("旧名")
+    monkeypatch.setattr(S, "rename_session", lambda session_id, title: False)
+    r = auth_client.patch(f"/qa/sessions/{sid}", json={"title": "新名"})
+    assert r.status_code == 404
+    assert r.json()["detail"] == "会话不存在"
 
 
 def test_rename_rejects_blank_title(auth_client):
@@ -395,16 +418,18 @@ def test_search_endpoint_escapes_underscore_wildcard(auth_client):
 
 
 def test_search_endpoint_escapes_backslash(auth_client):
-    """异常场景：反斜杠本身被转义（`_escape_like` 的第一步，前提是 `ESCAPE '\\'`）。
+    """异常场景：反斜杠本身必须翻倍，否则末尾 `%` 通配符会被它转义成字面 `%`。
 
-    为什么单独测：`\\` 是 ESCAPE 字符自身。它若不翻倍，搜索串尾部会与 `%`/`_` 前插入的
-    转义反斜杠连成 dangling escape——轻则把尾部通配符吃掉、重则 SQL 报错。
+    为什么单独测：`\\` 是 `ESCAPE '\\'` 的转义字符自身，且**只与它自己有关**——
+    输入 `q="\\"` 里没有 `%`/`_`，谈不上「与后插入的转义反斜杠串联」。
+    真机制是：不翻倍时 `pattern = "%\\%"` 尾部那个 `%` 被未加倍的反斜杠转义，
+    模式退化为「任意内容 + **字面 %**」——本用例库里两条消息都不含 `%`，命中 0 条。
     删掉 `_escape_like` 里 `text.replace("\\\\", "\\\\\\\\")` 那一行，本用例必须失败。
     """
     sid = S.create_session("s")
     S.append_message(sid, "user", r"C:\spec\gb50204 的路径写法")
     S.append_message(sid, "user", "普通内容")
-    # 未转义时 "\" 会与后续插入的转义反斜杠串联，命中的集合与下面断言不同
+    # 不翻倍时模式退化为「任意内容 + 字面 %」→ 命中 0 条（而非下面这条含反斜杠的消息）
     hits = auth_client.get("/qa/search", params={"q": "\\"}).json()["hits"]
     assert [h["content"] for h in hits] == [r"C:\spec\gb50204 的路径写法"]
 

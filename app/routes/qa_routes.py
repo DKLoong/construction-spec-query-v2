@@ -228,6 +228,22 @@ class QaContext:
     session_id: int | None
 
 
+def _dim_filters(body: QaRequest, relaxed: bool) -> dict:
+    """本轮请求携带的**分类维度**筛选（字段名取自 QA_DIM_FIELDS，单一来源）。
+
+    放宽（relaxed）时返回空 dict——那正是「放宽」的语义：只忽略分类维度，
+    状态过滤与前言设置仍生效。
+
+    两处调用方对结果的**取用方式**不同，但**判定相同**（都只问「有没有维度」）：
+      - `_prepare_qa_context`：结果直接展开进 `SearchQuery`（放宽 → 不传维度）；
+      - `_effective_filters`：结果作为「本轮生效筛选」的维度部分（放宽 → 不产出维度键）。
+    故 `relaxed` 一律由调用方显式传入，避免两处各写一遍 `if not body.relaxed` 的重复式。
+    """
+    if relaxed:
+        return {}
+    return {k: getattr(body, k) for k in QA_DIM_FIELDS if getattr(body, k)}
+
+
 def _effective_filters(body: QaRequest) -> dict:
     """本轮实际生效的筛选（分类维度 + **显式**状态过滤 + 前言放行）。
 
@@ -245,9 +261,7 @@ def _effective_filters(body: QaRequest) -> dict:
     这不是漏记：兜底是**问题文本的确定性函数**，而问题原文本身已随本轮消息落库
     （qa_messages.content），回看时可由问题文本**重建**当轮是否放行非条文。
     """
-    out: dict = {}
-    if not body.relaxed:
-        out = {k: getattr(body, k) for k in QA_DIM_FIELDS if getattr(body, k)}
+    out: dict = _dim_filters(body, body.relaxed)
     if body.status_filter is not None:
         out["status_filter"] = body.status_filter
     # ↓↓ 本 Task 追加的**唯一**一行逻辑（body.include_non_clause 在本 Task 才声明）↓↓
@@ -306,7 +320,7 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
         or ("前言" in question) or ("条文说明" in question)
     )
     # 放宽（relaxed）时清空分类维度：那正是「放宽」的语义（状态过滤与前言设置仍生效）
-    dims = {} if body.relaxed else {k: getattr(body, k) for k in QA_DIM_FIELDS if getattr(body, k)}
+    dims = _dim_filters(body, body.relaxed)
     has_dim = any(dims.values())
     sq = SearchQuery(
         keyword=question, per_page=pool,
@@ -640,10 +654,14 @@ async def qa_rename_session(session_id: int, body: QaSessionRenameRequest):
     title = (body.title or "").strip()
     if not title:
         return JSONResponse({"detail": "会话名不能为空"}, status_code=400)
-    if qa_sessions.get_session(session_id) is None:
+    # 以 `rename_session` 的返回值为准（UPDATE 的 rowcount），**不做前置存在性查询**：
+    # 先 get_session 再 rename 是 TOCTOU——两次调用之间会话可能被并发删除，
+    # 此时 UPDATE 影响 0 行却仍回 200，前端显示「已重命名」而实际什么都没改；
+    # 且丢弃返回值等于白查一次库。回传新标题让前端不必再拉一次列表。
+    new_title = title[:_SESSION_TITLE_MAX]
+    if not qa_sessions.rename_session(session_id, new_title):
         return JSONResponse({"detail": "会话不存在"}, status_code=404)
-    qa_sessions.rename_session(session_id, title[:_SESSION_TITLE_MAX])
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "title": new_title})
 
 
 @router.delete("/qa/sessions/{session_id}")
