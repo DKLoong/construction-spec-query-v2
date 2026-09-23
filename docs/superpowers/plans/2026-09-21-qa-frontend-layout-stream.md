@@ -553,7 +553,7 @@ Expected: FAIL — 骨架缺少 `.qa-thread` / `.qa-messages` 等完整结构
         <div class="qa-messages" x-ref="msgBox">
             <template x-for="(msg, i) in messages" :key="msg.uid || i">
                 <div class="qa-msg" :class="msg.role === 'user' ? 'qa-user' : 'qa-bot'">
-                    <template x-if="msg.role === 'bot'">
+                    <template x-if="msg.role === 'assistant'">
                         <div>
                             <!-- 易混淆术语提示（x-text 渲染，杜绝 HTML 注入）；仅提示、不改写答案 -->
                             <template x-if="msg.confusable && msg.confusable.length">
@@ -1047,11 +1047,16 @@ document.addEventListener('alpine:init', () => {
                 const data = await r.json();
                 // 字段结构与 qa_messages 一一对应，直接映射；
                 // 历史消息必须走完整渲染（含 KaTeX），因为流式降级渲染不跑公式
+                //
+                // ⚠️ role 值域是后端的 {user, assistant}（qa_messages.role），**不要**在本地另造
+                // 'bot' 之类的别名：本计划首版把助手消息写成 role:'bot'，而这里直接映射后端值
+                // 'assistant' ⇒ 模板的 x-if="msg.role === 'bot'" 恒为假 ⇒ **点开历史会话时
+                // 只显示提问、不显示任何回答**。统一用 'assistant'（CSS 类名 qa-bot 保留不动）。
                 this.messages = (data.messages || []).map(m => ({
                     uid: ++_uid,
                     role: m.role,
                     content: m.content,
-                    html: m.role === 'bot'
+                    html: m.role === 'assistant'
                         ? this.renderMarkdown(m.content, m.sources) : '',
                     sources: m.sources || [],
                     confusable: m.confusable || [],
@@ -1344,7 +1349,7 @@ Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `
             this.scrollToBottom();
 
             const botMsg = {
-                uid: ++_uid, role: 'bot', content: '', html: '',
+                uid: ++_uid, role: 'assistant', content: '', html: '',
                 sources: [], confusable: [], filteredOut: 0,
                 streaming: true,      // 生成中：.qa-answer 走 pre-wrap 纯文本样式
             };
