@@ -75,9 +75,14 @@ def test_build_history_skips_malformed_entries():
     此处补上配对的 assistant 答案，并使用有区分度的脏数据内容，使断言真正
     覆盖「脏数据被跳过」这一意图（原 `"x"` 为单字，无法据以断言未泄漏）。
     """
-    out = build_history([{"role": "user"}, {"content": "脏数据"},
-                         None, {"role": "user", "content": "有效"},
-                         {"role": "assistant", "content": "有效答案"}], 6, 6000)
+    # 用裸注解局部变量承载「有意越契约」的输入：None 元素故意触发 _turns 的
+    # isinstance 防御分支。**不放宽 build_history 的签名**——list[dict] 是
+    # get_messages 的真实契约（其行只构造 dict），放宽会把 error 搬给 Task 8 的
+    # 调用点；表达「此处有意越契约」的正确位置就是测试本身。
+    dirty: list = [{"role": "user"}, {"content": "脏数据"},
+                   None, {"role": "user", "content": "有效"},
+                   {"role": "assistant", "content": "有效答案"}]
+    out = build_history(dirty, 6, 6000)
     assert "有效" in out and "有效答案" in out
     assert "脏数据" not in out
 
