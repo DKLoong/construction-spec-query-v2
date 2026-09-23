@@ -123,9 +123,14 @@ def t1_qa_entry_is_a_page_link(page):
 
 
 def t1_left_panel_present_on_qa_page(page):
-    """正常场景：QA 页的左栏分类树照常在位（整页导航下由 base.html 渲染）。"""
+    """正常场景：QA 页的左栏分类树照常在位（整页导航下由 base.html 渲染）。
+
+    ⚠️ 选择器**必须限定在左栏内**（`.left-panel input[type=search]`）：QA 页在 T2 之后
+    会多出**会话管理栏的搜索框**，全局 `input[type=search]` 计数变 2 ⇒ 本用例在 T2 后必红，
+    而完成标准要求 t1~t5 全绿。全局计数是个"随别的 Task 变化"的隐式耦合，不能留。
+    """
     page.goto(f"{BASE}/qa")
-    assert page.locator("input[type=search]").count() == 1, "左栏搜索框缺失"
+    assert page.locator(".left-panel input[type=search]").count() == 1, "左栏搜索框缺失"
     assert page.locator(".tree-container").count() == 1, "左栏分类树缺失"
 
 
@@ -142,7 +147,10 @@ def t1_filters_carry_into_qa_via_url(page):
     page.wait_for_timeout(500)
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
-    assert "?" in page.url, f"QA URL 未携带筛选参数：{page.url}"
+    # ⚠️ 不要写成 `assert "?" in page.url`——那是**恒真**的：`buildQaUrl()` 总会带上
+    # `status_filter`（store 默认"仅现行"），所以 query 串必然非空，删掉整个维度回填它照样绿。
+    # 断言必须落到**分类维度键**上（下面这条 + 紧随的 active 计数共同钉住"筛选真的带过来了"）
+    assert "dim" in page.url, f"QA URL 未携带分类维度参数：{page.url}"
     active = page.locator(".tree-label.active").count()
     assert active >= 1, "QA 页未回填筛选（分类树无选中项）"
 
@@ -212,22 +220,46 @@ def t1_tree_click_in_search_page_still_searches(page):
     assert page.locator("#search-results").count() == 1
 
 
+# ⚠️ 键名 = 该 Task 的编号本身（"t1".."t5"）。后续 Task 追加用例时**必须同时把函数名加进对应键**，
+#    否则 `probe_qa_ui.py tN` 会 KeyError。本计划首版此处只登记了 "t1"，且 T3~T5 的调用键名整体错位一位
+#    （T3 调 t4、T4 调 t5、T5 调 t6），已修——**调用键与 Task 编号必须一致**。
+def t1_qa_enter_search_returns_to_search_page(page):
+    """正常场景（用户明确期望）：QA 页按回车搜索 = 回到检索页。
+
+    没有这条探针的话，「QA 页搜索后地址栏仍停在 /qa、内容却已是检索结果」这个半途状态
+    不会被任何东西抓到。删掉 `search()` 里那句 `history.pushState(null, '', '/')` → 本用例必红。
+    """
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    page.fill(".left-panel input[type=search]", "混凝土")
+    page.press(".left-panel input[type=search]", "Enter")
+    page.wait_for_selector("#search-results", timeout=10000)
+    assert page.locator("#qa-root").count() == 0, "搜索后 QA 界面应已被检索结果替换"
+    assert "/qa" not in page.url, f"地址栏未回落到检索页（应不再是 /qa）：{page.url}"
+
+
 CASES = {"t1": [t1_qa_entry_is_a_page_link,
                 t1_left_panel_present_on_qa_page,
                 t1_filters_carry_into_qa_via_url,
                 t1_qa_page_filters_survive_reload,
                 t1_search_page_unaffected,
                 t1_tree_click_in_qa_page_does_not_navigate,
-                t1_tree_click_in_search_page_still_searches]}
+                t1_tree_click_in_search_page_still_searches,
+                t1_qa_enter_search_returns_to_search_page]}
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "t1"
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome", headless=True)
         pg = browser.new_page(viewport={"width": 1600, "height": 900})
+        n = 0
         for fn in CASES[which]:
             fn(pg)
             print(f"PASS {fn.__name__}")
+            n += 1
+        # 自报条数：各 Task 的 Expected 一律照这一行核对，**不要在计划里手写死条数**
+        # （首版手写的「3 行 / 5 行 PASS」与 CASES 实际登记数不符，是同一类漂移）
+        print(f"== {which}: {n}/{len(CASES[which])} passed ==")
         browser.close()
 ```
 
@@ -298,7 +330,10 @@ async def qa_page(request: Request):
 ```bash
 grep -rn "qa_panel.html" app/ static/ | grep -v "__pycache__"
 ```
-Expected: 无输出。若有输出，先改掉那些引用再删。
+Expected: **仅剩注释级引用**——实测 `app/qa/sessions.py:302` 的一句注释里提到 `qa_panel.html:49`（记的是当时
+的行号出处）。这是**文档性引用**、不影响运行；但删掉模板后它就悬空了，故**本 Task 顺手把该注释改成
+可自解释的表述**（例如「QA 面板底部原有的参考条文行」），而不是留一个指向已删文件的路径。
+除该注释外不应再有输出；若还有其它引用，先改掉再删。
 
 **保留** `#clause-modal-overlay`（条文详情弹窗，本次明确不改）与 `partials/settings_dialog.html`。
 
@@ -336,10 +371,15 @@ function syncQaUrl() {
 
 在 `qaView` 组件中新增 `seedFiltersFromUrl()` 并在 `init()` 首行调用：
 
+> ⚠️ **T1 阶段不得调用 `loadSessions()`**——它属于 **T4**（本 Agent 在 T1 只建骨架与 URL 机制）。
+> 首版计划此处把 `await this.loadSessions()` 也写进了 `init()`，而 T1 的 `qaView` 里没有该方法
+> ⇒ QA 页 Alpine 初始化**立刻抛 TypeError**，T1 的探针一条都跑不到断言。
+> T4 实现 `loadSessions()` 时再把这一行加进 `init()`（T4 的说明里已明写必须保留 `seedFiltersFromUrl()`）。
+
 ```js
         async init() {
-            this.seedFiltersFromUrl();
-            await this.loadSessions();
+            this.seedFiltersFromUrl();   // T1：URL → store 回填
+            // await this.loadSessions();  ← T4 引入 loadSessions() 后在此启用
             this.scrollToBottom();
         },
 
@@ -429,6 +469,26 @@ function isQaView() {
 > `isQaView()` 已在上一步定义于 `tree.js`（单一实现，供 `tree.js`/`search.js`/`qa.js` 共用）。
 > **不要**在 `qa.js` 里另写一份 DOM 判据——那会让两处判据将来可能漂移。
 
+> ⚠️ **还差一处：QA 页按回车搜索的落点**（本计划首版漏了，会留下自相矛盾的半途状态）。
+> 左侧搜索框的 Enter 走 `search()`，它做的是 `htmx.ajax('GET', '/search?...', {target: '.center-panel-v2'})`
+> ——**片段换入**。于是在 QA 页按回车时：QA 界面被替换成检索结果，但**地址栏仍停在 `/qa`**
+> ⇒ 刷新或后退又变回 QA 页，两边对不上。
+> **为什么不能直接"导航到检索页"**：`GET /search` 返回的是**片段**（`partials/result_list.html`，
+> 见 `app/routes/search_routes.py:120`），`GET /` 也不接受关键词（`app/main.py:165` 只渲染欢迎页）
+> ⇒ 本项目**没有**「整页导航到检索结果」这条路径，htmx 换入是唯一形态。
+> **定案（与用户对「回车即展示搜索结果」的期望一致）**：让 QA 页的回车**表现得与检索页完全一致**——
+> 照常 htmx 换入结果，**并**把地址栏回落到 `/`：
+>
+> ```js
+> // search.js 的 search()：htmx.ajax(...) 之后追加——
+> // 若刚才在 QA 页，换入结果后把地址栏推回检索页，避免"内容已是检索页、URL 还是 /qa"
+> if (typeof isQaView === 'function' && isQaView()) history.pushState(null, '', '/');
+> ```
+>
+> 换入后 `#qa-root` 随 `.center-panel-v2` 一起消失 ⇒ 之后 `isQaView()` 自然为 false，
+> 左栏筛选项点击回到「检索页语义」⇒ 与"在检索页搜索完"的状态**逐字等价**。
+> **探针**：`t1_qa_enter_search_returns_to_search_page`（见 Step 1 的探针清单）
+
 - [ ] **Step 7: 提升静态资源版本号并重启**
 
 `base.html`：`qa.js?v=18` → `?v=19`；`tree.js?v=6` → `?v=7`；`search.js?v=9` → `?v=10`。
@@ -438,7 +498,7 @@ function isQaView() {
 - [ ] **Step 8: 运行探针确认通过**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t1`
-Expected: 5 行 `PASS`
+Expected: 全部 `PASS` —— **条数由脚本自报，不要在计划里写死**（首版手写的「3 行 / 5 行」与 CASES 实际登记数不符，且 T3~T5 的 Run 键名整体错位了一位，已修）。脚本会打印本次运行的用例名与 PASS/FAIL 计数，照它核对。
 
 - [ ] **Step 9: 提交**
 
@@ -522,9 +582,22 @@ def t2_qa_page_not_shown_on_other_pages(page):
 - [ ] **Step 2: 运行探针确认失败**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t2`
-Expected: FAIL — 骨架缺少 `.qa-thread` / `.qa-messages` 等完整结构
+Expected: FAIL —— **但不要拿"骨架缺结构"当 RED 证据**：`.qa-thread` / `.qa-messages` / `.qa-composer` / `.qa-sessions`
+这些选择器 **T1 的骨架就已经有了**（见 T1 Step 3），所以 `t2_layout_structure_present` 这类用例在 T1 建好后就通过。
+本步应以**折叠/宽度类**用例（依赖 T2 才落地的 `sessionsCollapsed` 数据字段与 `.qa-sessions` 宽度规则）
+作为失败证据；若跑出来"全部通过"，说明这些用例没有真正验收 T2 的交付物，**必须先改用例再继续**。
 
 - [ ] **Step 3: 实现 QA 页模板**
+
+> ⚠️ **先补 `sessionsCollapsed` 数据字段**：模板里的 `@click="sessionsCollapsed = !sessionsCollapsed"`
+> 与 `x-show="!sessionsCollapsed"` 依赖它。该字段**首版计划只在 T4 重写的组件里声明**，而 T2 的折叠探针
+> （`t2_sessions_panel_collapses_without_moving_composer`）在 T2 就要它生效。
+> ⇒ 本步在 `static/components/qa.js` 的 `qaView` 数据块里**新增 `sessionsCollapsed: false`**
+> （T4 重写组件时保留它）。不要依赖"Alpine 会对新增键做响应式跟踪"这类未在本项目验证过的行为——
+> 声明式地给出初值，折叠的初始态与绑定才都是确定的。
+>
+> 另注：`.qa-sessions` 的 `x-cloak` 需要 `[x-cloak]{display:none}` 样式在 CSS 里生效（Step 4 一并确认），
+> 否则首帧会闪一下会话栏。
 
 把 T1 建立的骨架 `app/templates/partials/qa_page.html` 换成完整布局：
 
@@ -615,6 +688,21 @@ Expected: FAIL — 骨架缺少 `.qa-thread` / `.qa-messages` 等完整结构
                   x-text="'· 已修改，将在下一轮生效'"></span>
         </div>
         <div class="qa-composer">
+            <!-- 问答模式切换（**必须保留**：设计文档 §4.8「必须保留的既有功能」+
+                 用户明确约束「原文摘抄/综合问答模式切换别搞废了，只调整 UI」）。
+                 位置从旧弹窗的顶部挪到输入框上方——它与「发送」同属一次提问的输入设置。
+                 ⚠️ 勾选框的 inline `width:1rem;height:1rem` **不能省**：本项目 pico 主题下
+                 经 `appearance:none` 重绘的 checkbox 若落到 `width:auto` 会塌缩成 4px（已踩过的坑）。
+                 文案与旧面板逐字一致，便于对照「功能未被删」。
+                 切换时机：与「本轮生效」同理，只影响**下一轮**提问（send() 时读 mode）。 -->
+            <label class="qa-mode-switch"
+                   style="display:flex;align-items:center;gap:0.25rem;font-size:0.75rem;margin:0 0 0.35rem 0;cursor:pointer;width:fit-content">
+                <input type="checkbox" style="width:1rem;height:1rem;margin:0"
+                       :checked="mode === 'verbatim'" @change="toggleMode()">
+                原文摘抄模式（禁止归纳，仅摘抄标注来源）
+                <small x-text="mode === 'verbatim' ? '🔤 原文摘抄' : '📖 综合问答'"
+                       style="color:var(--pico-muted-color)"></small>
+            </label>
             <textarea x-model="input" @keydown.enter.prevent="send()"
                       placeholder="输入问题并按 Enter 发送..." rows="3"></textarea>
             <div class="qa-composer-btns">
@@ -720,7 +808,7 @@ Expected: FAIL — 骨架缺少 `.qa-thread` / `.qa-messages` 等完整结构
 - [ ] **Step 6: 运行探针**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t2`
-Expected: 3 行 `PASS`
+Expected: 全部 `PASS` —— **条数由脚本自报，不要在计划里写死**（首版手写的「3 行 / 5 行」与 CASES 实际登记数不符，且 T3~T5 的 Run 键名整体错位了一位，已修）。脚本会打印本次运行的用例名与 PASS/FAIL 计数，照它核对。
 
 > 若 `t2` 因 `qaView()` 尚未实现而报 `Alpine Expression Error`，属预期——T3 重写组件。
 > 此时先确认 `.qa-thread`、`.qa-messages`、`.qa-composer`、`.qa-sessions`、`#qa-session-toggle`
@@ -788,7 +876,7 @@ def t3_ce_rerank_not_disabled_in_qa_page(page):
 
 - [ ] **Step 2: 运行探针确认失败**
 
-Run: `D:/Python/python.exe scripts/probe_qa_ui.py t4`
+Run: `D:/Python/python.exe scripts/probe_qa_ui.py t3`
 Expected: FAIL — `QA 面板内不应再有「仅现行」复选框`
 
 - [ ] **Step 3: 实现**
@@ -868,8 +956,8 @@ Expected: FAIL — `QA 面板内不应再有「仅现行」复选框`
 
 - [ ] **Step 5: 运行探针**
 
-Run: `D:/Python/python.exe scripts/probe_qa_ui.py t4`
-Expected: 3 行 `PASS`
+Run: `D:/Python/python.exe scripts/probe_qa_ui.py t3`
+Expected: 全部 `PASS` —— **条数由脚本自报，不要在计划里写死**（首版手写的「3 行 / 5 行」与 CASES 实际登记数不符，且 T3~T5 的 Run 键名整体错位了一位，已修）。脚本会打印本次运行的用例名与 PASS/FAIL 计数，照它核对。
 
 - [ ] **Step 6: 提交**
 
@@ -931,6 +1019,35 @@ def t4_history_shows_full_conversation(page):
     assert page.locator(".qa-msg").count() >= 2, "载入历史后应出现问答两条"
 
 
+def t4_mode_switch_reaches_request_body(page):
+    """正常场景（§4.8「必须保留的既有功能」）：模式切换必须真的进入请求体。
+
+    为什么必须有这条：模式切换控件在本计划首版的新模板里**被漏掉了**，而当时**没有任何探针会报警**
+    （完成标准却写着"模式切换正常"）⇒ 功能静默消失。本探针把「控件存在 + 切换生效 + 值到达请求体」
+    三件事一次性钉住：删控件 → `page.check` 找不到元素即红；`toggleMode` 不写 mode / `buildRequestBody`
+    不带 mode → 断言红。
+    """
+    page.goto(f"{BASE}/")
+    page.click("text=🤖 AI问答")
+    page.wait_for_selector("#qa-root", timeout=10000)
+
+    captured = {}
+
+    def _on_request(req):
+        if req.method == "POST" and req.url.endswith("/qa/ask"):
+            captured["body"] = req.post_data_json
+
+    page.on("request", _on_request)
+    page.check(".qa-mode-switch input[type=checkbox]")     # 切到「原文摘抄」
+    page.wait_for_timeout(200)
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+    page.wait_for_selector(".qa-bot", timeout=60000)
+
+    assert captured.get("body", {}).get("mode") == "verbatim", \
+        f"模式切换未进入请求体（mode 应为 verbatim）: {captured.get('body')}"
+
+
 def t4_continue_in_history_session_appends(page):
     """异常场景（核心）：在历史会话里继续提问，追加到同一会话而非新建。"""
     page.goto(f"{BASE}/")
@@ -988,12 +1105,25 @@ def t4_pending_filter_change_is_visible(page):
 
 - [ ] **Step 2: 运行探针确认失败**
 
-Run: `D:/Python/python.exe scripts/probe_qa_ui.py t5`
+Run: `D:/Python/python.exe scripts/probe_qa_ui.py t4`
 Expected: FAIL — `.qa-session-title` 未出现（会话列表未加载）
 
 - [ ] **Step 3: 实现**
 
 重写 `static/components/qa.js`。**必须保留**：模式切换（`toggleMode`）、`renderMarkdown`、`openClause`、`scrollToBottom`。以下是新增/改写部分：
+
+> ⚠️ **`send()` 的归属必须在本 Task 明确处理（本计划首版漏了，会直接炸）**：
+> 模板用的是 `@keydown.enter.prevent="send()"` 与 `@click="send()"`（plan 模板 `qa-composer`），
+> 而**本 Task 的"新增/改写"清单与"必须保留"清单里都没有 `send()`**；`send()` 的 SSE 版由 **T5** 拥有
+> （T5 的 Files 写着「`send()` 改走 SSE」）。
+> 若 T4 只照清单改，会落到两种坏结局之一：**删掉 → 发送键与回车彻底失效**；**留着旧版 → 回答永远空白**
+> （旧 `send()` 不写 `msg.html`，而新模板用 `x-html="msg.html"` 渲染助手消息，见 plan 模板 `qa-answer`）。
+> **定案（T4 必须做）**：本 Task 提供一版**非流式** `send()`——沿用 T5 将改写的签名 `async send(opts = {})`
+> （`opts.relaxed` 供「放宽分类筛选」复用），用 `buildRequestBody()` 发 `POST /qa/ask`（不带 `stream`），
+> 拿到 JSON 后写全 `bot` 消息的 `content`/`html`（`this.renderMarkdown(content, sources)`）/`sources`/`confusable`/
+> `filteredOut`/`filtersText`，并 `await this.loadSessions()` 刷新列表与 `this.currentSessionId = data.session_id`。
+> **T5 只把它的取数方式换成 SSE**，不动签名与收尾逻辑（T5 的 Step 4 会给出完整实现）。
+> 这样 T4 的全部探针（发送→回答可见→会话出现在列表→续聊）才有意义。
 
 ```js
 // AI 问答组件（QA 页）
@@ -1215,8 +1345,8 @@ document.addEventListener('alpine:init', () => {
 
 - [ ] **Step 5: 运行探针**
 
-Run: `D:/Python/python.exe scripts/probe_qa_ui.py t5`
-Expected: 3 行 `PASS`
+Run: `D:/Python/python.exe scripts/probe_qa_ui.py t4`
+Expected: 全部 `PASS` —— **条数由脚本自报，不要在计划里写死**（首版手写的「3 行 / 5 行」与 CASES 实际登记数不符，且 T3~T5 的 Run 键名整体错位了一位，已修）。脚本会打印本次运行的用例名与 PASS/FAIL 计数，照它核对。
 
 > 若 LLM 未配置导致回答失败，`t5` 中 `.qa-bot` 不会出现——先确认 `ai.backend.qa` 已配置可用后端（隔离库是副本，配置随副本带过来）。
 
@@ -1326,7 +1456,7 @@ def t5_stage_indicator_visible(page):
 
 - [ ] **Step 2: 运行探针确认失败**
 
-Run: `D:/Python/python.exe scripts/probe_qa_ui.py t6`
+Run: `D:/Python/python.exe scripts/probe_qa_ui.py t5`
 Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `stream` 标志）
 
 - [ ] **Step 4: 在 qa.js 实现 `send()`（SSE）**
@@ -1499,8 +1629,8 @@ function escHtml(s) {
 
 - [ ] **Step 6: 运行探针**
 
-Run: `D:/Python/python.exe scripts/probe_qa_ui.py t6`
-Expected: 3 行 `PASS`
+Run: `D:/Python/python.exe scripts/probe_qa_ui.py t5`
+Expected: 全部 `PASS` —— **条数由脚本自报，不要在计划里写死**（首版手写的「3 行 / 5 行」与 CASES 实际登记数不符，且 T3~T5 的 Run 键名整体错位了一位，已修）。脚本会打印本次运行的用例名与 PASS/FAIL 计数，照它核对。
 
 - [ ] **Step 7: 提交**
 
