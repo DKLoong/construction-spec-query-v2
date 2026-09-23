@@ -845,12 +845,51 @@ git commit -m "feat: QA 页布局（对话区 + 可折叠会话管理）"
 
 ```python
 def t3_qa_page_has_no_duplicate_status_checkboxes(page):
-    """正常场景：QA 页内不再有独立的状态过滤复选框（统一到左栏）。"""
+    """**回归守卫（本组允许全绿）**：QA 页内不再有独立的状态过滤复选框（统一到左栏）。
+
+    ⚠️ 这条**不是**本 Task 的 RED 证据，也不可能红：T2 的全新 `qa_page.html` 从一开始
+    就没有这个控件（旧的 `qa_panel.html` 已在 T1 删除）⇒ 它在 T3 开工前就是 PASS，
+    是一条「空守卫」。它守的是**将来**——别把重复的状态控件再加回来（例如有人为了
+    QA 页顺手，又在会话栏上方补一个「仅现行」）。
+    本 Task 真正会失败的是下面那条请求体探针。
+    """
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
     in_qa = page.locator("#qa-root").get_by_text("仅现行").count()
     assert in_qa == 0, "QA 面板内不应再有「仅现行」复选框，应统一读左栏"
+
+
+def t3_left_panel_status_unchecked_sends_empty_status_filter(page):
+    """正常场景（**本 Task 的 RED 证据**）：左栏取消「仅现行」后，QA 请求体的
+    `status_filter` 必须是**空串**（显式全不勾 = 放行非现行，与检索侧语义一致）。
+
+    为什么必须由这条来当 RED：`qa.js` 里原本有一份**自己的** `buildStatusFilter()`，
+    而它的本地字段 `statusCurrent: true` 恒返回 `'现行'` ⇒ 左栏怎么改，问答请求都带 `'现行'`。
+    只把注释改成「改为读 store」而不删本地实现，本用例必红。
+    """
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+
+    captured = {}
+
+    def _on_request(req):
+        if req.method == "POST" and req.url.endswith("/qa/ask"):
+            captured["body"] = req.post_data_json
+
+    page.on("request", _on_request)
+    # 左栏「仅现行」默认勾选；取消它 ⇒ 两个状态框都不勾 ⇒ buildStatusFilter() 返回 null
+    page.locator(".left-panel label:has-text('仅现行') input[type=checkbox]").uncheck()
+    page.wait_for_timeout(300)
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+    page.wait_for_selector(".qa-bot", timeout=60000)
+
+    body = captured.get("body") or {}
+    assert "status_filter" in body, f"请求体未携带 status_filter：{body}"
+    assert body["status_filter"] == "", \
+        f"左栏已取消「仅现行」，status_filter 应为空串，实得 {body['status_filter']!r}" \
+        "——说明请求体仍在用 qa.js 本地那份恒返回 '现行' 的 buildStatusFilter()"
 
 
 def t3_ce_rerank_has_tooltip(page):
@@ -872,12 +911,54 @@ def t3_ce_rerank_not_disabled_in_qa_page(page):
     page.wait_for_selector("#qa-root", timeout=10000)
     box = page.locator("input[type=checkbox]").nth(1)
     assert not box.is_disabled(), "CE 精排复选框在 QA 页被置灰了，应仅用 tooltip 说明"
+
+
+def t3_pending_filter_hint_appears_after_change(page):
+    """正常场景：「· 已修改，将在下一轮生效」提示必须真的出现。
+
+    为什么本 Task 就要有这条：`filtersChanged()` 依赖 `describeFilters()` 与
+    `effectiveFiltersText`——两者若留到 T4 才定义，T3/T4 阶段这个提示**恒不出现**
+    （`filtersChanged()` 第一行 `if (!this.effectiveFiltersText) return false;` 直接短路），
+    静默失效且无任何报警。所以本 Task 就把这两个（纯展示逻辑）定义好，并用这条钉住。
+
+    （T4 的 `t4_pending_filter_change_is_visible` 是同一断言的回归版：T3 这条钉「提前定义」，
+     T4 那条钉「重写组件后没弄丢」。两条并存，不是重复。）
+    """
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+    page.wait_for_selector(".qa-bot", timeout=60000)
+    page.wait_for_timeout(800)
+    assert page.locator(".qa-effective-filters").is_visible(), \
+        "输入框上方未显示本轮生效筛选（effectiveFiltersText 未写入）"
+    assert page.locator(".qa-filters-pending").is_hidden(), \
+        "尚未改动筛选时不应出现「将在下一轮生效」提示"
+    page.locator(".left-panel label:has-text('仅现行') input[type=checkbox]").uncheck()
+    page.wait_for_timeout(300)
+    assert page.locator(".qa-filters-pending").is_visible(), \
+        "改了筛选却没提示「将在下一轮生效」——describeFilters/effectiveFiltersText 未能比对（静默失效）"
+
+
+# 登记进本 Task 的键：**键名 = Task 编号本身**（不是 t4）。
+# 插入位置：T1 的 `CASES = {...}` 字面量之后、`if __name__ == "__main__":` **之前**
+# （放在其后则在 `__main__` 块执行时这些名字还不存在 → NameError）。
+CASES["t3"] = [t3_qa_page_has_no_duplicate_status_checkboxes,
+               t3_ce_rerank_has_tooltip,
+               t3_ce_rerank_not_disabled_in_qa_page,
+               t3_left_panel_status_unchecked_sends_empty_status_filter,
+               t3_pending_filter_hint_appears_after_change]
 ```
 
 - [ ] **Step 2: 运行探针确认失败**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t3`
-Expected: FAIL — `QA 面板内不应再有「仅现行」复选框`
+Expected: **部分 FAIL —— 本组不是整体 RED，别拿「守卫用例绿了」当没验收**：
+- `t3_qa_page_has_no_duplicate_status_checkboxes` 是**回归守卫，允许（且预期）全绿**——它守的是
+  「以后别把重复的状态控件加回来」，不是本 Task 的交付物；
+- 真正的 RED 证据是 `t3_left_panel_status_unchecked_sends_empty_status_filter`（左栏取消勾选后
+  `status_filter` 仍恒为 `'现行'`）与 `t3_pending_filter_hint_appears_after_change`（提示不出现）。
+- 若这两条也绿，说明取数并未真的改读 store（或提示逻辑没落地），**先改用例再继续**（同 T2 Step 2 的纪律）。
 
 - [ ] **Step 3: 实现**
 
@@ -915,13 +996,53 @@ Expected: FAIL — `QA 面板内不应再有「仅现行」复选框`
 > 说明用户正是在问这部分内容，此时不自动放行会让问答直接落空。改为 tooltip 说明，
 > 让「显式取消勾选 ≠ 完全排除」这件事可见，而不是让用户以为关掉了。
 
-`static/components/qa.js`，把本地状态与组合逻辑改为读 store：
+`static/components/qa.js`，把本地状态与组合逻辑改为读 store。
+
+> ⚠️ **必须删掉旧状态（只「改为读 store」是不够的，漏了这一步功能静默失效）**：
+> `qa.js` 里原有的这三样要**删除**：
+> 1. 数据字段 `statusCurrent: true`、`statusRevising: false`；
+> 2. 方法 `buildStatusFilter()`——那份**恒返回 `'现行'`** 的本地实现（`static/components/qa.js:59-63`）；
+> 3. 方法 `onStatusChange() {}`——空壳，左栏（`search.js`）已由共享 store 承担。
+>
+> 不删的后果：旧的 `send()`（`static/components/qa.js:34`）仍调**本地**那份 `buildStatusFilter()`，
+> 左栏的状态改动**对 QA 完全不生效**（在 T5 之前一直取恒值 `'现行'`），
+> 而上面那条「QA 页内没有重复复选框」的守卫探针**并不覆盖**这一点（它只看 DOM）。
+> 删除后 `send()` 的取数必须改走 `buildRequestBody()` —— 这正是
+> `t3_left_panel_status_unchecked_sends_empty_status_filter` 钉住的东西。
 
 ```js
+        // 本轮实际生效的筛选（D5）。**本 Task 就要有**：filtersChanged() 第一行读它，
+        // 留到 T4 才定义会让「将在下一轮生效」提示在整个 T3/T4 阶段恒不出现（静默失效）。
+        effectiveFiltersText: '',
+
         // 状态过滤改为读左栏共享 store（统一操作逻辑）：
         // QA 面板内不再有独立复选框，「仅现行 / 修订中」一律由左栏控制
         get statusFilter() {
             return this.$store.searchState.buildStatusFilter();
+        },
+
+        // 把筛选 dict 渲染成一行可读文本；空对象返回空串（调用处据此隐藏）。
+        // 同时服务两处：历史消息的「筛选：…」与输入框上方的「本轮生效：…」。
+        //
+        // ⚠️ 本方法**定义在 T3**（纯展示逻辑，无任何依赖，提前定义不影响任何东西）；
+        //    T4 重写组件时**必须原样保留**，删掉它会连带让 filtersChanged() 与
+        //    历史消息的「筛选：…」一起失效（本 Task 的 t3_pending_filter_hint_appears_after_change
+        //    与 T4 的 t4_filters_recorded_and_shown 都会红）。
+        describeFilters(f) {
+            const LABELS = {
+                dim1_hierarchy: '层级', dim1_industry: '行业', dim1_nature: '性质',
+                dim2_stage: '阶段', dim3_usage: '用途', dim4_specialty: '专业',
+                dim5_location: '地区', dim6_material: '材料',
+                status_filter: '状态', include_non_clause: '含前言说明',
+            };
+            if (!f || !Object.keys(f).length) return '';
+            return Object.entries(f).map(([k, v]) => {
+                const name = LABELS[k] || k;
+                if (v === true) return name;                       // 布尔开关只显示名字
+                if (v === false || v === '' || v == null) return '';  // 未启用/未选不显示
+                const val = Array.isArray(v) ? v.join('/') : String(v);
+                return val ? `${name}=${val}` : '';
+            }).filter(Boolean).join(' · ');
         },
 
         // 收集本轮筛选（**唯一来源**）：分类维度 + 状态 + 前言放行。
@@ -950,9 +1071,31 @@ Expected: FAIL — `QA 面板内不应再有「仅现行」复选框`
         },
 ```
 
+**本 Task 对既有 `send()` 的最小改动**（T4 会用完整版重写它，这里只改取数与提示写入两处）：
+
+```js
+        async send() {
+            // …前面不变…
+            const resp = await fetch('/qa/ask', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                // ① 取数改走 buildRequestBody()（读 store；不再调已删除的本地 buildStatusFilter()）
+                body: JSON.stringify(this.buildRequestBody(q)),
+            });
+            const data = await resp.json();
+            // ② 写入本轮生效筛选：否则 .qa-filters-pending 恒不出现
+            //    （后端 /qa/ask 的 JSON 响应已带 effective_filters，键与 _effective_filters 一致）
+            this.effectiveFiltersText = this.describeFilters(data.effective_filters);
+            // …后面不变（渲染与会话刷新由 T4 重写）…
+        },
+```
+
 - [ ] **Step 4: 提升版本号并重启**
 
-`base.html`：`tree.js?v=8` → `?v=9`；`qa.js` 版本号在 T4 统一处理。
+**本 Task 不改 `base.html`**——首版计划写的「把 `tree.js` 的版本号从 v=8 bump 到 v=9」已删：实际当前是 `?v=6`，
+**T1 已把它 bump 到 `?v=7`**，而且**本 Task 根本不改 `tree.js`**（改的是 `qa.js` 与 `tree_panel.html`）。
+`qa.js` 的版本号在 **T4 统一处理**（记 `?v=19`）；本 Task 阶段若要单跑 UI 验证，按 Global Constraints
+用 Ctrl+F5 强刷即可，不必为此单独 bump 一次。
 
 - [ ] **Step 5: 运行探针**
 
@@ -963,9 +1106,11 @@ Expected: 全部 `PASS` —— **条数由脚本自报，不要在计划里写�
 
 ```bash
 git add app/templates/partials/tree_panel.html static/components/qa.js \
-        app/templates/base.html scripts/probe_qa_ui.py
+        scripts/probe_qa_ui.py
 git commit -m "feat: QA 筛选统一读共享 store + CE 精排加 tooltip 说明"
 ```
+
+> `base.html` **不在**本次 `git add` 里：本 Task 不改它（见 Step 4）。
 
 ---
 
@@ -1067,7 +1212,14 @@ def t4_continue_in_history_session_appends(page):
 
 
 def t4_filters_recorded_and_shown(page):
-    """正常场景（D5）：答案下方显示当轮筛选，输入框上方显示本轮生效筛选。"""
+    """正常场景（D5）：答案下方显示当轮筛选，输入框上方显示本轮生效筛选，
+    且**载入历史会话后答案下方的筛选仍在**（这才真正走落库→回填那条路径）。
+
+    ⚠️ 只断言「当前这条答案下有 `.qa-msg-filters`」是不够的：那来自本轮内存里的消息对象，
+    即便 `filters_json` **完全没落库**、`GET /qa/sessions/{id}` 的 `filters` 恒为空，
+    它也照样通过 ⇒ 恰漏掉本用例声称覆盖的 D5 落库路径。故末尾补一段
+    「新会话 → 点回历史会话 → 再断言」，把回填路径钉死。
+    """
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
@@ -1081,6 +1233,17 @@ def t4_filters_recorded_and_shown(page):
         "答案下方未显示当轮筛选（D5 落库/展示未生效）"
     assert page.locator(".qa-effective-filters").count() == 1, \
         "输入框上方未显示本轮生效筛选"
+
+    # ── 落库回填路径（D5 的真正判据）──
+    # 清空到草稿态再点回该历史会话：消息改为从 GET /qa/sessions/{id} 重新映射，
+    # 此处的 `.qa-msg-filters` 只能来自 `qa_messages.filters_json`
+    page.click("text=＋ 新会话")
+    page.wait_for_timeout(300)
+    assert page.locator(".qa-msg").count() == 0, "新会话应清空对话区"
+    page.click(".qa-session-item >> nth=0")
+    page.wait_for_timeout(800)
+    assert page.locator(".qa-msg-filters").count() >= 1, \
+        "载入历史会话后答案下方的当轮筛选消失——filters 未随消息落库或未回填（D5 路径坏）"
 
 
 def t4_pending_filter_change_is_visible(page):
@@ -1101,6 +1264,16 @@ def t4_pending_filter_change_is_visible(page):
     page.wait_for_timeout(300)
     assert page.locator(".qa-filters-pending").is_visible(), \
         "改了筛选但未提示「将在下一轮生效」——静默失配复现"
+
+
+# 登记进本 Task 的键：**键名 = Task 编号本身**（不是 t5）。
+# 插入位置：T1 的 `CASES = {...}` 字面量之后、`if __name__ == "__main__":` **之前**。
+CASES["t4"] = [t4_ask_creates_session_and_lists_it,
+               t4_history_shows_full_conversation,
+               t4_mode_switch_reaches_request_body,
+               t4_continue_in_history_session_appends,
+               t4_filters_recorded_and_shown,
+               t4_pending_filter_change_is_visible]
 ```
 
 - [ ] **Step 2: 运行探针确认失败**
@@ -1143,9 +1316,18 @@ document.addEventListener('alpine:init', () => {
         sessionsCollapsed: false,
         rerankUsed: '',
         stageText: '正在检索…',
-        effectiveFiltersText: '',    // 本轮实际生效的筛选，显示在输入框上方（D5）
+        // 本轮实际生效的筛选，显示在输入框上方（D5）。
+        // T3 已定义（连同 describeFilters()/filtersChanged()）；重写时**原样保留**，别因为
+        // "T4 才是会话/筛选的 Task" 就把它们搬回来或删掉。
+        effectiveFiltersText: '',
 
         async init() {
+            // ⚠️ 首行**必须**是 seedFiltersFromUrl()，顺序也不能换（先回填 URL → 再拉会话列表）。
+            //    T1 已实现该方法并在 init() 里留了「← T4 引入 loadSessions() 后在此启用」的注释
+            //    （见 T1 Step 5 的 qa.js 片段）。重写组件时把它丢掉 ⇒ T1 的
+            //    `t1_filters_carry_into_qa_via_url`、`t1_qa_page_filters_survive_reload`
+            //    立刻回归失败（筛选经 URL 带入 / 刷新后仍在，全靠这一行）。
+            this.seedFiltersFromUrl();
             await this.loadSessions();
             this.scrollToBottom();
         },
@@ -1190,7 +1372,13 @@ document.addEventListener('alpine:init', () => {
                         ? this.renderMarkdown(m.content, m.sources) : '',
                     sources: m.sources || [],
                     confusable: m.confusable || [],
-                    // 当轮筛选随消息持久化（D5），回看时据此还原答案的筛选背景
+                    // 当轮筛选：**后端已落库**（D5 依赖已就绪，不再是"待补"）——
+                    // `app/routes/qa_routes.py` 的 `_finish_turn(...)` 现在会带
+                    // `filters=_effective_filters(body)` 写进 `qa_messages.filters_json`
+                    // （JSON 与 SSE `done` 两条路径都走它），`GET /qa/sessions/{id}` 返回的
+                    // 每条消息里就有 `filters`，字段名与 `_effective_filters` 的键一致：
+                    // 8 个分类维度名 + `status_filter` + `include_non_clause`。
+                    // 这里据此还原「这条答案是在什么筛选下产生的」。
                     filtersText: this.describeFilters(m.filters),
                     filteredOut: 0,
                     streaming: false,
@@ -1279,24 +1467,10 @@ document.addEventListener('alpine:init', () => {
 
         // ── 筛选可读化 ──
 
-        // 把筛选 dict 渲染成一行可读文本；空对象返回空串（调用处据此隐藏）。
-        // 同时服务两处：历史消息的「筛选：…」与输入框上方的「本轮生效：…」。
-        describeFilters(f) {
-            const LABELS = {
-                dim1_hierarchy: '层级', dim1_industry: '行业', dim1_nature: '性质',
-                dim2_stage: '阶段', dim3_usage: '用途', dim4_specialty: '专业',
-                dim5_location: '地区', dim6_material: '材料',
-                status_filter: '状态', include_non_clause: '含前言说明',
-            };
-            if (!f || !Object.keys(f).length) return '';
-            return Object.entries(f).map(([k, v]) => {
-                const name = LABELS[k] || k;
-                if (v === true) return name;                       // 布尔开关只显示名字
-                if (v === false || v === '' || v == null) return '';  // 未启用/未选不显示
-                const val = Array.isArray(v) ? v.join('/') : String(v);
-                return val ? `${name}=${val}` : '';
-            }).filter(Boolean).join(' · ');
-        },
+        // describeFilters(f) / collectFilters() / buildRequestBody(question) / filtersChanged()
+        // 四个方法**已在 T3 定义**（那里是唯一定义点，含完整实现与 LABELS 常量表），
+        // 本 Task 重写组件时**原样保留、不要在此处再复制一份**（两份必然漂移）。
+        // `effectiveFiltersText` 字段同理（见上方数据块）。
 
         // ── 降级状态提示 ──
 
@@ -1362,8 +1536,10 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 ## Task 5: 流式渲染（SSE + 降级渲染）
 
 **Files:**
-- Modify: `static/components/md-render.js`（新增无 KaTeX 的流式档）
 - Modify: `static/components/qa.js`（`send()` 改走 SSE）
+- **不改** `static/components/md-render.js`（首版此处列过一条「给它加一个流式档」的 Modify，
+  与本节正文及「文件结构」表的「不改」自相矛盾，已删——流式期间不经过任何 Markdown 解析器，
+  收尾才走既有完整管线，`md-render.js` 无需任何新档）
 - Test: `scripts/probe_qa_ui.py`
 
 **Interfaces:**
@@ -1380,19 +1556,39 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 
 ```python
 def t5_streaming_renders_progressively(page):
-    """正常场景：首字节早于完整回答，内容渐进出现。"""
+    """正常场景（渐进渲染）：**中途态必须真的存在**——带 `.streaming` 类且文本短于最终文本。
+
+    ⚠️ 首版只等「`.qa-answer` 文本非空」——那把流式换成一次性非流式实现（拿到整段再一次性写入）
+    也照样通过，与用例名不符（假绿）。这里钉住两件事：
+      ① 生成期间采样到的文本**严格短于**最终文本（真的在长）；
+      ② 收尾后 `.streaming` 类消失（降级样式只在生成期间存在）。
+    """
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
     page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
     page.press(".qa-composer textarea", "Enter")
-    # 流式：先出现部分文本（时长阈值放宽，避免慢网络误判）
+
+    # ① 中途态：等待期间采样。wait_for_function 默认按 rAF 轮询，能抓到最早的那一帧。
     page.wait_for_function(
         "() => { const a = document.querySelector('.qa-bot .qa-answer');"
-        " return a && a.innerText.trim().length > 0; }",
+        " return a && a.classList.contains('streaming') && a.innerText.trim().length > 0; }",
         timeout=60000)
-    partial = page.locator(".qa-bot .qa-answer").first.inner_text()
-    assert partial.strip(), "流式首帧应有文本"
+    mid_len = page.evaluate(
+        "() => { const a = document.querySelector('.qa-bot .qa-answer');"
+        " return a ? a.innerText.trim().length : 0; }")
+    assert mid_len > 0, "流式首帧应有文本"
+
+    # ② 收尾态：.streaming 类消失且文本变长（等收尾用 .streaming 判定，不依赖按钮禁用态）
+    page.wait_for_function(
+        "() => { const a = document.querySelector('.qa-bot .qa-answer');"
+        " return a && !a.classList.contains('streaming') && a.innerText.trim().length > 0; }",
+        timeout=60000)
+    final_len = page.evaluate(
+        "() => { const a = document.querySelector('.qa-bot .qa-answer');"
+        " return a ? a.innerText.trim().length : 0; }")
+    assert final_len > mid_len, \
+        f"最终文本（{final_len} 字）未长于中途采样（{mid_len} 字）——不是渐进渲染，而是一次性写入"
 
 
 def t5_streaming_shows_plain_text_not_markdown(page):
@@ -1401,6 +1597,10 @@ def t5_streaming_shows_plain_text_not_markdown(page):
     半截 Markdown（未闭合的 ** / 表格 / 公式）会让解析器反复重排，
     比「纯文本 → 一次性排版好」更晃眼。判据：生成期间 .qa-answer 带
     .streaming 类，且内部没有 Markdown 解析产物。
+
+    ⚠️ 首版这里用「发送按钮是否禁用」推断"还在流式"，然后写成条件分支——条件不成立就
+    **整段跳过**，用例体压根不执行 ⇒ 恒绿，等于没有守卫。现在改为**主动等**：
+    `wait_for_function` 断言 `.streaming` 出现（等不到就红），不做任何条件跳过。
     """
     page.goto(f"{BASE}/qa")
     page.wait_for_selector("#qa-root", timeout=10000)
@@ -1408,17 +1608,15 @@ def t5_streaming_shows_plain_text_not_markdown(page):
     page.press(".qa-composer textarea", "Enter")
     page.wait_for_function(
         "() => { const a = document.querySelector('.qa-bot .qa-answer');"
-        " return a && a.innerText.trim().length > 0; }",
+        " return a && a.classList.contains('streaming') && a.innerText.trim().length > 0; }",
         timeout=60000)
-    still_streaming = page.locator(".qa-composer-btns button").first.is_disabled()
-    if still_streaming:
-        ans = page.locator(".qa-bot .qa-answer").first
-        assert "streaming" in (ans.get_attribute("class") or ""), \
-            "生成期间 .qa-answer 缺 .streaming 类（pre-wrap 样式未生效）"
-        assert ans.locator("p, strong, table, h1, h2, ul").count() == 0, \
-            "生成期间出现了 Markdown 解析产物，应只显示转义纯文本"
-        assert ans.locator(".katex").count() == 0, \
-            "生成期间出现了 KaTeX 渲染产物"
+    ans = page.locator(".qa-bot .qa-answer").first
+    assert "streaming" in (ans.get_attribute("class") or ""), \
+        "生成期间 .qa-answer 缺 .streaming 类（pre-wrap 样式未生效）"
+    assert ans.locator("p, strong, table, h1, h2, ul").count() == 0, \
+        "生成期间出现了 Markdown 解析产物，应只显示转义纯文本"
+    assert ans.locator(".katex").count() == 0, \
+        "生成期间出现了 KaTeX 渲染产物"
 
 
 def t5_rerank_badge_handles_unreported_state(page):
@@ -1443,21 +1641,43 @@ def t5_rerank_badge_handles_unreported_state(page):
     assert got["ce"].strip(), "crossencoder 态必须有标记"
 
 
-def t5_stage_indicator_visible(page):
-    """正常场景：等待期间显示阶段进度，覆盖流式之前的死时间。"""
+def t5_stage_indicator_reflects_real_stage_events(page):
+    """正常场景：阶段提示随 `stage` 事件**变化**，不只是默认值。
+
+    ⚠️ 首版只断言 `.qa-stage` 文本非空——但 `stageText` 的默认值就是「正在检索…」，
+    于是**整块 stage 事件处理可以缺失**（不解析 `stage` 帧、不写 `stageText`）而无人报警（假绿）。
+    这里断言出现**只有真的收到 stage 事件才会出现**的文案：后端依次发
+    `retrieving → reranking → generating`，对应「已召回条文，精排中…」「生成中…」，
+    默认值「正在检索…」之外的两态必须至少命中一个。
+    """
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
     page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
     page.press(".qa-composer textarea", "Enter")
     page.wait_for_selector(".qa-stage:visible", timeout=15000)
-    assert page.locator(".qa-stage").first.inner_text().strip(), "阶段提示不应为空"
+    page.wait_for_function(
+        "() => { const s = document.querySelector('.qa-stage');"
+        " return s && /精排|生成中/.test(s.innerText); }",
+        timeout=15000)
+    got = page.locator(".qa-stage").first.inner_text()
+    assert "精排" in got or "生成中" in got, \
+        f"阶段提示未随 stage 事件变化（仍是默认值/空）：{got!r}"
+
+
+# 登记进本 Task 的键：**键名 = Task 编号本身**（不是 t6）。
+# 插入位置：T1 的 `CASES = {...}` 字面量之后、`if __name__ == "__main__":` **之前**。
+CASES["t5"] = [t5_streaming_renders_progressively,
+               t5_streaming_shows_plain_text_not_markdown,
+               t5_rerank_badge_handles_unreported_state,
+               t5_stage_indicator_reflects_real_stage_events]
 ```
 
 - [ ] **Step 2: 运行探针确认失败**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t5`
-Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `stream` 标志）
+Expected: FAIL —— `.qa-answer` 从不带 `.streaming` 类（一次性 JSON 响应），
+`.qa-stage` 的文案也不随 stage 变化（尚未带 `stream` 标志）。
 
 - [ ] **Step 4: 在 qa.js 实现 `send()`（SSE）**
 
@@ -1489,7 +1709,10 @@ Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `
             try {
                 await this._streamAsk(body, bot);
             } catch (e) {
-                console.error('[qa] 流式请求失败，回退非流式:', e);
+                // **仅**传输层失败才走兜底：`fetch` 抛错 / 响应非 2xx / `resp.body` 缺失 /
+                // reader 读流中断。应用层错误由 SSE 的 `error` 帧承载，已在 _handleSseChunk
+                // 内就地展示（那里**不 throw**）⇒ 不会走到这里、不会重发同一问题。
+                console.error('[qa] 流式请求失败（传输层），回退非流式:', e);
                 await this._fallbackAsk(body, bot, userMsg);
             } finally {
                 this.loading = false;
@@ -1571,11 +1794,21 @@ Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `
                 bot.filtersText = ft;
                 this.effectiveFiltersText = ft;
             } else if (event === 'error') {
-                throw new Error(data.message || 'AI 服务返回错误');
+                // ⚠️ **不要 `throw`**！_handleSseChunk 由 _streamAsk 调用，throw 会一路冒到
+                // send() 的 catch → 立刻走 _fallbackAsk **重发同一个问题**：后端已经报错
+                // （未配置后端 / 模型不可用）时这是白等一轮，且用户看到**两次完整生成**
+                // （重复计费、重复落库）。
+                // 边界：SSE 的 `error` 事件是**应用层**错误（后端已受理请求并显式回了 error 帧），
+                // ⇒ 只展示与记录，**不进兜底分支**。
+                // `_fallbackAsk` 只服务**传输层失败**（`fetch` 抛错 / `resp.body` 缺失 /
+                // reader 读流中断）——见 send() 的 catch 注释。
+                bot.content = data.message || 'AI 服务返回错误';
+                console.error('[qa] AI 服务返回错误（不再自动重发）:', data.message);
             }
         },
 
         // 流式失败兜底：同一 URL 重发，只是不带 stream → 走一次性 JSON。功能不丢。
+        // **只用于传输层失败**（fetch 抛错 / 读流异常），不作为应用层错误的补救路径。
         async _fallbackAsk(body, bot, userMsg) {
             try {
                 const r = await fetch('/qa/ask', {
@@ -1625,7 +1858,9 @@ function escHtml(s) {
 
 - [ ] **Step 5: 提升版本号并重启**
 
-`base.html`：`md-render.js?v=13` → `?v=14`；`qa.js?v=19` → `?v=20`。
+`base.html`：**只 bump `qa.js`**：`qa.js?v=19` → `?v=20`。
+（首版这里还写了把 `md-render.js` 的版本号从 v=13 bump 到 v=14——已删：**本 Task 不改 `md-render.js`**，
+bump 一个没改过的文件只会让版本号空转。）
 
 - [ ] **Step 6: 运行探针**
 
@@ -1635,7 +1870,7 @@ Expected: 全部 `PASS` —— **条数由脚本自报，不要在计划里写�
 - [ ] **Step 7: 提交**
 
 ```bash
-git add static/components/md-render.js static/components/qa.js app/templates/base.html scripts/probe_qa_ui.py
+git add static/components/qa.js app/templates/base.html scripts/probe_qa_ui.py
 git commit -m "feat: QA 流式输出（SSE 读取 + 流式期间降级渲染）"
 ```
 
