@@ -2727,6 +2727,24 @@ import pytest
 from app.ai.api_client import APIBackend
 from app.ai.cli_client import CLIResponse   # CLI 表头用例要用（漏了会 NameError，两条用例都跑不起来）
 
+_REAL_ASYNC_CLIENT = httpx.AsyncClient   # 必须在 monkeypatch 之前捕获真实类，见下方说明
+
+
+def _patch_async_client(monkeypatch, transport: httpx.MockTransport) -> None:
+    """把 httpx.AsyncClient 换成走 MockTransport 的客户端。
+
+    ⚠️ **必须在 lambda 外部先捕获真实类**：`monkeypatch.setattr(httpx, "AsyncClient", ...)`
+    会把模块属性换成该 lambda 本身，而 lambda 体内的 `httpx.AsyncClient` 是**调用时**才解析的
+    ——于是它解析到自己，变成「自己调自己且 transport 传了两次」，抛
+    `TypeError: got multiple values for keyword argument 'transport'`。
+    **本计划首版正是那个写法，9 条用例里有 6 条因此根本没跑到断言**，且失败现象被
+    `ask()` 的宽 `except Exception` 吞成 `KeyError: 'body'`，极难定位（见 task-14-report.md）。
+    """
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kw: _REAL_ASYNC_CLIENT(transport=transport, **kw),
+    )
+
 
 def _sse(*chunks: str) -> bytes:
     lines = []
@@ -2747,8 +2765,7 @@ async def test_ask_stream_yields_deltas(monkeypatch):
 
     transport = httpx.MockTransport(handler)
     backend = APIBackend("https://x/v1", "k", "m")
-    monkeypatch.setattr(httpx, "AsyncClient",
-                        lambda **kw: httpx.AsyncClient(transport=transport, **kw))
+    _patch_async_client(monkeypatch, transport)
 
     out = [e async for e in backend.ask_stream("q")]
     assert [e["text"] for e in out if e["type"] == "delta"] == ["混凝土", "强度", "等级"]
@@ -2763,8 +2780,7 @@ async def test_ask_stream_reports_http_error(monkeypatch):
 
     transport = httpx.MockTransport(handler)
     backend = APIBackend("https://x/v1", "k", "m")
-    monkeypatch.setattr(httpx, "AsyncClient",
-                        lambda **kw: httpx.AsyncClient(transport=transport, **kw))
+    _patch_async_client(monkeypatch, transport)
 
     out = [e async for e in backend.ask_stream("q")]
     assert out[-1]["type"] == "error"
@@ -2779,8 +2795,7 @@ async def test_ask_stream_handles_empty_stream(monkeypatch):
 
     transport = httpx.MockTransport(handler)
     backend = APIBackend("https://x/v1", "k", "m")
-    monkeypatch.setattr(httpx, "AsyncClient",
-                        lambda **kw: httpx.AsyncClient(transport=transport, **kw))
+    _patch_async_client(monkeypatch, transport)
 
     out = [e async for e in backend.ask_stream("q")]
     assert out == [{"type": "done"}]
@@ -2796,8 +2811,7 @@ async def test_ask_stream_skips_malformed_lines(monkeypatch):
 
     transport = httpx.MockTransport(handler)
     backend = APIBackend("https://x/v1", "k", "m")
-    monkeypatch.setattr(httpx, "AsyncClient",
-                        lambda **kw: httpx.AsyncClient(transport=transport, **kw))
+    _patch_async_client(monkeypatch, transport)
 
     out = [e async for e in backend.ask_stream("q")]
     assert [e["text"] for e in out if e["type"] == "delta"] == ["ok"]
@@ -2824,8 +2838,7 @@ async def test_api_backend_emits_context_header(monkeypatch, via_stream):
             {"choices": [{"message": {"content": "ok"}}]}).encode("utf-8"))
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "AsyncClient",
-                        lambda **kw: httpx.AsyncClient(transport=transport, **kw))
+    _patch_async_client(monkeypatch, transport)
     backend = APIBackend("https://x/v1", "k", "m")
     if via_stream:
         _ = [e async for e in backend.ask_stream("q", context="条文正文")]
@@ -2888,7 +2901,9 @@ def test_guard_references_context_header():
 - [ ] **Step 2: 运行测试确认失败**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -v`
-Expected: FAIL — `AttributeError: 'APIBackend' object has no attribute 'ask_stream'`
+Expected: FAIL — **两种失败形态都会出现**（实测：9 条里 4 条 `AttributeError: 'APIBackend' object has no attribute 'ask_stream'`，
+另 5 条 `ImportError`（用例体首句 `from app.ai.prompts import CONTEXT_HEADER` 尚不存在）——首版预期只写了 AttributeError，
+按它核对 RED 会误判。两种都算正常 RED。
 
 - [ ] **Step 3: 实现**
 
