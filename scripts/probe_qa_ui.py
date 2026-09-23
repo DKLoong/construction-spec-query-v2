@@ -1338,40 +1338,53 @@ def t5_relax_resends_with_relaxed_flag(page):
     会话列表后比对 id 集合（`_force_session_list` 的注释解释了为何必须强制刷新）。
     """
     _qa_open(page)
-    click_first_tree_label(page)               # 勾一个分类维度 ⇒ 触发候选不足判定
-    wait_tree_filter_seeded(page)
-    _qa_ask(page, "混凝土强度等级如何评定")
+    # ⚠️ 前置**必须由本用例自己建立**（控制器用全新副本库复跑时暴露：旧版把它当成"库里已设好"，
+    # 于是只在"上一轮跑过的库"里通过 ⇒ 典型的只在我机器上能过）。默认 3、范围 1~30，
+    # 调到 30 后勾任一维度 ⇒ 筛选后候选必然 < 30 ⇒ 后端如实报告 filtered_out>0。
+    _PARAM = "qa.retrieve.qa_min_candidates"
+    origin = _verify_settings_restored(page, [_PARAM])
+    try:
+        assert _put_settings(page, {_PARAM: 30}), f"无法写入 {_PARAM}=30（前置建立失败）"
+        click_first_tree_label(page)               # 勾一个分类维度 ⇒ 触发候选不足判定
+        wait_tree_filter_seeded(page)
+        _qa_ask(page, "混凝土强度等级如何评定")
 
-    assert poll_until(page, lambda: page.locator(".qa-relax-hint").count() >= 1,
-                      timeout_ms=8000), \
-        ("分类筛选下未出现「候选不足」提示（后端 filtered_out>0 未上报，"
-         "或 qa.retrieve.qa_min_candidates 未调到 30）——本用例的前置不成立")
+        assert poll_until(page, lambda: page.locator(".qa-relax-hint").count() >= 1,
+                          timeout_ms=8000), \
+            ("分类筛选下未出现「候选不足」提示（后端 filtered_out>0 未上报，"
+             f"或 {_PARAM} 未生效）——本用例的前置不成立")
 
-    # 基线：先强制刷新一次，保证两侧比对用的都是**权威列表**（不是"可能还没刷新的内存态"）
-    _force_session_list(page)
-    state_before = _qa_state(page)
-    n_msgs_before = page.locator(".qa-msg").count()
-    bodies = _track_ask_bodies(page)           # 必须在点击之前注册
-    # 取**最后一条**放宽提示：库里的旧会话也可能带提示，取第一条会点到别的轮次上
-    page.locator(".qa-relax-hint button").last.click()
+        # 基线：先强制刷新一次，保证两侧比对用的都是**权威列表**（不是"可能还没刷新的内存态"）
+        _force_session_list(page)
+        state_before = _qa_state(page)
+        n_msgs_before = page.locator(".qa-msg").count()
+        bodies = _track_ask_bodies(page)           # 必须在点击之前注册
+        # 取**最后一条**放宽提示：库里的旧会话也可能带提示，取第一条会点到别的轮次上
+        page.locator(".qa-relax-hint button").last.click()
 
-    assert poll_until(page, lambda: len(bodies) >= 1, timeout_ms=15000), \
-        "点「放宽分类筛选」后未发出 POST /qa/ask（relax() 未复用 send()）"
-    assert bodies[-1].get("relaxed") is True, \
-        f"放宽重发的请求体未带 relaxed=true：{bodies[-1]}"
-    # ② 前置：先等这一轮**真的收尾**（否则下面的取样落在本轮完成之前，判据无从判起）
-    assert _qa_round_done(page, n_msgs_before + 2, timeout_ms=90000), \
-        (f"放宽重发后本轮未收尾（.qa-msg={page.locator('.qa-msg').count()}，"
-         f"期望 >= {n_msgs_before + 2}；最后一条答案="
-         f"{_last_answer_text(page)!r}）——判据 ② 无从判起")
-    _force_session_list(page)
-    state_after = _qa_state(page)
-    assert set(state_after["ids"]) == set(state_before["ids"]), \
-        (f"放宽重发新建了会话（应为同一会话里的新轮次）：放宽前 ids={state_before['ids']}，"
-         f"放宽后 ids={state_after['ids']}")
-    assert state_after["current"] == state_before["current"], \
-        (f"放宽重发的当前会话变了：{state_before['current']} -> {state_after['current']}"
-         "（应为同一会话里的新轮次，session_id 必须随请求携带）")
+        assert poll_until(page, lambda: len(bodies) >= 1, timeout_ms=15000), \
+            "点「放宽分类筛选」后未发出 POST /qa/ask（relax() 未复用 send()）"
+        assert bodies[-1].get("relaxed") is True, \
+            f"放宽重发的请求体未带 relaxed=true：{bodies[-1]}"
+        # ② 前置：先等这一轮**真的收尾**（否则下面的取样落在本轮完成之前，判据无从判起）
+        assert _qa_round_done(page, n_msgs_before + 2, timeout_ms=90000), \
+            (f"放宽重发后本轮未收尾（.qa-msg={page.locator('.qa-msg').count()}，"
+             f"期望 >= {n_msgs_before + 2}；最后一条答案="
+             f"{_last_answer_text(page)!r}）——判据 ② 无从判起")
+        _force_session_list(page)
+        state_after = _qa_state(page)
+        assert set(state_after["ids"]) == set(state_before["ids"]), \
+            (f"放宽重发新建了会话（应为同一会话里的新轮次）：放宽前 ids={state_before['ids']}，"
+             f"放宽后 ids={state_after['ids']}")
+        assert state_after["current"] == state_before["current"], \
+            (f"放宽重发的当前会话变了：{state_before['current']} -> {state_after['current']}"
+             "（应为同一会话里的新轮次，session_id 必须随请求携带）")
+    finally:
+        # 还原 + 读回复验（不依赖页面状态的通道，见 `_restore_settings`）
+        _restore_settings(page, origin)
+        back = _verify_settings_restored(page, [_PARAM])
+        assert str(back.get(_PARAM)) == str(origin.get(_PARAM)), \
+            f"{_PARAM} 未还原：{origin.get(_PARAM)!r} -> {back.get(_PARAM)!r}"
 
 
 def t5_search_hit_jump_loads_session_and_highlights(page):
@@ -1622,6 +1635,36 @@ def t5_error_frame_is_not_retried_as_fallback(page):
 
 
 # 登记进本 Task 的键：**键名 = Task 编号本身**（不是 t6）。
+def t5_settings_button_opens_ai_tab(page):
+    """回归（控制器收尾时用浏览器实机验证发现并修复的真回归）：QA 页头部的 ⚙️ 必须**直接落到 AI 页签**。
+
+    背景：旧弹窗用的是 `onclick="window.dispatchEvent(new CustomEvent('open-settings', {detail:{tab:'ai'}}))"`
+    ——那是 **CustomEvent** 的 `detail`；T2 的模板改写成 Alpine 的
+    `@click="$dispatch('open-settings', {detail:{tab:'ai'}})"`，而 Alpine 的 `$dispatch(name, detail)`
+    **第二个参数本身就是 detail** ⇒ `event.detail = {detail:{...}}` ⇒ settingsDialog 读 `e.detail.tab`
+    得 undefined ⇒ **静默回退到 ocr 页签**。弹窗**照常打开**，所以「能打开设置」这类判据抓不到它。
+    把模板改回 `{detail:{tab:'ai'}}` → 本用例必红（activeTab 会是 'ocr'）。
+    """
+    _qa_open(page)
+    page.click('button[aria-label="AI 设置"]')
+    state = page.wait_for_function(
+        """() => {
+            const el = document.querySelector('.qa-modal-overlay');
+            const st = el && el._x_dataStack ? el._x_dataStack[0] : null;
+            return st && st.open ? { open: st.open, tab: st.activeTab } : null;
+        }""",
+        timeout=10000,
+    ).json_value()
+    assert state["open"] is True, "⚙️ 未打开设置弹窗"
+    assert state["tab"] == "ai", \
+        f"⚙️ 应直接落到 AI 页签，实得 {state['tab']!r}" \
+        "（Alpine 的 $dispatch 第二个参数就是 detail，不要再包一层 detail；旧弹窗的 CustomEvent 形状不能照抄）"
+    # 收尾：关掉弹窗，避免影响后续用例
+    page.evaluate(
+        "() => { const el = document.querySelector('.qa-modal-overlay');"
+        " if (el && el._x_dataStack) el._x_dataStack[0].close(); }")
+
+
 CASES["t5"] = [t5_streaming_renders_progressively,
                t5_streaming_shows_plain_text_not_markdown,
                t5_rerank_badge_handles_unreported_state,
@@ -1630,6 +1673,8 @@ CASES["t5"] = [t5_streaming_renders_progressively,
                # relax 放宽重发、跨会话搜索命中跳转 + 高亮计算样式。
                t5_relax_resends_with_relaxed_flag,
                t5_search_hit_jump_loads_session_and_highlights,
+               # 控制器收尾时用浏览器实机验证发现并修复的真回归（⚙️ 落错页签）⇒ 补守卫：
+               t5_settings_button_opens_ai_tab,
                # 本 Agent 补（简报又一缺项）：error 帧 ⇏ 兜底重发这条边界**无用例**，
                # 简报 Step 1 登记的 4 条一条都不碰错误路径（mutation B 因此无从判红）。
                # 放最后：它会临时改运行期设置（用例内已用 finally 还原）。

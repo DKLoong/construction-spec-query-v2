@@ -8,8 +8,13 @@
             <div style="display:flex;gap:0.5rem;align-items:center">
                 <span class="qa-rerank-badge" x-show="rerankUsed" x-text="rerankBadge()"
                       :title="rerankTip()" style="font-size:0.72rem;color:var(--pico-muted-color)"></span>
+                <!-- ⚙️ 打开设置并**直接落到 AI 页签**。注意 Alpine 的 $dispatch(name, detail)：
+                     **第二个参数就是 detail**，不要再包一层 detail。写成 {detail:{tab:'ai'}} 会让
+                     event.detail = {detail:{...}} ⇒ settingsDialog 读 e.detail.tab 得 undefined ⇒ 回退到 ocr 页签。
+                     （旧弹窗用的是 onclick + CustomEvent({detail:...})，形状不能照抄。
+                     另：注释必须写在标签**外**——标签内出现 `<!--` 会让解析器截断该标签。） -->
                 <button style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;line-height:1;margin:0"
-                        @click="$dispatch('open-settings', {detail:{tab:'ai'}})"
+                        @click="$dispatch('open-settings', {tab:'ai'})"
                         title="AI 设置" aria-label="AI 设置">⚙️</button>
                 <button type="button" class="outline" id="qa-session-toggle"
                         style="font-size:0.75rem;padding:0.1rem 0.4rem;margin:0"
