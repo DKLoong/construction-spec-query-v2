@@ -1669,6 +1669,16 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 > ⇒ 本 Task 在 `app.css` 补 `.qa-highlight` 规则（`app.css` 已加入本 Task 的 Files，见下方），
 > 并把 `app.css?v=21 → ?v=22` 一并递增。（另注：本 Task 也改 `qa.js` ⇒ `qa.js?v=22 → ?v=23`。）
 
+> 🧩 **本 Task 同时补两处此前遗漏的探针**（T4 复核指出：两处都是「实现已完成、但无用例守」，且成本都很低）：
+>
+> 1. **`relax()`（放宽分类筛选）**：T4 实现者认为"mock 下无法稳定复现 `filtered_out>0`"而跳过，
+>    **该理由偏弱**——阈值是**可配参数** `retrieve.qa_min_candidates`（`app/qa/registry` 注册，默认 3、范围 1~30），
+>    而探针库本就是副本 ⇒ **把它调到 30，再勾任一分类维度**，即可稳定造出「候选不足 → 前端显示放宽提示」；
+>    然后点「放宽分类筛选」→ 断言**请求体 `relaxed === true`**（用 T1-R1 的请求计数手法）且会话数不增。
+> 2. **`/qa/search` + 点命中跳转**：断言「搜一句 → `.qa-hit` ≥1 → 点击 → 该会话被载入且命中内容可见」。
+>    高亮本身是 **class 开关**（`qa.js` 的 `jumpToHit` 加 `.qa-highlight`），可用
+>    `page.evaluate(() => el.classList.contains('qa-highlight'))` 断言，**不依赖 CSS**（故它不受本 Task 补样式的影响）。
+
 > 🔌 **本 Task 的探针需要「AI 有回答」且要观测流式的中途态** ⇒ **必须配置 mock LLM**
 > （`%TEMP%/qa_mock_llm.py`，监听 `127.0.0.1:8199`；其流式响应刻意在帧间 sleep，留出可观测的「生成中」窗口）。
 > 副本库需写（**本段自带配置，因为简报不含计划开头的前置节**）：
