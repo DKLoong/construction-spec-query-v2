@@ -99,8 +99,9 @@ def wait_tree_filter_seeded(pg):
 ```
 
 > **后续 Task（T2~T5）追加探针时**：凡需点击分类树条目，一律 `wait_tree_filter_seeded(pg)` 后用
-> `click_first_tree_label(pg)`。**不要**在用例里直接写 `page.click(".tree-label >> nth=0")`
-> ——那在本项目必然 30s 超时（首版 8 条探针里有 5 条踩了这个坑）。
+> `click_first_tree_label(pg)`（**顺序不能反**：先等渲染再点；两者分行调用即可）。
+> **不要**在用例里直接写 `page.click(".tree-label >> nth=0")`——那在本项目必然 30s 超时
+> （首版 8 条探针里有 5 条踩了这个坑）。
 
 ### 前置 C：需要「AI 有回答」的 Task（T4/T5）用 **mock LLM**，不要用真实模型
 
@@ -222,7 +223,7 @@ def t1_filters_carry_into_qa_via_url(page):
     page.fill("input[type=search]", "混凝土")
     page.press("input[type=search]", "Enter")
     page.wait_for_selector("#search-results", timeout=10000)
-    page.click(".tree-label >> nth=0")          # 选中一个分类树条目
+    wait_tree_filter_seeded(page); click_first_tree_label(page)          # 选中一个分类树条目
     page.wait_for_timeout(500)
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
@@ -240,7 +241,7 @@ def t1_qa_page_filters_survive_reload(page):
     page.fill("input[type=search]", "混凝土")
     page.press("input[type=search]", "Enter")
     page.wait_for_selector("#search-results", timeout=10000)
-    page.click(".tree-label >> nth=0")
+    wait_tree_filter_seeded(page); click_first_tree_label(page)
     page.wait_for_timeout(500)
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
@@ -261,7 +262,7 @@ def t1_search_page_unaffected(page):
     page.fill("input[type=search]", "混凝土")
     page.press("input[type=search]", "Enter")
     page.wait_for_selector("#search-results", timeout=10000)
-    page.click(".tree-label >> nth=0")          # 分类树立即重搜（检索页语义）
+    wait_tree_filter_seeded(page); click_first_tree_label(page)          # 分类树立即重搜（检索页语义）
     page.wait_for_selector("#search-results", timeout=10000)
     page.evaluate("document.querySelector('.center-panel-v2').scrollTop = 500")
     page.fill("input[type=search]", "钢筋")
@@ -280,7 +281,7 @@ def t1_tree_click_in_qa_page_does_not_navigate(page):
     """
     page.goto(f"{BASE}/qa")
     page.wait_for_selector("#qa-root", timeout=10000)
-    page.click(".tree-label >> nth=0")
+    wait_tree_filter_seeded(page); click_first_tree_label(page)
     page.wait_for_timeout(800)
     assert page.locator("#qa-root").count() == 1, \
         "点分类树后 QA 页消失了——说明仍触发了检索"
@@ -293,7 +294,7 @@ def t1_tree_click_in_search_page_still_searches(page):
     page.fill("input[type=search]", "混凝土")
     page.press("input[type=search]", "Enter")
     page.wait_for_selector("#search-results", timeout=10000)
-    page.click(".tree-label >> nth=0")
+    wait_tree_filter_seeded(page); click_first_tree_label(page)
     page.wait_for_selector("#search-results", timeout=10000)
     assert page.locator("#qa-root").count() == 0
     assert page.locator("#search-results").count() == 1
@@ -1313,7 +1314,7 @@ def t4_filters_recorded_and_shown(page):
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
-    page.click(".tree-label >> nth=0")          # 勾一个分类树筛选
+    wait_tree_filter_seeded(page); click_first_tree_label(page)          # 勾一个分类树筛选
     page.wait_for_timeout(300)
     page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
     page.press(".qa-composer textarea", "Enter")
@@ -1350,7 +1351,7 @@ def t4_pending_filter_change_is_visible(page):
     page.wait_for_timeout(800)
     assert page.locator(".qa-filters-pending").is_hidden(), \
         "尚未改动筛选时不应出现「将在下一轮生效」提示"
-    page.click(".tree-label >> nth=0")          # 改动筛选
+    wait_tree_filter_seeded(page); click_first_tree_label(page)          # 改动筛选
     page.wait_for_timeout(300)
     assert page.locator(".qa-filters-pending").is_visible(), \
         "改了筛选但未提示「将在下一轮生效」——静默失配复现"
