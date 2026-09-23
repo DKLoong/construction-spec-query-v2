@@ -651,7 +651,8 @@ def test_qa_foreign_keys_state_is_documented(qa_db):
     """异常场景：记录 SQLite 外键实际状态。
 
     **事实断言而非期望断言**（首版计划此处写反了，经 Task 4 实测更正）：
-    本项目在 `app/database.py` 的 `get_db()` 里执行 `PRAGMA foreign_keys=ON`
+    本项目在 `app/database.py` 的 `get_connection()` 里执行 `PRAGMA foreign_keys=ON`
+    （`get_db()` 只是它的调用方）
     （自 `b1d08fe` 起就有，非本计划引入），因此 `ON DELETE CASCADE`
     **是生效的** —— 见下文 delete_session 的说明。
 
@@ -907,6 +908,25 @@ def test_delete_missing_session_returns_false(qa_db):
     assert S.delete_session(999999) is False
 
 
+def test_qa_messages_cascade_declaration_present(qa_db):
+    """回归（级联的**声明侧**）：qa_messages 必须声明 ON DELETE CASCADE。
+
+    为什么需要这条：T4 的 `test_qa_foreign_keys_state_is_documented` 只覆盖
+    级联的**前提**（PRAGMA foreign_keys 为 ON）。若有人只删掉 schema 里的
+    `REFERENCES qa_sessions(id) ON DELETE CASCADE`（**保留** PRAGMA），
+    前提仍在、级联却已静默失效 —— 那边四个用例全绿，消息会残留为孤儿。
+    两侧合起来才完整：前提侧管「外键有没有开」，声明侧管「开的是不是级联」。
+    """
+    with get_db() as conn:
+        fks = conn.execute("PRAGMA foreign_key_list(qa_messages)").fetchall()
+    cascades = [r for r in fks
+                if r["table"] == "qa_sessions" and r["on_delete"] == "CASCADE"]
+    assert cascades, (
+        "qa_messages 未声明 ON DELETE CASCADE（或未指向 qa_sessions）——"
+        "删除会话时消息会残留为孤儿"
+    )
+
+
 def test_search_messages_across_sessions(qa_db):
     """正常场景：跨会话搜消息，返回所属会话名与消息 id。"""
     a = S.create_session("混凝土")
@@ -956,11 +976,13 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'app.qa.sessions'`
 - 并发安全依赖 `get_db()` 的 `sqlite3.connect(..., timeout=30)` 把写入串行化；
   有测试守护该不变量（`test_concurrent_appends_same_session_do_not_lose_or_mix`）
 - 删除会话时**仍应用层显式删消息**，但理由与首版计划所述不同：
-  本项目 `get_db()` 里开着 `PRAGMA foreign_keys=ON`（`app/database.py:205`），
-  **级联删除实际是生效的**。显式删除保留为防御性写法——它让行为不依赖那条
-  PRAGMA，且在更早的 SQLite 版本或将来关掉外键时仍然正确。
-  见 tests/test_qa_sessions.py 的
-   test_qa_tables_cascade_delete 对实际状态的断言）
+  本项目在 `get_connection()` 里开着 `PRAGMA foreign_keys=ON`（`app/database.py:205`，
+  `get_db()` 只是其调用方），**级联删除实际是生效的**。显式删除保留为防御性写法——
+  它让行为不依赖那条 PRAGMA，且在更早的 SQLite 版本或将来关掉外键时仍然正确。
+- 级联的保护由**两侧**测试合起来构成（T4 已落前提侧）：
+  前提侧 = `tests/test_qa_sessions.py::test_qa_foreign_keys_state_is_documented`（断言 PRAGMA 为 ON）
+  声明侧 = 本 Task 的 `test_qa_messages_cascade_declaration_present`（断言 schema 里的 ON DELETE CASCADE）
+  **只删一侧的任一侧都会让级联静默失效**，故两测缺一不可
 - 单会话消息量小（几十条），遍历取用可接受；禁止在循环内发起查询
 """
 import json

@@ -207,8 +207,8 @@ CREATE INDEX IF NOT EXISTS idx_qa_messages_session ON qa_messages(session_id, id
 
 - 迁移方式沿用 `database.py` 既有模式（`CREATE TABLE IF NOT EXISTS` + 迁移段）
 - **`qa_request_logs` 保持不动**，两表职责分离：前者是**请求级埋点**（调参用），后者是**会话内容**（用户可见）
-- 删除会话时**在应用层显式删消息**。注意理由与首版所述相反：本项目 `get_db()` 里
-  执行 `PRAGMA foreign_keys=ON`（`app/database.py:205`，自 `b1d08fe` 起即有），
+- 删除会话时**在应用层显式删消息**。注意理由与首版所述相反：本项目在 `get_connection()` 里
+  执行 `PRAGMA foreign_keys=ON`（`app/database.py:205`，`get_db()` 只是其调用方；自 `b1d08fe` 起即有），
   **级联删除实际生效**；显式删除保留为**防御性写法**——让行为不依赖那条 PRAGMA。
   `ON DELETE CASCADE` 写在 schema 里，并有测试断言外键当前为 ON（它会在 PRAGMA 被移除时失败，
   那正是级联静默失效的时刻）
