@@ -211,3 +211,59 @@ def test_qa_ask_resolves_none_level_thresholds_at_route(monkeypatch, auth_client
     assert trace.high_count == n // 3, "分层切点必须落在前 1/3"
     assert trace.low_count == n - n // 3
 
+
+# ── 降级状态透出到响应 ──
+
+
+def test_qa_response_exposes_rerank_used():
+    """正常场景：响应必须透出实际生效的精排级别，供前端提示降级。"""
+    from app.models import QAResponse
+    resp = QAResponse(answer="x", rerank_used=RERANK_NONE)
+    assert resp.rerank_used == RERANK_NONE
+
+
+def test_qa_response_rerank_used_defaults_to_empty():
+    """边界场景：缺省为空串（兼容既有调用方，不破坏构造签名）。"""
+    from app.models import QAResponse
+    assert QAResponse(answer="x").rerank_used == ""
+
+
+def test_qa_ask_response_uses_trace_level_not_module_global(monkeypatch, auth_client):
+    """接线层回归守卫：响应必须取**本请求的 trace 值**，而非模块全局。
+
+    构造方式：路由在 return 前的最后一站是 `_emit_trace(trace)`，此时把模块全局
+    `_last_rerank_used` 覆写为 CE，模拟并发请求在本请求捕获 trace 之后改写全局。
+    若返回语句写成 `rerank_used=_last_rerank_used`，响应会变成 CE → 本用例失败。
+    """
+    from app.routes import qa_routes
+
+    candidates = _make_route_candidates(4)
+    monkeypatch.setattr(
+        "app.search.hybrid_search.hybrid_search",
+        lambda sq: (list(candidates), len(candidates)),
+    )
+    # 两条降级腿都断 → 本请求实际落到第 3 级
+    monkeypatch.setattr("app.ai.reranker.rerank", _raise_rerank)
+    monkeypatch.setattr("app.ai.embedding.embed_texts", _raise_embed)
+    monkeypatch.setattr(
+        "app.ai.cli_client.ClaudeCodeCLI.is_available", lambda self: True,
+    )
+    monkeypatch.setattr(
+        "app.ai.cli_client.ClaudeCodeCLI._run_cli", _fake_cli_success,
+    )
+
+    captured: list = []
+
+    def _emit_and_hijack(trace):
+        captured.append(trace)
+        # 模拟并发请求覆写模块全局（经 monkeypatch 设置，用例结束自动还原）
+        monkeypatch.setattr(qa_routes, "_last_rerank_used", RERANK_CE)
+
+    monkeypatch.setattr(qa_routes, "_emit_trace", _emit_and_hijack)
+
+    resp = auth_client.post("/qa/ask", json={"question": "模板设计要求"})
+    assert resp.status_code == 200, resp.text
+    assert captured[0].rerank_used == RERANK_NONE, "本请求实际是第 3 级降级"
+    assert resp.json()["rerank_used"] == RERANK_NONE, \
+        "响应必须取本请求 trace 的精排级别，不得取可被并发覆写的模块全局"
+

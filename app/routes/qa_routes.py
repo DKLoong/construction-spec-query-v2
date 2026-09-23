@@ -318,4 +318,5 @@ async def qa_ask(request: Request, body: QaRequest):
     _emit_trace(trace)
 
     return QAResponse(answer=answer, sources=sources, cli_used=cli_used,
-                      confusable_hits=confusable_hits)
+                      confusable_hits=confusable_hits,
+                      rerank_used=trace.rerank_used)
