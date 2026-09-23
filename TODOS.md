@@ -200,3 +200,29 @@
 - **Pros**：消除半截会话脏数据；让「失败轮次不入库」在异常路径上也成立。
 - **Cons**：要给 `get_db()` 或该调用点引入显式事务（`BEGIN`/`COMMIT`/`ROLLBACK`）语义，牵动既有连接管理；需评估与既有 `with get_db()` 用法的一致性。
 - **Blocked by**：无。属独立小项，但会动到持久化层，建议单独立项、单独评测。
+
+## T17 — `history_tokens` / `history_budget` 只写不读（2026-09-23 终审清理轮登记）
+
+- **What**：`QATrace.history_tokens` / `history_budget` 已随每轮请求写入 `qa_request_logs`（`app/routes/qa_routes.py` 的 `_emit_trace`，由 `_prepare_qa_context` 回填），但 **QA 日志 Tab 迄今未展示这两列**，也没有任何读取方（全仓检索只有「写入 + 一条断言写入存在」两处）。
+- **Why**：设计意图是**先可测、再调参**——`build_history` 是纯函数、无 IO，历史段超预算本身不留任何痕迹（逐轮丢弃最旧，但最新一轮无条件保留），故必须先把它变成可观测数据，才有依据去定夺 `token.max_history_tokens` 的默认值。当前数据已经在库里积累，缺的只是消费端（日志 Tab 展示 + 分位数统计），**不是缺采集**。登记它以免「已落库」被误读成「已闭环」。
+- **Context**：来源 = 终审清理轮的 Minor 清单（终审判定为「属实，但只登记不改」）。相关代码：`app/routes/qa_routes.py`（`QATrace` 字段、`_emit_trace` 的 INSERT、超预算 `logger.warning`）、`app/qa/context.py` 的 `build_history`/`estimate_tokens`。
+- **建议修法**：QA 日志 Tab（`app/templates/partials/logs_*.html` + 对应路由）加两列或一个「历史段超预算」筛选项；若表结构已足够，纯前端改动即可。
+- **Pros**：让已采集的数据真正被用上；超预算告警能在界面上被看见，而不是只落在服务端日志里。
+- **Cons**：属日志 Tab 的 UI 工作，与 QA 后端主链解耦；需先确认展示口径（单轮值 vs 分位数）。
+- **Blocked by**：无。独立小项。
+
+## T18 — 两条精排降级链分叉（2026-09-23 由终审清理轮 A1 修复暴露并登记）
+
+- **What**：同一套「CrossEncoder → bi-encoder 向量 → 回退」降级逻辑在本仓有**两份实现**：
+  1. `app/search/rerank.py` 的 `rerank_candidates`（**只被 `app/search/hybrid_search.py:179` 调用**）——档位用**内联字面量** `"crossencoder"/"vector"/"none"`，两处失败后回退为**全 1.0**；
+  2. `app/routes/qa_routes.py` 的 `_rerank_scored`（QA 侧副本）——档位用 `app/qa/degrade.py` 的**常量** `RERANK_CE/RERANK_VECTOR/RERANK_NONE`，回退为 `rank_scores` 的**排名归一化值**。
+  两处**输入清洗口径**（`plain_text` 后再截 300 字符）已由 2026-09-23 清理轮对齐，但级别常量与回退分数仍各写各的。
+- **Why**：`app/search/rerank.py` 的 docstring 此前自称「供检索模块与 QA 模块共同调用」（**与实测不符**，已在本轮改正为如实描述），这个错误描述正是分叉长期未被发现的原因——两处各自的演进（QA 需要级别 → 引入 `degrade.py` 常量与 `rank_scores`）被一句假的「共用」掩盖了。将来改降级链时只改一边不会有任何用例变红。
+- **关键差异（合并时必须保留）**：
+  - **检索侧丢弃级别**：`hybrid_search` 只用 `ranked`（`ranked, _ = rerank_candidates(...)`），档位字符串无人消费；其回退全 1.0 **无害**——检索侧不做强弱分层，分数只用于排序后的相对次序，而回退分支本就保持调用方传入顺序。
+  - **QA 侧需要级别**：`resolve_thresholds(rerank_used, ...)` 按级别选阈值集（CE / vector / none 三套），且 `none` 级别必须拿到**有区分度**的分数（`rank_scores`）才能切高低分层——QA 里全 1.0 会让分层退化成「全体强相关」。
+- **Context**：来源 = 终审清理轮 A1（QA 精排输入未清洗）的修复过程。相关代码：`app/search/rerank.py`、`app/routes/qa_routes.py::_rerank_scored`、`app/qa/degrade.py`、`app/search/hybrid_search.py:179`、`tests/test_search_rerank.py`（检索侧 6 条用例）。
+- **建议修法**：把 `rerank_candidates` 改为返回 `(ranked, 级别常量, 回退策略)` 或接受一个「回退分数构造器」参数，QA 侧改调同一实现并传 `rank_scores`；级别常量统一取自 `degrade.py`。**先补一条跨实现一致性用例**（同输入 → 同档位判定），否则合并本身没有守卫。
+- **Pros**：消除「同一套降级逻辑两份实现」的漂移面；把已存在的档位常量收敛到单一来源。
+- **Cons**：动检索层核心路径（`hybrid_search` 的 RRF 尾部精排），需跑检索相关全量用例；两侧回退分数语义不同，合并接口设计要小心，属于「收益中等、风险中等」的重构。
+- **Blocked by**：无硬依赖；建议与 T15（缓存键维度名硬编码）一并作为「检索层收口」小项排期。
