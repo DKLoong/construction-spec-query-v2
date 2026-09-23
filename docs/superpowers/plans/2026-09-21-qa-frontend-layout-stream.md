@@ -1193,6 +1193,10 @@ Expected: **部分 FAIL —— 本组不是整体 RED，别拿「守卫用例绿
 
 - [ ] **Step 4: 提升版本号并重启**
 
+> ⚠️ **更正（2026-09-23）**：本 Task **确实要改 `base.html`**——它改了 `static/components/qa.js`
+> ⇒ 按 Global Constraints「改静态资源的 Task 必须把 `base.html` 列入允许清单」，
+> 请 `qa.js?v=20 → ?v=21`（当前值；T1 bump 到 19、控制器热修 bump 到 20）。下面这段「不改 base.html」的旧说法保留供对照。
+
 **本 Task 不改 `base.html`**——首版计划写的「把 `tree.js` 的版本号从 v=8 bump 到 v=9」已删：实际当前是 `?v=6`，
 **T1 已把它 bump 到 `?v=7`**，而且**本 Task 根本不改 `tree.js`**（改的是 `qa.js` 与 `tree_panel.html`）。
 `qa.js` 的版本号在 **T4 统一处理**（记 `?v=19`）；本 Task 阶段若要单跑 UI 验证，按 Global Constraints
