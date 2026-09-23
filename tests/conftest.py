@@ -56,6 +56,19 @@ def auth_client(client, monkeypatch, tmp_path):
     return client
 
 
+@pytest.fixture()
+def qa_db(tmp_path, monkeypatch):
+    """隔离数据库（仅建表、无用户），供不走 HTTP 的单元测试使用。
+
+    需要它是因为 run_health_check 会写 system_logs / 快照表，
+    会话持久化层测试也要真库——不隔离会污染 dev 库。
+    走 patch 模块常量的方式（见测试基础设施 §1），不要用环境变量。
+    """
+    from app.database import init_db
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "qa_unit.db"))
+    init_db()
+
+
 def setup_search_data(conn):
     """写入 3 条测试条文（共享 helper，供搜索相关测试使用），INSERT 带 search_text"""
     from app.search.tokenize import build_search_text

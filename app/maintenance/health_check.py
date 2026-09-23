@@ -18,6 +18,7 @@ LABELS = {
     "vector_orphan": "向量孤儿记录",
     "vector_missing": "缺失向量索引",
     "fts_mismatch": "FTS 索引缺失",
+    "model_ready": "AI 模型就绪",
 }
 
 
@@ -102,6 +103,37 @@ def _count_fts_mismatch() -> int:
         ).fetchone()[0]
 
 
+def _check_models() -> tuple[str, str]:
+    """返回 (severity, hint)，探测两个本地模型是否就绪。
+
+    分享场景下用户常常没放模型文件，而系统只会静默降级——此处显式暴露。
+    - 缺 CrossEncoder：精排降级为向量/排名，质量下降但可用 → warn
+    - 缺 embedding  ：向量召回一并失效，hybrid_search 退化为纯关键词 → error
+
+    **用 `is_ready()` 探测，不调用 `get_reranker()` / `get_model()`**——
+    后者在未加载时会真的实例化模型（数秒），而本检查在维护页每次打开都跑，
+    不能带这种副作用。
+    """
+    from app.ai.reranker import is_ready as reranker_ready
+    from app.ai.embedding import is_ready as embedding_ready
+
+    has_reranker = reranker_ready()
+    has_embedding = embedding_ready()
+
+    if has_reranker and has_embedding:
+        return "ok", ""
+    if not has_embedding:
+        return "error", (
+            "embedding 模型（bge-small-zh-v1.5）缺失：向量召回已失效，"
+            "检索退化为纯关键词匹配。请将模型放入 models/BAAI/ 下。"
+        )
+    return "warn", (
+        "CrossEncoder 精排模型（bge-reranker-base）缺失："
+        "精排已降级为向量/排名排序，问答与检索质量下降。"
+        "请将模型放入 models/BAAI/ 下。"
+    )
+
+
 def run_health_check(username: str = "system") -> dict:
     """执行全部检查，写 system_logs + health_check_snapshots，返回结果 dict
 
@@ -115,7 +147,9 @@ def run_health_check(username: str = "system") -> dict:
         "vector_orphan": _count_vector_orphan(vector_ids if vstate == "ok" else None),
         "vector_missing": _count_vector_missing(vector_ids if vstate == "ok" else None),
         "fts_mismatch": _count_fts_mismatch(),
+        "model_ready": 0,
     }
+    model_severity, model_hint = _check_models()
     if vstate == "error":
         log_action("maintenance", "WARN", "健康检查向量索引读取失败", username=username)
     checks = []
@@ -125,6 +159,12 @@ def run_health_check(username: str = "system") -> dict:
         severity = "ok" if count == 0 else ("warn" if fixable else "error")
         item = {"key": key, "label": label, "count": count,
                 "severity": severity, "fixable": fixable}
+        if key == "model_ready":
+            item.update(severity=model_severity, count=0,
+                        count_text="✅ 就绪" if model_severity == "ok" else "⚠️ 缺失",
+                        status_text="", hint=model_hint)
+            checks.append(item)
+            continue
         if key == "vector_missing":
             if vstate == "missing":
                 # 向量表不存在：语义为「待重建」，非「可单项修复」，也不宜当异常
