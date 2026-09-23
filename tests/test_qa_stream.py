@@ -37,6 +37,16 @@ def _sse(*chunks: str) -> bytes:
     return "\n".join(lines).encode("utf-8")
 
 
+def _raw_after_done(tail_chunk: str) -> bytes:
+    """构造 `[DONE]` 之后**仍有内容帧**的响应体（用于守卫 break 的必要性）。
+
+    `_sse` 总把 `[DONE]` 放在末尾，而它的返回值以 `\\n\\n` 结尾，故可直接在其后拼接后置帧。
+    """
+    frame = ("data: " + json.dumps(
+        {"choices": [{"delta": {"content": tail_chunk}}]}, ensure_ascii=False) + "\n\n")
+    return _sse("before") + frame.encode("utf-8")
+
+
 @pytest.mark.asyncio
 async def test_ask_stream_yields_deltas(monkeypatch):
     """正常场景：逐块解析 delta，最后一条为 done。"""
@@ -167,3 +177,39 @@ def test_guard_references_context_header():
     from app.ai.prompts import CONTEXT_HEADER, MULTI_TURN_GUARD
     assert CONTEXT_HEADER in MULTI_TURN_GUARD
     assert "参考上下文" not in MULTI_TURN_GUARD
+
+
+def test_context_header_value_is_pinned():
+    """契约守卫：表头的字面值就是任务定论表规定的那个。
+
+    其余用例全部用**符号** `CONTEXT_HEADER` 比较（比值更健壮），代价是**没有人钉住这个值本身**——
+    实测把它改成任意别的标签，9 条全绿。而本 Task 的整个来由就是「护栏引用的标签必须精确」，
+    标签名本身是被文档/后续任务引用的契约；且它出现在模型实际读到的护栏文本里，
+    改错会让护栏重新变回「指向一个含糊标签」的状态。
+    注意这是**定论表契约**的钉点，不是功能不变量——功能上护栏与表头是同源派生的，比值即可。
+    """
+    from app.ai.prompts import CONTEXT_HEADER
+    assert CONTEXT_HEADER == "【参考条文】"
+
+
+@pytest.mark.asyncio
+async def test_ask_stream_ignores_frames_after_done(monkeypatch):
+    """边界场景：`[DONE]` 之后的内容帧必须被丢弃。
+
+    **删掉 `ask_stream` 里 `if payload == "[DONE]": break` 的 break（改 continue/pass）→
+    本用例必须失败**：那些帧会被当作正文发出，**用户会看到本不该出现的内容**
+    （`[DONE]` 是协议结束哨兵，其后帧来自上游 bug / 代理拼接 / 心跳被误当内容）。
+
+    既有夹具里凡含 `[DONE]` 的用例，其后都没有帧，故那条 break 此前是**无覆盖的载荷分支**——
+    实测把它删掉，除本用例外其余 10 条全绿。
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_raw_after_done("AFTER-DONE"))
+
+    transport = httpx.MockTransport(handler)
+    backend = APIBackend("https://x/v1", "k", "m")
+    _patch_async_client(monkeypatch, transport)
+
+    out = [e async for e in backend.ask_stream("q")]
+    assert [e["text"] for e in out if e["type"] == "delta"] == ["before"]
+    assert all("AFTER-DONE" not in e.get("text", "") for e in out)
