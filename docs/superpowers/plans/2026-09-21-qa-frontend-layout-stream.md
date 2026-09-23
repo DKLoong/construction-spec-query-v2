@@ -1657,8 +1657,15 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 
 ## Task 5: 流式渲染（SSE + 降级渲染）
 
-> 🔌 **本 Task 的探针需要「AI 有回答」且要观测流式的中途态** ⇒ **必须按计划开头的「前置 C」配置 mock LLM**
-> （它的流式响应刻意在帧间 sleep，留出可观测的「生成中」窗口）。同 T4：前置节不进简报，故此处留指针。
+> 🔌 **本 Task 的探针需要「AI 有回答」且要观测流式的中途态** ⇒ **必须配置 mock LLM**
+> （`%TEMP%/qa_mock_llm.py`，监听 `127.0.0.1:8199`；其流式响应刻意在帧间 sleep，留出可观测的「生成中」窗口）。
+> 副本库需写（**本段自带配置，因为简报不含计划开头的前置节**）：
+>
+> ```sql
+> INSERT OR REPLACE INTO settings (key, value) VALUES
+>   ('ai.backend','custom'), ('ai.custom.base_url','http://127.0.0.1:8199/v1'),
+>   ('ai.custom.api_key','mock'), ('ai.custom.model','mock-model');
+> ```
 
 **Files:**
 - Modify: `static/components/qa.js`（`send()` 改走 SSE）
