@@ -178,15 +178,22 @@ def _resolve_backend(backend_name: str | None, trace: QATrace):
     return backend, cli_used
 
 
+# 失败/空内容的用户可见文案：**唯一来源**（禁止在两处各写一份字面量）。
+# 非流式（_answer_text）与流式（_sse_stream 补帧 / error 帧兜底）必须逐字一致——
+# 「同一状态在两条路径上给出不同观感」正是合并单一入口要消灭的漂移。
+_EMPTY_ANSWER = "抱歉，AI 服务返回了空内容，请确认后端已正确配置。"
+_GENERIC_ERROR = "AI 服务返回错误"
+
+
 def _answer_text(resp, cli_used: str) -> str:
     """把后端响应归一为给用户看的文本（失败/空内容给可读提示）。"""
     if resp.success and resp.content.strip():
         return resp.content
     if resp.success:
         logger.warning("QA 后端返回空内容 (command=%s)", cli_used)
-        return "抱歉，AI 服务返回了空内容，请确认后端已正确配置。"
+        return _EMPTY_ANSWER
     logger.warning("QA 后端错误 (command=%s): %s", cli_used, resp.error)
-    return "抱歉，AI 服务返回错误。" + ("（超时）" if "超时" in (resp.error or "") else "")
+    return f"抱歉，{_GENERIC_ERROR}。" + ("（超时）" if "超时" in (resp.error or "") else "")
 
 
 @dataclass
@@ -433,22 +440,25 @@ async def qa_ask(request: Request, body: QaRequest):
     默认返回 JSON；body.stream=True 时返回 SSE（text/event-stream）。
     两种输出形态共用 _prepare_qa_context，检索逻辑只有一份。
 
+    **流式分支刻意不在这里做检索准备**：hybrid_search + CE 精排（跑模型，1~3 秒）
+    必须发生在 SSE 第一帧 stage **之后**，否则首帧只能在这段死时间结束时补发，
+    分阶段进度提示形同虚设（详见 _sse_stream）。非流式在返回前跑完准备，无此问题。
+
     会话为惰性创建（session_id 为 None 时新建），成功轮次落库供下轮做历史。
     """
     question = body.question.strip()
     if not question:
         return JSONResponse({"detail": "问题不能为空"}, status_code=400)
 
-    ctx = _prepare_qa_context(question, body)
-
     if body.stream:
         from fastapi.responses import StreamingResponse
         return StreamingResponse(
-            _sse_stream(ctx, body),
+            _sse_stream(question, body),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    ctx = _prepare_qa_context(question, body)
     return await _qa_json(ctx, body)
 
 
@@ -481,8 +491,18 @@ async def _qa_json(ctx: QaContext, body: QaRequest):
                       effective_filters=_effective_filters(body))
 
 
-async def _sse_stream(ctx: QaContext, body: QaRequest):
-    """流式输出：stage×N → delta×N → done | error。
+async def _sse_stream(question: str, body: QaRequest):
+    """流式输出：stage×2 → delta×N → done | error。
+
+    **首帧 stage 必须先于检索/精排发出**：`_prepare_qa_context` 是**同步**函数，
+    hybrid_search + CE 精排（跑模型，设计文档 §4.11 记 1~3 秒）全在它内部；这段
+    「第一个字吐出来之前」的死时间只有 stage 事件能覆盖（设计文档 :367 / :404）。
+    若把准备提到本函数之前（qa_ask 里先 prepare 再返回 StreamingResponse），
+    首帧就退化为「死时间结束后补发」——retrieving 与 generating 随 delta 一起涌出。
+
+    **只发 retrieving → generating 两帧，不发 reranking**：检索与精排都在同一个
+    同步调用里，我们**无法**从函数内部 yield，拆成两帧等于**假装**能区分它们
+    （retrieving 覆盖整个准备段、generating 覆盖模型段，才是诚实的状态回报）。
 
     注意：rerank_used 取自 ctx（准备阶段已拷贝），**不得**在此处再读
     模块级 _last_rerank_used——本函数跨多次 await，期间并发请求会改写它。
@@ -490,34 +510,51 @@ async def _sse_stream(ctx: QaContext, body: QaRequest):
     from app.ai.prompts import build_system_prompt
     from app.config import WORKSPACE_DIR
 
-    yield _sse("stage", {"stage": "retrieving"})
-    yield _sse("stage", {"stage": "reranking"})
+    yield _sse("stage", {"stage": "retrieving"})   # 必须先发：这一帧才是「覆盖死时间」的那一帧
+    ctx = _prepare_qa_context(question, body)      # 检索 + 精排都在这里（1~3 秒）
+    yield _sse("stage", {"stage": "generating"})   # 之后才是模型生成
 
     backend, cli_used = _resolve_backend(body.backend, ctx.trace)
     if not backend.is_available():
         yield _sse("error", {"message": f"{cli_used} 不可用，请确认已配置"})
         return
 
-    yield _sse("stage", {"stage": "generating"})
-
     parts: list[str] = []
     start = time.time()
-    async for ev in backend.ask_stream(
-        prompt=ctx.question, context=ctx.context_str,
-        system_prompt=build_system_prompt(body.mode, multi_turn=bool(ctx.history_str)),
-        work_dir=WORKSPACE_DIR,
-    ):
-        if ev["type"] == "delta":
-            parts.append(ev["text"])
-            yield _sse("delta", {"text": ev["text"]})
-        elif ev["type"] == "error":
-            ctx.trace.duration_ms = int((time.time() - start) * 1000)
-            yield _sse("error", {"message": ev.get("message") or "AI 服务返回错误"})
-            _emit_trace(ctx.trace)      # 失败也埋点，供排查
-            return
+    try:
+        async for ev in backend.ask_stream(
+            prompt=ctx.question, context=ctx.context_str,
+            system_prompt=build_system_prompt(body.mode, multi_turn=bool(ctx.history_str)),
+            work_dir=WORKSPACE_DIR,
+        ):
+            if ev["type"] == "delta":
+                parts.append(ev["text"])
+                yield _sse("delta", {"text": ev["text"]})
+            elif ev["type"] == "error":
+                ctx.trace.duration_ms = int((time.time() - start) * 1000)
+                yield _sse("error", {"message": ev.get("message") or _GENERIC_ERROR})
+                _emit_trace(ctx.trace)      # 失败也埋点，供排查
+                return
+    except Exception as e:
+        # 后端**抛异常**（而非发 error 帧）：此时 200 与上面的 stage 帧都已发出，
+        # 不兜底则客户端只看到连接中断、拿不到任何错误文案，且埋点永不落库——
+        # 与紧邻的 error 分支（特意写了 _emit_trace，注释「失败也埋点」）自相矛盾。
+        # 保留原始堆栈（exc_info），不吞异常上下文。
+        logger.error("QA 流式生成异常 (command=%s): %s", cli_used, e, exc_info=True)
+        ctx.trace.duration_ms = int((time.time() - start) * 1000)
+        yield _sse("error", {"message": _GENERIC_ERROR})
+        _emit_trace(ctx.trace)              # 失败也埋点，供排查
+        return
     ctx.trace.duration_ms = int((time.time() - start) * 1000)
 
     answer = "".join(parts)
+    if not answer.strip():
+        # 后端「成功但没有内容」：非流式会返回 _EMPTY_ANSWER 文案，流式若只发 done，
+        # 前端将显示**空白回答且无任何提示**。文案与非流式**同一来源**，保证逐字一致。
+        # 走到这里说明没发过 error 帧（两条失败分支都已 return），不会重复提示。
+        # 注意：**落库仍按原始内容判定**（下方 persist_ok 传 bool(answer.strip())）——
+        # 非流式在同一状态下同样不建会话，两条路径的持久化语义必须一致。
+        yield _sse("delta", {"text": _EMPTY_ANSWER})
     sources, confusable_hits, session_id = _finish_turn(
         ctx, answer, bool(answer.strip()), body)
 
