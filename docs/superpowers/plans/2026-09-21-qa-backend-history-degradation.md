@@ -3202,3 +3202,139 @@ git commit -m "feat: /qa/ask 单一入口支持流式输出（SSE），消除检
 
 - **计划 2（前端）**：`#main-content` 容器契约、QA 页布局与折叠、筛选统一、会话列表 UI 与续聊交互、SSE 前端读取与降级渲染、分阶段进度提示
 - 修复 `qa.js` 对 `/qa/ask` 的调用以携带 `session_id`
+---
+
+## 评审记录（2026-09-23 · `/plan-eng-review`）
+
+评审对象：本计划 + `2026-09-21-qa-frontend-layout-stream.md` + `2026-09-21-qa-history-session-design.md`。
+外部独立评审：Codex（`codex exec`，只读，模型默认，参考力度 高）。
+
+### What already exists（已有实现，本计划复用而非重建）
+
+| 子问题 | 已有实现 | 计划如何处理 |
+|---|---|---|
+| 精排三级降级链 | `app/routes/qa_routes.py:30-67` 的 `_rerank_scored` | **复用**，只改第 3 级的分数语义与阈值解析 |
+| 候选过滤/分层/上下文组装 | `app/qa/context.py`（`filter_by_score`/`tier_items`/`build_context`/`estimate_tokens`） | **完全复用**——第 3 级修正靠「喂进去的分数换成语义正确的值」实现，该文件一行不改 |
+| 筛选状态共享 | `Alpine.store('searchState')`（`tree.js`） | **复用**，QA 改读它而非自建副本 |
+| 问答埋点 | `qa_request_logs` 表 + `_emit_trace` | **复用且不动表结构**（与会话关联留作 YAGNI） |
+| 健康检查框架 | `app/maintenance/health_check.py` 的 `LABELS`/`checks`/`fix_issue` | **复用**，加一项 `model_ready` |
+| 参数设置 UI | `app/params/registry.py` 的 `qa` 分组 | **复用**，加两条注册表项即自动渲染进维护页 |
+| markdown 渲染管线 | `static/components/md-render.js`（marked + DOMPurify + KaTeX） | **复用**，收尾阶段直接调用；**计划已不再改动该文件** |
+| 会话持久化模式 | `app/database.py` 的 `CREATE TABLE IF NOT EXISTS` + 迁移段 | **复用**同一模式 |
+| 全文检索 | `clauses_fts`（FTS5 + jieba 预分词） | ⚠️ **有意不用**——`qa_messages` 是小表，改 LIKE + 通配符转义（理由见 spec §4.12） |
+
+### NOT in scope（本次明确不做）
+
+| 项 | 理由 |
+|---|---|
+| HTML 导出 | 已有 md 渲染管线，导出的 md 可直接丢回系统渲染；HTML 导出等于把渲染结果静态化，多一份维护面而不增能力 |
+| 给 `qa_messages` 建 FTS 索引 | 小表用 LIKE 足够；上 FTS 需额外维护索引同步（含级联删除），复杂度远超收益 |
+| 「仅当前会话」搜索勾选框 | 会话内通常只有几轮，价值低；全局搜索是它的自然超集 |
+| `qa_request_logs` 增 `session_id` 列 | 按会话分析检索质量确有价值，但本轮不动既有埋点表结构（已记入 TODO T12 的邻域） |
+| 会话绑定用户 / 权限 | D6 已定：全局共享。**代价已知**：多用户环境下任何登录用户可读可删他人历史（用户 2026-09-23 明确不采纳该项 TODO） |
+| CLI 后端取消 | 三个调用点、`APIBackend` 可覆盖，但属独立改造（TODO T13） |
+| 模型安装期可选化 | 属封装方案范畴（TODO T14） |
+| CLI 后端的真流式 | `CLIBackend.ask_stream` 为一次性吐出；`_run_cli` 的同步 `subprocess.run` 在 async 路径会阻塞事件循环——**pre-existing，本轮不修**（已记入 TODO T13） |
+| 流式中断的服务端语义 | 本轮未定义（TODO T12） |
+
+### 失败模式（新增代码路径）
+
+| 路径 | 现实失败场景 | 有测试？ | 有错误处理？ | 用户可见？ |
+|---|---|---|---|---|
+| `_prepare_qa_context` 检索段 | `hybrid_search` 抛异常 | ✅ `test_qa_routes` 既有 | ✅ `except` + 空候选降级，`logger.error` | ✅ 得到「未检索到相关条文」而非报错 |
+| 第 3 级降级排名切分 | 无模型环境下全部候选被误判强弱 | ✅ **本轮新增回归守卫** | ✅ 透传排名分数替代全 1.0 | ✅ 前端显示「⚠️ 无精排」 |
+| 会话落库 | SQLite 并发写锁 | ✅ `test_concurrent_appends_same_session_do_not_lose_or_mix` | ✅ `get_db()` 的 `timeout=30` 串行化 | ⚠️ 超时会 500；概率极低 |
+| 流式 SSE | 后端在流中途报错 | ✅ `test_stream_error_event_when_backend_fails` | ✅ 发 `error` 事件 + 补埋点 + 不落库 | ✅ 前端显示错误并回退非流式 |
+| 流式 SSE | **客户端中断**（关页/切会话） | ❌ **无** | ❌ **无**（未定义） | ⚠️ **静默**——可能留空会话、可能前端重发导致双倍生成 → **critical gap，记入 TODO T12** |
+| 导出 Markdown | 会话标题含换行/特殊字符 | ✅ 用 `quote()` 做 RFC 5987 编码 | ✅ | ✅ 文件名正确，无头注入 |
+| 跨会话搜索 | 用户输入含 `%` / `_` | ✅ `test_search_messages_escapes_like_wildcards` | ✅ `_escape_like` | ✅ 不会退化为全表命中 |
+| 健康检查 | 模型未装 | ✅ 三条用例 | ✅ 报告 severity + hint | ✅ 维护页显式可见 |
+| 前端 SSE 读取 | `fetch` 流中断 | ✅ 探针 t5 | ✅ `_fallbackAsk` 回退 | ✅ |
+| QA 页 URL 回填 | 维度名与后端漂移 | ✅ 探针 t1 | — | ✅ 筛选与树状态不一致会被探针抓到 |
+
+**critical gap 计 1 条**：流式中断的服务端语义未定义（无测试、无处理、静默）。
+
+### 并行化
+
+**顺序实施，无实质并行机会。** 两个计划共用 `app/routes/qa_routes.py` 与 `static/components/qa.js`，
+且计划 2 依赖计划 1 的全部接口（`/qa/sessions*`、`/qa/search`、`/qa/ask` 的 `stream` 开关、`rerank_used`）。
+计划 1 内部任务链亦为线性（T1 的 degrade 模块被 T8/T13/T15 依赖；T4 的表被 T5~T13 依赖）。
+
+| 阶段 | 模块 | 依赖 |
+|---|---|---|
+| 计划 1 | `app/qa/`、`app/ai/`、`app/routes/qa_routes.py`、`app/database.py` | — |
+| 计划 2 | `app/templates/`、`static/components/`、`static/app.css` | 计划 1 全部合入 |
+
+**Lane A**：计划 1（T1→T15，严格顺序）
+**Lane B**：计划 2（T1→T5，严格顺序），**必须等 Lane A 完成**
+
+两条 Lane 共用 `app/routes/qa_routes.py`（计划 2 的 T1 加 `GET /qa`），**不可并行**。
+
+### Implementation Tasks
+
+- [ ] **T1 (P1, human: ~2h / CC: ~20min)** — `app/qa/degrade.py` — 第 3 级降级改按排名切分
+  - Surfaced by: 架构评审 —— `_rerank_scored` 第 3 级返回全 1.0 会让 `tier_items` 把全部候选判为 high，摘要压缩失效、token 预算被吃光
+  - Files: `app/qa/degrade.py`、`app/routes/qa_routes.py`
+  - Verify: `pytest tests/test_qa_degrade.py -v`
+- [ ] **T2 (P1, human: ~3h / CC: ~30min)** — 流式并入 `/qa/ask` 单一入口，抽 `_prepare_qa_context`
+  - Surfaced by: 架构评审 —— 独立路由复制 72 行检索链，已致埋点缺失 + `_last_rerank_used` 跨 await 竞态
+  - Files: `app/routes/qa_routes.py`、`app/models.py`
+  - Verify: `pytest tests/test_qa_stream.py -v`（含 3 条回归守卫）
+- [ ] **T3 (P1, human: ~2h / CC: ~20min)** — 会话持久化 + 当轮筛选落库
+  - Surfaced by: 代码质量评审 —— 筛选不入库则历史答案的筛选背景不可逆丢失
+  - Files: `app/qa/sessions.py`、`app/database.py`
+  - Verify: `pytest tests/test_qa_sessions.py -v`（含并发与空会话用例）
+- [ ] **T4 (P1, human: ~1h / CC: ~10min)** — `QaRequest.include_non_clause` 显式声明
+  - Surfaced by: 代码质量评审 —— Pydantic `extra='ignore'` 会静默丢弃未声明字段，前端传了不生效且无报错
+  - Files: `app/models.py`、`app/routes/qa_routes.py`
+  - Verify: `pytest tests/test_qa_stream.py -k include_non_clause -v`
+- [ ] **T5 (P2, human: ~2h / CC: ~20min)** — 历史段独立 token 预算
+  - Surfaced by: 性能评审 —— 历史段与条文段共用 `token.max_context_tokens`，总上下文达配置值两倍
+  - Files: `app/config.py`、`app/params/registry.py`、`app/routes/qa_routes.py`
+  - Verify: `pytest tests/test_qa_history.py -v`
+- [ ] **T6 (P2, human: ~4h / CC: ~45min)** — QA 改整页导航 + 筛选进 URL
+  - Surfaced by: 架构评审 —— htmx 局部替换的唯一收益（筛选携带）本就非需求，代价却是改检索页 swap 目标 + Alpine-in-swap 无先例 + 后退键失效
+  - Files: `app/routes/qa_routes.py`、`app/templates/base.html`、`static/components/qa.js`、`tree.js`、`search.js`
+  - Verify: `python scripts/probe_qa_ui.py t1`
+- [ ] **T7 (P2, human: ~1h / CC: ~10min)** — 流式渲染改两态纯文本
+  - Surfaced by: 架构评审（外部） —— 「节流 + marked」真正的问题是半截 Markdown 反复重排的观感，且顺带引入未闭合公式风险
+  - Files: `static/components/qa.js`、`static/app.css`
+  - Verify: `python scripts/probe_qa_ui.py t5`
+- [ ] **T8 (P2, human: ~30min / CC: ~5min)** — 健康检查改探测不实例化
+  - Surfaced by: 性能评审（外部） —— `get_reranker()` 会在维护页真加载模型（数秒）
+  - Files: `app/ai/reranker.py`、`app/ai/embedding.py`、`app/maintenance/health_check.py`
+  - Verify: `pytest tests/test_health_check_models.py -v`
+- [ ] **T9 (P3, human: ~1d / CC: ~1h)** — 流式中断的服务端语义（见 TODOS.md T12）
+- [ ] **T10 (P3, human: ~1d / CC: ~1h)** — CLI 后端取消（见 TODOS.md T13）
+
+### 评审结论
+
+两个计划在本次评审中经 **10 轮逐项决策**修订。最重的三处结构性问题（流式路由重复导致的两个真实缺陷、
+QA 页面形态选错带来的三项代价、上下文预算双计）均已修正。
+外部评审（Codex）另有 6 条为假阳性（其 shell executor 故障，只能读提示词骨架，无法核实仓库），已逐条排除。
+
+**残余风险 1 条**：流式中断的服务端语义未定义（TODO T12）。
+
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Outside Review | `codex exec`（由 /plan-eng-review 自动发起） | Independent 2nd opinion | 1 | completed | 18 条：12 条经核实为真、6 条假阳性 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | issues_found | 13 项发现，**全部已处置** |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+**OUTSIDE COVERAGE:** provider=codex · phase=plan-review · **completed**（`codex exec` EXIT=0，32,333 tokens，只读沙箱）。
+Codex 自述其 shell executor 故障（`CreateProcess helper_unknown_error`），**无法读取仓库**，结论全部由提示词文本推导——
+因此其中 6 条（会话标题 XSS、`done` 事件缺 `effective_filters`、T1 需改 `context.py`、`build_history` 无预算来源、
+`relax()` 产生 Q,A,A、`filter_by_score` 需跳过）经逐条核实为**假阳性**，已排除。
+
+**CROSS-MODEL:** 两端一致的三条——① 流式路由复制检索链是架构缺陷；② 多轮上下文预算无明确上界；
+③ `_prepare_qa_context` 的抽取应前置而非放在最后一个任务。分歧一条：Codex 建议流式渲染改用纯文本
+（**已采纳**，见 D15）；它另建议把模型降级修正拆成独立交付单元**先交付**（未采纳，用户选择并入本轮）。
+
+**VERDICT:** ENG REVIEWED — 13 项发现全部处置完成，无未决项。两份计划（后端 15 Task / 前端 5 Task）可进入实施。
+
+NO UNRESOLVED DECISIONS

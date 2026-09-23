@@ -152,3 +152,30 @@
 - **Status（2026-09-20）**：规则页已修；余项触发式核查。
 
 
+
+## T12 — 流式中断的服务端语义（deferred，2026-09-23 plan-eng-review 后登记）
+
+- **What**：明确 `/qa/ask` 流式路径在**客户端中断**（关标签页、点「＋新会话」、切会话、网络断）时的服务端行为：会话是否保留、部分答案是否入库、`qa_request_logs` 是否补记。
+- **Why**：现状未定义。首轮中断可能留下**空会话**（已 `create_session` 但 `_finish_turn` 未执行）；且前端 `_fallbackAsk` 会重发同一问题，导致**同一次提问发起两次完整 LLM 生成**（双倍成本）。
+- **Context**：来源为 2026-09-23 的 `/plan-eng-review` 外部评审（Codex）指出。相关代码：`app/routes/qa_routes.py` 的 `_sse_stream`、`static/components/qa.js` 的 `_streamAsk` / `_fallbackAsk`。注意前端已有 `AbortController` 之类机制缺失——目前没有主动取消 reader 的路径。
+- **Pros**：消除“空会话”脏数据；避免重复计费；中断后的状态可预期。
+- **Cons**：需要定义并测试「中断」这一难以稳定复现的场景；可能要给前端加 `AbortController`。
+- **Blocked by**：无。建议在流式实际投用、观察到中断问题后启动。
+
+## T13 — CLI 后端取消（deferred，2026-09-23 登记）
+
+- **What**：评估并移除 `CLIBackend`（`claude` / `codex` 子进程）后端，统一走 API 后端。
+- **Why**：CLI 后端在 Windows 下依赖外部进程与登录态，是额外的运维面；`APIBackend` 已实现 `classify_batch_sync`，功能上可覆盖三个调用点。
+- **Context**：调用点仅三处——`app/ai/classifier_ai.py:20`（AI 分类）、`app/routes/import_routes.py:113`（导入时的版本校核）、`app/routes/qa_routes.py`（QA）。另需清理设置页的后端选择 UI 与 `ai.backend*` 三个配置项。**另注**：`CLIBackend._run_cli` 用同步 `subprocess.run`，在 async 路径里会**阻塞事件循环**（最长 60s）——若保留 CLI 后端，这是个独立待修项。用户 2026-09-21 表示“后续可能考虑取消”。
+- **Pros**：去掉一层外部进程依赖；消灭事件循环阻塞风险；减少设置项。
+- **Cons**：失去“用户已有 CLI 订阅、无需另配 API key”这条路径。
+- **Blocked by**：无硬依赖。需先确认实际使用中是否有人依赖 CLI 后端。
+
+## T14 — 模型安装期可选化（deferred，2026-09-23 登记）
+
+- **What**：封装/分享时把 CrossEncoder 精排模型（`bge-reranker-base`）设为**可选安装项**，安装流程中给出提示与跳过选项，并说明缺失后果。
+- **Why**：分享给他人时对方可能不装精排模型；当前系统会**静默降级**，用户不知道检索质量为何下降。
+- **Context**：设计文档 D12 已在本轮补上「降级状态透出前端」与「健康检查报告模型就绪」两项可观测性，但**安装期**的可选化属于封装方案范畴。相关代码：`app/ai/reranker.py`、`app/ai/embedding.py`（均已是 `local_files_only=True`，不会自动下载）、`app/maintenance/health_check.py` 的 `model_ready` 项。
+- **Pros**：对方拿到系统后知道缺什么、要不要装；降低分享门槛（可不装精排模型先跑起来）。
+- **Cons**：需设计安装脚本/文档；embedding 模型缺失会让向量召回一并失效（比精排更严重），可选化的边界要分清。
+- **Blocked by**：封装方案立项之后（用户 2026-09-21：“等封装的时候再谈”）。

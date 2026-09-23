@@ -1496,3 +1496,30 @@ git commit -m "feat: QA 流式输出（SSE 读取 + 流式期间降级渲染）"
 - **`.center-panel-v2` 的滚动与 QA 页高度**：已用最小复现实测确认——`.center-panel-v2:has(.qa-root) { height:100% }` 在 1600×900 下使 `.qa-root` 高度正确解析为 852px，内部滚动与贴底输入框均正常，且 `:has()` 收窄后不影响其它页面。（实测时锚点曾是 `#main-content`；改为整页导航后该壳层不存在，锚点变为 `.center-panel-v2`——规则本身不变。）**若将来浏览器不支持 `:has()`**（项目用 Chrome/Edge，已支持），退路是给 `.center-panel-v2` 补 `display:flex; flex-direction:column` + 其直接子元素 `flex:1; min-height:0`。
 - **QA 页与检索结果的双滚动条**：`.center-panel-v2` 本身可滚，`.qa-messages` 也可滚。QA 页下 `.qa-root` 占满高度，`.center-panel-v2` 应不产生滚动；若实施时发现外层也滚，给 `.center-panel-v2:has(.qa-root)` 补 `overflow: hidden`。
 - **QA 页的 Alpine 初始化**：整页导航走 DOMContentLoaded，与 `/specs`、`/rules`、`/lexicon` 完全同形——本项目已验证过无数次，故 T1 的 `t1_qa_entry_is_a_page_link` 探针即是这一条的守卫（若 Alpine 未接管，`.qa-sessions` 的 `x-show` 不会生效、点击树标签不会走 `isQaView()` 分支）。
+
+---
+
+> 本计划的评审记录见 `2026-09-21-qa-backend-history-degradation.md` 末尾的「评审记录」与 `## GSTACK REVIEW REPORT`。
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Outside Review | `codex exec`（由 /plan-eng-review 自动发起） | Independent 2nd opinion | 1 | completed | 18 条：12 条经核实为真、6 条假阳性 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | issues_found | 13 项发现，**全部已处置** |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+**OUTSIDE COVERAGE:** provider=codex · phase=plan-review · **completed**（`codex exec` EXIT=0，32,333 tokens，只读沙箱）。
+Codex 自述其 shell executor 故障（`CreateProcess helper_unknown_error`），**无法读取仓库**，结论全部由提示词文本推导——
+因此其中 6 条（会话标题 XSS、`done` 事件缺 `effective_filters`、T1 需改 `context.py`、`build_history` 无预算来源、
+`relax()` 产生 Q,A,A、`filter_by_score` 需跳过）经逐条核实为**假阳性**，已排除。
+
+**CROSS-MODEL:** 两端一致的三条——① 流式路由复制检索链是架构缺陷；② 多轮上下文预算无明确上界；
+③ `_prepare_qa_context` 的抽取应前置而非放在最后一个任务。分歧一条：Codex 建议流式渲染改用纯文本
+（**已采纳**，见 D15）；它另建议把模型降级修正拆成独立交付单元**先交付**（未采纳，用户选择并入本轮）。
+
+**VERDICT:** ENG REVIEWED — 13 项发现全部处置完成，无未决项。两份计划（后端 15 Task / 前端 5 Task）可进入实施。
+
+NO UNRESOLVED DECISIONS
