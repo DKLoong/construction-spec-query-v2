@@ -37,6 +37,19 @@ def _sse(*chunks: str) -> bytes:
     return "\n".join(lines).encode("utf-8")
 
 
+def _sse_no_done(*chunks: str) -> bytes:
+    """构造**不含** `data: [DONE]` 的响应体（流自然耗尽）。
+
+    `_sse` 无条件在末尾补 `[DONE]`，故「上游不发结束哨兵」这条路径此前无覆盖。
+    """
+    lines = []
+    for c in chunks:
+        lines.append("data: " + json.dumps(
+            {"choices": [{"delta": {"content": c}}]}, ensure_ascii=False))
+        lines.append("")
+    return "\n".join(lines).encode("utf-8")
+
+
 def _raw_after_done(tail_chunk: str) -> bytes:
     """构造 `[DONE]` 之后**仍有内容帧**的响应体（用于守卫 break 的必要性）。
 
@@ -89,6 +102,30 @@ async def test_ask_stream_handles_empty_stream(monkeypatch):
 
     out = [e async for e in backend.ask_stream("q")]
     assert out == [{"type": "done"}]
+
+
+@pytest.mark.asyncio
+async def test_ask_stream_without_done_sentinel(monkeypatch):
+    """边界场景：上游未发 `[DONE]`（流自然耗尽）→ delta 完整且仍以 done 收尾。
+
+    夹具 `_sse` **无条件**在末尾补 `data: [DONE]`，故此前没有任何用例走过「流自然结束」
+    这条路径；而 `test_ask_stream_yields_deltas` 的末条 done 断言**在有无 `[DONE]` 时都成立**，
+    不能区分两条路径。真实上游（代理/网关/自建服务）不保证一定发结束哨兵，
+    此时既不能丢 delta，也不能缺 done。
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_sse_no_done("混凝土", "强度"))
+
+    transport = httpx.MockTransport(handler)
+    backend = APIBackend("https://x/v1", "k", "m")
+    _patch_async_client(monkeypatch, transport)
+
+    out = [e async for e in backend.ask_stream("q")]
+    assert out == [
+        {"type": "delta", "text": "混凝土"},
+        {"type": "delta", "text": "强度"},
+        {"type": "done"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -167,12 +204,37 @@ async def test_cli_backends_emit_context_header(monkeypatch, cls_name):
     assert "参考上下文" not in seen["p"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content,error,expected", [
+    ("答案", "", [{"type": "delta", "text": "答案"}, {"type": "done"}]),
+    ("", "", [{"type": "done"}]),                      # 成功但空内容：不得产生空 delta
+    ("", "boom", [{"type": "error", "message": "boom"}]),
+])
+async def test_cli_backend_ask_stream(monkeypatch, content, error, expected):
+    """正常/边界/异常：CLI 后端不支持真流式，整段吐一个 delta 再 done。
+
+    这是 `CLIBackend.ask_stream` 的**唯一**守护：删掉该方法（或让 `APIBackend` 的覆盖
+    之外没有默认实现），T15 的单一入口在 CLI 后端下会直接 AttributeError。
+    """
+    from app.ai import cli_client
+
+    def fake_run(prompt, work_dir=None, timeout=60):
+        return CLIResponse(success=not error, content=content, error=error)
+
+    cli = cli_client.ClaudeCodeCLI()
+    monkeypatch.setattr(cli, "_run_cli", fake_run)
+    out = [e async for e in cli.ask_stream("q")]
+    assert out == expected
+
+
 def test_guard_references_context_header():
     """一致性守卫：护栏引用的标签**就是**两条路径实际产出的那个表头。
 
     T7 的坑：护栏写的是【参考上下文】（全角），而 QA 实际走的 API 路径根本没有表头、
     CLI 路径用的是半角 `[参考上下文]` —— 护栏指向一个不存在的东西，退化为含糊约束。
-    本用例钉住「常量 == 护栏引用的标签」：改常量不改护栏、或把护栏改回字面量，都必须红。
+    本用例钉的是**两条**：① 护栏由常量派生（把护栏改回字面量即红）；② 护栏里不残留旧标签。
+    而**常量字面值本身**由 `test_context_header_value_is_pinned` 单独钉住——
+    护栏是 f-string，改常量时护栏**跟着漂**，故本用例结构上无法覆盖常量取值那一层。
     """
     from app.ai.prompts import CONTEXT_HEADER, MULTI_TURN_GUARD
     assert CONTEXT_HEADER in MULTI_TURN_GUARD
@@ -212,4 +274,3 @@ async def test_ask_stream_ignores_frames_after_done(monkeypatch):
 
     out = [e async for e in backend.ask_stream("q")]
     assert [e["text"] for e in out if e["type"] == "delta"] == ["before"]
-    assert all("AFTER-DONE" not in e.get("text", "") for e in out)
