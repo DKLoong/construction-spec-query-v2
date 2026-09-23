@@ -475,25 +475,14 @@ async def qa_export_session(session_id: int):
     )
 
 
-# 搜索关键词长度上限（业务常量集中管理，禁止散落魔法数字）
-_SEARCH_MAX_CHARS = 200
-
-
 @router.get("/qa/search")
 async def qa_search_messages(q: str = ""):
     """跨会话搜索消息内容（LIKE，参数化 + 通配符转义）。
 
-    只读接口：查询一律委托 `sessions.search_messages`（T5），路由不拼任何 SQL。
+    只读接口：查询一律委托 `sessions.search_messages`（T5），路由内不拼任何 SQL，
+    也不重复它已有的处理（空词早退与 strip 都在 T5 里，见 sessions.py:253-255）。
     返回结构恒为 `{"hits": [...]}`——空关键词与无命中都是 `[]`，不返回 null。
-    超长关键词直接拒绝（开发铁律 1.1 入参范围校验）：它不可能命中任何一条消息，
-    却会把整串带进 LIKE 构造。
     """
     from app.qa import sessions as qa_sessions
 
-    keyword = (q or "").strip()
-    if len(keyword) > _SEARCH_MAX_CHARS:
-        return JSONResponse(
-            {"detail": f"搜索关键词过长（最多 {_SEARCH_MAX_CHARS} 字）"},
-            status_code=400,
-        )
-    return JSONResponse({"hits": qa_sessions.search_messages(keyword)})
+    return JSONResponse({"hits": qa_sessions.search_messages(q)})

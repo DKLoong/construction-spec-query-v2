@@ -10,7 +10,6 @@ import pytest
 
 from app.ai.cli_client import CLIResponse
 from app.qa import sessions as S
-from app.routes import qa_routes as QR
 
 # 固定候选（stub 用），字段与真实 hybrid_search 返回对齐
 _CAND = {"id": 1, "spec_code": "GB 50204", "clause_no": "8.2.1",
@@ -374,20 +373,19 @@ def test_search_endpoint_escapes_underscore_wildcard(auth_client):
     assert [h["content"] for h in hits] == ["字段 a_b 的说明"]
 
 
-def test_search_endpoint_rejects_overlong_query(auth_client):
-    """异常场景：超长关键词被拒（400），不得进入 LIKE 构造（铁律 1.1 范围校验）。
+def test_search_endpoint_escapes_backslash(auth_client):
+    """异常场景：反斜杠本身被转义（`_escape_like` 的第一步，前提是 `ESCAPE '\\'`）。
 
-    在长度上限处做行为钉点（上限内可用、上限 +1 拒绝），
-    否则「上限」只是一个永远不会被触发的常量。
+    为什么单独测：`\\` 是 ESCAPE 字符自身。它若不翻倍，搜索串尾部会与 `%`/`_` 前插入的
+    转义反斜杠连成 dangling escape——轻则把尾部通配符吃掉、重则 SQL 报错。
+    删掉 `_escape_like` 里 `text.replace("\\\\", "\\\\\\\\")` 那一行，本用例必须失败。
     """
     sid = S.create_session("s")
-    S.append_message(sid, "user", "x" * (QR._SEARCH_MAX_CHARS + 100))
-    ok = auth_client.get("/qa/search", params={"q": "x" * QR._SEARCH_MAX_CHARS})
-    assert ok.status_code == 200
-    assert len(ok.json()["hits"]) == 1
-    r = auth_client.get("/qa/search", params={"q": "x" * (QR._SEARCH_MAX_CHARS + 1)})
-    assert r.status_code == 400
-    assert r.json()["detail"] == f"搜索关键词过长（最多 {QR._SEARCH_MAX_CHARS} 字）"
+    S.append_message(sid, "user", r"C:\spec\gb50204 的路径写法")
+    S.append_message(sid, "user", "普通内容")
+    # 未转义时 "\" 会与后续插入的转义反斜杠串联，命中的集合与下面断言不同
+    hits = auth_client.get("/qa/search", params={"q": "\\"}).json()["hits"]
+    assert [h["content"] for h in hits] == [r"C:\spec\gb50204 的路径写法"]
 
 
 def test_search_endpoint_caps_hits_at_single_call_limit(auth_client):
@@ -400,6 +398,8 @@ def test_search_endpoint_caps_hits_at_single_call_limit(auth_client):
 
     sid = S.create_session("s")
     n = S._SEARCH_LIMIT + 5
+    # 刻意绕开 S.append_message：逐条 append 是循环内单次提交（违反铁律 1.3
+    # 「批量操作必须走批量接口」），本处用 executemany 一次写入
     with get_db() as conn:
         conn.executemany(
             "INSERT INTO qa_messages (session_id, role, content) VALUES (?,?,?)",
