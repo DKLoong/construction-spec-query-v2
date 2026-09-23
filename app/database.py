@@ -111,6 +111,8 @@ CREATE TABLE IF NOT EXISTS qa_request_logs (
     budget          INTEGER,
     dropped_overflow INTEGER,
     context_empty   INTEGER DEFAULT 0,
+    history_tokens  INTEGER,
+    history_budget  INTEGER,
     rerank_used     TEXT,
     duration_ms     INTEGER,
     created_at      TEXT DEFAULT (datetime('now','localtime'))
@@ -469,6 +471,17 @@ def init_db():
         # 迁移：specifications 加 dim1_industry（规范所属行业，层级归并后单独承载行业）
         try:
             conn.execute("ALTER TABLE specifications ADD COLUMN dim1_industry TEXT")
+        except Exception:
+            pass  # 列已存在
+        # 迁移：qa_request_logs 加 history_tokens / history_budget（历史段实际占用与预算）。
+        #   为什么必须落库：`build_history` 是纯函数、无 IO，历史段超预算这件事**本身
+        #   不留下任何痕迹**；没有分位数数据就无法判断默认预算 800 是否偏小（先可测再调参）。
+        try:
+            conn.execute("ALTER TABLE qa_request_logs ADD COLUMN history_tokens INTEGER")
+        except Exception:
+            pass  # 列已存在
+        try:
+            conn.execute("ALTER TABLE qa_request_logs ADD COLUMN history_budget INTEGER")
         except Exception:
             pass  # 列已存在
         # 日志表 + 健康检查快照表（P1 维护工具先建表，P3 日志界面消费）

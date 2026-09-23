@@ -204,6 +204,11 @@ class SearchResponse(BaseModel):
 
 class QaRequest(BaseModel):
     question: str
+    # 会话 id：None → 惰性新建会话；指向不存在的会话 → 同样视为新建（不跨会话取历史）
+    session_id: Optional[int] = None
+    # 「放宽分类筛选」重发标记：True 时**只**忽略分类维度重新检索，
+    # 状态过滤与前言设置仍生效（见设计文档 §4.7）
+    relaxed: bool = False
     backend: str | None = None
     # 问答模式：rag 综合问答（默认） / verbatim 原文摘抄
     mode: str = "rag"
@@ -233,3 +238,5 @@ class QAResponse(BaseModel):
     confusable_hits: list[dict] = []
     # 实际生效的精排级别（crossencoder / vector / none）；前端据此提示降级
     rerank_used: str = ""
+    # 本次问答所属会话 id（惰性创建时为新 id）
+    session_id: int = 0

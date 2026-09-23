@@ -111,6 +111,10 @@ class QATrace:
     budget: int = 0
     dropped_overflow: int = 0
     context_empty: bool = False
+    # 历史段【实际占用】token 与配置预算：build_history 是纯函数无 IO，
+    # 超预算不留任何痕迹——故必须由调用方回填并在超支时告警（先可测，再调参）
+    history_tokens: int = 0
+    history_budget: int = 0
     rerank_used: str = ""
     duration_ms: int = 0
     _extra: dict = field(default_factory=dict, repr=False)
@@ -130,8 +134,9 @@ def _emit_trace(trace: QATrace) -> None:
                 """INSERT INTO qa_request_logs (
                     question, mode, backend, include_invalid, rrf_total, pool_size,
                     after_meta, after_threshold, select_target, high_count, low_count,
-                    context_tokens, budget, dropped_overflow, context_empty, rerank_used, duration_ms
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    context_tokens, budget, dropped_overflow, context_empty,
+                    history_tokens, history_budget, rerank_used, duration_ms
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     trace.question, trace.mode, trace.backend,
                     1 if trace.include_invalid else 0,
@@ -140,6 +145,7 @@ def _emit_trace(trace: QATrace) -> None:
                     trace.high_count, trace.low_count, trace.context_tokens,
                     trace.budget, trace.dropped_overflow,
                     1 if trace.context_empty else 0,
+                    trace.history_tokens, trace.history_budget,
                     trace.rerank_used, trace.duration_ms,
                 ),
             )
@@ -147,27 +153,65 @@ def _emit_trace(trace: QATrace) -> None:
         logger.warning("QA trace 落库失败: %s", e)
 
 
-@router.post("/qa/ask")
-async def qa_ask(request: Request, body: QaRequest):
-    """AI 问答：检索 → 元数据过滤 → 精排 → 阈值过滤 → 动态条数 → 分层 → Token 兜底 → 推理"""
+@dataclass
+class QaContext:
+    """一次问答的检索准备结果（/qa/ask 编排用）。
+
+    抽出来是为了让后续的「放宽重发」（T13）与「流式输出」（T15）共用同一份
+    检索逻辑——复制一份必然漂移。本 Task 只填 question / context_str / picked /
+    trace / history_str / session_id；filtered_out 与 rerank_used 由 T13 补齐，
+    故此处先留默认值（后续任务只做加法，不再重构本函数）。
+    """
+    question: str
+    context_str: str
+    picked: list
+    trace: QATrace
+    filtered_out: int = 0
+    rerank_used: str = ""
+    history_str: str = ""
+    session_id: int | None = None
+
+
+def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
+    """检索 → 元数据过滤 → 精排 → 阈值过滤 → 动态条数 → 分层 → 上下文组装 + 会话/历史解析。
+
+    纯准备阶段：不调用模型、不落库、不写埋点（埋点随本轮结果在 /qa/ask 收尾时输出）。
+    """
     from app.qa.context import (
         filter_by_metadata, filter_by_score, dynamic_select,
-        tier_items, build_context,
+        tier_items, build_context, build_history, estimate_tokens,
     )
     from app.qa.config import get_qa_float, get_qa_int, get_qa_str
-    from app.ai.prompts import build_system_prompt
+    from app.qa import sessions as qa_sessions
     from app.search.hybrid_search import hybrid_search
-    from app.ai.cli_client import get_backend
-    from app.config import WORKSPACE_DIR
 
-    question = body.question.strip()
-    if not question:
-        return JSONResponse({"detail": "问题不能为空"}, status_code=400)
+    # 会话解析：不存在的 id 一律视为新会话——严格不跨会话取历史（D3）
+    session_id = body.session_id
+    if session_id is not None and qa_sessions.get_session(session_id) is None:
+        logger.info("QA session_id=%s 不存在，按新会话处理", session_id)
+        session_id = None
+    # 历史段必须在落库本轮消息之前读取，否则本轮问答会被算进自己的历史
+    history_messages = qa_sessions.get_messages(session_id) if session_id else []
 
     trace = QATrace(
         question=question[:100], mode=body.mode,
         backend=body.backend or "", include_invalid=body.include_invalid,
     )
+
+    # ⓪ 历史段组装（纯函数无 IO）
+    history_budget = get_qa_int("token.max_history_tokens")
+    history_str = build_history(
+        history_messages, get_qa_int("history.max_turns"), history_budget,
+    )
+    # 可观测性：超预算在服务端日志可见（build_history 逐轮丢弃最旧，但**最新一轮无条件保留**，
+    # 故单轮自身超预算时历史段会突破预算——这是有意取舍，需要数据来定夺默认值）
+    trace.history_tokens = estimate_tokens(history_str)
+    trace.history_budget = history_budget
+    if trace.history_tokens > history_budget:
+        logger.warning(
+            "QA 历史段超预算：history_tokens=%d > history_budget=%d",
+            trace.history_tokens, trace.history_budget,
+        )
 
     # ① RRF 混合召回（候选池大小走配置）
     pool = get_qa_int("retrieve.candidate_pool")
@@ -262,7 +306,33 @@ async def qa_ask(request: Request, body: QaRequest):
     trace.dropped_overflow = dropped
     trace.context_empty = not context_str.strip()
 
-    # ⑧ 后端 + system prompt
+    # 历史段置于条文上下文之前（system prompt → 历史 → 本轮条文 → 本轮问题）
+    if history_str:
+        context_str = f"{history_str}\n\n{context_str}"
+
+    return QaContext(question=question, context_str=context_str, picked=picked,
+                     trace=trace, history_str=history_str, session_id=session_id)
+
+
+@router.post("/qa/ask")
+async def qa_ask(request: Request, body: QaRequest):
+    """AI 问答：检索 → 元数据过滤 → 精排 → 阈值过滤 → 动态条数 → 分层 → Token 兜底 → 推理
+
+    会话为惰性创建（session_id 为 None 时新建），成功轮次落库供下轮做历史。
+    """
+    from app.ai.prompts import build_system_prompt
+    from app.ai.cli_client import get_backend
+    from app.qa import sessions as qa_sessions
+    from app.config import WORKSPACE_DIR
+
+    question = body.question.strip()
+    if not question:
+        return JSONResponse({"detail": "问题不能为空"}, status_code=400)
+
+    ctx = _prepare_qa_context(question, body)
+    trace = ctx.trace
+
+    # ⑧ 后端 + system prompt（多轮历史存在时追加引用护栏）
     backend = get_backend(body.backend)
     if isinstance(backend, APIBackend):
         from app.ai.provider_presets import PROVIDERS
@@ -285,16 +355,28 @@ async def qa_ask(request: Request, body: QaRequest):
     start = time.time()
     resp = await backend.ask(
         prompt=question,
-        context=context_str,
-        system_prompt=build_system_prompt(body.mode),
+        context=ctx.context_str,
+        system_prompt=build_system_prompt(body.mode, multi_turn=bool(ctx.history_str)),
         work_dir=WORKSPACE_DIR,
     )
     trace.duration_ms = int((time.time() - start) * 1000)
 
+    # 来源引用：只取实际进入上下文的条文（保证引用与上下文一致）
+    sources = _extract_sources([it.clause for it, _ in ctx.picked])
+
+    # 易混淆术语命中：检测对象恒为用户问题原文（仅提示，不做任何改写）
+    confusable_hits = []
+    if question:
+        from app.lexicon import store, confusable
+        confusable_hits = confusable.detect_confusable(
+            question, store.load_confusable_pairs())
+
     # 处理响应
+    persist_ok = False
     if resp.success and resp.content.strip():
         answer = resp.content
-    elif resp.success and not resp.content.strip():
+        persist_ok = True
+    elif resp.success:
         logger.warning("QA CLI returned empty content (command=%s)", cli_used)
         answer = "抱歉，AI 服务返回了空内容，请确认 CLI 已登录并可用。"
     else:
@@ -304,19 +386,21 @@ async def qa_ask(request: Request, body: QaRequest):
             + ("（超时）" if "超时" in (resp.error or "") else "")
         )
 
-    # 来源引用：只取实际进入上下文的条文（保证引用与上下文一致）
-    sources = _extract_sources([it.clause for it, _ in picked])
-
-    # 易混淆术语命中：检测对象恒为用户问题原文（仅提示，不做任何改写）
-    confusable_hits = []
-    if question:
-        from app.lexicon import store, confusable
-        confusable_hits = confusable.detect_confusable(
-            question, store.load_confusable_pairs())
+    # 仅成功轮次落库（失败不入库，避免半截会话污染历史）
+    session_id = ctx.session_id
+    if persist_ok:
+        if session_id is None:
+            session_id = qa_sessions.create_session(
+                qa_sessions.derive_title(question))
+        qa_sessions.append_message(session_id, "user", question)
+        qa_sessions.append_message(
+            session_id, "assistant", answer, sources=sources,
+            confusable=confusable_hits, mode=body.mode,
+        )
 
     # 埋点
     _emit_trace(trace)
 
     return QAResponse(answer=answer, sources=sources, cli_used=cli_used,
                       confusable_hits=confusable_hits,
-                      rerank_used=trace.rerank_used)
+                      rerank_used=trace.rerank_used, session_id=session_id or 0)
