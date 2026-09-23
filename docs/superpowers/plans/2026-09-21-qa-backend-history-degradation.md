@@ -1925,6 +1925,7 @@ git commit -m "feat: 会话重命名与删除接口"
 ## Task 11: 导出 Markdown
 
 **Files:**
+- Modify: `app/qa/sessions.py`（新增 `build_markdown`）
 - Modify: `app/routes/qa_routes.py`
 - Test: `tests/test_qa_session_routes.py`（追加）
 
