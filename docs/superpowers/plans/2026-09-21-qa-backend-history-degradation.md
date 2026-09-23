@@ -650,13 +650,20 @@ def test_qa_messages_index_exists(qa_db):
 def test_qa_foreign_keys_state_is_documented(qa_db):
     """异常场景：记录 SQLite 外键实际状态。
 
-    这是事实断言而非期望断言——SQLite 默认 PRAGMA foreign_keys=OFF，
-    因此级联删除**不可依赖**，delete_session 必须应用层显式删（T5 覆盖）。
-    本用例存在的意义：若将来有人开启外键，这里会失败并提醒复核 T5。
+    **事实断言而非期望断言**（首版计划此处写反了，经 Task 4 实测更正）：
+    本项目在 `app/database.py` 的 `get_db()` 里执行 `PRAGMA foreign_keys=ON`
+    （自 `b1d08fe` 起就有，非本计划引入），因此 `ON DELETE CASCADE`
+    **是生效的** —— 见下文 delete_session 的说明。
+
+    本用例存在的意义：它会在**有人移除该 PRAGMA** 时失败，而那正是级联删除
+    静默失效的时刻，需要复核 T5 的显式删除路径。
     """
     with get_db() as conn:
         fk_on = conn.execute("PRAGMA foreign_keys").fetchone()[0]
-    assert fk_on == 0, "外键状态变了：请复核 sessions.delete_session 的显式删除是否仍必要"
+    assert fk_on == 1, (
+        "外键被关闭了（PRAGMA foreign_keys 不再是 ON）——"
+        "级联删除将静默失效，请复核 sessions.delete_session 的显式删除是否仍在"
+    )
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -948,8 +955,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'app.qa.sessions'`
 - 所有 SQL 一律参数化（开发铁律 1.1）
 - 并发安全依赖 `get_db()` 的 `sqlite3.connect(..., timeout=30)` 把写入串行化；
   有测试守护该不变量（`test_concurrent_appends_same_session_do_not_lose_or_mix`）
-- 删除会话时**应用层显式删消息**，不依赖 ON DELETE CASCADE
-  （SQLite 默认 PRAGMA foreign_keys=OFF，见 tests/test_qa_sessions.py 的
+- 删除会话时**仍应用层显式删消息**，但理由与首版计划所述不同：
+  本项目 `get_db()` 里开着 `PRAGMA foreign_keys=ON`（`app/database.py:205`），
+  **级联删除实际是生效的**。显式删除保留为防御性写法——它让行为不依赖那条
+  PRAGMA，且在更早的 SQLite 版本或将来关掉外键时仍然正确。
+  见 tests/test_qa_sessions.py 的
    test_qa_tables_cascade_delete 对实际状态的断言）
 - 单会话消息量小（几十条），遍历取用可接受；禁止在循环内发起查询
 """

@@ -207,8 +207,11 @@ CREATE INDEX IF NOT EXISTS idx_qa_messages_session ON qa_messages(session_id, id
 
 - 迁移方式沿用 `database.py` 既有模式（`CREATE TABLE IF NOT EXISTS` + 迁移段）
 - **`qa_request_logs` 保持不动**，两表职责分离：前者是**请求级埋点**（调参用），后者是**会话内容**（用户可见）
-- 删除会话时**在应用层显式删消息**——SQLite 默认 `PRAGMA foreign_keys=OFF`，`ON DELETE CASCADE` 不可依赖。
-  `ON DELETE CASCADE` 仍写在 schema 里（若将来开启外键则自动生效），并有测试记录当前外键状态作为提醒
+- 删除会话时**在应用层显式删消息**。注意理由与首版所述相反：本项目 `get_db()` 里
+  执行 `PRAGMA foreign_keys=ON`（`app/database.py:205`，自 `b1d08fe` 起即有），
+  **级联删除实际生效**；显式删除保留为**防御性写法**——让行为不依赖那条 PRAGMA。
+  `ON DELETE CASCADE` 写在 schema 里，并有测试断言外键当前为 ON（它会在 PRAGMA 被移除时失败，
+  那正是级联静默失效的时刻）
 
 ### 4.5 多轮上下文（精简多轮）
 
@@ -553,7 +556,7 @@ return [(c, 1.0) for c in candidates]      # 全部 1.0
 | 风险 | 说明 | 处置 |
 |---|---|---|
 | swap 目标改动的影响面 | `search.js`/`tree.js` 改 target 后，检索页所有入口需同步；`afterSettle` 回顶逻辑依赖 `#search-results` 存在 | 回归测试覆盖检索页翻页/换词/筛选三条路径 |
-| `ON DELETE CASCADE` | 依赖 `PRAGMA foreign_keys=ON`，SQLite 默认关闭 | 实现时确认；未开启则应用层显式删消息 |
+| `ON DELETE CASCADE` | 依赖 `PRAGMA foreign_keys=ON`。**已实测本项目开着**（`app/database.py:205`），故级联生效 | 应用层仍显式删消息作为防御；测试断言外键为 ON 以在 PRAGMA 被移除时报警 |
 | 多轮下的引用幻觉 | AI 可能引用历史里出现过、但本轮未提供的条文 | prompt 硬约束（4.5）+ 前端只对 `sources` 内的条文转超链接（`qa.js:92-113` 已具备该保护） |
 | QA 页左栏筛选"静默不同步" | 用户切了筛选但看不到影响 | 输入框附近常驻小字显示本轮生效筛选（`effective_filters`） |
 | 首轮问题过短导致会话名无信息量 | 如"那检验批呢" | 可接受；配合可重命名 |
