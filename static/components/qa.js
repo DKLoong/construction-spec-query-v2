@@ -97,14 +97,22 @@ document.addEventListener('alpine:init', () => {
                     }),
                 });
                 const data = await resp.json();
+                const answer = data.answer || '(AI 未返回回答)';
+                // role 值域是后端的 {user, assistant}（qa_messages.role），**不要**在本地另造 'bot' 别名：
+                // 新模板的助手分支判的就是 `msg.role === 'assistant'`，写成 'bot' 会让每条回答都渲染成空气泡。
+                // 同时必须给 `html`（模板用 x-html="msg.html" 渲染回答）。
                 this.messages.push({
-                    role: 'bot',
-                    content: data.answer || '(AI 未返回回答)',
+                    role: 'assistant',
+                    content: answer,
+                    html: this.renderMarkdown(answer, data.sources || []),
                     sources: data.sources || [],
                     confusable: data.confusable_hits || [],
                 });
             } catch (e) {
-                this.messages.push({ role: 'bot', content: '请求失败，请稍后重试' });
+                console.error('[qa] 提问失败:', e);
+                // 失败提示同样要给 html（固定字面量、无用户内容，无需转义）
+                this.messages.push({ role: 'assistant', content: '请求失败，请稍后重试',
+                                     html: '请求失败，请稍后重试' });
             } finally {
                 this.loading = false;
                 this.scrollToBottom();
