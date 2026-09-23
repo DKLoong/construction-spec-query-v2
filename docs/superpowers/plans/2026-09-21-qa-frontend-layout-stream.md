@@ -1698,7 +1698,9 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 - Modify: `static/components/qa.js`（`send()` 改走 SSE）
 - Modify: `static/app.css`（补 `.qa-highlight` 规则 + `.qa-answer.streaming` 的 `white-space: pre-wrap`；
   见上方 ⚠️ 说明）
-- Modify: `app/templates/base.html`（`app.css?v=21 → ?v=22`；`qa.js?v=22 → ?v=23`）
+- Modify: `app/templates/base.html`（`app.css?v=21 → ?v=22`；`qa.js?v=**23** → ?v=24`
+  —— 开工前请以 `grep 'qa.js?v=' app/templates/base.html` 的**实际值**为准：本计划写过的版本号已被 T1~T4 的
+  多次递增与两次控制器代补甩开，**不要照抄数字**）
 - **不改** `static/components/md-render.js`（首版此处列过一条「给它加一个流式档」的 Modify，
   与本节正文及「文件结构」表的「不改」自相矛盾，已删——流式期间不经过任何 Markdown 解析器，
   收尾才走既有完整管线，`md-render.js` 无需任何新档）
