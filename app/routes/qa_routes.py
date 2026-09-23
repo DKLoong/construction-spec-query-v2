@@ -17,12 +17,15 @@ from fastapi.responses import JSONResponse
 from app.models import QaRequest, QAResponse, SearchQuery
 from app.ai.api_client import APIBackend
 from app.database import get_db
+from app.qa.degrade import (
+    RERANK_CE, RERANK_VECTOR, RERANK_NONE, rank_scores, resolve_thresholds,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# 记录本次请求实际生效的精排器（crossencoder / vector / none），供阈值选型与埋点
-_last_rerank_used = "none"
+# 记录本次请求实际生效的精排器（RERANK_CE / RERANK_VECTOR / RERANK_NONE），供阈值选型与埋点
+_last_rerank_used = RERANK_NONE
 
 
 # ── 精排降级链（CrossEncoder → bi-encoder 向量 → 原始顺序） ──
@@ -33,10 +36,12 @@ def _rerank_scored(question: str, candidates: list[dict]) -> list[tuple[dict, fl
     - 候选 ≤ 1：直接返回 [(c, 1.0)]，不打分、不分层。
     - CrossEncoder 可用：分数 = 模型输出（量纲约 0~1）。
     - 降级 bi-encoder 向量：分数 = 余弦相似度（量纲 -1~1），阈值用 qa.vector.* 独立集。
+    - 两者皆不可用：分数 = **排名归一化值**（无绝对相关度语义），
+      阈值改为 min_score=0 + high_threshold=2/3，按排名切分强弱。
     """
     global _last_rerank_used
     if len(candidates) <= 1:
-        _last_rerank_used = "none"
+        _last_rerank_used = RERANK_NONE
         return [(c, 1.0) for c in candidates]
 
     texts = [(c.get("content") or "")[:300] for c in candidates]
@@ -45,7 +50,7 @@ def _rerank_scored(question: str, candidates: list[dict]) -> list[tuple[dict, fl
         from app.ai.reranker import rerank
         scores = rerank(question, texts)
         if scores is not None:
-            _last_rerank_used = "crossencoder"
+            _last_rerank_used = RERANK_CE
             ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
             return [(c, float(s)) for c, s in ranked]
     except Exception as e:
@@ -57,14 +62,16 @@ def _rerank_scored(question: str, candidates: list[dict]) -> list[tuple[dict, fl
         q_vec = np.array(embed_texts([question])[0], dtype=np.float32)
         emb = np.array(embed_texts(texts), dtype=np.float32)
         scores = np.dot(emb, q_vec)
-        _last_rerank_used = "vector"
+        _last_rerank_used = RERANK_VECTOR
         ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
         return [(c, float(s)) for c, s in ranked]
     except Exception as e:
         logger.warning("向量重排序失败，降级为原始顺序: %s", e)
 
-    _last_rerank_used = "none"
-    return [(c, 1.0) for c in candidates]
+    _last_rerank_used = RERANK_NONE
+    # 修正（设计文档 §4.13 缺口 1）：不再返回全 1.0，改按排名归一化。
+    # hybrid_search 的候选本身已按 RRF 分数降序，此处名次即相对相关度。
+    return list(zip(candidates, rank_scores(len(candidates))))
 
 
 def _extract_sources(clauses: list[dict]) -> list[dict]:
@@ -224,15 +231,10 @@ async def qa_ask(request: Request, body: QaRequest):
     )
     trace.after_meta = len(candidates)
 
-    # ③④ 精排打分 + 分数阈值过滤（分 CrossEncoder / 降级向量两套阈值集）
+    # ③④ 精排打分 + 分数阈值过滤（阈值按实际生效的精排级别解析，见 app/qa/degrade.py）
     ranked = _rerank_scored(question, candidates)
     trace.rerank_used = _last_rerank_used
-    if trace.rerank_used == "crossencoder":
-        min_score = get_qa_float("rerank.min_score")
-        high_thr = get_qa_float("rerank.high_threshold")
-    else:
-        min_score = get_qa_float("vector.min_score")
-        high_thr = get_qa_float("vector.high_threshold")
+    min_score, high_thr = resolve_thresholds(_last_rerank_used, get_qa_float)
     ranked = filter_by_score(ranked, min_score)
     trace.after_threshold = len(ranked)
 
