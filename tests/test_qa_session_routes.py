@@ -10,6 +10,7 @@ import pytest
 
 from app.ai.cli_client import CLIResponse
 from app.qa import sessions as S
+from app.routes import qa_routes as QR
 
 # 固定候选（stub 用），字段与真实 hybrid_search 返回对齐
 _CAND = {"id": 1, "spec_code": "GB 50204", "clause_no": "8.2.1",
@@ -303,3 +304,119 @@ def test_export_missing_session_returns_404(auth_client):
     r = auth_client.get("/qa/sessions/999999/export")
     assert r.status_code == 404
     assert r.json()["detail"] == "会话不存在"
+
+
+# ── 跨会话搜索接口（T12） ──
+
+def test_search_endpoint_returns_hits(auth_client):
+    """正常场景：命中返回消息 + 所属会话名 + 消息 id（前端用于定位跳转）。"""
+    sid = S.create_session("混凝土")
+    S.append_message(sid, "user", "混凝土强度等级如何评定")
+    r = auth_client.get("/qa/search", params={"q": "混凝土"})
+    assert r.status_code == 200
+    hits = r.json()["hits"]
+    assert len(hits) == 1
+    assert hits[0]["session_id"] == sid
+    assert hits[0]["session_title"] == "混凝土"
+    assert "id" in hits[0]
+    # 追加断言（brief 只断 id 存在、未断内容）：钉住返回体确实是"这条消息"，
+    # 而非"某个恰好也被算作命中的东西"。注意本用例库里只有这一条消息，
+    # 故"路由把 q 丢掉、直接返回整表"同样会得到 hits == 1 —— 该缺口由下一条
+    # 用例 test_search_endpoint_filters_by_keyword 单独堵住。
+    assert hits[0]["content"] == "混凝土强度等级如何评定"
+    assert hits[0]["role"] == "user"
+
+
+def test_search_endpoint_filters_by_keyword(auth_client):
+    """正常场景：关键词确实参与过滤——跨会话只返回命中的会话，未命中的不出现。"""
+    a = S.create_session("混凝土会话")
+    S.append_message(a, "user", "混凝土强度等级如何评定")
+    b = S.create_session("钢筋会话")
+    S.append_message(b, "user", "钢筋锚固长度怎么算")
+    hits = auth_client.get("/qa/search", params={"q": "混凝土"}).json()["hits"]
+    # 忽略 q 时这里会拿到 2 条（两个会话各一条）→ 断言失败
+    assert [h["session_id"] for h in hits] == [a]
+    # 无命中 → 空数组（统一结构，禁止返回 null）
+    assert auth_client.get("/qa/search", params={"q": "钢结构"}).json() == {"hits": []}
+
+
+def test_search_endpoint_blank_query_returns_empty(auth_client):
+    """边界场景：空查询返回空数组，不退化为全量。"""
+    sid = S.create_session("s")
+    S.append_message(sid, "user", "x")
+    assert auth_client.get("/qa/search", params={"q": "  "}).json() == {"hits": []}
+    # 追加断言：省略 q 时必须落到默认空串，而不是 422（默认值也是契约的一部分）
+    assert auth_client.get("/qa/search").json() == {"hits": []}
+
+
+def test_search_endpoint_escapes_wildcards(auth_client):
+    """异常场景：% 被转义，不得命中全部消息。"""
+    sid = S.create_session("s")
+    S.append_message(sid, "user", "普通内容")
+    assert auth_client.get("/qa/search", params={"q": "%"}).json() == {"hits": []}
+    # 追加断言：转义不得"把 % 一律打死"——字面 % 仍应命中含它的那条
+    S.append_message(sid, "assistant", "含水率 100% 的说明")
+    hits = auth_client.get("/qa/search", params={"q": "100%"}).json()["hits"]
+    assert [h["content"] for h in hits] == ["含水率 100% 的说明"]
+
+
+def test_search_endpoint_escapes_underscore_wildcard(auth_client):
+    """异常场景：_ 被单独转义——搜 "_" 只命中字面含下划线的消息，不得命中全部。
+
+    与 % 分开断言：`_escape_like` 里两个 replace 是两行独立代码，只测 % 时
+    删掉 `_` 那一行照样通过（`%` 用例覆盖不到它）。
+    """
+    sid = S.create_session("s")
+    S.append_message(sid, "user", "普通内容")          # 不含下划线
+    S.append_message(sid, "user", "字段 a_b 的说明")   # 含字面下划线
+    hits = auth_client.get("/qa/search", params={"q": "_"}).json()["hits"]
+    # 未转义时 "_" 退化为"任意单字符" → 两条都命中（len == 2）→ 本断言失败
+    assert [h["content"] for h in hits] == ["字段 a_b 的说明"]
+
+
+def test_search_endpoint_rejects_overlong_query(auth_client):
+    """异常场景：超长关键词被拒（400），不得进入 LIKE 构造（铁律 1.1 范围校验）。
+
+    在长度上限处做行为钉点（上限内可用、上限 +1 拒绝），
+    否则「上限」只是一个永远不会被触发的常量。
+    """
+    sid = S.create_session("s")
+    S.append_message(sid, "user", "x" * (QR._SEARCH_MAX_CHARS + 100))
+    ok = auth_client.get("/qa/search", params={"q": "x" * QR._SEARCH_MAX_CHARS})
+    assert ok.status_code == 200
+    assert len(ok.json()["hits"]) == 1
+    r = auth_client.get("/qa/search", params={"q": "x" * (QR._SEARCH_MAX_CHARS + 1)})
+    assert r.status_code == 400
+    assert r.json()["detail"] == f"搜索关键词过长（最多 {QR._SEARCH_MAX_CHARS} 字）"
+
+
+def test_search_endpoint_caps_hits_at_single_call_limit(auth_client):
+    """边界场景：命中数超过单次上限时截断到上限。
+
+    只断"返回的是列表"覆盖不到上限——忽略上限（例如调用时传了个大 limit
+    或把 search_messages 的默认 limit 去掉）时本用例会拿到 n 条而失败。
+    """
+    from app.database import get_db
+
+    sid = S.create_session("s")
+    n = S._SEARCH_LIMIT + 5
+    with get_db() as conn:
+        conn.executemany(
+            "INSERT INTO qa_messages (session_id, role, content) VALUES (?,?,?)",
+            [(sid, "user", f"混凝土 {i}") for i in range(n)],
+        )
+    hits = auth_client.get("/qa/search", params={"q": "混凝土"}).json()["hits"]
+    assert len(hits) == S._SEARCH_LIMIT
+
+
+def test_search_route_coexists_with_session_detail_route(auth_client):
+    """路由不互相遮蔽：/qa/search 与 /qa/sessions/{id} 各自命中自己的处理器。
+
+    /qa/search 是固定段、/qa/sessions/{session_id} 首段不同，理论上不冲突；
+    此处用一条实测把"两条路由都活着且返回结构各不相同"钉住
+    （任一被遮蔽时解析不出对应键 → 失败）。
+    """
+    sid = S.create_session("s")
+    S.append_message(sid, "user", "混凝土")
+    assert list(auth_client.get("/qa/search", params={"q": "混凝土"}).json()) == ["hits"]
+    assert list(auth_client.get(f"/qa/sessions/{sid}").json()) == ["session", "messages"]
