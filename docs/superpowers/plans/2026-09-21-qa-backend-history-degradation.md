@@ -566,7 +566,11 @@ def _check_models() -> tuple[str, str]:
             # 不能沿用通用的「⚠️ 可修复」：缺模型文件只能由用户把文件放进 models/BAAI/，
             # 系统无法代劳——而 warn/error 两档正是本 Task 存在的全部理由，
             # 在这里宣称"可修复"会直接误导分享场景下的使用者。
-            # fixable=False 同时消除 fix_all 走进未知分支的隐患（见评审 D14）。
+            # fixable=False：缺模型文件只能由用户放进 models/BAAI/，系统无法代劳。
+            # 注意：它**不能**消除 fix_all() 的行为——fix_all 遍历的是 LABELS
+            # （health_check.py:264），与各 item 的 fixable 无关，因此仍会对
+            # model_ready 调 fix_issue → 返回「未知检查项」，该返回值在
+            # maintenance_routes.py 被丢弃、用户不可见（已交终审 triage）。
             item.update(
                 severity=model_severity, count=0,
                 count_text="✅ 就绪" if model_severity == "ok" else "⚠️ 缺失",
