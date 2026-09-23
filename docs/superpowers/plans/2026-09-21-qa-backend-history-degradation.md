@@ -747,7 +747,10 @@ git commit -m "feat: 新增 qa_sessions / qa_messages 表"
   - `list_sessions() -> list[dict]` — 键：`id, title, updated_at, msg_count`，按 `updated_at DESC, id DESC`
   - `get_session(session_id: int) -> dict | None` — 键：`id, title, created_at, updated_at`
   - `get_messages(session_id: int) -> list[dict]` — 键：`id, role, content, sources, confusable, filters, mode, created_at`（`sources`/`confusable`/`filters` 已反序列化为 list/dict）
-  - `append_message(session_id: int, role: str, content: str, sources=None, confusable=None, mode="rag") -> int`
+  - `append_message(session_id: int, role: str, content: str, sources=None, confusable=None, mode="rag", filters: dict | None = None) -> int`
+    —— **`filters` 只能追加在末尾**（`mode` 之后）。插在中间会改变既有位置参数的含义：
+    下游若按位置传 `..., confusable, "text"` 会把 mode 值绑进 `filters`，且**静默降级**
+    （`json.dumps("text")` → `'"text"'`，`_loads_dict` 再折成 `{}`）
   - `rename_session(session_id: int, title: str) -> bool`
   - `delete_session(session_id: int) -> bool`
   - `touch_session(session_id: int) -> None`
@@ -1231,7 +1234,8 @@ def _escape_like(text: str) -> str:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_sessions.py -v`
-Expected: PASS（26 passed —— T4 的 4 条 + 本 Task 的 22 条。原写 18 为陈旧值，Task 5 实测 26）
+Expected: PASS（**27 passed** —— T4 的 4 条 + 本 Task 的 23 条。原写 18 为陈旧值；Task 5 实测 26，
+第 27 条为修复轮补的 `test_touch_session_bumps_updated_at_without_adding_message`）
 
 - [ ] **Step 5: 提交**
 
