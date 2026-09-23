@@ -297,11 +297,14 @@ def build_markdown(sess: dict, messages: list[dict]) -> str:
             lines += ["## 答", "", content, ""]
             sources = m.get("sources") or []
             if sources:
-                # 参考条文格式为「规范号 空格 条号」（如 `GB 50204 8.2.1`），
-                # 由 tests::test_build_markdown_contains_title_and_turns 钉住——
-                # brief 的测试用例即为接口契约，故此处不得改成带《》的写法。
+                # 参考条文格式「《规范编号》条文号」是**项目惯例**，与全站其余 7 处
+                # 渲染保持一致：app/ai/prompts.py:11,23（【《规范编号》条文X】）、
+                # app/qa/context.py:92、app/templates/partials/qa_panel.html:49、
+                # static/components/qa.js:93,111、result_content.html:25。
+                # 导出的 md 会被丢回系统渲染（qa.js 的 `【《code》clause】` 正则转链接），
+                # 故此处**不得**改成空格分隔的写法。
                 refs = "、".join(
-                    f"{s.get('code', '')} {s.get('clause_no', '')}"
+                    f"《{s.get('code', '')}》{s.get('clause_no', '')}"
                     for s in sources if isinstance(s, dict)
                 )
                 if refs:

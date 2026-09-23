@@ -256,13 +256,18 @@ def test_build_markdown_contains_title_and_turns():
     md = S.build_markdown(sess, msgs)
     assert "# 混凝土强度" in md
     assert "如何评定" in md
-    assert "GB 50204 8.2.1" in md
+    # 引文格式为「《规范编号》条文号」——项目惯例，与 app/ai/prompts.py:11,23、
+    # app/qa/context.py:92、app/templates/partials/qa_panel.html:49、
+    # static/components/qa.js:93,111 等 7 处渲染一致（qa.js 还会用
+    # `【《code》clause】` 正则把它转成条文链接）。brief 原断言写作空格分隔的
+    # `"GB 50204 8.2.1"` 是笔误：它不可能是 `《GB 50204》8.2.1` 的子串。
+    assert "《GB 50204》8.2.1" in md
     # 追加断言（brief 的三条对「user/assistant 弄反」无法失败——两段正文无论
     # 谁挂谁都在 md 里）。钉住轮次顺序与「问/答」标签的归属。
     assert md.index("## 问") < md.index("如何评定") \
         < md.index("## 答") < md.index("按 GB 50204 评定")
     # 同上：参考条文若被摘掉 `> 参考条文：` 前缀，上面那条 `in md` 照样通过
-    assert "> 参考条文：GB 50204 8.2.1" in md
+    assert "> 参考条文：《GB 50204》8.2.1" in md
 
 
 def test_build_markdown_handles_session_without_messages():
