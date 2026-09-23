@@ -364,10 +364,19 @@ resp = await client.post(f"{self.base_url}/chat/completions",
 
 | SSE 事件 | 载荷 | 用途 |
 |---|---|---|
-| `event: stage` | `{stage: "retrieving" \| "reranking" \| "generating"}` | 覆盖流式之前的死时间 |
+| `event: stage` | `{stage: "retrieving" \| "generating"}` | 覆盖流式之前的死时间 |
 | `event: delta` | `{text: "..."}` | 增量文本 |
-| `event: done` | `{session_id, sources, confusable_hits, rerank_used, filtered_out}` | 收尾元数据 |
+| `event: done` | `{session_id, sources, confusable_hits, rerank_used, filtered_out, effective_filters}` | 收尾元数据 |
 | `event: error` | `{message}` | 错误 |
+
+> **实现修订（2026-09-23，施工后回填）**：`stage` 的取值**只有两态**，原先写的 `reranking` **已删除**。
+> 原因：检索与 CE 精排都发生在同一个**同步函数** `_prepare_qa_context` 内部，没法从里面 yield
+> ⇒ 把两者拆成两帧是**假装能区分**它们；`retrieving` 覆盖整个准备段（含精排，1~3 秒）才是诚实的。
+> 同理，`generating` 帧必须在**后端可用性检查之后**才发——后端不可用时先报「生成中…」同样是预告未发生的事。
+> **时序要求（本表存在的意义）**：`retrieving` 帧必须**先于** `_prepare_qa_context` 发出，
+> 否则它就无法覆盖那段死时间（施工中曾写反过一次，已由 `tests/test_qa_stream.py` 的顺序用例钉住）。
+> `done` 另含 `effective_filters`（前端显示「本轮生效筛选」）；空回答时会在 `done` 前补一帧
+> `delta`（文案与 JSON 路径同一来源），避免流式路径出现无任何提示的空白回答。
 
 - `APIBackend.ask_stream()`：`client.stream("POST", ...)` + `aiter_lines()` 解析 `data:` 行，遇 `[DONE]` 结束
 - **CLI 后端不做真流式**（见 D11）。但它**不需要前端另走一条路径**：单一入口下，`CLIBackend.ask_stream` 的默认实现就是「调 `ask()` 后一次性 yield 一个 delta + done」。SSE 里一次性吐出，前端渲染路径完全一致，`stage` 事件仍会在等待期间给出「生成中…」反馈。既无「假装流式」的误导，也无需维护第二条渲染路径。
