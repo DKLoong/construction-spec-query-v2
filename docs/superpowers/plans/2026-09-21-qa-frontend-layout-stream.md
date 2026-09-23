@@ -1221,6 +1221,11 @@ git commit -m "feat: QA 筛选统一读共享 store + CE 精排加 tooltip 说�
 
 ## Task 4: 会话列表、切换载入与续聊
 
+> 🔌 **本 Task 的探针需要「AI 有回答」**（会话列表要出现、续聊要追加消息）⇒ **必须按计划开头的「前置 C」配置 mock LLM**
+> （`%TEMP%/qa_mock_llm.py` 监听 8123 之外的 8199；副本库写 `ai.backend='custom'` + `ai.custom.base_url/api_key/model`）。
+> 用真实模型既耗配额、内容又不可控。**注意**：`task-brief` 只抽取 Task 段落，开头的前置节不会出现在简报里，
+> 故本指针必须留在这里。
+
 **Files:**
 - Modify: `static/components/qa.js`
 - Modify: `app/templates/base.html`（本 Task 改 `qa.js` ⇒ `qa.js?v=21 → ?v=22`；Global Constraints 要求此时必须把 base.html 列入清单）
@@ -1651,6 +1656,9 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 ---
 
 ## Task 5: 流式渲染（SSE + 降级渲染）
+
+> 🔌 **本 Task 的探针需要「AI 有回答」且要观测流式的中途态** ⇒ **必须按计划开头的「前置 C」配置 mock LLM**
+> （它的流式响应刻意在帧间 sleep，留出可观测的「生成中」窗口）。同 T4：前置节不进简报，故此处留指针。
 
 **Files:**
 - Modify: `static/components/qa.js`（`send()` 改走 SSE）
