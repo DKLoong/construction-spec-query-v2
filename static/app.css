@@ -447,3 +447,10 @@
 .qa-hit:hover { background: var(--pico-card-sectioning-background-color, #f3f4f5); }
 .qa-hit-title { font-weight: 600; font-size: 0.78rem; }
 .qa-hit-body { color: var(--pico-muted-color); font-size: 0.75rem; }
+/* 跨会话搜索命中：定位到该消息后短暂高亮（2 秒，由 qa.js 的 jumpToHit 摘类）。
+   ⚠️ 必须排在 `.qa-user` / `.qa-bot`（第 108-109 行）**之后**：三者特异性相同，
+   全靠源序取胜——挪到它们前面，底色会被 `.qa-bot` 的 background 覆盖，高亮又变回
+   视觉 no-op（本 Task 之前正是这种状态）。
+   此处**不加 transition**：过渡会让 getComputedStyle 在摘/加类的瞬间读到动画起点的
+   中间值，探针的计算样式判据将不可判。 */
+.qa-highlight { background: #fff3cd; outline: 2px solid #e0a800; outline-offset: 1px; }

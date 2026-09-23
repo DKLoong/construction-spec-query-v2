@@ -11,6 +11,15 @@ const QA_DIM_KEYS = ['dim1_hierarchy', 'dim1_industry', 'dim1_nature',
                      'dim2_stage', 'dim3_usage', 'dim4_specialty',
                      'dim5_location', 'dim6_material'];
 
+// HTML 转义：任何把用户/DB 可控字符串插进 HTML 的路径（流式期间的纯文本渲染、
+// renderMarkdown 的源链接改写）都必须先转义（开发铁律 1.1）。
+// 抽成模块级**单一来源**：两处各写一份迟早漂移。
+function escHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+}
+
 // 由共享 store 生成 QA 页 URL；无筛选时退化为裸 /qa
 function buildQaUrl() {
     const ss = window.Alpine && window.Alpine.store && Alpine.store('searchState');
@@ -204,6 +213,19 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        // ⚠️ **不要**写 `this.$refs.msgBox`：Alpine 3.15 的 magic（`$refs` / `$root`）
+        //    解析上下文是**调用该方法的那个元素**，而本组件的方法都由嵌套元素的处理器调用
+        //    （`.qa-hit` 的 @click、输入框的 @keydown）⇒ `this.$refs` 落到 `.qa-hit._x_refs`
+        //    上（一个自动新建的空对象）⇒ `msgBox` 恒为 undefined。
+        //    实测（qa.js 旧写法）：jumpToHit 下一行直接抛
+        //    `TypeError: Cannot read properties of undefined (reading 'querySelectorAll')`，
+        //    **高亮从未真正加上过**（不是"样式缺失所以看不见"，是类压根没加上）。
+        //    按类名取则与调用点无关；QA 页全页只有一个 .qa-messages
+        //    （t2_layout_structure_present 断言其唯一性）。
+        _messageBox() {
+            return document.querySelector('.qa-messages');
+        },
+
         async jumpToHit(hit) {
             await this.openSession(hit.session_id);
             this.searchHits = [];
@@ -212,8 +234,9 @@ document.addEventListener('alpine:init', () => {
             this.$nextTick(() => {
                 const idx = this.messages.findIndex(m => m.content === hit.content);
                 if (idx < 0) return;
-                const nodes = this.$refs.msgBox.querySelectorAll('.qa-msg');
-                const el = nodes[idx];
+                const box = this._messageBox();
+                if (!box) return;
+                const el = box.querySelectorAll('.qa-msg')[idx];
                 if (el) {
                     el.scrollIntoView({ block: 'center' });
                     el.classList.add('qa-highlight');
@@ -229,9 +252,7 @@ document.addEventListener('alpine:init', () => {
         // 生成期间的渲染辅助：只做 HTML 转义，不解析 Markdown。
         // 换行由 CSS 的 white-space: pre-wrap 呈现（见 app.css 的 .qa-answer.streaming）。
         _streamingHtml(text) {
-            return String(text ?? '').replace(/[&<>"']/g, c => ({
-                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-            }[c]));
+            return escHtml(text);
         },
 
         // ── 提问 ──
@@ -242,62 +263,162 @@ document.addEventListener('alpine:init', () => {
             const fromInput = opts.question === undefined;
             const q = (fromInput ? this.input : String(opts.question)).trim();
             if (!q || this.loading) return;
-            this.messages.push({ uid: ++_uid, role: 'user', content: q, html: '',
-                                 sources: [], confusable: [], filtersText: '',
-                                 filteredOut: 0, streaming: false });
+
+            // 统一由 buildRequestBody() 组合请求体（读共享 store；QA 面板内不再自持筛选状态），
+            // 并携带 currentSessionId ⇒ 在历史会话里追问会**追加到同一会话**。
+            const body = this.buildRequestBody(q);
+            if (opts.relaxed) body.relaxed = true;
+
+            // 乐观插入用户消息（失败时回滚，见 _fallbackAsk 的 catch 分支）
+            const userMsg = { uid: ++_uid, role: 'user', content: q, html: '',
+                              sources: [], confusable: [], filtersText: '',
+                              filteredOut: 0, streaming: false };
+            this.messages.push(userMsg);
             if (fromInput) this.input = '';
             this.loading = true;
+            this.rerankUsed = '';
             this.stageText = '正在检索…';
             this.scrollToBottom();
 
-            try {
-                // 统一由 buildRequestBody() 组合请求体（读共享 store；QA 面板内不再自持筛选状态），
-                // 并携带 currentSessionId ⇒ 在历史会话里追问会**追加到同一会话**。
-                const body = this.buildRequestBody(q);
-                if (opts.relaxed) body.relaxed = true;
-                const resp = await fetch('/qa/ask', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                });
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                const data = await resp.json();
-                // 写入本轮生效筛选：否则 .qa-filters-pending（「将在下一轮生效」）恒不出现
-                // （后端 /qa/ask 的 JSON 响应已带 effective_filters）
-                this.effectiveFiltersText = this.describeFilters(data.effective_filters);
-                if (data.rerank_used) this.rerankUsed = data.rerank_used;
-                // 落库后的会话 id（草稿态首轮发送即在此创建会话）
-                if (data.session_id) this.currentSessionId = data.session_id;
-                // 先刷新会话列表再补消息：列表项与消息同帧可见，探针/用户不会看到
-                // 「回答已出现但会话还没进列表」的中间态
-                await this.loadSessions();
+            // 助手气泡**先占位**：`.streaming` 决定它走「转义纯文本 + pre-wrap」的降级样式
+            // （收尾时置回 false 并跑完整渲染管线）。
+            // role 值域是后端的 {user, assistant}（qa_messages.role），**不要**在本地另造 'bot' 别名：
+            // 模板的助手分支判的就是 `msg.role === 'assistant'`，写成 'bot' 会让每条回答都渲染成空气泡。
+            // 同时必须给 `html`（模板用 x-html="msg.html" 渲染回答）。
+            this.messages.push({
+                uid: ++_uid, role: 'assistant', content: '', html: '',
+                sources: [], confusable: [], filteredOut: 0,
+                filtersText: '', streaming: true,
+            });
+            const bot = this.messages[this.messages.length - 1];
 
-                const answer = data.answer || '(AI 未返回回答)';
-                // role 值域是后端的 {user, assistant}（qa_messages.role），**不要**在本地另造 'bot' 别名：
-                // 新模板的助手分支判的就是 `msg.role === 'assistant'`，写成 'bot' 会让每条回答都渲染成空气泡。
-                // 同时必须给 `html`（模板用 x-html="msg.html" 渲染回答）。
-                this.messages.push({
-                    uid: ++_uid,
-                    role: 'assistant',
-                    content: answer,
-                    html: this.renderMarkdown(answer, data.sources || []),
-                    sources: data.sources || [],
-                    confusable: data.confusable_hits || [],
-                    filtersText: this.describeFilters(data.effective_filters),
-                    filteredOut: data.filtered_out || 0,
-                    streaming: false,
-                });
+            try {
+                await this._streamAsk(body, bot);
             } catch (e) {
-                console.error('[qa] 提问失败:', e);
-                // 失败提示同样要给 html（固定字面量、无用户内容，无需转义）
-                this.messages.push({ uid: ++_uid, role: 'assistant',
-                                     content: '请求失败，请稍后重试',
-                                     html: '请求失败，请稍后重试',
-                                     sources: [], confusable: [], filtersText: '',
-                                     filteredOut: 0, streaming: false });
+                // **仅**传输层失败才走兜底：`fetch` 抛错 / 响应非 2xx / `resp.body` 缺失 /
+                // reader 读流中断。应用层错误由 SSE 的 `error` 帧承载，已在 _handleSseChunk
+                // 内就地展示（那里**不 throw**）⇒ 不会走到这里、不会重发同一问题。
+                console.error('[qa] 流式请求失败（传输层），回退非流式:', e);
+                await this._fallbackAsk(body, bot, userMsg);
             } finally {
                 this.loading = false;
+                // 收尾：用完整管线（含 KaTeX）重渲染一次，公式在此时排版
+                bot.streaming = false;
+                if (bot.content) bot.html = this.renderMarkdown(bot.content, bot.sources);
                 this.scrollToBottom();
+                await this.loadSessions();
+            }
+        },
+
+        // SSE 读取。不用 EventSource：它只支持 GET，而我们需要 POST body
+        // （问题 + 筛选 + session_id）。
+        // 与兜底路径同一 URL，仅以 stream 标志区分响应形态（后端为单一入口）。
+        async _streamAsk(body, bot) {
+            const resp = await fetch('/qa/ask', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...body, stream: true }),
+            });
+            if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buf = '';
+
+            for (;;) {
+                // 读流中断（网络断开）会从 read() 抛出 ⇒ 冒到 send() 的 catch 走兜底，
+                // 这是**传输层**失败，与 SSE 的 error 帧（应用层）语义不同。
+                const { done, value } = await reader.read();
+                if (done) break;
+                buf += decoder.decode(value, { stream: true });
+                // SSE 以空行分隔消息；保留最后一段不完整数据在 buf 中
+                const chunks = buf.split('\n\n');
+                buf = chunks.pop() || '';
+                for (const chunk of chunks) this._handleSseChunk(chunk, bot);
+            }
+        },
+
+        _handleSseChunk(chunk, bot) {
+            let event = 'message';
+            const dataLines = [];
+            for (const line of chunk.split('\n')) {
+                if (line.startsWith('event:')) event = line.slice(6).trim();
+                else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+            }
+            if (!dataLines.length) return;
+            let data;
+            try {
+                data = JSON.parse(dataLines.join('\n'));
+            } catch (e) {
+                // 单帧坏数据不该毁掉整轮回答：跳过该帧、留下告警（保留原始错误）
+                console.warn('[qa] SSE 数据解析失败，跳过该帧:', e);
+                return;
+            }
+
+            if (event === 'stage') {
+                // ⚠️ 后端 stage **只有两态**（`reranking` 已在施工中删除：检索与 CE 精排都在同一个
+                // 同步函数内、无法从里面 yield，拆两帧是假装能区分它们）。
+                // 保留一个「处理中…」兜底，但**不要**再加回 `reranking` 分支。
+                this.stageText = {
+                    retrieving: '正在检索…',
+                    generating: '生成中…',
+                }[data.stage] || '处理中…';
+            } else if (event === 'delta') {
+                bot.content += data.text || '';
+                // 生成期间只做转义纯文本，**不跑任何 Markdown 解析器**：半截 Markdown
+                // （未闭合的 ** / 表格 / 公式）会让解析器反复重排，比
+                // 「纯文本 → 一次性排版」更晃眼；KaTeX 遇到未闭合公式还会渲染失败甚至抛错。
+                bot.html = this._streamingHtml(bot.content);
+                this.scrollToBottom();
+            } else if (event === 'done') {
+                bot.sources = data.sources || [];
+                bot.confusable = data.confusable_hits || [];
+                bot.filteredOut = data.filtered_out || 0;
+                this.rerankUsed = data.rerank_used || '';
+                this.currentSessionId = data.session_id || this.currentSessionId;
+                // 写入本轮生效筛选：否则 .qa-filters-pending（「将在下一轮生效」）恒不出现
+                const ft = this.describeFilters(data.effective_filters);
+                bot.filtersText = ft;
+                this.effectiveFiltersText = ft;
+            } else if (event === 'error') {
+                // ⚠️ **不要 `throw`**！_handleSseChunk 由 _streamAsk 调用，throw 会一路冒到
+                // send() 的 catch → 立刻走 _fallbackAsk **重发同一个问题**：后端已经报错
+                // （未配置后端 / 模型不可用）时这是白等一轮，且用户看到**两次完整生成**
+                // （重复计费、重复落库）。
+                // 边界：SSE 的 `error` 事件是**应用层**错误（后端已受理请求并显式回了 error 帧），
+                // ⇒ 只展示与记录，**不进兜底分支**。
+                // `_fallbackAsk` 只服务**传输层失败**（`fetch` 抛错 / `resp.body` 缺失 /
+                // reader 读流中断）——见 send() 的 catch 注释。
+                bot.content = data.message || 'AI 服务返回错误';
+                console.error('[qa] AI 服务返回错误（不再自动重发）:', data.message);
+            }
+        },
+
+        // 流式失败兜底：同一 URL 重发，只是不带 stream → 走一次性 JSON。功能不丢。
+        // **只用于传输层失败**（fetch 抛错 / 读流异常），不作为应用层错误的补救路径。
+        async _fallbackAsk(body, bot, userMsg) {
+            try {
+                const r = await fetch('/qa/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...body, stream: false }),
+                });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const data = await r.json();
+                bot.content = data.answer || '(AI 未返回回答)';
+                bot.sources = data.sources || [];
+                bot.confusable = data.confusable_hits || [];
+                bot.filteredOut = data.filtered_out || 0;
+                this.rerankUsed = data.rerank_used || '';
+                this.currentSessionId = data.session_id || this.currentSessionId;
+                const ft = this.describeFilters(data.effective_filters);
+                bot.filtersText = ft;
+                this.effectiveFiltersText = ft;
+            } catch (e2) {
+                console.error('[qa] 非流式兜底同样失败:', e2);
+                bot.content = '请求失败，请稍后重试';
+                // 用户消息回滚：本轮未成功，不留在界面上误导
+                this.messages = this.messages.filter(m => m.uid !== userMsg.uid);
             }
         },
 
@@ -385,7 +506,10 @@ document.addEventListener('alpine:init', () => {
 
         scrollToBottom() {
             this.$nextTick(() => {
-                const box = this.$refs.msgBox;
+                // 同 jumpToHit：`this.$refs.msgBox` 在方法里恒为 undefined（magic 的解析
+                // 上下文是调用点元素），旧写法因此**从未真正贴底过**；流式期间每帧都要贴底，
+                // 这里必须走 _messageBox()。
+                const box = this._messageBox();
                 if (box) box.scrollTop = box.scrollHeight;
             });
         },
@@ -405,9 +529,8 @@ document.addEventListener('alpine:init', () => {
             // 把正文出处【《规范编号》条文X】转超链接，点击复用 clause-modal 详情弹窗。
             // 兼容：表X 前缀（映射到对应条文）、顿号/逗号分隔的多个条文号（拆开逐个匹配）。
             // 安全：DOMPurify 消毒后回插 DB/用户可控字符串，必须先转义（防消毒后注入绕过）。
-            const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
-                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-            }[c]));
+            // 转义用模块级 escHtml（单一来源，与 _streamingHtml 同一实现）。
+            const esc = escHtml;
             if (sources && sources.length) {
                 html = html.replace(/【《([^》]+)》([^】]+)】/g, (m, code, clauses) => {
                     const codeT = code.trim();

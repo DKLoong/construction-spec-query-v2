@@ -615,13 +615,15 @@ def _qa_open(page):
 def _qa_ask(page, question, expect_msgs=2, timeout_ms=90000):
     """发送一个问题，等**回答真的渲染出来**。
 
-    判据三条（缺一不可）：
+    判据四条（缺一不可）：
       · `.qa-msg` 条数达标 —— 等这一轮收尾（用户消息 + 助手消息都入列）；
-      · 最后一条 `.qa-bot .qa-answer` **有非空正文** —— 只等 `.qa-bot` 存在是不够的：
-        新模板用 `x-html="msg.html"` 渲染回答，`send()` 不写 `html` 时 `.qa-bot` 照样出现
-        （那正是 52a3aa2 热修前的「空气泡」），固定 sleep 或存在性等待都会把它判成 PASS；
+      · 最后一条 `.qa-bot .qa-answer` **不带 `.streaming`** —— 流式改造后助手气泡是
+        **乐观占位**的：它一出现就有内容（首个 delta 起），此后还要吐十几帧。若只等
+        「正文非空」，本助手会在**流中途**返回 ⇒ 依赖 `done` 帧写入的字段
+        （currentSessionId / filtersText / effectiveFiltersText）全都没就绪，
+        T4 的会话与筛选用例会成片假红（**不是**产品缺陷，是判据没跟上流式改造）。
       · 该正文**不得含失败兜底字面量**，且**必须含 mock 的确定性标记** ——
-        `send()` 在 `!resp.ok`/网络异常时走 catch，推入的助手消息 content/html 都是
+        `send()` 在 `!resp.ok`/网络异常时走兜底，助手消息 content/html 都是
         **非空**固定串『请求失败，请稍后重试』⇒「非空」这一条对「HTTP 层失败但 UI 看不出」
         零判别力（第二次提问被后端 422 拒绝时，条数达标 + 气泡非空 + 不新建会话 + 标题不变
         四条判据**全绿**，而追问根本没落到 DB）。补上这两条后，**任何**用到本助手的用例
@@ -636,7 +638,9 @@ def _qa_ask(page, question, expect_msgs=2, timeout_ms=90000):
         if (msgs.length < n) return false;
         const ans = document.querySelectorAll('.qa-bot .qa-answer');
         if (!ans.length) return false;
-        const t = (ans[ans.length - 1].textContent || '').trim();
+        const last = ans[ans.length - 1];
+        if (last.classList.contains('streaming')) return false;   // 还在流式 ⇒ 本轮未收尾
+        const t = (last.textContent || '').trim();
         if (t === '') return false;
         if (t.indexOf(failText) !== -1) return false;
         return t.indexOf(marker) !== -1;
@@ -1032,6 +1036,352 @@ CASES["t4"] = [t4_ask_creates_session_and_lists_it,
                # 本 Agent 补（简报缺项）：rename/delete/export 入口无任何用例覆盖。
                # 放最后：它会对会话执行 rename/delete（改变列表），且拦了一次导航。
                t4_session_ops_reach_the_right_routes]
+
+# ── T5：流式输出（SSE）+ 流式期间降级渲染 ────────────────────────────────────
+# 本组必须配 mock LLM（`%TEMP%/qa_mock_llm.py`，监听 127.0.0.1:8199）：它的流式响应
+# **帧间 sleep 0.12s**，从而造出可观测的「生成中」窗口——渐进渲染与 stage 中途态
+# 两条判据都依赖这个窗口存在（真模型下窗口长度不可控，判据会漂）。
+# 另：副本库需把 `qa.retrieve.qa_min_candidates` 调到 30（见 relax 用例 docstring）。
+
+
+def t5_streaming_renders_progressively(page):
+    """正常场景（渐进渲染）：**中途态必须真的存在**——带 `.streaming` 类且文本短于最终文本。
+
+    ⚠️ 只等「`.qa-answer` 文本非空」是不够的——那把流式换成一次性非流式实现（拿到整段再
+    一次性写入）也照样通过，与用例名不符（假绿）。这里钉住两件事：
+      ① 生成期间采样到的文本**严格短于**最终文本（真的在长）；
+      ② 收尾后 `.streaming` 类消失（降级样式只在生成期间存在）。
+    """
+    _qa_open(page)
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+
+    # ① 中途态：等待期间采样。wait_for_function 默认按 rAF 轮询，能抓到最早的那一帧。
+    page.wait_for_function(
+        "() => { const a = document.querySelector('.qa-bot .qa-answer');"
+        " return a && a.classList.contains('streaming') && a.innerText.trim().length > 0; }",
+        timeout=60000)
+    mid_len = page.evaluate(
+        "() => { const a = document.querySelector('.qa-bot .qa-answer');"
+        " return a ? a.innerText.trim().length : 0; }")
+    assert mid_len > 0, "流式首帧应有文本"
+
+    # ② 收尾态：.streaming 类消失且文本变长（等收尾用 .streaming 判定，不依赖按钮禁用态）
+    page.wait_for_function(
+        "() => { const a = document.querySelector('.qa-bot .qa-answer');"
+        " return a && !a.classList.contains('streaming') && a.innerText.trim().length > 0; }",
+        timeout=60000)
+    final_len = page.evaluate(
+        "() => { const a = document.querySelector('.qa-bot .qa-answer');"
+        " return a ? a.innerText.trim().length : 0; }")
+    assert final_len > mid_len, \
+        f"最终文本（{final_len} 字）未长于中途采样（{mid_len} 字）——不是渐进渲染，而是一次性写入"
+
+
+def t5_streaming_shows_plain_text_not_markdown(page):
+    """异常场景（关键约束）：生成期间显示转义纯文本，不解析 Markdown。
+
+    半截 Markdown（未闭合的 ** / 表格 / 公式）会让解析器反复重排，比「纯文本 → 一次性
+    排版好」更晃眼。判据：生成期间 `.qa-answer` 带 `.streaming` 类，且内部没有 Markdown
+    解析产物。
+
+    ⚠️ 用「发送按钮是否禁用」推断"还在流式"、然后写成条件分支的话，条件不成立就**整段跳过**，
+    用例体压根不执行 ⇒ 恒绿，等于没有守卫。故这里**主动等**：`wait_for_function` 断言
+    `.streaming` 出现（等不到就红），不做任何条件跳过。
+    """
+    _qa_open(page)
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+    page.wait_for_function(
+        "() => { const a = document.querySelector('.qa-bot .qa-answer');"
+        " return a && a.classList.contains('streaming') && a.innerText.trim().length > 0; }",
+        timeout=60000)
+    ans = page.locator(".qa-bot .qa-answer").first
+    assert "streaming" in (ans.get_attribute("class") or ""), \
+        "生成期间 .qa-answer 缺 .streaming 类（pre-wrap 样式未生效）"
+    assert ans.locator("p, strong, table, h1, h2, ul").count() == 0, \
+        "生成期间出现了 Markdown 解析产物，应只显示转义纯文本"
+    assert ans.locator(".katex").count() == 0, \
+        "生成期间出现了 KaTeX 渲染产物"
+
+
+def t5_rerank_badge_handles_unreported_state(page):
+    """异常场景（防谎报）：后端未上报精排级别时不得显示降级标记。
+
+    `QAResponse.rerank_used` 的缺省是空串——那是**契约外的第四态**（未上报），
+    不是 `RERANK_NONE`。若把 `rerankBadge()` 写成 `else → 无精排`，会在字段
+    缺失时谎报「系统已降级」。本用例直接钉住三态 + 未上报态的返回值契约。
+    """
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    got = page.evaluate("""() => {
+        const d = window.Alpine.$data(document.getElementById('qa-root'));
+        const probe = (v) => { d.rerankUsed = v; return d.rerankBadge(); };
+        return {unreported: probe(''), none: probe('none'),
+                vector: probe('vector'), ce: probe('crossencoder')};
+    }""")
+    assert got["unreported"] == "", \
+        f"未上报（空串）时应无任何标记，实得 {got['unreported']!r} —— 谎报降级"
+    assert got["none"].strip(), "none 态必须有标记"
+    assert got["vector"].strip(), "vector 态必须有标记"
+    assert got["ce"].strip(), "crossencoder 态必须有标记"
+
+
+def t5_stage_indicator_reflects_real_stage_events(page):
+    """正常场景：阶段提示随 `stage` 事件**变化**，不只是默认值。
+
+    ⚠️ 只断言 `.qa-stage` 文本非空是不够的——`stageText` 的默认值就是「正在检索…」，
+    于是**整块 stage 事件处理可以缺失**（不解析 `stage` 帧、不写 `stageText`）而无人报警（假绿）。
+    这里断言出现**只有真的收到 stage 事件才会出现**的文案：后端依次发
+    `retrieving → generating`（**只有两态**；`reranking` 已在施工中删除），
+    对应「生成中…」——该文案在默认值「正在检索…」之外，故必须由真实 stage 事件驱动才会出现。
+    """
+    _qa_open(page)
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+    page.wait_for_selector(".qa-stage:visible", timeout=15000)
+    page.wait_for_function(
+        "() => { const s = document.querySelector('.qa-stage');"
+        " return s && /生成中/.test(s.innerText); }",
+        timeout=15000)
+    got = page.locator(".qa-stage").first.inner_text()
+    assert "生成中" in got, \
+        f"阶段提示未随 stage 事件变化（仍是默认值/空）：{got!r}"
+
+
+def _track_ask_bodies(page):
+    """登记 POST /qa/ask 的**请求体**监听器，返回累积列表（必须在点击之前调用）。
+
+    与 `track_search_requests` 同一手法：Playwright 不补发注册之前的事件，
+    故列表天然只含「注册之后发出的请求」——用它证伪「请求体带了 relaxed」这件事。
+    """
+    seen = []
+
+    def _on_request(req):
+        if req.method == "POST" and req.url.endswith("/qa/ask"):
+            try:
+                seen.append(req.post_data_json or {})
+            except ValueError:      # 请求体不是 JSON（理论上不会出现）：留一条空记录，不吞掉这次请求
+                seen.append({})
+
+    page.on("request", _on_request)
+    return seen
+
+
+def t5_relax_resends_with_relaxed_flag(page):
+    """正常场景（补漏）：点「放宽分类筛选」→ 以 `relaxed=true` 重发，且**不新建会话**。
+
+    前置（本 Task 简报给的低成本做法）：副本库把 `qa.retrieve.qa_min_candidates`
+      （可配参数 `qa.retrieve.qa_min_candidates`，默认 3、范围 1~30）调到 **30**，
+      再勾任一分类维度 ⇒ 分类筛选后的候选必然 < 30 ⇒ 后端如实报告 `filtered_out>0`
+      ⇒ 前端出现「候选不足 + 放宽分类筛选」提示。不必依赖某条问题恰好筛空。
+
+    两条判据：
+      ① 点放宽后**新发起**的 POST /qa/ask，请求体 `relaxed === true`
+         （用请求体监听器判定——只看"又出现了气泡"无法区分「带 relaxed 重发」与
+          「点了个寂寞但列表被别的路径刷新了」）；
+      ② 会话数**不增**：放宽是**同一会话里的一次新轮次**，不是新开会话
+         （有界观察窗：一旦新建立即判红）。
+    """
+    _qa_open(page)
+    click_first_tree_label(page)               # 勾一个分类维度 ⇒ 触发候选不足判定
+    wait_tree_filter_seeded(page)
+    _qa_ask(page, "混凝土强度等级如何评定")
+
+    assert poll_until(page, lambda: page.locator(".qa-relax-hint").count() >= 1,
+                      timeout_ms=8000), \
+        ("分类筛选下未出现「候选不足」提示（后端 filtered_out>0 未上报，"
+         "或 qa.retrieve.qa_min_candidates 未调到 30）——本用例的前置不成立")
+
+    n_before = page.locator(".qa-session-item").count()
+    bodies = _track_ask_bodies(page)           # 必须在点击之前注册
+    # 取**最后一条**放宽提示：库里的旧会话也可能带提示，取第一条会点到别的轮次上
+    page.locator(".qa-relax-hint button").last.click()
+
+    assert poll_until(page, lambda: len(bodies) >= 1, timeout_ms=15000), \
+        "点「放宽分类筛选」后未发出 POST /qa/ask（relax() 未复用 send()）"
+    assert bodies[-1].get("relaxed") is True, \
+        f"放宽重发的请求体未带 relaxed=true：{bodies[-1]}"
+    # ② 会话数不增（有界观察窗：等待与判据分离）
+    grew = poll_until(page, lambda: page.locator(".qa-session-item").count() != n_before,
+                      timeout_ms=1500)
+    assert not grew, \
+        (f"放宽重发不应新建会话（放宽前 {n_before} 条，放宽后 "
+         f"{page.locator('.qa-session-item').count()} 条）——应是同一会话里的新轮次")
+
+
+def t5_search_hit_jump_loads_session_and_highlights(page):
+    """正常场景（补漏）：跨会话搜索 → 点命中 → 载入**该**会话并高亮命中消息。
+
+    高亮本体的判据是**计算样式**（`getComputedStyle(el).backgroundColor`）而不是
+    `classList.contains('qa-highlight')`：后者在 `app.css` 的 `.qa-highlight` 规则
+    **被删掉**时依然为真（视觉 no-op 却判绿）⇒ 锁不住「补了这条样式」这个交付。
+
+    样式判据写成「同一元素**有/无**该类的底色必须不同」而非「底色非透明」：
+    `.qa-bot` 本身就有不透明底色（`--pico-card-sectioning-background-color`），
+    「非透明」在规则缺失时**照样成立**，是个假绿判据（本 Task 简报此处建议的写法不可用）。
+
+    取样用 MutationObserver（在点击前安装）而非轮询：`jumpToHit` 只保留 2 秒高亮，
+    轮询有采样落空的风险；观察器在类变化时同步触发，取样是必然命中的。
+    """
+    _qa_open(page)
+    first = _qa_ask_and_remember(page, "混凝土强度等级如何评定")
+    # 再造一个**不同**会话：命中必须能把它载回来（若命中来自当前会话，"载入了"无可证伪）
+    page.click("text=＋ 新会话")
+    assert poll_until(page, lambda: page.locator(".qa-msg").count() == 0, timeout_ms=3000), \
+        "点「新会话」后对话区未清空"
+    second = _qa_ask_and_remember(page, "混凝土强度等级如何评定")
+    assert second != first, f"两次提问落在了同一个会话（{first}）——前置不成立"
+
+    # 搜索 mock 回答里的确定性标记 ⇒ 命中必然来自助手消息（其会话里一定有前置的提问）
+    page.fill(".qa-sessions-search input[type=search]", MOCK_ANSWER_MARKER)
+    page.press(".qa-sessions-search input[type=search]", "Enter")
+    assert poll_until(page, lambda: page.locator(".qa-hit").count() >= 1, timeout_ms=10000), \
+        f"搜索「{MOCK_ANSWER_MARKER}」无命中（/qa/search 未返回，或命中列表未渲染）"
+
+    hits = page.evaluate(
+        "() => (window.Alpine.$data(document.querySelector('#qa-root')).searchHits || [])"
+        ".map(h => h.session_id)")
+    idx = next((i for i, sid in enumerate(hits) if sid != second), None)
+    assert idx is not None, \
+        f"搜索命中全部来自当前会话 {second}（hits={hits}）——换一个会话的命中才能证伪「载入」"
+    target = hits[idx]
+
+    # 观察器必须在点击**之前**安装（Playwright/JS 都不补发注册之前的事件）
+    page.evaluate("""() => {
+        const read = (el) => getComputedStyle(el).backgroundColor;
+        const rec = { seen: false, bg: '', base: '' };
+        window.__qaHl = rec;
+        const check = () => {
+            if (rec.seen) return;
+            const el = document.querySelector('.qa-highlight');
+            if (!el) return;
+            rec.seen = true;
+            rec.bg = read(el);                  // 高亮态底色
+            // 同一元素「无高亮」时的真实底色：同步摘类 → 读 → 还原
+            //（getComputedStyle 强制重算，故这一次读到的就是级联里少了该类的值）
+            el.classList.remove('qa-highlight');
+            rec.base = read(el);
+            el.classList.add('qa-highlight');
+        };
+        new MutationObserver(check).observe(document.body,
+            { attributes: true, subtree: true, attributeFilter: ['class'] });
+        check();
+        return true;
+    }""")
+    page.locator(".qa-hit").nth(idx).click()
+
+    assert poll_until(page, lambda: _qa_state(page)["current"] == target, timeout_ms=10000), \
+        (f"点命中后未载入**该**会话：期望 currentSessionId={target}，"
+         f"实得 {_qa_state(page)['current']}（hits={hits}）")
+    assert poll_until(page, lambda: page.locator(".qa-msg").count() >= 2, timeout_ms=10000), \
+        f"载入的会话未渲染出问答两条（当前 {page.locator('.qa-msg').count()} 条）"
+    assert MOCK_ANSWER_MARKER in page.locator(".qa-messages").inner_text(), \
+        f"载入的会话里看不到命中内容（{MOCK_ANSWER_MARKER}）"
+
+    assert page.evaluate("() => !!(window.__qaHl && window.__qaHl.seen)"), \
+        "点命中后没有任何消息被加上 .qa-highlight（jumpToHit 的定位/高亮未生效）"
+    hl = page.evaluate("() => window.__qaHl")
+    assert hl["bg"] not in ("", "rgba(0, 0, 0, 0)", "transparent"), \
+        f"高亮消息的底色为透明：{hl['bg']!r}（.qa-highlight 未生效）"
+    assert hl["base"] and hl["bg"] != hl["base"], \
+        (f".qa-highlight 对底色毫无影响（有类 {hl['bg']!r} / 无类 {hl['base']!r}）"
+         "—— app.css 里缺该规则，高亮是视觉 no-op")
+
+
+def _qa_ask_and_remember(page, question):
+    """提问并返回**落库后的会话 id**（本组多处要按会话 id 判「载入的是哪一个」）。"""
+    _qa_ask(page, question, expect_msgs=2)
+    sid = _qa_state(page)["current"]
+    assert sid, f"提问「{question}」后 currentSessionId 仍为空（会话未落库）"
+    return sid
+
+
+def _read_settings(page, keys):
+    """读运行期设置（只取关心的键）。"""
+    return page.evaluate("""async (keys) => {
+        const r = await fetch('/settings');
+        const d = await r.json();
+        const out = {};
+        for (const k of keys) out[k] = d[k];
+        return out;
+    }""", keys)
+
+
+def _put_settings(page, payload):
+    """写运行期设置（探针内部用，**用完必须还原**）。"""
+    return page.evaluate("""async (body) => {
+        const r = await fetch('/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        return r.ok;
+    }""", payload)
+
+
+def t5_error_frame_is_not_retried_as_fallback(page):
+    """异常场景（本 Task 的关键边界）：SSE 的 `error` 帧**只展示**，不得触发非流式重发。
+
+    ⚠️ 本 Task 简报说两条边界「都有对应用例」，但 error 帧这条**没有任何用例**守着
+    （简报 Step 1 只登记了 4 条，且都不碰错误路径）⇒ mutation B（让 error 帧也 throw）
+    没有判据可红。故本 Agent 补此用例（与 `t5_stage_indicator_reflects_real_stage_events`
+    对应另一条边界，两者配对）。
+
+    为什么必须这样判：`_handleSseChunk` 的 throw 会一路冒到 `send()` 的 catch ⇒ 走
+    `_fallbackAsk` **重发同一个问题**。后端已经明确报错（未配置 / 模型不可用）时，这是
+    白等一轮，且用户看到**两次完整生成**（重复计费、重复落库）。
+
+    造错方式：把 `ai.custom.api_key` 置空 ⇒ `APIBackend.is_available()` 为 False
+    ⇒ 后端依次发 `stage(retrieving)` → `error`（**不碰网络，确定性失败**，不依赖 mock 的
+    行为）。判据三条：
+      ① 界面上出现的是 **error 帧的文案**（「…不可用…」），不是兜底失败文案；
+      ② 全程**只有一次** POST /qa/ask（负向判据走有界观察窗）；
+      ③ 那一次请求体带 `stream: true`（钉「走的是流式入口」）。
+    """
+    _qa_open(page)
+    keys = ["ai.backend", "ai.custom.api_key"]
+    origin = _read_settings(page, keys)
+    assert origin.get("ai.custom.api_key"), \
+        f"前置不成立：副本库的 ai.custom.api_key 本应为 mock 值，实得 {origin!r}"
+    bodies = _track_ask_bodies(page)      # 必须在提问之前注册
+    try:
+        assert _put_settings(page, {"ai.backend": "custom", "ai.custom.api_key": ""}), \
+            "切换 ai 后端设置失败（PUT /settings）"
+        page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+        page.press(".qa-composer textarea", "Enter")
+        assert poll_until(page, lambda: "不可用" in _last_answer_text(page), timeout_ms=40000), \
+            (f"未显示 error 帧的文案（应含「不可用」），实得 {_last_answer_text(page)!r}"
+             "—— 走了兜底分支就会变成『请求失败，请稍后重试』")
+        # ② 负向判据的有界观察窗：一旦真的重发，立即判红（不是"睡够就算过"）
+        retried = poll_until(page, lambda: len(bodies) >= 2, timeout_ms=1500)
+        assert not retried, \
+            (f"error 帧触发了非流式重发（共 {len(bodies)} 次 /qa/ask："
+             f"{[b.get('stream') for b in bodies]}）——后端已报错还白等一轮、用户看到两次生成")
+        assert len(bodies) == 1, f"期望恰好一次 /qa/ask，实得 {len(bodies)} 次"
+        # ③ 走的是流式入口（body.stream 由 _streamAsk 注入）
+        assert bodies[0].get("stream") is True, \
+            f"提问未走流式入口（请求体 stream 应为 True）：{bodies[0]}"
+        assert page.locator(".qa-msg").count() >= 2, \
+            "error 帧是应用层错误：本轮已受理，用户消息不应被回滚"
+    finally:
+        _put_settings(page, origin)       # 无论成败都还原后端设置，避免污染后续用例
+
+
+# 登记进本 Task 的键：**键名 = Task 编号本身**（不是 t6）。
+CASES["t5"] = [t5_streaming_renders_progressively,
+               t5_streaming_shows_plain_text_not_markdown,
+               t5_rerank_badge_handles_unreported_state,
+               t5_stage_indicator_reflects_real_stage_events,
+               # 本 Task 补的两处遗漏探针（简报 🧩 段）：
+               # relax 放宽重发、跨会话搜索命中跳转 + 高亮计算样式。
+               t5_relax_resends_with_relaxed_flag,
+               t5_search_hit_jump_loads_session_and_highlights,
+               # 本 Agent 补（简报又一缺项）：error 帧 ⇏ 兜底重发这条边界**无用例**，
+               # 简报 Step 1 登记的 4 条一条都不碰错误路径（mutation B 因此无从判红）。
+               # 放最后：它会临时改运行期设置（用例内已用 finally 还原）。
+               t5_error_frame_is_not_retried_as_fallback]
+
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "t1"
