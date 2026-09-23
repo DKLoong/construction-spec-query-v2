@@ -4,7 +4,7 @@
 
 **Goal:** 把 AI 问答从弹窗改为独立的整页（左侧分类树照常在位），接入会话列表与续聊，让分类树筛选对检索页与 QA 页同时生效，并把流式输出渲染到界面。
 
-**Architecture:** QA 是**整页导航**的独立页面（`GET /qa` → `base.html`，与 `/rules`、`/lexicon` 同形），中栏内部用 flex 分两列承载「对话区 | 会话管理（可折叠）」。筛选经 **URL** 跨页携带（整页导航会重置 Alpine store），筛选统一靠一个共享的 DOM 判据 `isQaView()`：在 QA 页时左栏筛选只更新状态并同步 URL、不发检索，从而让「下一轮生效」成立。流式渲染全程降级——流式期间不跑 KaTeX，收尾时跑一次完整管线。
+**Architecture:** QA 是**整页导航**的独立页面（`GET /qa` → `base.html`，与 `/rules`、`/lexicon` 同形），内部用 flex 分两列承载「对话区 | 会话管理（可折叠）」。筛选经 **URL** 跨页携带（整页导航会重置 Alpine store），筛选统一靠一个共享的 DOM 判据 `isQaView()`：在 QA 页时左栏筛选只更新状态并同步 URL、不发检索，从而让「下一轮生效」成立。流式渲染**两态**：生成期间显示**转义纯文本**（`pre-wrap` 保留换行），`done` 后一次性跑完整管线（marked + DOMPurify + KaTeX）。
 
 **Tech Stack:** FastAPI + Jinja2 · htmx · Alpine.js · marked / DOMPurify / KaTeX · Playwright（验证）
 
@@ -63,7 +63,7 @@ with sync_playwright() as p:
 | `static/components/qa.js` | QA 组件（会话、筛选、URL 携带、流式渲染） | 重写 |
 | `static/components/tree.js` | 分类树（`view` 判断 / `isQaView`） | 修改 |
 | `static/components/search.js` | 搜索框（`view` 判断） | 修改 |
-| `static/components/md-render.js` | 渲染管线（新增无 KaTeX 的流式档） | 修改 |
+| `static/components/md-render.js` | 统一渲染管线 | **不改**（流式期间走纯文本，收尾才用完整管线） |
 | `static/app.css` | QA 页布局与折叠 | 修改 |
 | `scripts/probe_qa_ui.py` | Playwright 验证探针（一次性，验证完删） | **新建** |
 
@@ -567,8 +567,10 @@ Expected: FAIL — 骨架缺少 `.qa-thread` / `.qa-messages` 等完整结构
                                     </template>
                                 </div>
                             </template>
-                            <!-- 流式期间用 outerHTML 承载降级渲染结果；收尾后由 renderMarkdown 重渲染 -->
-                            <div class="qa-answer" x-html="msg.html"></div>
+                            <!-- 生成期间 msg.html 是转义纯文本（.streaming 的 pre-wrap 保留换行）；
+                                 收到 done 后由 renderMarkdown 换成完整管线结果 -->
+                            <div class="qa-answer" :class="{ streaming: msg.streaming }"
+                                 x-html="msg.html"></div>
                             <!-- 当轮实际生效筛选（D5）：回看历史时据此还原
                                  「这条答案是在什么筛选下产生的」 -->
                             <template x-if="msg.filtersText">
@@ -692,6 +694,8 @@ Expected: FAIL — 骨架缺少 `.qa-thread` / `.qa-messages` 等完整结构
 .qa-sessions-empty { color: var(--pico-muted-color); padding: 0.5rem 0.4rem; font-size: 0.8rem; }
 .qa-stage { color: var(--pico-muted-color); font-size: 0.8rem; padding: 0.3rem 0.1rem; }
 .qa-msg-filters { margin-top: 0.25rem; font-size: 0.72rem; color: var(--pico-muted-color); }
+/* 生成期间：转义纯文本 + 保留换行（不经过任何 Markdown 解析器） */
+.qa-answer.streaming { white-space: pre-wrap; word-break: break-word; }
 .qa-effective-filters { margin-top: 0.35rem; font-size: 0.72rem; color: var(--pico-muted-color); }
 .qa-filters-pending { color: #a06500; }
 .qa-confusable { margin-bottom: 0.4rem; padding: 0.4rem 0.6rem; border: 1px solid #e0a800; border-radius: 6px; background: #fff8e1; font-size: 0.78rem; }
@@ -1031,6 +1035,7 @@ document.addEventListener('alpine:init', () => {
                     // 当轮筛选随消息持久化（D5），回看时据此还原答案的筛选背景
                     filtersText: this.describeFilters(m.filters),
                     filteredOut: 0,
+                    streaming: false,
                 }));
                 this.currentSessionId = sid;
                 this.scrollToBottom();
@@ -1106,6 +1111,12 @@ document.addEventListener('alpine:init', () => {
                     setTimeout(() => el.classList.remove('qa-highlight'), 2000);
                 }
             });
+        },
+
+        // 生成期间的渲染：只做 HTML 转义，不解析 Markdown。
+        // 换行由 CSS 的 white-space: pre-wrap 呈现（见 app.css 的 .qa-answer.streaming）。
+        _streamingHtml(text) {
+            return escHtml(text || '');
         },
 
         // ── 筛选可读化 ──
@@ -1191,8 +1202,9 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 
 **Interfaces:**
 - Consumes: `POST /qa/ask` 带 `stream=true`（后端计划 T15），事件 `stage` / `delta` / `done` / `error`
-- Produces: `window.mdRender.renderStreaming(md) -> string`——marked + DOMPurify，**不跑 KaTeX**
-- 行为契约：流式期间增量渲染用 `renderStreaming`；收到 `done` 后改用 `renderMarkdown`（完整管线含 KaTeX + 源链接改写）
+- Produces: `qaView()._streamingHtml(text) -> string`——把增量文本转义为可安全插入的 HTML（保留换行）
+- 行为契约：生成期间 `msg.html` 是**转义纯文本**（`white-space: pre-wrap`）；收到 `done` 后改用 `renderMarkdown`（完整管线含 KaTeX + 源链接改写）
+- **本 Task 不改 `md-render.js`**——流式期间不经过任何 Markdown 解析器
 
 > **为何必须降级**：一次回答有几十上百个 delta，每个都跑 KaTeX auto-render 会卡死；且公式未闭合时（`$$E = mc^`）KaTeX 会渲染失败甚至抛错。详见设计文档 §4.11。
 
@@ -1217,26 +1229,30 @@ def t5_streaming_renders_progressively(page):
     assert partial.strip(), "流式首帧应有文本"
 
 
-def t5_streaming_avoids_katex_mid_stream(page):
-    """异常场景（关键约束）：流式进行中不得出现 KaTeX 渲染产物。
+def t5_streaming_shows_plain_text_not_markdown(page):
+    """异常场景（关键约束）：生成期间显示转义纯文本，不解析 Markdown。
 
-    流式期间跑 KaTeX 会因公式未闭合而报错，且性能不可接受。
-    判据：进行中不应有 .katex 节点；结束后才允许出现。
+    半截 Markdown（未闭合的 ** / 表格 / 公式）会让解析器反复重排，
+    比「纯文本 → 一次性排版好」更晃眼。判据：生成期间 .qa-answer 带
+    .streaming 类，且内部没有 Markdown 解析产物。
     """
-    page.goto(f"{BASE}/")
-    page.click("text=🤖 AI问答")
+    page.goto(f"{BASE}/qa")
     page.wait_for_selector("#qa-root", timeout=10000)
-    page.fill(".qa-composer textarea", "混凝土强度等级如何评定 并给出公式")
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
     page.press(".qa-composer textarea", "Enter")
     page.wait_for_function(
         "() => { const a = document.querySelector('.qa-bot .qa-answer');"
         " return a && a.innerText.trim().length > 0; }",
         timeout=60000)
-    # 此刻仍在流式中（发送按钮 disabled），不应有 katex 节点
     still_streaming = page.locator(".qa-composer-btns button").first.is_disabled()
     if still_streaming:
-        assert page.locator(".qa-bot .qa-answer .katex").count() == 0, \
-            "流式进行中出现了 KaTeX 渲染，应延迟到 done 之后"
+        ans = page.locator(".qa-bot .qa-answer").first
+        assert "streaming" in (ans.get_attribute("class") or ""), \
+            "生成期间 .qa-answer 缺 .streaming 类（pre-wrap 样式未生效）"
+        assert ans.locator("p, strong, table, h1, h2, ul").count() == 0, \
+            "生成期间出现了 Markdown 解析产物，应只显示转义纯文本"
+        assert ans.locator(".katex").count() == 0, \
+            "生成期间出现了 KaTeX 渲染产物"
 
 
 def t5_stage_indicator_visible(page):
@@ -1254,42 +1270,6 @@ def t5_stage_indicator_visible(page):
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t6`
 Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `stream` 标志）
-
-- [ ] **Step 3: 在 md-render.js 增加流式档**
-
-在 `static/components/md-render.js` 中，`renderHtml` 之后新增：
-
-```js
-    // 流式专用：只做 marked → DOMPurify，**不跑 KaTeX**。
-    // 原因（设计文档 §4.11）：一次回答几十上百个 delta，每个都跑 KaTeX
-    // auto-render 会卡死；且公式写到一半（"$$E = mc^"）未闭合会让 KaTeX 报错。
-    // 收尾时改用 renderInto/renderHtml 跑完整管线，公式在那一刻才变成排版结果。
-    function renderStreaming(md) {
-        let raw = fixOrphanSup(rewriteImg(md || '', '')).replace(/\\n/g, '<br>');
-        raw = raw.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
-        let html;
-        try {
-            html = window.marked.parse(raw, { gfm: true, breaks: true });
-        } catch (e) {
-            html = String(raw).replace(/</g, '&lt;');
-        }
-        return window.DOMPurify ? window.DOMPurify.sanitize(html) : html;
-    }
-```
-
-并把它加入导出对象：
-
-```js
-    window.mdRender = {
-        fixOrphanSup: fixOrphanSup,
-        rewriteImg: rewriteImg,
-        katexize: katexize,
-        renderInto: renderInto,
-        renderHtml: renderHtml,
-        renderStreaming: renderStreaming,
-        renderSearchResults: renderSearchResults,
-    };
-```
 
 - [ ] **Step 4: 在 qa.js 实现 `send()`（SSE）**
 
@@ -1313,6 +1293,7 @@ Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `
             const botMsg = {
                 uid: ++_uid, role: 'bot', content: '', html: '',
                 sources: [], confusable: [], filteredOut: 0,
+                streaming: true,      // 生成中：.qa-answer 走 pre-wrap 纯文本样式
             };
             this.messages.push(botMsg);
             const bot = this.messages[this.messages.length - 1];
@@ -1325,6 +1306,7 @@ Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `
             } finally {
                 this.loading = false;
                 // 收尾：用完整管线（含 KaTeX）重渲染一次，公式在此时排版
+                bot.streaming = false;
                 if (bot.content) {
                     bot.html = this.renderMarkdown(bot.content, bot.sources);
                 }
@@ -1384,11 +1366,10 @@ Expected: FAIL — `.qa-answer` 无内容或 `.qa-stage` 不出现（尚未带 `
             } else if (event === 'delta') {
                 bot.content += data.text || '';
                 // 流式期间降级渲染：marked + DOMPurify，不跑 KaTeX
-                if (window.mdRender && window.mdRender.renderStreaming) {
-                    bot.html = window.mdRender.renderStreaming(bot.content);
-                } else {
-                    bot.html = '<pre>' + escHtml(bot.content) + '</pre>';
-                }
+                // 生成期间输出转义纯文本（CSS 的 white-space: pre-wrap 保留换行）。
+                // 不跑任何 Markdown 解析器：半截 Markdown（未闭合的 ** / 表格 / 公式）
+                // 会让解析器反复重排，比"纯文本 → 一次性排版好"更晃眼。
+                bot.html = this._streamingHtml(bot.content);
                 this.scrollToBottom();
             } else if (event === 'done') {
                 bot.sources = data.sources || [];
