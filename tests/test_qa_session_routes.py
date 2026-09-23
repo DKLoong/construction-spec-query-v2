@@ -295,6 +295,27 @@ def test_export_endpoint_returns_markdown_attachment(auth_client):
     assert quote("混凝土强度.md") in r.headers["content-disposition"]
 
 
+def test_export_filename_encodes_slash_in_title(auth_client):
+    """异常场景（用户可见）：标题含 `/` 时导出文件名必须是合法的 RFC 5987 头。
+
+    触发路径**很现实**：会话默认标题取**提问前 20 字**（`TITLE_MAX_CHARS = 20`），
+    而本项目最常见的提问开头就是「GB/T …」。
+    `quote` 默认 `safe='/'` **不编码斜杠**，而 RFC 5987 的 attr-char 不含 `/` ——
+    实测会发出 `filename*=UTF-8''GB/T50204.md` 这种畸形头，浏览器可能截断，
+    也可能整个忽略 `filename*`（于是文件名退化成 URL 最后一段）。
+    **把 `safe=""` 去掉，本用例即红。**
+    """
+    sid = S.create_session("GB/T50204 混凝土强度评定")
+    S.append_message(sid, "user", "如何评定")
+    cd = auth_client.get(f"/qa/sessions/{sid}/export").headers["content-disposition"]
+
+    assert "filename*=UTF-8''" in cd
+    encoded = cd.split("filename*=UTF-8''", 1)[1]
+    assert "%2F" in cd, "标题里的 / 必须被百分号编码（quote 的默认 safe='/' 不会编码它）"
+    assert "/" not in encoded, \
+        f"filename* 的值里不得残留裸斜杠（RFC 5987 attr-char 不含 /）：{cd!r}"
+
+
 def test_export_missing_session_returns_404(auth_client):
     """异常场景：导出不存在的会话返回 404。
 

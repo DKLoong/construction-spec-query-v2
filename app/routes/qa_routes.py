@@ -18,6 +18,7 @@ from app.models import (
     QaRequest, QAResponse, QaSessionRenameRequest, SearchQuery, QA_DIM_FIELDS,
 )
 from app.ai.api_client import APIBackend
+from app.ai.text_clean import plain_text
 from app.database import get_db
 from app.qa.degrade import (
     RERANK_CE, RERANK_VECTOR, RERANK_NONE, rank_scores, resolve_thresholds,
@@ -36,6 +37,7 @@ def _rerank_scored(question: str, candidates: list[dict]) -> list[tuple[dict, fl
     """精排打分，返回 (候选, 分数) 按分数降序全部候选（不在此截断条数）。
 
     - 候选 ≤ 1：直接返回 [(c, 1.0)]，不打分、不分层。
+    - **送进模型的文本先过 `plain_text`**（去 OCR 标记 / LaTeX），见下方 texts 构造。
     - CrossEncoder 可用：分数 = 模型输出（量纲约 0~1）。
     - 降级 bi-encoder 向量：分数 = 余弦相似度（量纲 -1~1），阈值用 qa.vector.* 独立集。
     - 两者皆不可用：分数 = **排名归一化值**（无绝对相关度语义），
@@ -46,7 +48,12 @@ def _rerank_scored(question: str, candidates: list[dict]) -> list[tuple[dict, fl
         _last_rerank_used = RERANK_NONE
         return [(c, 1.0) for c in candidates]
 
-    texts = [(c.get("content") or "")[:300] for c in candidates]
+    # content 是渲染载荷（含 OCR 的 HTML 表格/LaTeX），**必须先清洗再截断**——
+    # 精排输入属派生消费方（与喂 prompt 的 app/qa/context.py 同一条尺子）。
+    # 不清洗时表格条文的前 300 字符几乎全是标记（`<td style=...>`），正文被截掉，
+    # 模型只看到「td style」；本仓标记占比实测约 20~25%。清洗函数与
+    # app/search/rerank.py（检索侧同逻辑副本）取自同一来源，不在此另写一份。
+    texts = [plain_text(c.get("content") or "")[:300] for c in candidates]
 
     try:
         from app.ai.reranker import rerank
@@ -660,8 +667,12 @@ async def qa_export_session(session_id: int):
     if sess is None:
         return JSONResponse({"detail": "会话不存在"}, status_code=404)
     md = qa_sessions.build_markdown(sess, qa_sessions.get_messages(session_id))
-    # 文件名做 RFC 5987 编码，避免中文标题导致下载名乱码
-    fname = quote(f"{sess['title']}.md")
+    # 文件名做 RFC 5987 编码，避免中文标题导致下载名乱码。
+    # `safe=""` 是必需的：`quote` 默认 `safe="/"` **不编码斜杠**，而 RFC 5987 的
+    # attr-char 不含 `/` ⇒ 标题含 `/` 时（本项目最常见的提问开头就是「GB/T …」，
+    # 且会话默认标题取提问前 20 字）会发出 `filename*=UTF-8''GB/T50204.md` 这种
+    # 畸形头，浏览器可能截断或整个忽略 `filename*`。
+    fname = quote(f"{sess['title']}.md", safe="")
     return Response(
         content=md,
         media_type="text/markdown; charset=utf-8",

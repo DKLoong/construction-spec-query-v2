@@ -1,4 +1,10 @@
-"""API 后端 SSE 流式解析 + `/qa/ask` 单一入口的两种输出形态（T15）。"""
+"""API 后端 SSE 流式解析 + `/qa/ask` 单一入口的两种输出形态（T15）。
+
+文件末段另有两组守卫（终审清理轮补）：
+  · A1 —— QA 精排输入必须先清洗 OCR 标记（**非流式**，两形态共用 `_rerank_scored`，
+    就近落在本文件，不另开一份只为一个函数的测试文件）；
+  · A2 —— SSE `done` 载荷的 6 个键（键集整集相等 + 三个此前零覆盖键的值）。
+"""
 import json
 from unittest.mock import AsyncMock
 
@@ -852,3 +858,127 @@ def test_done_rerank_used_comes_from_prepared_copy(auth_client, stream_env,
     done = [d for e, d in _parse_sse(r.text) if e == "done"][0]
     assert done["rerank_used"] == "crossencoder", \
         "done 必须取准备阶段的拷贝值，不得回读收尾期被改写的 trace"
+
+
+# ═══════════════════════════════════════════════════════════
+# A1：QA 精排输入必须先清洗 OCR 标记（派生消费方）
+# ═══════════════════════════════════════════════════════════
+
+def test_qa_rerank_input_is_cleaned(monkeypatch):
+    """守卫（A1）：喂给精排模型的文本必须先过 `plain_text`，不得直接截断 content。
+
+    `content` 是**渲染载荷**（含 OCR 的 HTML 表格/LaTeX，实测标记约占索引 20~25%）；
+    不清洗时表格条文的前 300 字符几乎全是 `<td style=...>`，正文被截掉，
+    模型只看到标记 —— 静默降低排序与分层质量、无任何报错。
+    同一条链上的检索侧（`app/search/rerank.py:30`）与喂 prompt 的
+    `app/qa/context.py` 都已清洗，QA 侧的精排此前是唯一漏网的派生消费方。
+
+    **去掉 `_rerank_scored` 里的 `plain_text(...)`，本用例即红。**
+    """
+    import app.routes.qa_routes as qr
+    from app.qa.degrade import RERANK_NONE
+
+    # 钉住模块级全局：本用例会真的执行 _rerank_scored，它会写该全局；
+    # monkeypatch 在收尾时还原成钉住的值，故不会把 CE 级别泄漏给后续用例。
+    monkeypatch.setattr(qr, "_last_rerank_used", RERANK_NONE)
+
+    seen: dict = {}
+
+    def fake_rerank(question, texts):
+        seen["texts"] = list(texts)
+        return [0.5] * len(texts)      # 非 None 才会走 CE 分支
+
+    monkeypatch.setattr("app.ai.reranker.rerank", fake_rerank)
+
+    table = ('<table><tr><td style="text-align:center">接头类型</td>'
+             '<td>抗拉强度</td></tr></table>')
+    cands = [{"id": 1, "content": table},
+             {"id": 2, "content": "模板及其支架应进行设计"}]
+    qr._rerank_scored("接头抗拉强度", cands)
+
+    assert "texts" in seen, "精排未被调用（桩没生效？）"
+    assert len(seen["texts"]) == 2
+    t = seen["texts"][0]
+    assert "<" not in t and "td" not in t and "style" not in t, \
+        f"精排输入里残留 HTML 标记（未清洗）：{t!r}"
+    assert "接头类型" in t and "抗拉强度" in t, \
+        f"清洗不得吃掉正文（表格单元格文字要保留）：{t!r}"
+
+
+# ═══════════════════════════════════════════════════════════
+# A2：done 载荷的键集与三个零覆盖键
+# ═══════════════════════════════════════════════════════════
+
+# 前端将按这 6 个键消费 done 载荷；键名/键数变更即跨进程契约变更
+_DONE_KEYS = {"session_id", "sources", "confusable_hits",
+              "rerank_used", "filtered_out", "effective_filters"}
+
+
+def test_done_payload_key_set_is_exactly_the_six_contract_keys(auth_client, stream_env):
+    """契约守卫（A2）：done 载荷的键集必须**恰好**是约定的 6 个。
+
+    此前只有 `session_id` / `sources` 有断言，`confusable_hits` / `filtered_out` /
+    `effective_filters` 三个键在整个 `tests/` 里**零覆盖**——将来改名或漏发
+    （例如把 filtered_out 并进 effective_filters）不会有任何用例变红，
+    而前端是按这 6 键写的。
+
+    用**整集相等**而非子集/包含：子集断言对「少发一个键」完全无感，
+    那正是本条要挡的失败模式。**删掉 done 里任一键，本用例即红。**
+    """
+    r = auth_client.post("/qa/ask", json={"question": "q", "stream": True})
+    done = [d for e, d in _parse_sse(r.text) if e == "done"][0]
+    assert set(done) == _DONE_KEYS, \
+        f"done 载荷键集漂移：多={set(done) - _DONE_KEYS} 少={_DONE_KEYS - set(done)}"
+
+
+def test_done_carries_confusable_hits(auth_client, stream_env, monkeypatch):
+    """正常场景（A2）：done 的 `confusable_hits` 携带本轮易混淆命中（此前零断言）。
+
+    桩掉词库读取：`_confusable_hits` 在函数内 `from app.lexicon import store`，
+    故 patch 模块属性即可生效（不要 patch 路由模块——本仓测试基础设施的第 2 条要求）。
+    问题里同现 canonical 与 variants[0]，命中值逐字段钉住（含 distinguish）。
+    """
+    from app.lexicon.store import LexiconRow
+
+    pair = LexiconRow(id=1, kind="confusable", canonical="钢筋", variants=["箍筋"],
+                      distinguish="钢筋受拉，箍筋受剪")
+    monkeypatch.setattr("app.lexicon.store.load_confusable_pairs", lambda: [pair])
+
+    r = auth_client.post("/qa/ask",
+                         json={"question": "钢筋和箍筋有何不同", "stream": True})
+    done = [d for e, d in _parse_sse(r.text) if e == "done"][0]
+    assert done["confusable_hits"] == [
+        {"a": "钢筋", "b": "箍筋", "distinguish": "钢筋受拉，箍筋受剪"},
+    ]
+
+
+def test_done_reports_filtered_out_from_the_relaxed_search(auth_client, stream_env,
+                                                            monkeypatch):
+    """正常场景（A2）：分类筛选候选不足时，done 的 `filtered_out` = 全局命中数。
+
+    两条路径的桩值刻意不同（窄查询 1 条 < `retrieve.qa_min_candidates`=3，
+    宽松查询 **42** 条）：断言 42 才能证明这个数确实来自**放宽后的那次检索**，
+    而不是候选池大小（1）、阈值过滤后的条数或别的量。
+    """
+    def fake_search(sq):
+        return ([dict(_CAND)], 1) if sq.dim4_specialty else ([dict(_CAND)], 42)
+
+    monkeypatch.setattr("app.search.hybrid_search.hybrid_search", fake_search)
+
+    r = auth_client.post("/qa/ask", json={"question": "q", "stream": True,
+                                          "dim4_specialty": ["混凝土"]})
+    done = [d for e, d in _parse_sse(r.text) if e == "done"][0]
+    assert done["filtered_out"] == 42, \
+        "filtered_out 必须回传放宽检索的全局命中数（分类筛掉的那部分）"
+
+
+def test_done_effective_filters_carries_request_dims(auth_client, stream_env):
+    """正常场景（A2）：done 的 `effective_filters` 含本轮所传维度键（此前零断言）。
+
+    「本轮生效筛选」必须随响应可见，否则用户切换筛选后无从知道它只影响下一轮。
+    """
+    r = auth_client.post("/qa/ask", json={"question": "q", "stream": True,
+                                          "dim4_specialty": ["混凝土"]})
+    done = [d for e, d in _parse_sse(r.text) if e == "done"][0]
+    assert done["effective_filters"]["dim4_specialty"] == ["混凝土"]
+    assert set(done["effective_filters"]) >= {"dim4_specialty"}

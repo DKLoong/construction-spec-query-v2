@@ -1,7 +1,14 @@
-"""检索/问答共用精排降级链：CrossEncoder → bi-encoder 向量 → 原始顺序
+"""检索侧精排降级链：CrossEncoder → bi-encoder 向量 → 原始顺序
 
-从 QA 的 `_rerank_scored` 抽取出的纯函数，供检索模块（hybrid_search）与
-QA 模块共同调用，避免两处复制同一套降级逻辑。
+从 QA 的 `_rerank_scored` 抽取出的纯函数，**实际只被检索模块调用**
+（`app/search/hybrid_search.py` 一处）。QA 侧并未改为调用本函数，而是保留了
+自己的同逻辑副本 `app/routes/qa_routes._rerank_scored`——两处差异：
+  1. QA 副本需要**精排级别**（RERANK_CE / RERANK_VECTOR / RERANK_NONE 常量，
+     供 `app/qa/degrade.resolve_thresholds` 按级别选阈值），故返回 (候选, 分数)
+     而不返回级别字符串；检索侧丢弃本函数返回的级别。
+  2. 两处不可用时都回退，但**分数不同**：检索侧统一 1.0（不分层，全 1.0 无害），
+     QA 侧用 `degrade.rank_scores` 的排名归一化值（QA 需要按排名切分强弱）。
+两处逻辑的合并见 TODOS T18。
 """
 
 import logging
