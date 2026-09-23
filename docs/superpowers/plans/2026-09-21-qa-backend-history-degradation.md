@@ -3775,16 +3775,31 @@ git add app/models.py app/routes/qa_routes.py tests/test_qa_stream.py
 git commit -m "feat: /qa/ask 单一入口支持流式输出（SSE），消除检索链路重复"
 ```
 
-## 完成标准
+## 完成标准（**2026-09-23 已按全分支终审逐条回填**）
 
-- [ ] `tests/` 全量通过，无回归
-- [ ] `pyright app/` 无新增 error
-- [ ] 15 个 Task 各自单次提交，提交信息符合 `type: 描述` 规范
-- [ ] `GET /qa/sessions`、`GET /qa/sessions/{id}`、`PATCH`、`DELETE`、`export`、`/qa/search` 均可访问
-- [ ] `POST /qa/ask` 带 `stream=true` 返回 `text/event-stream`，不带则返回 JSON（既有契约不变）
-- [ ] `/qa/ask` 非流式路径行为不变（既有用例通过）
-- [ ] 第 3 级降级不再产生"全 1.0 → 全 high"，有回归测试守卫
-- [ ] 流式与非流式两条路径都落 `qa_request_logs`（埋点不因输出形态而丢失）
+> 进度与过程记录的**权威来源**是 `.superpowers/sdd/2026-09-21-qa-backend-history-degradation/progress.md`
+> 与 git 历史；本计划正文里 15 个 Task 的 `- [ ]` 复选框**未逐一勾选**（98 处），
+> 不代表未实施——15 个 Task 均已实现并各自通过「逐任务复核 → 修复轮 → 限定范围复核」。
+
+- [x] `tests/` 全量通过，无回归 —— **终审实跑 990 passed / 0 failed**
+- [x] `pyright app/` 无新增 error —— **终审实跑 `pyright app/` 与项目口径 `pyright`（app+tests）均 0 errors**
+- [x] 15 个 Task 的提交信息符合 `type: 描述` 规范 —— 65 个提交全部合规
+      （但**并非**「各自单次提交」：每个 Task 之后都有复核驱动的修复轮，属流程使然）
+- [x] `GET /qa/sessions`、`GET /qa/sessions/{id}`、`PATCH`、`DELETE`、`export`、`/qa/search` 均可访问
+      —— 终审用 `app.openapi()` 枚举确认，且确认**无** `/qa` 页面路由（留给前端计划 T1 新建）
+- [x] `POST /qa/ask` 带 `stream=true` 返回 `text/event-stream`，不带则返回 JSON（既有契约不变）
+- [ ] `/qa/ask` 非流式路径**除两处有意变更外**行为不变（既有用例全部通过）
+  > **口径更正（2026-09-23，全分支终审）**：按字面「行为不变」**不成立**，实测有三处有意变更：
+  > ① T13「取消静默放宽」本身就是本计划的核心行为变更（既有用例被相应改名改断言）；
+  > ② 空回答提示文案「请确认 CLI 已登录并可用」→「请确认后端已正确配置」；
+  > ③ 503 文案「{cli_used} CLI 不可用，请确认已安装并配置」→「{cli_used} 不可用，请确认已配置」。
+  > ②③ 是**修正**（T14 之后后端可能不是 CLI，旧文案会误导），既有用例只断 `"不可用" in detail` 故全绿。
+  > 本条的正确读法是：**既有非流式用例全部通过，且上述三处变更均属有意为之**。
+- [x] 第 3 级降级不再产生"全 1.0 → 全 high"，有回归测试守卫
+      —— `rank_scores` 按排名归一化 + `resolve_thresholds(RERANK_NONE) → (0.0, 2/3)`，
+      守卫见 `tests/test_qa_degrade.py` 的三条（含保序）
+- [x] 流式与非流式两条路径都落 `qa_request_logs`（埋点不因输出形态而丢失）
+      —— 两条路径各有用例钉行数；另有 3 条失败分支也补 `_emit_trace`
 
 ## 后续（不在本计划内）
 

@@ -1653,8 +1653,8 @@ def t5_stage_indicator_reflects_real_stage_events(page):
     ⚠️ 首版只断言 `.qa-stage` 文本非空——但 `stageText` 的默认值就是「正在检索…」，
     于是**整块 stage 事件处理可以缺失**（不解析 `stage` 帧、不写 `stageText`）而无人报警（假绿）。
     这里断言出现**只有真的收到 stage 事件才会出现**的文案：后端依次发
-    `retrieving → reranking → generating`，对应「已召回条文，精排中…」「生成中…」，
-    默认值「正在检索…」之外的两态必须至少命中一个。
+    `retrieving → generating`（**只有两态**；`reranking` 已在施工中删除，理由见设计文档 §4.11 的实现修订），
+    对应「生成中…」——该文案在默认值「正在检索…」之外，故必须由真实 stage 事件驱动才会出现。
     """
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
@@ -1775,9 +1775,11 @@ Expected: FAIL —— `.qa-answer` 从不带 `.streaming` 类（一次性 JSON �
             }
 
             if (event === 'stage') {
+                // ⚠️ 后端 stage **只有两态**（`reranking` 已在施工中删除：检索与 CE 精排都在同一个
+                // 同步函数内、无法从里面 yield，拆两帧是假装能区分它们；见设计文档 §4.11 的实现修订）。
+                // 保留一个 `×: '处理中…'` 兜底，但**不要**再加回 `reranking` 分支。
                 this.stageText = {
                     retrieving: '正在检索…',
-                    reranking: '已召回条文，精排中…',
                     generating: '生成中…',
                 }[data.stage] || '处理中…';
             } else if (event === 'delta') {
