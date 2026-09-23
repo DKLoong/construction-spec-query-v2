@@ -25,6 +25,15 @@
 - **类型检查要覆盖本 Task 改动的全部文件**，不只是新增的模块——`pyright <该 Task 的 Files 全部路径>`。
   Task 5 的教训：只跑 `pyright app/qa/sessions.py` 报 0 error，但漏掉了同期改动的测试文件里的 3 个 error。
   另注：`pyrightconfig.json` 的 `include` 是 `["app","tests"]` 且 tests 无 exclude，**测试代码同样计入「不得新增 error」**
+- **禁止「只断言 HTTP 状态码」的用例**——要同时断言 body。原因：**FastAPI 对不存在的路由也返回 404**
+  （body 为 `{"detail": "Not Found"}`），故 `assert r.status_code == 404` 在**路由根本没实现**时也会通过，
+  是「测试锁不住自己名字里的行为」的又一变体。正确写法：
+  ```python
+  r = auth_client.get("/qa/sessions/999999")
+  assert r.status_code == 404
+  assert r.json()["detail"] == "会话不存在"   # 区分「我们的 404」与「框架的 404」
+  ```
+  同一写法已用于 T10 的重命名/删除与 T11 的导出用例（原计划 4 处均只断状态码，已改）
 - **`get_session()` 返回 `dict | None`，禁止直接下标**（`S.get_session(sid)["title"]` 会报
   `reportOptionalSubscript`）。正确写法是先绑局部变量再窄化：
   ```python
@@ -1904,8 +1913,15 @@ def test_get_session_detail_returns_messages_with_sources(auth_client):
 
 
 def test_get_missing_session_returns_404(auth_client):
-    """异常场景：不存在的会话返回 404，而非空对象。"""
-    assert auth_client.get("/qa/sessions/999999").status_code == 404
+    """异常场景：不存在的会话返回 404，而非空对象。
+
+    ⚠️ **不能只断言状态码**：路由若根本不存在，FastAPI 也返回 404
+    （body 为 `{"detail": "Not Found"}`），那样本用例会**假通过**。
+    必须同时断言 body，才能区分「我们的 404」与「框架的 404」。
+    """
+    r = auth_client.get("/qa/sessions/999999")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "会话不存在"
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -1943,7 +1959,7 @@ async def qa_get_session(session_id: int):
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_session_routes.py -v`
-Expected: PASS（10 passed）
+Expected: PASS（11 passed —— T8 存量 7 + 本 Task 新增 4。原写 10 为陈旧值）
 
 - [ ] **Step 5: 提交**
 
@@ -1990,9 +2006,13 @@ def test_rename_rejects_blank_title(auth_client):
 
 
 def test_rename_missing_session_returns_404(auth_client):
-    """异常场景：不存在的会话返回 404。"""
+    """异常场景：不存在的会话返回 404。
+
+    ⚠️ 同样必须断言 body——只断状态码时，路由缺失也会因 FastAPI 默认 404 而假通过。
+    """
     r = auth_client.patch("/qa/sessions/999999", json={"title": "x"})
     assert r.status_code == 404
+    assert r.json()["detail"] == "会话不存在"
 
 
 def test_rename_title_length_enforced(auth_client):
@@ -2015,8 +2035,13 @@ def test_delete_session_endpoint_removes_messages(auth_client):
 
 
 def test_delete_missing_session_returns_404(auth_client):
-    """异常场景：删除不存在的会话返回 404。"""
-    assert auth_client.delete("/qa/sessions/999999").status_code == 404
+    """异常场景：删除不存在的会话返回 404。
+
+    ⚠️ 同样必须断言 body——只断状态码时，路由缺失也会因 FastAPI 默认 404 而假通过。
+    """
+    r = auth_client.delete("/qa/sessions/999999")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "会话不存在"
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -2126,8 +2151,13 @@ def test_export_endpoint_returns_markdown_attachment(auth_client):
 
 
 def test_export_missing_session_returns_404(auth_client):
-    """异常场景：导出不存在的会话返回 404。"""
-    assert auth_client.get("/qa/sessions/999999/export").status_code == 404
+    """异常场景：导出不存在的会话返回 404。
+
+    ⚠️ 同样必须断言 body——只断状态码时，路由缺失也会因 FastAPI 默认 404 而假通过。
+    """
+    r = auth_client.get("/qa/sessions/999999/export")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "会话不存在"
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
