@@ -404,3 +404,25 @@ async def qa_ask(request: Request, body: QaRequest):
     return QAResponse(answer=answer, sources=sources, cli_used=cli_used,
                       confusable_hits=confusable_hits,
                       rerank_used=trace.rerank_used, session_id=session_id or 0)
+
+
+# ── 会话管理接口 ──
+
+@router.get("/qa/sessions")
+async def qa_list_sessions():
+    """会话列表（按最近活跃倒序）。"""
+    from app.qa import sessions as qa_sessions
+    return JSONResponse({"sessions": qa_sessions.list_sessions()})
+
+
+@router.get("/qa/sessions/{session_id}")
+async def qa_get_session(session_id: int):
+    """会话详情：元信息 + 全部消息（含 sources，供前端重建条文链接）。"""
+    from app.qa import sessions as qa_sessions
+    sess = qa_sessions.get_session(session_id)
+    if sess is None:
+        return JSONResponse({"detail": "会话不存在"}, status_code=404)
+    return JSONResponse({
+        "session": sess,
+        "messages": qa_sessions.get_messages(session_id),
+    })

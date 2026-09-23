@@ -140,3 +140,36 @@ def test_trace_records_history_tokens_and_budget(auth_client, qa_env):
     assert row is not None
     assert row["history_tokens"] > 0, "第二轮应记录历史段实际 token"
     assert row["history_budget"] > 0, "应记录历史段预算"
+
+
+def test_list_sessions_endpoint(auth_client):
+    """正常场景：列表接口返回会话数组，按最近活跃倒序。"""
+    a = S.create_session("A")
+    S.append_message(a, "user", "q")
+    r = auth_client.get("/qa/sessions")
+    assert r.status_code == 200
+    assert r.json()["sessions"][0]["id"] == a
+
+
+def test_list_sessions_empty_returns_empty_array(auth_client):
+    """边界场景：无会话时返回空数组（统一结构，禁止返回 null）。"""
+    r = auth_client.get("/qa/sessions")
+    assert r.json() == {"sessions": []}
+
+
+def test_get_session_detail_returns_messages_with_sources(auth_client):
+    """正常场景：详情返回会话元信息 + 全部消息，含 sources（前端据此重建条文链接）。"""
+    sid = S.create_session("s")
+    S.append_message(sid, "user", "q")
+    S.append_message(sid, "assistant", "a", sources=[{"code": "GB 50204",
+                                                      "clause_no": "8.2.1"}])
+    r = auth_client.get(f"/qa/sessions/{sid}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["session"]["title"] == "s"
+    assert body["messages"][1]["sources"][0]["clause_no"] == "8.2.1"
+
+
+def test_get_missing_session_returns_404(auth_client):
+    """异常场景：不存在的会话返回 404，而非空对象。"""
+    assert auth_client.get("/qa/sessions/999999").status_code == 404
