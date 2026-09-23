@@ -2327,7 +2327,8 @@ git commit -m "feat: 跨会话搜索消息接口"
 **Files:**
 - Modify: `app/routes/qa_routes.py`（`_prepare_qa_context` 内的放宽段 + 维度构造；新增 `_effective_filters`；`/qa/ask` 返回体）
 - Modify: `app/models.py`（`QAResponse` 增两字段；新增 `QA_DIM_FIELDS` 常量）
-- Test: `tests/test_qa_relax.py`
+- Modify: `tests/test_qa_routes.py`（**既有「放宽」用例的命名与语义必须同步更新**——见 3f，取消静默放宽是行为变更，不回填既有用例就是留一条名字说谎的绿用例）
+- Test: `tests/test_qa_relax.py`（新建）
 
 **Interfaces:**
 - Consumes: `app.qa.config.get_qa_int`（既有）
@@ -2369,8 +2370,10 @@ def qa_env(monkeypatch):
     """
     monkeypatch.setattr("app.search.hybrid_search.hybrid_search",
                         lambda sq: ([dict(_CAND)], 1))
+    # 精排**恒等透传**（不是无视入参返回常量）：这样「哪一组候选流进了回答」
+    # 在断言层可见——本 Task 的核心行为变更（宽检索结果不再被拿去回答）必须可证伪。
     monkeypatch.setattr("app.routes.qa_routes._rerank_scored",
-                        lambda q, c: [(dict(_CAND), 0.9)])
+                        lambda q, c: [(x, 0.9) for x in c])
     monkeypatch.setattr("app.ai.cli_client.get_backend", lambda name=None: _backend())
 
 
@@ -2449,6 +2452,45 @@ def test_effective_filters_omits_default_status(auth_client, qa_env):
     body = auth_client.post("/qa/ask",
                             json={"question": "q", "status_filter": ""}).json()
     assert body["effective_filters"]["status_filter"] == ""
+
+
+def test_wide_candidates_are_not_used_to_answer(auth_client, qa_env, monkeypatch):
+    """核心行为（取消静默放宽）：候选不足时**只报告**全局命中数，**不得**把宽检索结果拿去回答。
+
+    这是本 Task 唯一的行为变更，也是最容易被后来人打回退的地方。
+    证伪方式：实现若仍写 `candidates, _ = hybrid_search(wide_sq)`（原地放宽），
+    第二次检索的那条文就会流进上下文 → 下面的否定断言失败。
+    **并且同时断言窄候选的内容确实在上下文里**（正向对照）——否则「上下文为空」
+    也会让否定断言通过，那是另一种假通过（本 Task 的文件里已经出现过两次同类教训）。
+    """
+    captured = {}
+
+    async def fake_ask(**kw):
+        captured.update(kw)
+        return CLIResponse(success=True, content="答案")
+
+    b = AsyncMock()
+    b.is_available = lambda: True
+    b.ask = fake_ask
+    monkeypatch.setattr("app.ai.cli_client.get_backend", lambda name=None: b)
+
+    calls = {"n": 0}
+
+    def fake_search(sq):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [dict(_CAND)], 1                        # 窄：content = "混凝土"
+        return [{**_CAND, "content": "WIDE-ONLY-MARKER"}], 20
+
+    monkeypatch.setattr("app.search.hybrid_search.hybrid_search", fake_search)
+
+    body = auth_client.post(
+        "/qa/ask", json={"question": "q", "dim4_specialty": ["混凝土"]}).json()
+
+    assert body["filtered_out"] == 20, "必须如实报告全局命中数"
+    ctx = captured.get("context", "")
+    assert "混凝土" in ctx, "正向对照：窄候选确实进了上下文（否则下面一条是空断言）"
+    assert "WIDE-ONLY-MARKER" not in ctx, "宽检索结果不得进入答案（静默放宽已取消）"
 
 
 def test_qa_dim_fields_matches_request_model():
@@ -2578,15 +2620,47 @@ def _effective_filters(body: QaRequest) -> dict:
 > 内部已按 `relaxed` 清空维度，重复判会变成两处各说一套的漂移源。
 > 另需在 `app/routes/qa_routes.py` 的 `app.models` 导入行追加 `QA_DIM_FIELDS`。
 
+**3f. `tests/test_qa_routes.py`（既有用例回填）** —— `test_qa_ask_falls_back_wide_when_dim_filter_sparse`
+（`tests/test_qa_routes.py:276`）的**名字与 docstring 都在宣称一个已取消的行为**：
+
+```python
+def test_qa_ask_falls_back_wide_when_dim_filter_sparse(auth_client, monkeypatch, tmp_path):
+    """分类筛选候选过少（<3）时放宽回全局检索，保证上下文充足"""
+    ...
+    # 第一次带维度（0 条 < 3）→ 第二次放宽为无维度
+    assert len(query_log) == 2, "候选不足时应放宽为全局检索"
+```
+
+取消静默放宽后，它**仍然会通过**（诊断性全局检索照旧发生，仍是 2 次调用），但「放宽回全局检索」已不成立
+⇒ 这是一条**名字说谎的绿用例**，「测试锁不住自己名字里的行为」的镜像形态（名字锁不住实现，实现也不锁名字）。
+
+必须改为（**只改名字/docstring/注释，断言保留**——它断言的是「诊断性第二次检索携带空维度」，那仍然为真）：
+
+```python
+def test_qa_ask_reports_wide_total_when_dim_filter_sparse(auth_client, monkeypatch, tmp_path):
+    """分类筛选候选过少（<3）时做一次**诊断性**全局检索，如实报告全局命中数。
+
+    注意：**不再**放宽（设计文档 D9）——诊断结果只用于向用户报告 `filtered_out`，
+    不参与本轮回答（「宽结果不得进入答案」由 tests/test_qa_relax.py 的
+    test_wide_candidates_are_not_used_to_answer 钉住）。
+    """
+    ...
+    # 第一次带维度（0 条 < 3）→ 第二次为诊断性全局检索（**不做替换**）
+    assert len(query_log) == 2, "候选不足时应发起一次诊断性全局检索"
+    assert query_log[0].dim5_location == ["屋面"]
+    assert query_log[1].dim5_location == []
+```
+
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `D:/Python/python.exe -m pytest tests/test_qa_relax.py tests/test_qa_session_routes.py tests/test_qa_routes.py -v`
+Run: `D:/Python/python.exe -m pytest tests/test_qa_relax.py tests/test_qa_session_routes.py tests/test_qa_routes.py tests/test_qa_status_filter.py -v`
 Expected: 全部 PASS
+并跑 `pyright app/models.py app/routes/qa_routes.py tests/test_qa_relax.py tests/test_qa_routes.py` —— **0 error**。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add app/models.py app/routes/qa_routes.py tests/test_qa_relax.py
+git add app/models.py app/routes/qa_routes.py tests/test_qa_relax.py tests/test_qa_routes.py
 git commit -m "feat: 分类筛选候选不足改为显式提示 + 一键放宽（取消静默兜底）"
 ```
 
@@ -3594,16 +3668,20 @@ def _answer_text(resp, cli_used: str) -> str:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_qa_stream.py -v`
-Expected: PASS（T14 的 4 条 + 本 Task 的 9 条——原写 10 条，其中 `test_qa_dim_fields_matches_request_model`
-随 `QA_DIM_FIELDS` 前移至 T13，此处已移出）
+Expected: PASS（**21 passed** = T14 的 8 条 + 本 Task 的 13 条）
+
+> 计数更正（2026-09-23，控制器）：本行原写「T14 的 4 条 + 本 Task 的 10 条」，两处都陈旧——
+> T14 的 Step 1 已补到 8 条（4 条流式 + 1 条 API 表头 + 2 条 CLI 表头参数化 + 1 条护栏一致性守卫）；
+> 本 Task 的用例经实数为 **13 条**（控制器一度改成 9 条，那也是错的——**没数就写**，已在此更正）。
+> 另：`test_qa_dim_fields_matches_request_model` 已随 `QA_DIM_FIELDS` 前移至 T13，不在本 Task 内。
 
 - [ ] **Step 5: 全量回归 + 类型检查**
 
 Run: `D:/Python/python.exe -m pytest tests/ -q`
 Expected: 全部 PASS（既有约 726 条 + 本计划新增）
 
-Run: `pyright app/`
-Expected: 无新增 error
+Run: `pyright app/ tests/test_qa_stream.py`
+Expected: 无新增 error（**测试文件也要覆盖**——T5 的教训：只跑 `app/` 会漏掉测试文件里的 error）
 
 - [ ] **Step 6: 提交**
 
