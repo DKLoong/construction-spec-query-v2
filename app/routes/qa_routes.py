@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, asdict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from app.models import QaRequest, QAResponse, SearchQuery
+from app.models import QaRequest, QAResponse, QaSessionRenameRequest, SearchQuery
 from app.ai.api_client import APIBackend
 from app.database import get_db
 from app.qa.degrade import (
@@ -426,3 +426,29 @@ async def qa_get_session(session_id: int):
         "session": sess,
         "messages": qa_sessions.get_messages(session_id),
     })
+
+
+# 会话标题长度上限（业务常量集中管理）
+_SESSION_TITLE_MAX = 100
+
+
+@router.patch("/qa/sessions/{session_id}")
+async def qa_rename_session(session_id: int, body: QaSessionRenameRequest):
+    """重命名会话；空白标题拒绝，超长截断。"""
+    from app.qa import sessions as qa_sessions
+    title = (body.title or "").strip()
+    if not title:
+        return JSONResponse({"detail": "会话名不能为空"}, status_code=400)
+    if qa_sessions.get_session(session_id) is None:
+        return JSONResponse({"detail": "会话不存在"}, status_code=404)
+    qa_sessions.rename_session(session_id, title[:_SESSION_TITLE_MAX])
+    return JSONResponse({"ok": True})
+
+
+@router.delete("/qa/sessions/{session_id}")
+async def qa_delete_session(session_id: int):
+    """删除会话及其全部消息（前端需二次确认）。"""
+    from app.qa import sessions as qa_sessions
+    if not qa_sessions.delete_session(session_id):
+        return JSONResponse({"detail": "会话不存在"}, status_code=404)
+    return JSONResponse({"ok": True})

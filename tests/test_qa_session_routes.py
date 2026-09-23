@@ -181,3 +181,65 @@ def test_get_missing_session_returns_404(auth_client):
     r = auth_client.get("/qa/sessions/999999")
     assert r.status_code == 404
     assert r.json()["detail"] == "会话不存在"
+
+
+def test_rename_session_endpoint(auth_client):
+    """正常场景：重命名生效。"""
+    sid = S.create_session("旧名")
+    r = auth_client.patch(f"/qa/sessions/{sid}", json={"title": "新名"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    got = S.get_session(sid)
+    assert got is not None
+    assert got["title"] == "新名"
+
+
+def test_rename_rejects_blank_title(auth_client):
+    """异常场景：空白标题被拒（400），不得写库。"""
+    sid = S.create_session("原名")
+    r = auth_client.patch(f"/qa/sessions/{sid}", json={"title": "   "})
+    assert r.status_code == 400
+    got = S.get_session(sid)
+    assert got is not None
+    assert got["title"] == "原名"
+
+
+def test_rename_missing_session_returns_404(auth_client):
+    """异常场景：不存在的会话返回 404。
+
+    ⚠️ 同样必须断言 body——只断状态码时，路由缺失也会因 FastAPI 默认 404 而假通过。
+    """
+    r = auth_client.patch("/qa/sessions/999999", json={"title": "x"})
+    assert r.status_code == 404
+    assert r.json()["detail"] == "会话不存在"
+
+
+def test_rename_title_length_enforced(auth_client):
+    """边界场景：超长标题被截断到上限，不拒绝（用户体验优先）。"""
+    sid = S.create_session("s")
+    r = auth_client.patch(f"/qa/sessions/{sid}", json={"title": "长" * 200})
+    assert r.status_code == 200
+    got = S.get_session(sid)
+    assert got is not None
+    assert len(got["title"]) <= 100
+    # 追加断言（brief 只给 <=100，无法区分「截断到 100」与「截断到任意更短值」）：
+    # 钉住上限本身，否则把 _SESSION_TITLE_MAX 改成 5 也照样通过。
+    assert len(got["title"]) == 100
+
+
+def test_delete_session_endpoint_removes_messages(auth_client):
+    """正常场景：删除会话后消息一并清除。"""
+    sid = S.create_session("s")
+    S.append_message(sid, "user", "q")
+    r = auth_client.delete(f"/qa/sessions/{sid}")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert S.get_session(sid) is None and S.get_messages(sid) == []
+
+
+def test_delete_missing_session_returns_404(auth_client):
+    """异常场景：删除不存在的会话返回 404。
+
+    ⚠️ 同样必须断言 body——只断状态码时，路由缺失也会因 FastAPI 默认 404 而假通过。
+    """
+    r = auth_client.delete("/qa/sessions/999999")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "会话不存在"

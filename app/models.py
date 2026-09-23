@@ -240,3 +240,8 @@ class QAResponse(BaseModel):
     rerank_used: str = ""
     # 本次问答所属会话 id（惰性创建时为新 id）
     session_id: int = 0
+
+
+class QaSessionRenameRequest(BaseModel):
+    """会话重命名请求。"""
+    title: str
