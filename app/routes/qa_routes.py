@@ -494,7 +494,12 @@ async def _qa_json(ctx: QaContext, body: QaRequest):
 
 
 async def _sse_stream(question: str, body: QaRequest):
-    """流式输出：stage×2 → delta×N → done | error。
+    """流式输出。帧序列**随路径而异**，不是恒定的一串 stage×2：
+
+      · 正常路径          ：stage(retrieving) → stage(generating) → delta×N → done；
+      · 后端不可用        ：stage(retrieving) → error（**只发 1 帧 stage**，见下方说明）；
+      · 准备阶段异常      ：stage(retrieving) → error（无埋点可写，理由见对应分支注释）；
+      · 生成/收尾阶段异常 ：stage(retrieving) → stage(generating) → [delta×N] → error。
 
     **首帧 stage 必须先于检索/精排发出**：`_prepare_qa_context` 是**同步**函数，
     hybrid_search + CE 精排（跑模型，设计文档 §4.11 记 1~3 秒）全在它内部；这段

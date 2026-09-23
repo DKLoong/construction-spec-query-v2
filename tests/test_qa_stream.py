@@ -464,6 +464,12 @@ def test_stream_empty_output_reuses_json_hint(auth_client, stream_env, monkeypat
         "流式空内容的提示必须与非流式逐字相同（同一文案来源）"
     assert "error" not in [e for e, _ in frames], "成功但空内容不是错误路径"
     assert [e for e, _ in frames][-1] == "done"
+    # 补提示帧只是「给用户看」的一半；另一半是**不落库**：空回答轮次不建会话、不写消息
+    # （与非流式空内容走 `persist_ok=False` 严格一致）。只钉补帧，把
+    # `bool(answer.strip())` 改成常量 True 的变异仍会全绿——那时界面有提示、
+    # 库里却多出一条**空助手消息**的会话，回看历史时无从解释。
+    assert S.list_sessions() == [], \
+        "空回答轮次不建会话（与非流式空内容不建会话严格一致）"
 
 
 def test_stream_done_carries_session_id_and_sources(auth_client, stream_env):
@@ -497,6 +503,46 @@ def test_stream_error_event_when_backend_fails(auth_client, stream_env, monkeypa
     r = auth_client.post("/qa/ask", json={"question": "q", "stream": True})
     assert _parse_sse(r.text)[-1][0] == "error"
     assert S.list_sessions() == [], "失败轮次不得建库"
+
+
+def test_stream_backend_unavailable_emits_only_retrieving_then_error(
+        auth_client, stream_env, monkeypatch):
+    """异常场景：**后端不可用**的流式路径只发 retrieving → error，绝不预告 generating。
+
+    这条路径此前**完全无守卫**：`grep -rn is_available tests/` 里没有任何用例把它桩成
+    False（非流式的对应路径在 tests/test_qa_routes.py:167 有覆盖，流式没有）。于是上一轮
+    刚修的「后端不可用时不预告 generating」无人看守——把 `yield stage generating` 移回可用性
+    检查**之前**，改前全部用例仍绿。
+
+    为什么必须挡：`generating` 是「模型开始产字了」的承诺。后端不可用时先发它，就是**预告
+    一件根本没发生的事**，与「retrieving 覆盖整个准备段、generating 覆盖模型段」这条
+    「不假装」的尺子相悖（见 `_sse_stream` docstring）。
+
+    断言用**精确帧序列**而非 `"generating" not in kinds`：后者对「多出 delta / done」无感，
+    而这条路径的任何多余帧都是同一个病（把没发生的事报给用户）。
+    """
+    b = AsyncMock()
+    b.is_available = lambda: False
+    b.command = "fake"      # 必须是真字符串，理由见 _stream_backend docstring
+    monkeypatch.setattr("app.ai.cli_client.get_backend", lambda name=None: b)
+
+    r = auth_client.post("/qa/ask", json={"question": "后端不可用检查", "stream": True})
+    frames = _parse_sse(r.text)
+
+    assert [e for e, _ in frames] == ["stage", "error"], \
+        "后端不可用时只发 retrieving 后接 error；多一帧 generating 就是预告没发生的事"
+    assert frames[0][1] == {"stage": "retrieving"}
+    assert frames[1][1] == {"message": "fake 不可用，请确认已配置"}
+    b.ask_stream.assert_not_called()        # 未发生生成：连调用都不允许
+    assert S.list_sessions() == []          # 失败轮次不建会话
+    # 该路径不写埋点：可用性检查在 _finish_turn 之前就 return 了（与非流式 503 路径一致）。
+    # 用 question LIKE 限定范围而非裸 `== 0`——将来给 503 补埋点时不至于误伤本用例。
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM qa_request_logs WHERE question LIKE ?",
+            ("%后端不可用检查%",),
+        ).fetchone()[0]
+    assert n == 0, "后端不可用的流式轮次不落埋点（与非流式 503 对齐）"
 
 
 def test_stream_backend_exception_emits_error_frame_and_traces(auth_client, stream_env,
@@ -535,6 +581,35 @@ def test_stream_backend_exception_emits_error_frame_and_traces(auth_client, stre
             ("%流式异常埋点检查%",),
         ).fetchone()[0]
     assert n == 1, "抛异常的流式轮次未落埋点（try/except 只做了一半）"
+
+
+def test_non_stream_error_answer_wraps_generic_text(auth_client, stream_env, monkeypatch):
+    """回归（裁决 4）：非流式错误回答的包裹文案必须逐字为「抱歉，AI 服务返回错误。」。
+
+    `_answer_text` 的这句包裹（`"抱歉，" + _GENERIC_ERROR + "。"` + 超时后缀）此前
+    **没有任何精确断言**：tests/test_qa_routes.py:204 是
+    `"抱歉" in ... or "错误" in ...` 的弱形式——丢掉「抱歉，」前缀、丢掉句号、
+    或把常量换成别的字面量都照样绿。
+    期望值由实现的 `_GENERIC_ERROR` 现算（不另抄一份字面量），故本用例钉的是**包裹格式**；
+    常量本身的字面量由本文件 `test_stream_backend_exception_emits_error_frame_and_traces`
+    的 error 帧断言钉住。超时后缀同理**在此前无任何断言**（`grep 超时 tests/` 只命中入参）。
+    """
+    import app.routes.qa_routes as qr
+
+    b = AsyncMock()
+    b.is_available = lambda: True
+    b.command = "fake"      # 真字符串，理由见 _stream_backend docstring
+    b.ask = AsyncMock(return_value=CLIResponse(success=False, content="", error="上游 500"))
+    monkeypatch.setattr("app.ai.cli_client.get_backend", lambda name=None: b)
+
+    data = auth_client.post("/qa/ask", json={"question": "q"}).json()
+    assert data["answer"] == f"抱歉，{qr._GENERIC_ERROR}。"
+    assert S.list_sessions() == [], "失败轮次不得建库"
+
+    b.ask = AsyncMock(return_value=CLIResponse(success=False, content="", error="CLI 调用超时"))
+    data = auth_client.post("/qa/ask", json={"question": "q"}).json()
+    assert data["answer"] == f"抱歉，{qr._GENERIC_ERROR}。（超时）", \
+        "错误文案含「超时」时必须带上超时后缀（与非流式既有观感一致）"
 
 
 def test_stream_continues_into_existing_session(auth_client, stream_env):
