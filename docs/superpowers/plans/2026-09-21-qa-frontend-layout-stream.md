@@ -101,10 +101,16 @@ def wait_tree_filter_seeded(pg):
     pg.wait_for_selector(".tree-label", state="attached", timeout=10000)
 ```
 
-> **后续 Task（T2~T5）追加探针时**：凡需点击分类树条目，一律 `wait_tree_filter_seeded(pg)` 后用
-> `click_first_tree_label(pg)`（**顺序不能反**：先等渲染再点；两者分行调用即可）。
-> **不要**在用例里直接写 `page.click(".tree-label >> nth=0")`——那在本项目必然 30s 超时
-> （首版 8 条探针里有 5 条踩了这个坑）。
+> **后续 Task（T2~T5）追加探针时**：凡需点击分类树条目，用 `click_first_tree_label(pg)`；
+> **不要**在用例里直接写 `page.click(".tree-label >> nth=0")`（在折叠的 `<details>` 内，
+> 必然 30s 超时；首版 8 条探针里有 5 条踩了这个坑）。
+>
+> ⚠️ **两个 helper 的语义与顺序（2026-09-23 更正，首版写反过）**：
+> - `click_first_tree_label(pg)`：**展开**第一个 `<details>` 并点其第一个条目——用在**全新页面**（尚无选中项）。
+> - `wait_tree_filter_seeded(pg)`：等 **`.tree-label.active`（已选中节点）** 出现——它的用途是**核实
+>   「URL 回填 / 刚点的那一下」确实记进了 store**，**不是**点击前的门禁。
+>   在全新页面（无任何选中项）上先调它会**必然 10s 超时**（T4 施工时实测踩到）。
+> - **正确顺序：需要确认选择生效时 → 先 `click_first_tree_label` 再 `wait_tree_filter_seeded`**。
 
 ### 前置 C：需要「AI 有回答」的 Task（T4/T5）用 **mock LLM**，不要用真实模型
 
@@ -1337,7 +1343,7 @@ def t4_filters_recorded_and_shown(page):
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
-    wait_tree_filter_seeded(page); click_first_tree_label(page)          # 勾一个分类树筛选
+    click_first_tree_label(page)                  # 勾一个分类树筛选（全新页面：先点、再等，顺序见「前置 B」）
     page.wait_for_timeout(300)
     page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
     page.press(".qa-composer textarea", "Enter")
@@ -1374,7 +1380,7 @@ def t4_pending_filter_change_is_visible(page):
     page.wait_for_timeout(800)
     assert page.locator(".qa-filters-pending").is_hidden(), \
         "尚未改动筛选时不应出现「将在下一轮生效」提示"
-    wait_tree_filter_seeded(page); click_first_tree_label(page)          # 改动筛选
+    click_first_tree_label(page)                  # 改动筛选（顺序同上）
     page.wait_for_timeout(300)
     assert page.locator(".qa-filters-pending").is_visible(), \
         "改了筛选但未提示「将在下一轮生效」——静默失配复现"
@@ -1657,6 +1663,12 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 
 ## Task 5: 流式渲染（SSE + 降级渲染）
 
+> ⚠️ **本 Task 同时补一件 T4 做不到的事：跨会话搜索命中的「高亮」样式**。
+> `qa.js` 会给命中的消息加 `.qa-highlight` 类（`jumpToHit` 的滚动+高亮），但 **`app.css` 里 0 处匹配**
+> ⇒ 目前**高亮是视觉 no-op**（T4 的 Files 不含 `app.css`，且那轮硬约束明确禁改它）。
+> ⇒ 本 Task 在 `app.css` 补 `.qa-highlight` 规则（`app.css` 已加入本 Task 的 Files，见下方），
+> 并把 `app.css?v=21 → ?v=22` 一并递增。（另注：本 Task 也改 `qa.js` ⇒ `qa.js?v=22 → ?v=23`。）
+
 > 🔌 **本 Task 的探针需要「AI 有回答」且要观测流式的中途态** ⇒ **必须配置 mock LLM**
 > （`%TEMP%/qa_mock_llm.py`，监听 `127.0.0.1:8199`；其流式响应刻意在帧间 sleep，留出可观测的「生成中」窗口）。
 > 副本库需写（**本段自带配置，因为简报不含计划开头的前置节**）：
@@ -1669,6 +1681,9 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 
 **Files:**
 - Modify: `static/components/qa.js`（`send()` 改走 SSE）
+- Modify: `static/app.css`（补 `.qa-highlight` 规则 + `.qa-answer.streaming` 的 `white-space: pre-wrap`；
+  见上方 ⚠️ 说明）
+- Modify: `app/templates/base.html`（`app.css?v=21 → ?v=22`；`qa.js?v=22 → ?v=23`）
 - **不改** `static/components/md-render.js`（首版此处列过一条「给它加一个流式档」的 Modify，
   与本节正文及「文件结构」表的「不改」自相矛盾，已删——流式期间不经过任何 Markdown 解析器，
   收尾才走既有完整管线，`md-render.js` 无需任何新档）
