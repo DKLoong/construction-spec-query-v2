@@ -452,3 +452,24 @@ async def qa_delete_session(session_id: int):
     if not qa_sessions.delete_session(session_id):
         return JSONResponse({"detail": "会话不存在"}, status_code=404)
     return JSONResponse({"ok": True})
+
+
+@router.get("/qa/sessions/{session_id}/export")
+async def qa_export_session(session_id: int):
+    """导出会话为 Markdown 附件。"""
+    from urllib.parse import quote
+
+    from fastapi.responses import Response
+    from app.qa import sessions as qa_sessions
+
+    sess = qa_sessions.get_session(session_id)
+    if sess is None:
+        return JSONResponse({"detail": "会话不存在"}, status_code=404)
+    md = qa_sessions.build_markdown(sess, qa_sessions.get_messages(session_id))
+    # 文件名做 RFC 5987 编码，避免中文标题导致下载名乱码
+    fname = quote(f"{sess['title']}.md")
+    return Response(
+        content=md,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"},
+    )

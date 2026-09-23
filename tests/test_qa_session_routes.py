@@ -243,3 +243,58 @@ def test_delete_missing_session_returns_404(auth_client):
     r = auth_client.delete("/qa/sessions/999999")
     assert r.status_code == 404
     assert r.json()["detail"] == "会话不存在"
+
+
+def test_build_markdown_contains_title_and_turns():
+    """正常场景：导出内容含会话名、问答正文与参考条文。"""
+    sess = {"id": 1, "title": "混凝土强度", "created_at": "2026-09-21 10:00:00",
+            "updated_at": "2026-09-21 10:05:00"}
+    msgs = [{"role": "user", "content": "如何评定", "sources": [], "created_at": "x"},
+            {"role": "assistant", "content": "按 GB 50204 评定",
+             "sources": [{"code": "GB 50204", "clause_no": "8.2.1"}],
+             "created_at": "x"}]
+    md = S.build_markdown(sess, msgs)
+    assert "# 混凝土强度" in md
+    assert "如何评定" in md
+    assert "GB 50204 8.2.1" in md
+    # 追加断言（brief 的三条对「user/assistant 弄反」无法失败——两段正文无论
+    # 谁挂谁都在 md 里）。钉住轮次顺序与「问/答」标签的归属。
+    assert md.index("## 问") < md.index("如何评定") \
+        < md.index("## 答") < md.index("按 GB 50204 评定")
+    # 同上：参考条文若被摘掉 `> 参考条文：` 前缀，上面那条 `in md` 照样通过
+    assert "> 参考条文：GB 50204 8.2.1" in md
+
+
+def test_build_markdown_handles_session_without_messages():
+    """边界场景：空会话导出不报错，仍含标题。"""
+    md = S.build_markdown({"title": "空会话", "created_at": "", "updated_at": ""}, [])
+    assert "# 空会话" in md
+    # 追加断言：零消息不得凭空渲染出轮次标题
+    assert "## 问" not in md and "## 答" not in md
+
+
+def test_export_endpoint_returns_markdown_attachment(auth_client):
+    """正常场景：导出接口返回 markdown 附件，带 Content-Disposition。"""
+    sid = S.create_session("混凝土强度")
+    S.append_message(sid, "user", "如何评定")
+    r = auth_client.get(f"/qa/sessions/{sid}/export")
+    assert r.status_code == 200
+    assert "text/markdown" in r.headers["content-type"]
+    assert "attachment" in r.headers["content-disposition"]
+    assert "如何评定" in r.text
+    # 追加断言（brief 只断 "attachment"，对「改成裸 filename="中文.md"」无法失败：
+    # 裸文件名同样含 attachment 字样，而中文名在多数浏览器下会乱码）。
+    # 故钉住 RFC 5987 的 filename* 及其百分号编码结果。
+    from urllib.parse import quote
+    assert "filename*=UTF-8''" in r.headers["content-disposition"]
+    assert quote("混凝土强度.md") in r.headers["content-disposition"]
+
+
+def test_export_missing_session_returns_404(auth_client):
+    """异常场景：导出不存在的会话返回 404。
+
+    ⚠️ 同样必须断言 body——只断状态码时，路由缺失也会因 FastAPI 默认 404 而假通过。
+    """
+    r = auth_client.get("/qa/sessions/999999/export")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "会话不存在"

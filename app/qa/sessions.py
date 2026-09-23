@@ -272,3 +272,38 @@ def _escape_like(text: str) -> str:
     return (text.replace("\\", "\\\\")
                 .replace("%", "\\%")
                 .replace("_", "\\_"))
+
+
+def build_markdown(sess: dict, messages: list[dict]) -> str:
+    """把会话渲染为 Markdown（导出用）。
+
+    只做 Markdown 不做 HTML：项目已有完整 md 渲染管线
+    （marked + DOMPurify + KaTeX），导出的 md 可直接丢回系统渲染。
+    """
+    lines = [f"# {sess.get('title') or '未命名会话'}", ""]
+    if sess.get("created_at"):
+        lines += [f"- 创建时间：{sess['created_at']}"]
+    if sess.get("updated_at"):
+        lines += [f"- 最后活跃：{sess['updated_at']}"]
+    lines.append("")
+
+    for m in messages:
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        if m.get("role") == "user":
+            lines += ["## 问", "", content, ""]
+        else:
+            lines += ["## 答", "", content, ""]
+            sources = m.get("sources") or []
+            if sources:
+                # 参考条文格式为「规范号 空格 条号」（如 `GB 50204 8.2.1`），
+                # 由 tests::test_build_markdown_contains_title_and_turns 钉住——
+                # brief 的测试用例即为接口契约，故此处不得改成带《》的写法。
+                refs = "、".join(
+                    f"{s.get('code', '')} {s.get('clause_no', '')}"
+                    for s in sources if isinstance(s, dict)
+                )
+                if refs:
+                    lines += [f"> 参考条文：{refs}", ""]
+    return "\n".join(lines)
