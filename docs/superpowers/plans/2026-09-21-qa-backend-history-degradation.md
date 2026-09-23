@@ -1131,7 +1131,11 @@ def rename_session(session_id: int, title: str) -> bool:
 
 
 def delete_session(session_id: int) -> bool:
-    """删除会话及其全部消息（应用层显式删，不依赖外键级联）。"""
+    """删除会话及其全部消息。
+
+    显式删消息是**防御性写法**：本项目 get_db() 开着 PRAGMA foreign_keys=ON
+    （app/database.py:205），级联删除实际生效；但显式删除让行为不依赖那条 PRAGMA。
+    """
     with get_db() as conn:
         cur = conn.execute("DELETE FROM qa_sessions WHERE id = ?", (session_id,))
         if cur.rowcount == 0:
