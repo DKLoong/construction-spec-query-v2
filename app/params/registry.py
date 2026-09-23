@@ -158,6 +158,17 @@ def _build_meta():
         "qa.token.summary_chars", "qa", "次相关摘要限长",
         float(QA_CONFIG_DEFAULTS["token.summary_chars"]), 50, 2000, "50~2000",
         "次相关条文仅提供前 N 字摘要进入上下文。", dtype="int"))
+    meta.append(_num(
+        "qa.history.max_turns", "qa", "多轮历史窗口",
+        float(QA_CONFIG_DEFAULTS["history.max_turns"]), 0, 50, "0~50",
+        "注入模型的历史对话轮数上限；0 = 不带历史（纯单轮）。"
+        "历史只含问答文本，不含条文上下文。", dtype="int"))
+    meta.append(_num(
+        "qa.token.max_history_tokens", "qa", "历史段 token 预算",
+        float(QA_CONFIG_DEFAULTS["token.max_history_tokens"]), 0, 4000, "0~4000",
+        "历史对话段的独立 token 预算，与「上下文 token 预算」（条文段）分开计。"
+        "两段合计上界 = 本值 + 上下文 token 预算 + system prompt。"
+        "0 = 不注入历史。", dtype="int"))
     return meta
 
 

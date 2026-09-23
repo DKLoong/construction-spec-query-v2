@@ -250,3 +250,74 @@ def build_context(
     if low_picked:
         sections.append("── 次相关条文（仅供参考，不可作为主要依据）──\n" + "\n\n".join(low_picked))
     return "\n\n".join(sections), used, dropped, picked
+
+
+# ── 多轮历史段组装（精简多轮策略） ──
+#
+# 核心不变量（设计文档 D1/D3）：
+# 1. 历史段只含问答文本，绝不复用历史条文上下文——条文每轮由
+#    hybrid_search 重新召回。带历史条文会导致 token 平方级增长，
+#    且旧条文可能与新问题矛盾。
+# 2. 上下文严格限于当前会话——调用方只传当前会话的消息。
+# 3. 超预算时逐轮丢弃最旧，不截断单条答案内部
+#    （与同文件 build_context 的既有原则一致）。
+#
+# 复用本文件既有的 estimate_tokens()，不另造 token 估算。
+
+HISTORY_HEADER = "【历史对话】"
+
+
+def _turns(messages: list[dict]) -> list[tuple[str, str]]:
+    """把扁平消息列表按 (user, assistant) 配对成轮次，顺序保持。
+
+    - 连续的 user（如失败重试）取最后一条，避免出现无答案的轮次
+    - 末尾孤立的 user（正在提问但无答案）不构成轮次
+    - 脏数据（None / 缺字段）跳过
+    """
+    turns: list[tuple[str, str]] = []
+    pending_q: str | None = None
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        if role == "user":
+            pending_q = content
+        elif role == "assistant" and pending_q is not None:
+            turns.append((pending_q, content))
+            pending_q = None
+    return turns
+
+
+def build_history(messages: list[dict], max_turns: int,
+                  token_budget: int) -> str:
+    """取最近 max_turns 轮「问+答」拼为历史段；超预算逐轮丢弃最旧。
+
+    max_turns <= 0 → 返回空串（关闭多轮，行为等同单轮）。
+    """
+    if max_turns <= 0 or not messages or token_budget <= 0:
+        return ""
+
+    turns = _turns(messages)
+    if not turns:
+        return ""
+
+    recent = turns[-max_turns:]
+    # 从最近往前累积，超预算即停——保证丢的是最旧的轮次
+    kept: list[tuple[str, str]] = []
+    used = estimate_tokens(HISTORY_HEADER)
+    for q, a in reversed(recent):
+        cost = estimate_tokens(q) + estimate_tokens(a)
+        if kept and used + cost > token_budget:
+            break
+        used += cost
+        kept.append((q, a))
+    kept.reverse()
+
+    if not kept:
+        return ""
+
+    blocks = [f"用户：{q}\n助手：{a}" for q, a in kept]
+    return HISTORY_HEADER + "\n" + "\n\n".join(blocks)

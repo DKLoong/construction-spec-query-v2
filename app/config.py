@@ -89,4 +89,8 @@ QA_CONFIG_DEFAULTS: dict = {
     "token.max_context_tokens": 6000,       # 上下文 token 预算
     "token.chars_per_token": 2,             # 字符/token 估算系数（中文为主取 len/2）
     "token.summary_chars": 200,             # 次相关摘要限长
+    "history.max_turns": 6,                 # 多轮历史窗口（轮）；0 = 关闭多轮
+    # 历史段的**独立** token 预算。不复用 token.max_context_tokens——
+    # 那是「条文上下文」的预算，两段各自按它截断会让总上下文达配置值的两倍
+    "token.max_history_tokens": 800,
 }
