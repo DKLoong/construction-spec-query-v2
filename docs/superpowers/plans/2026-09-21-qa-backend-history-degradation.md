@@ -1333,10 +1333,18 @@ def test_build_history_does_not_truncate_inside_an_answer():
 
 
 def test_build_history_skips_malformed_entries():
-    """异常场景：缺 role/content 的脏数据被跳过，不抛异常。"""
-    out = build_history([{"role": "user"}, {"content": "x"}, None,
-                         {"role": "user", "content": "有效"}], 6, 6000)
-    assert "有效" in out
+    """异常场景：缺 role/content 的脏数据被跳过，不抛异常。
+
+    ⚠️ 首版此用例有笔误（Task 6 实测）：原输入末尾是**无答案的孤立 user**，
+    而 `_turns` 规定轮次必须 Q+A 配对，故必返回空串 → 原断言在任何符合 brief
+    的实现下都不可能通过。已补上配对的 assistant，并把脏数据内容由单字 `"x"`
+    换成有区分度的 `"脏数据"`，使断言真正覆盖「脏数据被跳过」这一意图。
+    """
+    out = build_history([{"role": "user"}, {"content": "脏数据"},
+                         None, {"role": "user", "content": "有效"},
+                         {"role": "assistant", "content": "有效答案"}], 6, 6000)
+    assert "有效" in out and "有效答案" in out
+    assert "脏数据" not in out  # 反向断言：脏数据不得泄漏进历史段
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
