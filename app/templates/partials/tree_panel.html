@@ -4,14 +4,19 @@
     <div class="search-box" x-data="searchBox()">
         <input type="search" x-model="keyword" @keyup.enter="search()"
                placeholder="输入关键词搜索条文...">
-        <!-- 勾选立即重搜：放行前言/条文说明等打标非条文（后端 include_non_clause=1） -->
-        <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1">
+        <!-- 勾选立即重搜：放行前言/条文说明等打标非条文（后端 include_non_clause=1）。
+             tooltip 说明文本兜底的存在——用户取消勾选后，若问句里出现
+             「前言」「条文说明」字样仍会放行打标非条文（后端兜底条款） -->
+        <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1"
+               title="勾选后放行前言/条文说明等打标非条文。注意：即使不勾选，若提问中含「前言」或「条文说明」字样，系统仍会包含这类内容">
             <input type="checkbox" x-model="includeNonClause" @change="search()"
                    style="width:0.875rem;height:0.875rem;flex:none;margin:0;padding:0">
             <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">包含前言·条文说明</span>
         </label>
-        <!-- CE 精排热切换：勾选/取消立即重搜（onCeChange 弹提示 + 触发重搜），结果实时按新开关排序 -->
-        <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1">
+        <!-- CE 精排热切换：勾选/取消立即重搜（onCeChange 弹提示 + 触发重搜），结果实时按新开关排序。
+             tooltip 说明其作用域，避免用户误以为 AI 问答也受此开关影响 -->
+        <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1"
+               title="CE 精排仅作用于检索结果排序；AI 问答走独立精排链（CrossEncoder → 向量 → 原序降级），不受此开关影响">
             <input type="checkbox" x-model="ceRerank" @change="onCeChange()"
                    style="width:0.875rem;height:0.875rem;flex:none;margin:0;padding:0">
             <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">启用 CE 精排</span>

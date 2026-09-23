@@ -444,6 +444,116 @@ def t1_qa_enter_search_returns_to_search_page(page):
     assert "/qa" not in page.url, f"地址栏未回落到检索页（应不再是 /qa）：{page.url}"
 
 
+def t3_qa_page_has_no_duplicate_status_checkboxes(page):
+    """**回归守卫（本组允许全绿）**：QA 页内不再有独立的状态过滤复选框（统一到左栏）。
+
+    ⚠️ 这条**不是**本 Task 的 RED 证据，也不可能红：T2 的全新 `qa_page.html` 从一开始
+    就没有这个控件（旧的 `qa_panel.html` 已在 T1 删除）⇒ 它在 T3 开工前就是 PASS，
+    是一条「空守卫」。它守的是**将来**——别把重复的状态控件再加回来（例如有人为了
+    QA 页顺手，又在会话栏上方补一个「仅现行」）。
+    本 Task 真正会失败的是下面那条请求体探针。
+    """
+    page.goto(f"{BASE}/")
+    page.click("text=🤖 AI问答")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    in_qa = page.locator("#qa-root").get_by_text("仅现行").count()
+    assert in_qa == 0, "QA 面板内不应再有「仅现行」复选框，应统一读左栏"
+
+
+def t3_left_panel_status_unchecked_sends_empty_status_filter(page):
+    """正常场景（**本 Task 的 RED 证据**）：左栏取消「仅现行」后，QA 请求体的
+    `status_filter` 必须是**空串**（显式全不勾 = 放行非现行，与检索侧语义一致）。
+
+    为什么必须由这条来当 RED：`qa.js` 里原本有一份**自己的** `buildStatusFilter()`，
+    而它的本地字段 `statusCurrent: true` 恒返回 `'现行'` ⇒ 左栏怎么改，问答请求都带 `'现行'`。
+    只把注释改成「改为读 store」而不删本地实现，本用例必红。
+    """
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+
+    captured = {}
+
+    def _on_request(req):
+        if req.method == "POST" and req.url.endswith("/qa/ask"):
+            captured["body"] = req.post_data_json
+
+    page.on("request", _on_request)
+    # 左栏「仅现行」默认勾选；取消它 ⇒ 两个状态框都不勾 ⇒ 共享 store 的
+    # buildStatusFilter() 返回 null（`collectFilters()` 转空串）
+    page.locator(".left-panel label:has-text('仅现行') input[type=checkbox]").uncheck()
+    # 原写法 `wait_for_timeout(300)`：把「等 store 反映这次取消勾选」这件事从固定 sleep
+    # 换成**有界断言**（本文件方法论：等待与判据分离，等待失败即报红、信息明确）。
+    # 断言的对象正是本用例的判据所依赖的那个值本身（store 的组合结果 = null）。
+    assert poll_until(
+        page,
+        lambda: page.evaluate(
+            "(window.Alpine && Alpine.store('searchState')).buildStatusFilter()") is None,
+        timeout_ms=3000), \
+        "取消「仅现行」后共享 store 的 buildStatusFilter() 未变为 null（左栏状态未写进 store）"
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+    page.wait_for_selector(".qa-bot", timeout=60000)
+
+    body = captured.get("body") or {}
+    assert "status_filter" in body, f"请求体未携带 status_filter：{body}"
+    assert body["status_filter"] == "", \
+        f"左栏已取消「仅现行」，status_filter 应为空串，实得 {body['status_filter']!r}" \
+        "——说明请求体仍在用 qa.js 本地那份恒返回 '现行' 的 buildStatusFilter()"
+
+
+def t3_ce_rerank_has_tooltip(page):
+    """正常场景：CE 精排复选框有说明性 tooltip（防误解，不锁功能）。"""
+    page.goto(f"{BASE}/")
+    label = page.locator(".left-panel label:has-text('启用 CE 精排')")
+    title = label.get_attribute("title") or ""
+    assert title, "CE 精排复选框所在 label 缺少 title 属性（tooltip 未落地）"
+    assert "问答" in title or "AI" in title, f"CE 复选框缺少问答相关说明: {title!r}"
+
+
+def t3_ce_rerank_not_disabled_in_qa_page(page):
+    """异常场景（防回退）：QA 页内 CE 复选框不得被置灰。
+
+    历史上的方案是「QA 界面里 CE 置灰」，但那会锁死检索侧的 CE 功能
+    （QA 常驻后没有「进入 QA 界面」这个时刻了）。改用 tooltip 说明。
+    """
+    page.goto(f"{BASE}/")
+    page.click("text=🤖 AI问答")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    box = page.locator(".left-panel input[type=checkbox]").nth(1)
+    assert not box.is_disabled(), "CE 精排复选框在 QA 页被置灰了，应仅用 tooltip 说明"
+
+
+def t3_pending_filter_hint_appears_after_change(page):
+    """正常场景：「· 已修改，将在下一轮生效」提示必须真的出现。
+
+    为什么本 Task 就要有这条：`filtersChanged()` 依赖 `describeFilters()` 与
+    `effectiveFiltersText`——两者若留到 T4 才定义，T3/T4 阶段这个提示**恒不出现**
+    （`filtersChanged()` 第一行 `if (!this.effectiveFiltersText) return false;` 直接短路），
+    静默失效且无任何报警。所以本 Task 就把这两个（纯展示逻辑）定义好，并用这条钉住。
+
+    （T4 的 `t4_pending_filter_change_is_visible` 是同一断言的回归版：T3 这条钉「提前定义」，
+     T4 那条钉「重写组件后没弄丢」。两条并存，不是重复。）
+    """
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+    page.wait_for_selector(".qa-bot", timeout=60000)
+    # 原写法 `wait_for_timeout(800)`：把「等这一轮的 effectiveFiltersText 写入」换成有界断言
+    # （`.qa-effective-filters` 的 x-show 直接绑它 ⇒ 可见即「已写入且非空」，是该条件的忠实代理）。
+    assert poll_until(page, lambda: page.locator(".qa-effective-filters").is_visible(),
+                      timeout_ms=5000), \
+        "输入框上方未显示本轮生效筛选（effectiveFiltersText 未写入）"
+    assert page.locator(".qa-filters-pending").is_hidden(), \
+        "尚未改动筛选时不应出现「将在下一轮生效」提示"
+    page.locator(".left-panel label:has-text('仅现行') input[type=checkbox]").uncheck()
+    # 同上：等待条件 = 「提示真的出现」（判据本身），有界且失败信息明确
+    assert poll_until(page, lambda: page.locator(".qa-filters-pending").is_visible(),
+                      timeout_ms=3000), \
+        "改了筛选却没提示「将在下一轮生效」——describeFilters/effectiveFiltersText 未能比对（静默失效）"
+
+
+# 登记进本 Task 的键：**键名 = Task 编号本身**（不是 t4）。
 CASES = {"t1": [t1_qa_entry_is_a_page_link,
                 t1_left_panel_present_on_qa_page,
                 t1_filters_carry_into_qa_via_url,
@@ -458,7 +568,14 @@ CASES = {"t1": [t1_qa_entry_is_a_page_link,
                 t2_composer_input_shares_row_with_buttons,
                 t2_sessions_panel_collapses_without_moving_composer,
                 t2_qa_page_not_shown_on_other_pages,
-                t2_mode_checkbox_survives_narrow_viewport]}
+                t2_mode_checkbox_survives_narrow_viewport],
+         # T3：筛选统一（QA 读共享 store）+ CE tooltip。顺序 = 「守卫/静态契约 → 真正的判据」，
+         # 最后一条会真发一次 /qa/ask（含真实模型调用），放最后以便前面的失败不吞掉它的输出。
+         "t3": [t3_qa_page_has_no_duplicate_status_checkboxes,
+                t3_ce_rerank_has_tooltip,
+                t3_ce_rerank_not_disabled_in_qa_page,
+                t3_left_panel_status_unchecked_sends_empty_status_filter,
+                t3_pending_filter_hint_appears_after_change]}
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "t1"

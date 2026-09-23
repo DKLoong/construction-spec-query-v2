@@ -40,11 +40,19 @@ document.addEventListener('alpine:init', () => {
         input: '',
         loading: false,
         mode: 'rag',            // rag 综合问答（默认） / verbatim 原文摘抄
-        // 状态过滤：默认仅勾「现行」（与检索侧 tree.js 语义一致，全不勾=不过滤非现行）
-        statusCurrent: true,
-        statusRevising: false,
         // 会话栏折叠态：T1 骨架的「◂ 会话」按钮已引用它；完整会话栏由 T4 填充
         sessionsCollapsed: false,
+
+        // 本轮实际生效的筛选（D5）：回复中改筛选只影响下一轮，靠它与当前选中比对出提示。
+        // **本 Task 就要有**：filtersChanged() 第一行读它，留到 T4 才定义会让
+        // 「将在下一轮生效」提示在整个 T3/T4 阶段恒不出现（静默失效）。
+        effectiveFiltersText: '',
+
+        // 状态过滤改为读左栏共享 store（统一操作逻辑）：
+        // QA 面板内不再有独立复选框，「仅现行 / 修订中」一律由左栏控制
+        get statusFilter() {
+            return this.$store.searchState.buildStatusFilter();
+        },
 
         async init() {
             this.seedFiltersFromUrl();   // T1：URL → store 回填
@@ -84,19 +92,17 @@ document.addEventListener('alpine:init', () => {
             this.scrollToBottom();
 
             try {
-                // 携带当前分类树选中维度，收窄检索范围提升精确度（未选分类时空对象不影响）
-                const filters = (this.$store && this.$store.searchState)
-                    ? this.$store.searchState.filters
-                    : {};
+                // 携带当前筛选（分类维度 + 状态 + 前言放行），收窄检索范围提升精确度。
+                // 统一由 buildRequestBody() 组合（读共享 store），QA 面板内不再自持状态。
                 const resp = await fetch('/qa/ask', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        question: q, mode: this.mode, ...filters,
-                        status_filter: this.buildStatusFilter(),
-                    }),
+                    body: JSON.stringify(this.buildRequestBody(q)),
                 });
                 const data = await resp.json();
+                // 写入本轮生效筛选：否则 .qa-filters-pending（「将在下一轮生效」）恒不出现
+                // （后端 /qa/ask 的 JSON 响应已带 effective_filters）
+                this.effectiveFiltersText = this.describeFilters(data.effective_filters);
                 const answer = data.answer || '(AI 未返回回答)';
                 // role 值域是后端的 {user, assistant}（qa_messages.role），**不要**在本地另造 'bot' 别名：
                 // 新模板的助手分支判的就是 `msg.role === 'assistant'`，写成 'bot' 会让每条回答都渲染成空气泡。
@@ -124,15 +130,54 @@ document.addEventListener('alpine:init', () => {
             this.input = '';
         },
 
-        // 组合状态过滤白名单（与检索侧 tree.js buildStatusFilter 语义一致）：
-        // 现行+修订中 → '现行,修订中'；仅现行 → '现行'；仅修订中 → '修订中'；全不勾 → ''（不过滤）
-        buildStatusFilter() {
-            if (this.statusCurrent && this.statusRevising) return '现行,修订中';
-            if (this.statusCurrent) return '现行';
-            if (this.statusRevising) return '修订中';
-            return '';
+        // 把筛选 dict 渲染成一行可读文本；空对象返回空串（调用处据此隐藏）。
+        // 同时服务两处：历史消息的「筛选：…」与输入框上方的「本轮生效：…」。
+        //
+        // ⚠️ 本方法**定义在 T3**（纯展示逻辑，无任何依赖，提前定义不影响任何东西）；
+        //    T4 重写组件时**必须原样保留**，删掉它会连带让 filtersChanged() 与
+        //    历史消息的「筛选：…」一起失效（本 Task 的 t3_pending_filter_hint_appears_after_change
+        //    与 T4 的 t4_filters_recorded_and_shown 都会红）。
+        describeFilters(f) {
+            const LABELS = {
+                dim1_hierarchy: '层级', dim1_industry: '行业', dim1_nature: '性质',
+                dim2_stage: '阶段', dim3_usage: '用途', dim4_specialty: '专业',
+                dim5_location: '地区', dim6_material: '材料',
+                status_filter: '状态', include_non_clause: '含前言说明',
+            };
+            if (!f || !Object.keys(f).length) return '';
+            return Object.entries(f).map(([k, v]) => {
+                const name = LABELS[k] || k;
+                if (v === true) return name;                       // 布尔开关只显示名字
+                if (v === false || v === '' || v == null) return '';  // 未启用/未选不显示
+                const val = Array.isArray(v) ? v.join('/') : String(v);
+                return val ? `${name}=${val}` : '';
+            }).filter(Boolean).join(' · ');
         },
-        onStatusChange() {},
+
+        // 收集本轮筛选（**唯一来源**）：分类维度 + 状态 + 前言放行。
+        // buildRequestBody 与 filtersChanged 共用同一份，避免两处各拼一套而漂移。
+        collectFilters() {
+            const ss = this.$store.searchState;
+            const out = { ...ss.filters };
+            // buildStatusFilter() 全不勾返回 null → 传空串（不过滤非现行），与既有语义一致
+            const sf = this.statusFilter;
+            out.status_filter = (sf === null || sf === undefined) ? '' : sf;
+            if (ss.includeNonClause) out.include_non_clause = true;
+            return out;
+        },
+
+        buildRequestBody(question) {
+            const body = { question, mode: this.mode, ...this.collectFilters() };
+            if (this.currentSessionId) body.session_id = this.currentSessionId;
+            return body;
+        },
+
+        // 筛选已改但尚未生效（设计文档场景 2 的可见性）：
+        // 比较「当前选中」与「本轮实际生效」，不一致就提示——否则用户切了以为生效了。
+        filtersChanged() {
+            if (!this.effectiveFiltersText) return false;
+            return this.describeFilters(this.collectFilters()) !== this.effectiveFiltersText;
+        },
 
         scrollToBottom() {
             this.$nextTick(() => {
