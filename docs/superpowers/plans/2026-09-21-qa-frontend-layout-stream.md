@@ -909,7 +909,7 @@ def t3_ce_rerank_not_disabled_in_qa_page(page):
     page.goto(f"{BASE}/")
     page.click("text=🤖 AI问答")
     page.wait_for_selector("#qa-root", timeout=10000)
-    box = page.locator("input[type=checkbox]").nth(1)
+    box = page.locator(".left-panel input[type=checkbox]").nth(1)
     assert not box.is_disabled(), "CE 精排复选框在 QA 页被置灰了，应仅用 tooltip 说明"
 
 
@@ -1522,7 +1522,7 @@ document.addEventListener('alpine:init', () => {
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t4`
 Expected: 全部 `PASS` —— **条数由脚本自报，不要在计划里写死**（首版手写的「3 行 / 5 行」与 CASES 实际登记数不符，且 T3~T5 的 Run 键名整体错位了一位，已修）。脚本会打印本次运行的用例名与 PASS/FAIL 计数，照它核对。
 
-> 若 LLM 未配置导致回答失败，`t5` 中 `.qa-bot` 不会出现——先确认 `ai.backend.qa` 已配置可用后端（隔离库是副本，配置随副本带过来）。
+> 若 LLM 未配置导致回答失败，`t4` 中 `.qa-bot` 不会出现——先确认 `ai.backend.qa` 已配置可用后端（隔离库是副本，配置随副本带过来）。
 
 - [ ] **Step 6: 提交**
 
@@ -1679,7 +1679,7 @@ Run: `D:/Python/python.exe scripts/probe_qa_ui.py t5`
 Expected: FAIL —— `.qa-answer` 从不带 `.streaming` 类（一次性 JSON 响应），
 `.qa-stage` 的文案也不随 stage 变化（尚未带 `stream` 标志）。
 
-- [ ] **Step 4: 在 qa.js 实现 `send()`（SSE）**
+- [ ] **Step 3: 在 qa.js 实现 `send()`（SSE）**
 
 ```js
         async send(opts = {}) {
@@ -1856,18 +1856,18 @@ function escHtml(s) {
 }
 ```
 
-- [ ] **Step 5: 提升版本号并重启**
+- [ ] **Step 4: 提升版本号并重启**
 
 `base.html`：**只 bump `qa.js`**：`qa.js?v=19` → `?v=20`。
 （首版这里还写了把 `md-render.js` 的版本号从 v=13 bump 到 v=14——已删：**本 Task 不改 `md-render.js`**，
 bump 一个没改过的文件只会让版本号空转。）
 
-- [ ] **Step 6: 运行探针**
+- [ ] **Step 5: 运行探针**
 
 Run: `D:/Python/python.exe scripts/probe_qa_ui.py t5`
 Expected: 全部 `PASS` —— **条数由脚本自报，不要在计划里写死**（首版手写的「3 行 / 5 行」与 CASES 实际登记数不符，且 T3~T5 的 Run 键名整体错位了一位，已修）。脚本会打印本次运行的用例名与 PASS/FAIL 计数，照它核对。
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add static/components/qa.js app/templates/base.html scripts/probe_qa_ui.py
