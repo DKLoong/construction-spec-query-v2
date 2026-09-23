@@ -235,6 +235,8 @@ def _effective_filters(body: QaRequest) -> dict:
     「前言放行」：只记**复选框显式勾选**（body.include_non_clause）——问题文本里
     出现「前言」字样属于隐式兜底，不是用户对本轮筛选的选择，记进去会让回看时
     「这条答案在什么筛选下产生」失真。
+    这不是漏记：兜底是**问题文本的确定性函数**，而问题原文本身已随本轮消息落库
+    （qa_messages.content），回看时可由问题文本**重建**当轮是否放行非条文。
     """
     out: dict = {}
     if not body.relaxed:
@@ -512,12 +514,15 @@ async def _sse_stream(question: str, body: QaRequest):
 
     yield _sse("stage", {"stage": "retrieving"})   # 必须先发：这一帧才是「覆盖死时间」的那一帧
     ctx = _prepare_qa_context(question, body)      # 检索 + 精排都在这里（1~3 秒）
-    yield _sse("stage", {"stage": "generating"})   # 之后才是模型生成
 
     backend, cli_used = _resolve_backend(body.backend, ctx.trace)
     if not backend.is_available():
         yield _sse("error", {"message": f"{cli_used} 不可用，请确认已配置"})
         return
+
+    # 「生成中」必须等**后端确认可用**之后再发：后端不可用而先预告生成，就是预告一件
+    # 根本没发生的事——与「不假装区分检索/精排」是同一条尺子。
+    yield _sse("stage", {"stage": "generating"})
 
     parts: list[str] = []
     start = time.time()
