@@ -608,7 +608,9 @@ git commit -m "feat: QA 改为整页导航（/qa），筛选经 URL 携带"
 
 **Files:**
 - Modify: `app/templates/partials/qa_page.html`（把 T1 的骨架换成完整布局）
-- Modify: `static/app.css`
+- Modify: `static/app.css`（QA 页布局与折叠；**并顺手订正 `:215` 的过时注释**——它写「必须高于 QA 弹窗
+  （`.qa-modal-overlay` z-index:9999)」，而该 CSS 类在 T1 删掉旧弹窗后**仅服务设置弹窗**（`settings_dialog.html:6`
+  复用同名类），已不指涉 QA 弹窗。T1 施工时发现但 `app.css` 不在其 Files 内，故移交本 Task）
 - Test: `scripts/probe_qa_ui.py`
 
 **Interfaces:**
