@@ -136,3 +136,78 @@ def test_rerank_scored_none_branch_order_follows_input(monkeypatch):
     scores = [s for _, s in ranked]
     assert scores[0] == max(scores)
     assert scores[-1] == min(scores)
+
+
+# ── 接线层守卫：路由必须按级别解析阈值，不得硬编码向量阈值 ──
+
+
+def _fake_cli_success(self, prompt, context="", work_dir=None, timeout=60):
+    """模拟 CLI 成功返回（与 test_qa_routes.py 的桩同形）"""
+    from app.ai.cli_client import CLIResponse
+    return CLIResponse(success=True, content="根据规范，模板应能承受混凝土侧压力。",
+                       duration_ms=100)
+
+
+def _make_route_candidates(n: int) -> list[dict]:
+    """构造 n 条字段完整的候选（可安全穿过 filter_by_metadata / tier_items）"""
+    return [
+        {
+            "id": i + 1,
+            "spec_code": "GB 50204", "clause_no": f"5.1.{i + 1}",
+            "spec_title": "混凝土结构工程施工质量验收规范",
+            "title": f"第{i + 1}条", "spec_status": "现行",
+            "dim3_usage": "", "spec_nature": "",
+            "content": f"模板及其支架应按第{i + 1}项规定设计，保证承载能力与刚度满足要求。",
+        }
+        for i in range(n)
+    ]
+
+
+def test_qa_ask_resolves_none_level_thresholds_at_route(monkeypatch, auth_client):
+    """接线层回归守卫：路由必须按实际降级级别解析阈值。
+
+    这是本 Task 交付物 (b) 的接线守卫。只测 `resolve_thresholds` 助手函数是不够的：
+    若把 `qa_routes.py` 的那行接线改回硬编码 `vector.min_score` / `vector.high_threshold`，
+    助手层用例依然全绿。本用例走**路由级**路径把它钉住。
+
+    判据用**可观测结果**而非 mock `get_qa_float`：
+      - 一条不丢（after_threshold == n）→ 证明 min_score 是 0.0 而非向量档 0.30；
+      - 分层切点落在前 1/3（high_count == n // 3）→ 证明 high_threshold 是 2/3 而非 0.55。
+    改用向量档时，n=9 的排名分里有 3 条 < 0.30 会被丢掉、且 high 会切成 4 条，两条断言都会红。
+    """
+    from app.routes import qa_routes
+
+    n = 9
+    candidates = _make_route_candidates(n)
+
+    # 绕过真实检索，直接喂 n 条候选（n=9 < min_results=10 → dynamic_select 全取，切点干净）
+    monkeypatch.setattr(
+        "app.search.hybrid_search.hybrid_search",
+        lambda sq: (list(candidates), len(candidates)),
+    )
+    # 两条降级腿都断 → 强制落到第 3 级
+    monkeypatch.setattr("app.ai.reranker.rerank", _raise_rerank)
+    monkeypatch.setattr("app.ai.embedding.embed_texts", _raise_embed)
+    # 捕获埋点对象，顺便避免落库
+    captured: list = []
+    monkeypatch.setattr(qa_routes, "_emit_trace", captured.append)
+    # CLI 可用且成功
+    monkeypatch.setattr(
+        "app.ai.cli_client.ClaudeCodeCLI.is_available", lambda self: True,
+    )
+    monkeypatch.setattr(
+        "app.ai.cli_client.ClaudeCodeCLI._run_cli", _fake_cli_success,
+    )
+
+    resp = auth_client.post("/qa/ask", json={"question": "模板设计要求"})
+    assert resp.status_code == 200, resp.text
+
+    assert len(captured) == 1, "路由应恰好 emit 一次 trace"
+    trace = captured[0]
+    assert trace.rerank_used == RERANK_NONE
+    # min_score 必须是 0.0：向量档 0.30 会丢掉末尾 3 条
+    assert trace.after_threshold == n, "第 3 级不得丢条（min_score 必须为 0.0）"
+    # high_threshold 必须是 2/3：向量档 0.55 会把 high 切成 4 条
+    assert trace.high_count == n // 3, "分层切点必须落在前 1/3"
+    assert trace.low_count == n - n // 3
+
