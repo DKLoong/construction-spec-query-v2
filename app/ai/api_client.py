@@ -1,8 +1,41 @@
 """OpenAI 兼容 API 后端"""
 import logging
 from app.ai.cli_client import CLIBackend, CLIResponse
+from app.ai.prompts import CONTEXT_HEADER
 
 logger = logging.getLogger(__name__)
+
+# 默认 system prompt（ask / ask_stream 共用，禁止两处各写一份）
+_DEFAULT_SYSTEM = (
+    "你是建筑施工规范查询助手。只根据提供的上下文回答，不要编造规范条文。"
+    "如果上下文中没有相关信息，请如实告知。回答请使用中文。"
+)
+
+
+def _build_messages(prompt: str, context: str, system_prompt: str) -> list[dict]:
+    """两条路径（ask / ask_stream）**共用**的 messages 构造——复制一份必然漂移。"""
+    full_prompt = prompt
+    if context:
+        full_prompt = (
+            f"{CONTEXT_HEADER}\n{context}\n\n---\n\n请基于以上上下文回答：{prompt}"
+        )
+    return [
+        {"role": "system", "content": system_prompt or _DEFAULT_SYSTEM},
+        {"role": "user", "content": full_prompt},
+    ]
+
+
+def _extract_delta(payload: str) -> str:
+    """从 SSE 单行 JSON 中取出增量文本；脏数据返回空串（跳过该行）。"""
+    import json as _json
+    try:
+        data = _json.loads(payload)
+    except ValueError:
+        return ""
+    try:
+        return data["choices"][0]["delta"].get("content") or ""
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return ""
 
 
 class APIBackend(CLIBackend):
@@ -25,22 +58,7 @@ class APIBackend(CLIBackend):
         import time
         import httpx
 
-        full_prompt = prompt
-        if context:
-            full_prompt = (
-                f"{context}\n\n---\n\n请基于以上上下文回答：{prompt}"
-            )
-
-        messages = [
-            {
-                "role": "system",
-                "content": system_prompt or (
-                    "你是建筑施工规范查询助手。只根据提供的上下文回答，不要编造规范条文。"
-                    "如果上下文中没有相关信息，请如实告知。回答请使用中文。"
-                ),
-            },
-            {"role": "user", "content": full_prompt},
-        ]
+        messages = _build_messages(prompt, context, system_prompt)
 
         start = time.time()
         try:
@@ -98,6 +116,47 @@ class APIBackend(CLIBackend):
                 error="API 调用失败，请检查网络连接或稍后重试",
                 duration_ms=duration,
             )
+
+    async def ask_stream(self, prompt: str, context: str = "",
+                         system_prompt: str = "",
+                         work_dir: str | None = None):
+        """SSE 流式调用，逐块 yield {type: delta|done|error}。
+
+        与 ask() 共用同一套 messages 构造（`_build_messages`），保证两种路径行为一致。
+        """
+        import httpx
+
+        messages = _build_messages(prompt, context, system_prompt)
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                async with client.stream(
+                    "POST", f"{self.base_url}/chat/completions",
+                    json={"model": self.model, "messages": messages,
+                          "temperature": 0.3, "max_tokens": 2048, "stream": True},
+                    headers={"Authorization": f"Bearer {self.api_key}",
+                             "Content-Type": "application/json"},
+                ) as resp:
+                    if resp.status_code != 200:
+                        msg = ("API 调用超限 (429)，请检查当日配额或稍后重试"
+                               if resp.status_code == 429
+                               else f"API 返回错误 (HTTP {resp.status_code})")
+                        yield {"type": "error", "message": msg}
+                        return
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if payload == "[DONE]":
+                            break
+                        text = _extract_delta(payload)
+                        if text:
+                            yield {"type": "delta", "text": text}
+            yield {"type": "done"}
+        except httpx.TimeoutException:
+            yield {"type": "error", "message": "API 调用超时"}
+        except httpx.HTTPError as e:
+            logger.error("API 流式调用异常: %s", e)
+            yield {"type": "error", "message": "API 调用失败，请检查网络连接或稍后重试"}
 
     def classify_batch_sync(self, clauses, dimension,
                             candidate_labels: list[str] | None = None) -> list:

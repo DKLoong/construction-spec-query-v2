@@ -3,6 +3,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from app.ai.prompts import CONTEXT_HEADER
 from app.ai.text_clean import strip_html
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,24 @@ class CLIBackend(ABC):
                 logger.error(f"CLI 返回解析失败: {e}")
         return []
 
+    async def ask_stream(self, prompt: str, context: str = "",
+                         system_prompt: str = "",
+                         work_dir: str | None = None):
+        """流式接口默认实现：不支持真流式的后端整段吐出。
+
+        API 后端覆盖此方法做真流式；CLI 后端沿用本实现——
+        SSE 里一次性发一个 delta 再 done，前端无需第二条渲染路径，
+        stage 事件仍会在等待期间给出「生成中…」反馈。
+        """
+        resp = await self.ask(prompt, context=context,
+                              system_prompt=system_prompt, work_dir=work_dir)
+        if resp.success:
+            if resp.content:
+                yield {"type": "delta", "text": resp.content}
+            yield {"type": "done"}
+        else:
+            yield {"type": "error", "message": resp.error or "调用失败"}
+
     def is_available(self) -> bool:
         try:
             result = subprocess.run(
@@ -195,7 +214,7 @@ class ClaudeCodeCLI(CLIBackend):
         if system_prompt:
             parts.append(f"[系统指令]\n{system_prompt}")
         if context:
-            parts.append(f"[参考上下文]\n{context}")
+            parts.append(f"{CONTEXT_HEADER}\n{context}")
         parts.append(f"[用户问题]\n{prompt}")
         full_prompt = "\n\n---\n\n".join(parts)
         return self._run_cli(full_prompt, work_dir=work_dir, timeout=60)
@@ -212,7 +231,7 @@ class CodexCLI(CLIBackend):
         if system_prompt:
             parts.append(f"[系统指令]\n{system_prompt}")
         if context:
-            parts.append(f"[参考上下文]\n{context}")
+            parts.append(f"{CONTEXT_HEADER}\n{context}")
         parts.append(f"[用户问题]\n{prompt}")
         full_prompt = "\n\n---\n\n".join(parts)
         return self._run_cli(full_prompt, work_dir=work_dir, timeout=60)
