@@ -232,6 +232,55 @@ def t1_tree_click_in_search_page_still_searches(page):
         f"新发起的 /search 请求未携带分类维度参数（点击未生效）：{new_urls}"
 
 
+def t2_layout_structure_present(page):
+    """正常场景：完整布局就位（对话区 / 消息区 / 输入区 / 会话管理四块）。"""
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    for sel in (".qa-thread", ".qa-messages", ".qa-composer", ".qa-sessions"):
+        assert page.locator(sel).count() == 1, f"缺少 {sel}"
+
+
+def t2_sessions_panel_collapses_without_moving_composer(page):
+    """边界场景（核心）：折叠会话管理栏后，输入框纵向不动、对话区横向延伸。
+
+    两条缺一不可：
+      - 纵向不动：输入框贴在对话栏底部，不能随会话管理折叠被带走；
+      - 横向延伸：折叠让出的空间要回流给对话区（含消息区与输入框），
+        填满空白而不是留一条空缺。
+
+    几何已用最小复现实测确认（1600x900 视口下 842 → 1219，右边缘 +377）。
+    """
+    page.goto(f"{BASE}/")
+    page.click("text=🤖 AI问答")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    before = {s: page.locator(s).bounding_box()
+              for s in (".qa-composer", ".qa-messages", ".qa-thread")}
+    page.click("#qa-session-toggle")
+    page.wait_for_timeout(300)
+    after = {s: page.locator(s).bounding_box()
+             for s in (".qa-composer", ".qa-messages", ".qa-thread")}
+    assert all(before.values()) and all(after.values())
+
+    assert abs(before[".qa-composer"]["y"] - after[".qa-composer"]["y"]) < 2, \
+        f"折叠后输入框纵向位移 {after['.qa-composer']['y'] - before['.qa-composer']['y']}px，应保持不动"
+
+    for sel, name in ((".qa-messages", "对话消息区"),
+                      (".qa-composer", "输入框"),
+                      (".qa-thread", "对话栏")):
+        assert after[sel]["width"] > before[sel]["width"], \
+            f"折叠后{name}应变宽以填充空白：{before[sel]['width']} -> {after[sel]['width']}"
+
+    # 会话管理栏必须真的收起（否则上面的变宽可能是布局重叠造成的假象）
+    assert page.locator(".qa-sessions").is_hidden(), "折叠后会话管理栏应不可见"
+
+
+def t2_qa_page_not_shown_on_other_pages(page):
+    """异常场景（回归）：其它页面不得冒出 QA 界面。"""
+    for path in ("/specs", "/rules", "/lexicon"):
+        page.goto(f"{BASE}{path}")
+        assert page.locator("#qa-root").count() == 0, f"{path} 不该出现 QA 界面"
+
+
 # ⚠️ 键名 = 该 Task 的编号本身（"t1".."t5"）。后续 Task 追加用例时**必须同时把函数名加进对应键**，
 #    否则 `probe_qa_ui.py tN` 会 KeyError。本计划首版此处只登记了 "t1"，且 T3~T5 的调用键名整体错位一位
 #    （T3 调 t4、T4 调 t5、T5 调 t6），已修——**调用键与 Task 编号必须一致**。
@@ -257,7 +306,10 @@ CASES = {"t1": [t1_qa_entry_is_a_page_link,
                 t1_search_page_unaffected,
                 t1_tree_click_in_qa_page_does_not_navigate,
                 t1_tree_click_in_search_page_still_searches,
-                t1_qa_enter_search_returns_to_search_page]}
+                t1_qa_enter_search_returns_to_search_page],
+         "t2": [t2_layout_structure_present,
+                t2_sessions_panel_collapses_without_moving_composer,
+                t2_qa_page_not_shown_on_other_pages]}
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "t1"

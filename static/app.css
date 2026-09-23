@@ -212,7 +212,8 @@
     width: 100vw; height: 100vh;
     background: rgba(74, 68, 84, 0.5);
     display: flex; align-items: center; justify-content: center;
-    /* 必须高于 QA 弹窗（.qa-modal-overlay z-index:9999），否则被 QA 界面盖住 */
+    /* 必须高于设置弹窗（.qa-modal-overlay z-index:9999；该类名沿用旧 QA 弹窗，
+       现仅由 settings_dialog.html 使用），否则条文详情被设置弹窗盖住 */
     z-index: 10000; backdrop-filter: blur(3px);
     animation: modal-fade-in 0.2s ease;
 }
@@ -376,3 +377,60 @@
 .status-current { background:#d8f5d8; color:#1a7a1a; }
 .status-revising { background:#ffe8c2; color:#a06500; }
 .status-obsolete { background:#fbd8d8; color:#b00000; }
+
+/* ═══════════════════════════════════════════════════════════════
+   QA 页布局：对话区（主） | 会话管理（右，可向右折叠）
+   ═══════════════════════════════════════════════════════════════ */
+
+/* QA 页需要确定高度，否则 .qa-root 的 height:100% 解析不到父级高度而塌陷
+   （内部滚动区与「输入框贴底」都依赖它）。
+   用 :has() 把该规则限定在 QA 页，避免影响检索/规范/规则等其它页面的滚动行为。 */
+.center-panel-v2:has(.qa-root) { height: 100%; }
+
+.qa-root { display: flex; gap: 0.75rem; height: 100%; min-height: 0; }
+.qa-thread { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.qa-thread-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; font-weight: 600; }
+.qa-messages {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    padding: 0.5rem; border: 1px solid var(--pico-muted-border-color);
+    border-radius: 6px; background: var(--pico-card-background-color);
+}
+.qa-composer { margin-top: 0.5rem; display: flex; gap: 0.25rem; align-items: flex-start; flex-wrap: wrap; }
+.qa-composer textarea { flex: 1 1 auto; font-size: 0.85rem; margin: 0; }
+.qa-composer-btns { display: flex; flex-direction: column; gap: 0.25rem; }
+.qa-composer-btns button { font-size: 0.75rem; padding: 0.25rem 0.5rem; white-space: nowrap; margin: 0; }
+/* 问答模式切换独占一行（落在输入框上方）：flex 布局下 flex-basis 优先于 width，
+   故 flex-basis:100% 会覆盖 label inline 的 width:fit-content ⇒ 该 label 撑满整行，
+   textarea 与按钮被换到第二行。少了它，label 会变成 textarea 左侧的一列（与设计不符）。 */
+.qa-mode-switch { flex: 0 0 100%; }
+/* 消掉 pico 的「表单帮助文本」规则对本行的破坏：`input + small` 会给**紧跟在 input 后面**的
+   <small> 强加 `display:block; width:100%`。模式状态文字正好落在这个位置（勾选框之后），
+   于是它撑满整行 → 说明文字被挤成两行、勾选框被压缩（实测 1rem 的勾选框被压到 11.8px）。
+   旧面板把状态文字放在 <label> **之外**（其后元素是 label 而非 input），所以没踩到；
+   本布局把它挪进 label 内，必须显式退回「随内容定宽的行内小字」。 */
+.qa-mode-switch > small { display: inline; width: auto; margin: 0; }
+/* 会话管理栏：固定宽度，折叠时整体隐藏（不挤压输入框所在列） */
+.qa-sessions { flex: 0 0 22rem; max-width: 22rem; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--pico-muted-border-color); padding-left: 0.75rem; }
+.qa-sessions-search { margin-bottom: 0.4rem; }
+.qa-sessions-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; font-size: 0.82rem; }
+.qa-session-item { display: flex; justify-content: space-between; align-items: center; gap: 0.3rem; padding: 0.3rem 0.4rem; border-radius: 4px; cursor: pointer; }
+.qa-session-item:hover { background: var(--pico-card-sectioning-background-color, #f3f4f5); }
+.qa-session-item.active { background: var(--pico-primary-background); color: var(--pico-primary-inverse); }
+.qa-session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qa-session-ops button { background: none; border: none; cursor: pointer; padding: 0 0.15rem; font-size: 0.8rem; margin: 0; line-height: 1; }
+.qa-sessions-empty { color: var(--pico-muted-color); padding: 0.5rem 0.4rem; font-size: 0.8rem; }
+.qa-stage { color: var(--pico-muted-color); font-size: 0.8rem; padding: 0.3rem 0.1rem; }
+.qa-msg-filters { margin-top: 0.25rem; font-size: 0.72rem; color: var(--pico-muted-color); }
+/* 生成期间：转义纯文本 + 保留换行（不经过任何 Markdown 解析器） */
+.qa-answer.streaming { white-space: pre-wrap; word-break: break-word; }
+.qa-effective-filters { margin-top: 0.35rem; font-size: 0.72rem; color: var(--pico-muted-color); }
+.qa-filters-pending { color: #a06500; }
+.qa-confusable { margin-bottom: 0.4rem; padding: 0.4rem 0.6rem; border: 1px solid #e0a800; border-radius: 6px; background: #fff8e1; font-size: 0.78rem; }
+.qa-relax-hint { margin-top: 0.4rem; padding: 0.35rem 0.6rem; border: 1px solid #e0a800; border-radius: 6px; background: #fff8e1; font-size: 0.78rem; }
+.qa-sources { margin-top: 0.4rem; padding-top: 0.3rem; border-top: 1px dashed var(--pico-muted-border-color); display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.qa-source-link { font-size: 0.75rem; color: var(--pico-primary); text-decoration: underline; white-space: nowrap; }
+.qa-search-hits { border-bottom: 1px dashed var(--pico-muted-border-color); margin-bottom: 0.3rem; padding-bottom: 0.3rem; }
+.qa-hit { padding: 0.25rem 0.4rem; border-radius: 4px; cursor: pointer; }
+.qa-hit:hover { background: var(--pico-card-sectioning-background-color, #f3f4f5); }
+.qa-hit-title { font-weight: 600; font-size: 0.78rem; }
+.qa-hit-body { color: var(--pico-muted-color); font-size: 0.75rem; }

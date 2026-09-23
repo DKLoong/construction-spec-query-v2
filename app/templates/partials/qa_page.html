@@ -1,19 +1,143 @@
 <!-- AI 问答页（整页导航，与规范/规则/词库同形）
-     布局在 T2 填入；此处先给探针所需的最小结构 -->
+     布局：对话区（主，输入框贴底） | 会话管理（右，可向右折叠）
+     注意：会话管理折叠只收走自己一列，输入框位置不受影响 -->
 <div id="qa-root" x-data="qaView()" class="qa-root">
     <div class="qa-thread">
         <div class="qa-thread-header">
             <span>🤖 AI 智能问答</span>
-            <button type="button" class="outline" id="qa-session-toggle"
-                    style="font-size:0.75rem;padding:0.1rem 0.4rem;margin:0"
-                    @click="sessionsCollapsed = !sessionsCollapsed"
-                    x-text="sessionsCollapsed ? '◂ 会话' : '会话 ▸'">会话 ▸</button>
+            <div style="display:flex;gap:0.5rem;align-items:center">
+                <span class="qa-rerank-badge" x-show="rerankUsed" x-text="rerankBadge()"
+                      :title="rerankTip()" style="font-size:0.72rem;color:var(--pico-muted-color)"></span>
+                <button style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;line-height:1;margin:0"
+                        @click="$dispatch('open-settings', {detail:{tab:'ai'}})"
+                        title="AI 设置" aria-label="AI 设置">⚙️</button>
+                <button type="button" class="outline" id="qa-session-toggle"
+                        style="font-size:0.75rem;padding:0.1rem 0.4rem;margin:0"
+                        @click="sessionsCollapsed = !sessionsCollapsed"
+                        x-text="sessionsCollapsed ? '◂ 会话' : '会话 ▸'"
+                        title="展开/折叠会话管理"></button>
+            </div>
         </div>
-        <div class="qa-messages" x-ref="msgBox"></div>
+
+        <div class="qa-messages" x-ref="msgBox">
+            <template x-for="(msg, i) in messages" :key="msg.uid || i">
+                <div class="qa-msg" :class="msg.role === 'user' ? 'qa-user' : 'qa-bot'">
+                    <template x-if="msg.role === 'assistant'">
+                        <div>
+                            <!-- 易混淆术语提示（x-text 渲染，杜绝 HTML 注入）；仅提示、不改写答案 -->
+                            <template x-if="msg.confusable && msg.confusable.length">
+                                <div class="qa-confusable">
+                                    <strong>⚠️ 术语区分提示</strong>
+                                    <template x-for="h in msg.confusable" :key="h.a + '|' + h.b">
+                                        <div style="margin-top:0.15rem">
+                                            <strong x-text="h.a"></strong> 与 <strong x-text="h.b"></strong>：
+                                            <span x-text="h.distinguish"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                            <!-- 生成期间 msg.html 是转义纯文本（.streaming 的 pre-wrap 保留换行）；
+                                 收到 done 后由 renderMarkdown 换成完整管线结果 -->
+                            <div class="qa-answer" :class="{ streaming: msg.streaming }"
+                                 x-html="msg.html"></div>
+                            <!-- 当轮实际生效筛选（D5）：回看历史时据此还原
+                                 「这条答案是在什么筛选下产生的」 -->
+                            <template x-if="msg.filtersText">
+                                <div class="qa-msg-filters" x-text="'筛选：' + msg.filtersText"></div>
+                            </template>
+                            <template x-if="msg.filteredOut > 0">
+                                <div class="qa-relax-hint">
+                                    <span x-text="'⚠️ 当前分类筛选下候选不足（全局命中 ' + msg.filteredOut + ' 条）'"></span>
+                                    <!-- 文案只说「分类筛选」：relaxed 只清分类维度，
+                                         状态过滤与前言设置仍然生效（评审 D13） -->
+                                    <button type="button" class="outline"
+                                            style="font-size:0.75rem;padding:0.1rem 0.4rem;margin:0 0 0 0.4rem"
+                                            @click="relax()">放宽分类筛选</button>
+                                </div>
+                            </template>
+                            <template x-if="msg.sources && msg.sources.length">
+                                <div class="qa-sources">
+                                    <small style="color:var(--pico-muted-color);line-height:1.6">📎 参考条文：</small>
+                                    <template x-for="s in msg.sources" :key="s.code + '|' + s.clause_no">
+                                        <a href="javascript:void(0)" @click.prevent="openClause(s.clause_id)"
+                                           x-text="'《' + s.code + '》' + s.clause_no"
+                                           class="qa-source-link"></a>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                    <template x-if="msg.role === 'user'">
+                        <div x-text="msg.content"></div>
+                    </template>
+                </div>
+            </template>
+            <!-- 阶段进度：覆盖流式之前的死时间（检索/精排发生在首字节之前） -->
+            <div class="qa-stage" x-show="loading" x-text="stageText"></div>
+        </div>
+
+        <!-- 本轮生效筛选（D5）：场景 2（回复中切换）只能影响下一轮，
+             这条常驻小字让「这次没生效」不再静默 -->
+        <div class="qa-effective-filters" x-show="effectiveFiltersText">
+            <span x-text="'本轮生效：' + effectiveFiltersText"></span>
+            <span x-show="filtersChanged()" class="qa-filters-pending"
+                  x-text="'· 已修改，将在下一轮生效'"></span>
+        </div>
         <div class="qa-composer">
-            <textarea x-model="input" rows="3" style="flex:1"></textarea>
-            <button type="button" @click="send()">发送</button>
+            <!-- 问答模式切换（**必须保留**：设计文档 §4.8「必须保留的既有功能」+
+                 用户明确约束「原文摘抄/综合问答模式切换别搞废了，只调整 UI」）。
+                 位置从旧弹窗的顶部挪到输入框上方——它与「发送」同属一次提问的输入设置。
+                 ⚠️ 勾选框的 inline `width:1rem;height:1rem` **不能省**：本项目 pico 主题下
+                 经 `appearance:none` 重绘的 checkbox 若落到 `width:auto` 会塌缩成 4px（已踩过的坑）。
+                 文案与旧面板逐字一致，便于对照「功能未被删」。
+                 切换时机：与「本轮生效」同理，只影响**下一轮**提问（send() 时读 mode）。 -->
+            <label class="qa-mode-switch"
+                   style="display:flex;align-items:center;gap:0.25rem;font-size:0.75rem;margin:0 0 0.35rem 0;cursor:pointer;width:fit-content">
+                <input type="checkbox" style="width:1rem;height:1rem;margin:0"
+                       :checked="mode === 'verbatim'" @change="toggleMode()">
+                原文摘抄模式（禁止归纳，仅摘抄标注来源）
+                <small x-text="mode === 'verbatim' ? '🔤 原文摘抄' : '📖 综合问答'"
+                       style="color:var(--pico-muted-color)"></small>
+            </label>
+            <textarea x-model="input" @keydown.enter.prevent="send()"
+                      placeholder="输入问题并按 Enter 发送..." rows="3"></textarea>
+            <div class="qa-composer-btns">
+                <button type="button" @click="send()" :disabled="loading || !input.trim()">发送</button>
+                <button type="button" class="outline" @click="newSession()"
+                        :disabled="loading">＋ 新会话</button>
+            </div>
         </div>
     </div>
-    <aside class="qa-sessions" x-show="!sessionsCollapsed" x-cloak>会话管理</aside>
+
+    <!-- 会话管理栏：可向右折叠，折叠后对话区自动变宽 -->
+    <aside class="qa-sessions" x-show="!sessionsCollapsed" x-cloak>
+        <div class="qa-sessions-search">
+            <input type="search" x-model="searchKeyword" @keyup.enter="runSearch()"
+                   placeholder="搜索历史消息…" style="font-size:0.8rem">
+        </div>
+        <div class="qa-sessions-list">
+            <template x-if="searchHits.length">
+                <div class="qa-search-hits">
+                    <template x-for="h in searchHits" :key="'hit' + h.id">
+                        <div class="qa-hit" @click="jumpToHit(h)">
+                            <div class="qa-hit-title" x-text="h.session_title"></div>
+                            <div class="qa-hit-body" x-text="h.content.slice(0, 40)"></div>
+                        </div>
+                    </template>
+                </div>
+            </template>
+            <template x-for="s in sessions" :key="s.id">
+                <div class="qa-session-item" :class="{ active: s.id === currentSessionId }"
+                     @click="openSession(s.id)">
+                    <span class="qa-session-title" x-text="s.title"></span>
+                    <span class="qa-session-ops">
+                        <button type="button" title="导出 Markdown" @click.stop="exportSession(s)">⬇</button>
+                        <button type="button" title="重命名" @click.stop="renameSession(s)">✎</button>
+                        <button type="button" title="删除" @click.stop="deleteSession(s)">🗑</button>
+                    </span>
+                </div>
+            </template>
+            <div x-show="!sessions.length" class="qa-sessions-empty">暂无历史会话</div>
+        </div>
+    </aside>
 </div>
