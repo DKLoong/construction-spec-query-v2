@@ -152,6 +152,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_pending_uniq
 -- 规则级 pending（clause_id IS NULL）同键唯一：存量碎片无来源条文，仅 pending 态互斥
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_pending_rule_key
     ON rule_pending(dimension, pattern, label) WHERE clause_id IS NULL AND status='pending';
+
+-- AI 问答会话与消息（用户可见的会话内容）
+-- 与 qa_request_logs 职责分离：后者是请求级埋点（调参用），本表是会话内容
+CREATE TABLE IF NOT EXISTS qa_sessions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS qa_messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      INTEGER NOT NULL REFERENCES qa_sessions(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    sources_json    TEXT DEFAULT '[]',
+    confusable_json TEXT DEFAULT '[]',
+    filters_json    TEXT DEFAULT '{}',
+    mode            TEXT DEFAULT 'rag',
+    created_at      TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_qa_messages_session ON qa_messages(session_id, id);
 """
 
 TRIGGERS_SQL = """
