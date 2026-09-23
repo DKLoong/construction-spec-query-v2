@@ -2892,15 +2892,28 @@ Expected: FAIL — `AttributeError: 'APIBackend' object has no attribute 'ask_st
 CONTEXT_HEADER = "【参考条文】"
 ```
 
-把 `MULTI_TURN_GUARD` 里两处 `【参考上下文】` 改成引用该常量（f-string），**其余文字一字不动**：
+把 `MULTI_TURN_GUARD` 里两处 `【参考上下文】` 改成引用该常量（改 f-string），**其余文字一字不动**。
+
+⚠️ **注意它的真实形态是三引号多行字符串**（`app/ai/prompts.py:36-43`），**不是** `"..."` 片段拼接——
+本计划早期版本的片段写成了拼接形式，那是**结构虚构**（照抄会改变字符串内容，例如多出/少掉换行）。
+实测原样如下（`CONTEXT_HEADER` 由上一段定义、就放在它上方），改完后应恰好是：
 
 ```python
-MULTI_TURN_GUARD = (
-    f"1. 你**只能引用本轮{CONTEXT_HEADER}中实际提供的条文**。\n"
-    f"2. 历史对话中出现过的规范编号或条文号，若本轮{CONTEXT_HEADER}中未提供，\n"
-    # ...（原文其余部分保持原样，仅把两处标签换成 {CONTEXT_HEADER}）
-)
+# 多轮护栏：历史段只含问答文本、不含条文上下文，
+# 因此必须禁止 AI 凭「历史里见过」去引用本轮未提供的条文。
+MULTI_TURN_GUARD = f"""
+
+【多轮对话附加约束】
+本轮为连续对话，上方可能附有【历史对话】段。请注意：
+1. 你**只能引用本轮{CONTEXT_HEADER}中实际提供的条文**。
+2. 历史对话中出现过的规范编号或条文号，若本轮{CONTEXT_HEADER}中未提供，
+   不得作为引用来源，也不得凭记忆复述其内容。
+3. 若本轮上下文不足以回答，请如实说明「当前未检索到相关条文」，禁止编造。"""
 ```
+
+（`CONTEXT_HEADER` 必须先于 `MULTI_TURN_GUARD` 定义；该段文字里没有 `{`/`}`，故 f-string 无需转义。
+**验收**：改完后 `MULTI_TURN_GUARD` 的值应与改前**仅在两处标签处不同**——可用一段临时脚本
+比对 `"参考上下文" not in GUARD` 与逐行 diff 自证，不要凭眼看。）
 
 **3b. `app/ai/cli_client.py`** —— 新增 `CLIBackend.ask_stream` 默认实现（CLI 后端不支持真流式，整段返回即可；**不需要 `supports_stream` 之类的判定标志**——单一入口下路由层无需据此分流）：
 
