@@ -23,7 +23,16 @@
 - TDD：先写测试再实现；每个 Task 覆盖正常/边界/异常三类场景
 - 每个 Task 完成后跑**增量测试**（本 Task 关联用例）+ `pyright`（不得新增 error），再 commit
 - **类型检查要覆盖本 Task 改动的全部文件**，不只是新增的模块——`pyright <该 Task 的 Files 全部路径>`。
-  Task 5 的教训：只跑 `pyright app/qa/sessions.py` 报 0 error，但漏掉了同期改动的测试文件里的 3 个 error
+  Task 5 的教训：只跑 `pyright app/qa/sessions.py` 报 0 error，但漏掉了同期改动的测试文件里的 3 个 error。
+  另注：`pyrightconfig.json` 的 `include` 是 `["app","tests"]` 且 tests 无 exclude，**测试代码同样计入「不得新增 error」**
+- **`get_session()` 返回 `dict | None`，禁止直接下标**（`S.get_session(sid)["title"]` 会报
+  `reportOptionalSubscript`）。正确写法是先绑局部变量再窄化：
+  ```python
+  got = S.get_session(sid)
+  assert got is not None
+  assert got["title"] == "新名"
+  ```
+  这个模式在原计划的 T5/T8/T9/T10 用例里出现过多次，**已全部按此改正**——新写用例时照着来
 - **`qa_sessions.created_at` / `updated_at` 由应用层写入，格式为带微秒的
   `YYYY-MM-DD HH:MM:SS.ffffff`**（Task 5 定，见其 `_now_ts()`）。
   **不要用 SQL 的 `datetime('now','localtime')`** —— 它只到秒，同一秒内的「新建会话」与「追加消息」
@@ -856,10 +865,16 @@ def test_concurrent_appends_same_session_do_not_lose_or_mix(qa_db):
 def test_append_message_bumps_updated_at(qa_db):
     """边界场景：追加消息必须刷新 updated_at，否则列表排序不反映活跃度。"""
     sid = S.create_session("s")
-    before = S.get_session(sid)["updated_at"]
+    got_before = S.get_session(sid)
+    assert got_before is not None
     S.append_message(sid, "user", "q")
-    after = S.get_session(sid)["updated_at"]
-    assert after >= before  # 同秒内可能相等，但不得回退
+    got_after = S.get_session(sid)
+    assert got_after is not None
+    before, after = got_before["updated_at"], got_after["updated_at"]
+    # 必须是**严格**递增：`>=` 在 append_message 完全没碰 updated_at 时也会通过
+    # （after == before），那样本用例对它名字里的行为就永远无法失败。
+    # 微秒精度（见 _now_ts）保证了同一次调用内不会取到相同时间串。
+    assert after > before
 
 
 def test_list_sessions_orders_by_recent_activity(qa_db):
@@ -900,7 +915,9 @@ def test_rename_session(qa_db):
     """正常场景：重命名生效。"""
     sid = S.create_session("旧名")
     assert S.rename_session(sid, "新名") is True
-    assert S.get_session(sid)["title"] == "新名"
+    got = S.get_session(sid)
+    assert got is not None
+    assert got["title"] == "新名"
 
 
 def test_rename_missing_session_returns_false(qa_db):
@@ -1117,8 +1134,8 @@ def _loads_dict(raw) -> dict:
 
 def append_message(session_id: int, role: str, content: str,
                    sources: list | None = None, confusable: list | None = None,
-                   filters: dict | None = None,
-                   mode: str = "rag") -> int:
+                   mode: str = "rag",
+                   filters: dict | None = None) -> int:
     """追加一条消息，并刷新所属会话的 updated_at。
 
     filters 记录**当轮实际生效的筛选**（D5）：回看历史时据此还原
@@ -1129,14 +1146,15 @@ def append_message(session_id: int, role: str, content: str,
     sources_json = json.dumps(sources or [], ensure_ascii=False)
     confusable_json = json.dumps(confusable or [], ensure_ascii=False)
     filters_json = json.dumps(filters or {}, ensure_ascii=False)
+    ts = _now_ts()   # created_at 与 updated_at 共用同一个时间串，格式统一
     with get_db() as conn:
         cur = conn.execute(
             """INSERT INTO qa_messages
                (session_id, role, content, sources_json, confusable_json,
-                filters_json, mode)
-               VALUES (?,?,?,?,?,?,?)""",
+                filters_json, mode, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (session_id, role, content, sources_json, confusable_json,
-             filters_json, mode),
+             filters_json, mode, ts),
         )
         conn.execute(
             "UPDATE qa_sessions SET updated_at = datetime('now','localtime') WHERE id = ?",
@@ -1591,7 +1609,9 @@ def test_first_ask_creates_session(auth_client, qa_env):
     r = auth_client.post("/qa/ask", json={"question": "混凝土强度等级如何评定"})
     assert r.status_code == 200
     sid = r.json()["session_id"]
-    assert S.get_session(sid)["title"] == "混凝土强度等级如何评定"
+    got = S.get_session(sid)
+    assert got is not None
+    assert got["title"] == "混凝土强度等级如何评定"
 
 
 def test_ask_persists_both_messages(auth_client, qa_env):
@@ -1905,7 +1925,9 @@ def test_rename_session_endpoint(auth_client):
     sid = S.create_session("旧名")
     r = auth_client.patch(f"/qa/sessions/{sid}", json={"title": "新名"})
     assert r.status_code == 200 and r.json()["ok"] is True
-    assert S.get_session(sid)["title"] == "新名"
+    got = S.get_session(sid)
+    assert got is not None
+    assert got["title"] == "新名"
 
 
 def test_rename_rejects_blank_title(auth_client):
@@ -1913,7 +1935,9 @@ def test_rename_rejects_blank_title(auth_client):
     sid = S.create_session("原名")
     r = auth_client.patch(f"/qa/sessions/{sid}", json={"title": "   "})
     assert r.status_code == 400
-    assert S.get_session(sid)["title"] == "原名"
+    got = S.get_session(sid)
+    assert got is not None
+    assert got["title"] == "原名"
 
 
 def test_rename_missing_session_returns_404(auth_client):
@@ -1927,7 +1951,9 @@ def test_rename_title_length_enforced(auth_client):
     sid = S.create_session("s")
     r = auth_client.patch(f"/qa/sessions/{sid}", json={"title": "长" * 200})
     assert r.status_code == 200
-    assert len(S.get_session(sid)["title"]) <= 100
+    got = S.get_session(sid)
+    assert got is not None
+    assert len(got["title"]) <= 100
 
 
 def test_delete_session_endpoint_removes_messages(auth_client):
