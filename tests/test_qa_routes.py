@@ -273,8 +273,13 @@ def test_qa_ask_passes_dim_filters(auth_client, monkeypatch, tmp_path):
     assert first.dim4_specialty == ["结构"]
 
 
-def test_qa_ask_falls_back_wide_when_dim_filter_sparse(auth_client, monkeypatch, tmp_path):
-    """分类筛选候选过少（<3）时放宽回全局检索，保证上下文充足"""
+def test_qa_ask_reports_wide_total_when_dim_filter_sparse(auth_client, monkeypatch, tmp_path):
+    """分类筛选候选过少（<3）时做一次**诊断性**全局检索，如实报告全局命中数。
+
+    注意：**不再**放宽（设计文档 D9）——诊断结果只用于向用户报告 `filtered_out`，
+    不参与本轮回答（「宽结果不得进入答案」由 tests/test_qa_relax.py 的
+    test_wide_candidates_are_not_used_to_answer 钉住）。
+    """
     db_path = tmp_path / "test_qa_dim_sparse.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
     from app.database import init_db, get_db
@@ -290,8 +295,8 @@ def test_qa_ask_falls_back_wide_when_dim_filter_sparse(auth_client, monkeypatch,
         "dim5_location": ["屋面"],
     })
     assert resp.status_code == 200
-    # 第一次带维度（0 条 < 3）→ 第二次放宽为无维度
-    assert len(query_log) == 2, "候选不足时应放宽为全局检索"
+    # 第一次带维度（0 条 < 3）→ 第二次为诊断性全局检索（**不做替换**）
+    assert len(query_log) == 2, "候选不足时应发起一次诊断性全局检索"
     assert query_log[0].dim5_location == ["屋面"]
     assert query_log[1].dim5_location == []
 

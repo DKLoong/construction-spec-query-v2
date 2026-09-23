@@ -202,6 +202,16 @@ class SearchResponse(BaseModel):
     results: list[ClauseResponse]
 
 
+# 维度筛选的请求字段名（dim1 含三个子维度，共 8 个字段）。
+# 检索条件构造与「当轮生效筛选」记录都从这里派生，避免同一个列表
+# 在 _prepare_qa_context / _effective_filters 里各写一遍而漏改。
+QA_DIM_FIELDS: tuple[str, ...] = (
+    "dim1_hierarchy", "dim1_industry", "dim1_nature",
+    "dim2_stage", "dim3_usage", "dim4_specialty",
+    "dim5_location", "dim6_material",
+)
+
+
 class QaRequest(BaseModel):
     question: str
     # 会话 id：None → 惰性新建会话；指向不存在的会话 → 同样视为新建（不跨会话取历史）
@@ -240,6 +250,10 @@ class QAResponse(BaseModel):
     rerank_used: str = ""
     # 本次问答所属会话 id（惰性创建时为新 id）
     session_id: int = 0
+    # 分类筛选候选不足时的全局命中数（>0 表示被筛选挡住，前端提示可放宽）
+    filtered_out: int = 0
+    # 本轮实际生效的筛选（前端展示「当前生效筛选」；T15 起随助手消息落库追溯）
+    effective_filters: dict = {}
 
 
 class QaSessionRenameRequest(BaseModel):

@@ -14,7 +14,9 @@ from dataclasses import dataclass, field, asdict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from app.models import QaRequest, QAResponse, QaSessionRenameRequest, SearchQuery
+from app.models import (
+    QaRequest, QAResponse, QaSessionRenameRequest, SearchQuery, QA_DIM_FIELDS,
+)
 from app.ai.api_client import APIBackend
 from app.database import get_db
 from app.qa.degrade import (
@@ -159,8 +161,10 @@ class QaContext:
 
     抽出来是为了让后续的「放宽重发」（T13）与「流式输出」（T15）共用同一份
     检索逻辑——复制一份必然漂移。本 Task 只填 question / context_str / picked /
-    trace / history_str / session_id；filtered_out 与 rerank_used 由 T13 补齐，
-    故此处先留默认值（后续任务只做加法，不再重构本函数）。
+    trace / history_str / session_id；filtered_out 由 T13 补齐（见该字段注释）。
+    注意 `rerank_used` 并非由本类承载：/qa/ask 直接读 `trace.rerank_used`
+    （见 _prepare_qa_context 内 `trace.rerank_used = _last_rerank_used`），
+    本字段目前**无人读写**，保留仅为兼容 T8 的接口形状。
     """
     question: str
     context_str: str
@@ -170,6 +174,27 @@ class QaContext:
     rerank_used: str = ""
     history_str: str = ""
     session_id: int | None = None
+
+
+def _effective_filters(body: QaRequest) -> dict:
+    """本轮实际生效的筛选（分类维度 + **显式**状态过滤）。
+
+    用途：① 随响应返回，供前端显示「本轮生效筛选」——「回复中切换筛选只影响下一轮」
+    这件事必须可见，否则用户切了会以为立即生效；② T15 起随助手消息落库追溯（D5）。
+
+    放宽（relaxed）时分类维度为空——那正是放宽的语义。
+    维度字段名取自 QA_DIM_FIELDS（单一来源），新增维度时不会漏记。
+    状态过滤判 `is not None` 而非真值，两种语义必须分开：
+      None（缺参，旧客户端）→ 走 settings 默认白名单，**不记录**（记了等于把默认值冒充用户选择）；
+      ""（显式全不勾）      → 放行非现行，**是**用户选择，记录为 ""。
+    「前言放行」（body.include_non_clause）由 T15 追加——该字段在 T15 才声明，此处不引用。
+    """
+    out: dict = {}
+    if not body.relaxed:
+        out = {k: getattr(body, k) for k in QA_DIM_FIELDS if getattr(body, k)}
+    if body.status_filter is not None:
+        out["status_filter"] = body.status_filter
+    return out
 
 
 def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
@@ -216,19 +241,12 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
     # ① RRF 混合召回（候选池大小走配置）
     pool = get_qa_int("retrieve.candidate_pool")
     keyword_mentions_non_clause = ("前言" in question) or ("条文说明" in question)
-    has_dim = any([
-        body.dim1_hierarchy, body.dim1_industry, body.dim1_nature, body.dim2_stage,
-        body.dim3_usage,
-        body.dim4_specialty, body.dim5_location, body.dim6_material,
-    ])
+    # 放宽（relaxed）时清空分类维度：那正是「放宽」的语义（状态过滤与前言设置仍生效）
+    dims = {} if body.relaxed else {k: getattr(body, k) for k in QA_DIM_FIELDS if getattr(body, k)}
+    has_dim = any(dims.values())
     sq = SearchQuery(
         keyword=question, per_page=pool,
-        dim1_hierarchy=body.dim1_hierarchy, dim1_industry=body.dim1_industry,
-        dim1_nature=body.dim1_nature,
-        dim2_stage=body.dim2_stage, dim3_usage=body.dim3_usage,
-        dim4_specialty=body.dim4_specialty, dim5_location=body.dim5_location,
-        dim6_material=body.dim6_material,
-        include_non_clause=keyword_mentions_non_clause,
+        include_non_clause=keyword_mentions_non_clause, **dims,
     )
     try:
         candidates, total = hybrid_search(sq)
@@ -238,17 +256,23 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
     trace.rrf_total = total
     trace.pool_size = len(candidates)
 
-    # 兜底：分类筛选使候选过少时放宽为全局检索
-    if has_dim and len(candidates) < get_qa_int("retrieve.qa_min_candidates"):
-        logger.info("QA 分类筛选候选过少，放宽为全局检索")
+    # 分类筛选候选不足：**不再静默放宽**（设计文档 D9）。
+    # 原因：QA 与检索结果同屏后，静默放宽会造成"左边筛了分类、
+    # 右边答案却来自别的分类"的可见不一致。改为如实报告候选量，
+    # 由前端提示并提供一键放宽（body.relaxed=True 重发）。
+    filtered_out = 0
+    if not body.relaxed and has_dim and len(candidates) < get_qa_int("retrieve.qa_min_candidates"):
         wide_sq = SearchQuery(
             keyword=question, per_page=pool,
             include_non_clause=keyword_mentions_non_clause,
         )
         try:
-            candidates, _ = hybrid_search(wide_sq)
+            _, wide_total = hybrid_search(wide_sq)
+            filtered_out = wide_total
+            logger.info("QA 分类筛选候选不足（%d 条），已如实报告全局命中 %d 条",
+                        len(candidates), wide_total)
         except Exception as e:
-            logger.error("QA hybrid_search (wide) failed: %s", e)
+            logger.error("QA 分类筛选候选不足的诊断检索失败: %s", e)
 
     # ② 元数据过滤（RRF 后、CrossEncoder 前；默认过滤废止/已替代规范）
     # status_filter 三分支：
@@ -311,7 +335,8 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
         context_str = f"{history_str}\n\n{context_str}"
 
     return QaContext(question=question, context_str=context_str, picked=picked,
-                     trace=trace, history_str=history_str, session_id=session_id)
+                     trace=trace, filtered_out=filtered_out,
+                     history_str=history_str, session_id=session_id)
 
 
 @router.post("/qa/ask")
@@ -403,7 +428,9 @@ async def qa_ask(request: Request, body: QaRequest):
 
     return QAResponse(answer=answer, sources=sources, cli_used=cli_used,
                       confusable_hits=confusable_hits,
-                      rerank_used=trace.rerank_used, session_id=session_id or 0)
+                      rerank_used=trace.rerank_used, session_id=session_id or 0,
+                      filtered_out=ctx.filtered_out,
+                      effective_filters=_effective_filters(body))
 
 
 # ── 会话管理接口 ──
