@@ -213,14 +213,17 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        // ⚠️ **不要**写 `this.$refs.msgBox`：Alpine 3.15 的 magic（`$refs` / `$root`）
-        //    解析上下文是**调用该方法的那个元素**，而本组件的方法都由嵌套元素的处理器调用
-        //    （`.qa-hit` 的 @click、输入框的 @keydown）⇒ `this.$refs` 落到 `.qa-hit._x_refs`
-        //    上（一个自动新建的空对象）⇒ `msgBox` 恒为 undefined。
-        //    实测（qa.js 旧写法）：jumpToHit 下一行直接抛
-        //    `TypeError: Cannot read properties of undefined (reading 'querySelectorAll')`，
-        //    **高亮从未真正加上过**（不是"样式缺失所以看不见"，是类压根没加上）。
-        //    按类名取则与调用点无关；QA 页全页只有一个 .qa-messages
+        // ⚠️ **不要**写 `this.$refs.msgBox`：**方法内取不到 `$refs`**。
+        //    现象已复现（qa.js 旧写法 + T5 探针）：jumpToHit 下一行直接抛
+        //    `TypeError: Cannot read properties of undefined (reading 'querySelectorAll')`
+        //    ⇒ 高亮从未真正加上过（不是"样式缺失所以看不见"，是类压根没加上）。
+        //    **机制未定**（勿再写成结论）：「Alpine 的 magic（`$refs`/`$root`）解析上下文 =
+        //    调用该方法的元素」这一解释**已被复核证伪**——项目自带的 alpine.min.js(3.15.12)
+        //    里 `$refs` 走 `_x_refs_proxy`，而 `_x_refs` 只由 `x-ref` 指令建于 closestRoot，
+        //    复核者的独立页面实测 `this.$refs.msgBox` **取得到**；同一调用点的
+        //    `this.$nextTick` 解析也正常（自相矛盾）。
+        //    故不再依赖 `$refs` 在 `x-if` / `x-for` 生成元素上的行为，改为**按类名取**：
+        //    与调用点无关；QA 页全页只有一个 .qa-messages
         //    （t2_layout_structure_present 断言其唯一性）。
         _messageBox() {
             return document.querySelector('.qa-messages');
@@ -331,8 +334,12 @@ document.addEventListener('alpine:init', () => {
                 const { done, value } = await reader.read();
                 if (done) break;
                 buf += decoder.decode(value, { stream: true });
-                // SSE 以空行分隔消息；保留最后一段不完整数据在 buf 中
-                const chunks = buf.split('\n\n');
+                // SSE 以空行分隔消息；保留最后一段不完整数据在 buf 中。
+                // ⚠️ 分帧必须用 `/\r?\n\r?\n/` 而不是字面量 `'\n\n'`：当前后端发的是 LF
+                //    （两者等价），但只要中间有一层反向代理把行尾改写成 CRLF，字面量就**永不切分**
+                //    ⇒ buf 无限增长、末尾残包被丢弃 ⇒ **静默无输出且无告警**。成本极低，直接兼容。
+                //    （每行的行尾 `\r` 由下方 `_handleSseChunk` 里的 `trim()` 吃掉。）
+                const chunks = buf.split(/\r?\n\r?\n/);
                 buf = chunks.pop() || '';
                 for (const chunk of chunks) this._handleSseChunk(chunk, bot);
             }
@@ -364,22 +371,36 @@ document.addEventListener('alpine:init', () => {
                     generating: '生成中…',
                 }[data.stage] || '处理中…';
             } else if (event === 'delta') {
-                bot.content += data.text || '';
-                // 生成期间只做转义纯文本，**不跑任何 Markdown 解析器**：半截 Markdown
-                // （未闭合的 ** / 表格 / 公式）会让解析器反复重排，比
-                // 「纯文本 → 一次性排版」更晃眼；KaTeX 遇到未闭合公式还会渲染失败甚至抛错。
-                bot.html = this._streamingHtml(bot.content);
-                this.scrollToBottom();
+                // ⚠️ **不要 throw**（同 error 分支的理由）：本方法由 _streamAsk 调用，
+                //    这里抛错会一路冒到 send() 的 catch → 被**误判为传输层失败** →
+                //    _fallbackAsk **重发同一个问题**。故整段包 try/catch：出错只记录、**继续**。
+                try {
+                    bot.content += data.text || '';
+                    // 生成期间只做转义纯文本，**不跑任何 Markdown 解析器**：半截 Markdown
+                    // （未闭合的 ** / 表格 / 公式）会让解析器反复重排，比
+                    // 「纯文本 → 一次性排版」更晃眼；KaTeX 遇到未闭合公式还会渲染失败甚至抛错。
+                    bot.html = this._streamingHtml(bot.content);
+                    this.scrollToBottom();
+                } catch (e) {
+                    console.error('[qa] 流式增量渲染失败（继续读后续帧，不重发）:', e);
+                }
             } else if (event === 'done') {
-                bot.sources = data.sources || [];
-                bot.confusable = data.confusable_hits || [];
-                bot.filteredOut = data.filtered_out || 0;
-                this.rerankUsed = data.rerank_used || '';
-                this.currentSessionId = data.session_id || this.currentSessionId;
-                // 写入本轮生效筛选：否则 .qa-filters-pending（「将在下一轮生效」）恒不出现
-                const ft = this.describeFilters(data.effective_filters);
-                bot.filtersText = ft;
-                this.effectiveFiltersText = ft;
+                // 同上：`describeFilters` / `scrollToBottom` 任一处抛错都**不得**冒到
+                // send() 的 catch（那会被当成传输层失败而重发同一问题——正是 error 分支
+                // 注释要避免的重复请求）。捕获后只记录，本轮按已收到的数据收尾。
+                try {
+                    bot.sources = data.sources || [];
+                    bot.confusable = data.confusable_hits || [];
+                    bot.filteredOut = data.filtered_out || 0;
+                    this.rerankUsed = data.rerank_used || '';
+                    this.currentSessionId = data.session_id || this.currentSessionId;
+                    // 写入本轮生效筛选：否则 .qa-filters-pending（「将在下一轮生效」）恒不出现
+                    const ft = this.describeFilters(data.effective_filters);
+                    bot.filtersText = ft;
+                    this.effectiveFiltersText = ft;
+                } catch (e) {
+                    console.error('[qa] done 帧写入失败（不重发，按已收数据收尾）:', e);
+                }
             } else if (event === 'error') {
                 // ⚠️ **不要 `throw`**！_handleSseChunk 由 _streamAsk 调用，throw 会一路冒到
                 // send() 的 catch → 立刻走 _fallbackAsk **重发同一个问题**：后端已经报错
@@ -416,9 +437,15 @@ document.addEventListener('alpine:init', () => {
                 this.effectiveFiltersText = ft;
             } catch (e2) {
                 console.error('[qa] 非流式兜底同样失败:', e2);
+                // 失败文案（探针 FAIL_ANSWER_TEXT 所指的**唯一来源**字面量）：
+                // 该气泡在下一行就被回滚，故这行只用于失败语义留痕，不参与渲染。
                 bot.content = '请求失败，请稍后重试';
-                // 用户消息回滚：本轮未成功，不留在界面上误导
-                this.messages = this.messages.filter(m => m.uid !== userMsg.uid);
+                // 本轮彻底失败 ⇒ **用户消息与乐观插入的助手气泡一并回滚**。
+                // 只回滚用户消息的话，界面上会留下一条**没有对应问题**的
+                // 「请求失败，请稍后重试」气泡（孤儿气泡：用户看不到自己问过什么，
+                // 也不知道为什么冒出这条），与回滚用户消息的语义不一致。
+                this.messages = this.messages.filter(
+                    m => m.uid !== userMsg.uid && m.uid !== bot.uid);
             }
         },
 
@@ -506,9 +533,11 @@ document.addEventListener('alpine:init', () => {
 
         scrollToBottom() {
             this.$nextTick(() => {
-                // 同 jumpToHit：`this.$refs.msgBox` 在方法里恒为 undefined（magic 的解析
-                // 上下文是调用点元素），旧写法因此**从未真正贴底过**；流式期间每帧都要贴底，
-                // 这里必须走 _messageBox()。
+                // 同 jumpToHit：改为按类名取（`$refs` 在方法内的取用行为**未定**，见
+                // _messageBox() 的注释；原先"magic 解析上下文=调用点元素 ⇒ 从未真正贴底"
+                // 的说法已被复核证伪，不再保留）。旧写法 `this.$refs.msgBox` + `if (box)`
+                // 在取不到时是**静默空操作**（贴没贴底无从判断）；流式期间每帧都要贴底，
+                // 不能留这种可能。
                 const box = this._messageBox();
                 if (box) box.scrollTop = box.scrollHeight;
             });

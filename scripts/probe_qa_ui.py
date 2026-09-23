@@ -6,8 +6,10 @@
 import json
 import os
 import re
+import sqlite3
 import sys
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 BASE = "http://127.0.0.1:8123"
@@ -597,6 +599,8 @@ MOCK_ANSWER_MARKER = "GB 50204"
 # `send()` 失败兜底的字面量（qa.js 的 catch 分支）。**判据必须能识别它**：
 # 该消息的 content/html 都是这个**非空**固定串 ⇒ 只看"气泡文本非空"时，
 # 「被后端 4xx 拒绝的一轮」与「成功的一轮」在 DOM 上完全无法区分（本组曾有的假绿）。
+# R1 补：该气泡在「兜底也失败」时已连同用户消息一起被**回滚**（qa.js `_fallbackAsk` 的
+# catch）⇒ 该路径上它不再进入 DOM，判据退化为兜底防护（仍是免费的一道）。保留常量。
 FAIL_ANSWER_TEXT = "请求失败"
 
 
@@ -612,10 +616,37 @@ def _qa_open(page):
     page.wait_for_selector(".qa-sessions", state="visible", timeout=10000)
 
 
+def _qa_round_done(page, expect_msgs, timeout_ms=90000):
+    """**这一轮是否已收尾**（有界轮询，返回 bool；四条判据见 `_qa_ask` 的 docstring）。
+
+    从 `_qa_ask` 抽出（R1）：`relax` 那条用例也要「先等这一轮真的结束」再判会话集合——
+    在那里等不到收尾，会话判据根本无从判起（旧写法正是拿 1.5s 观察窗冒充"等结束"）。
+    抽成**单一来源**，避免两处各写一份判据而漂移。
+    """
+    # 在页面内一次性判定，避免 Python 侧多次取节点时遭遇 render 中途的失效句柄
+    # （解构数组形参：Playwright 只把 arg 当作**单个**实参传给 JS 函数）
+    probe = """([n, failText, marker]) => {
+        const msgs = document.querySelectorAll('.qa-msg');
+        if (msgs.length < n) return false;
+        const ans = document.querySelectorAll('.qa-bot .qa-answer');
+        if (!ans.length) return false;
+        const last = ans[ans.length - 1];
+        if (last.classList.contains('streaming')) return false;   // 还在流式 ⇒ 本轮未收尾
+        const t = (last.textContent || '').trim();
+        if (t === '') return false;
+        if (t.indexOf(failText) !== -1) return false;
+        return t.indexOf(marker) !== -1;
+    }"""
+    return poll_until(
+        page,
+        lambda: page.evaluate(probe, [expect_msgs, FAIL_ANSWER_TEXT, MOCK_ANSWER_MARKER]),
+        timeout_ms=timeout_ms)
+
+
 def _qa_ask(page, question, expect_msgs=2, timeout_ms=90000):
     """发送一个问题，等**回答真的渲染出来**。
 
-    判据四条（缺一不可）：
+    判据四条（缺一不可，实现见 `_qa_round_done`）：
       · `.qa-msg` 条数达标 —— 等这一轮收尾（用户消息 + 助手消息都入列）；
       · 最后一条 `.qa-bot .qa-answer` **不带 `.streaming`** —— 流式改造后助手气泡是
         **乐观占位**的：它一出现就有内容（首个 delta 起），此后还要吐十几帧。若只等
@@ -631,24 +662,7 @@ def _qa_ask(page, question, expect_msgs=2, timeout_ms=90000):
     """
     page.fill(".qa-composer textarea", question)
     page.press(".qa-composer textarea", "Enter")
-    # 在页面内一次性判定，避免 Python 侧多次取节点时遭遇 render 中途的失效句柄
-    # （解构数组形参：Playwright 只把 arg 当作**单个**实参传给 JS 函数）
-    probe = """([n, failText, marker]) => {
-        const msgs = document.querySelectorAll('.qa-msg');
-        if (msgs.length < n) return false;
-        const ans = document.querySelectorAll('.qa-bot .qa-answer');
-        if (!ans.length) return false;
-        const last = ans[ans.length - 1];
-        if (last.classList.contains('streaming')) return false;   // 还在流式 ⇒ 本轮未收尾
-        const t = (last.textContent || '').trim();
-        if (t === '') return false;
-        if (t.indexOf(failText) !== -1) return false;
-        return t.indexOf(marker) !== -1;
-    }"""
-    assert poll_until(
-        page,
-        lambda: page.evaluate(probe, [expect_msgs, FAIL_ANSWER_TEXT, MOCK_ANSWER_MARKER]),
-        timeout_ms=timeout_ms), \
+    assert _qa_round_done(page, expect_msgs, timeout_ms), \
         (f"提问「{question}」后未等到渲染完成的回答（当前 .qa-msg="
          f"{page.locator('.qa-msg').count()}，期望 >= {expect_msgs}；"
          f"最后一条答案正文={_last_answer_text(page)!r}）"
@@ -673,6 +687,24 @@ def _qa_state(page):
     return page.evaluate(
         "() => { const d = window.Alpine.$data(document.querySelector('#qa-root'));"
         " return { ids: (d.sessions || []).map(s => s.id), current: d.currentSessionId }; }")
+
+
+def _force_session_list(page):
+    """**强制**拉一次会话列表并**等它落地**（`page.evaluate` 会 await 返回的 Promise）。
+
+    为什么需要（裁决 R1-5）：用 `_qa_state()['ids']` 判「会话 id 集合未变」时，两侧取样都
+    必须是**权威列表**。`send()` 的 finally 里 `await this.loadSessions()` 排在
+    `bot.streaming = false` **之后**，而"本轮收尾"的判据只等到前者 ⇒ 若不做这一步，
+    取样可能落在列表刷新**之前**——变异世界（本轮真的新建了会话）里新 id 还没入列，
+    集合相等照样成立 ⇒ 判据**假绿**（与旧写法「1.5s 观察窗」是同一类错误：
+    判据与它要判定的事件之间没有因果关系）。
+    走的是组件自己那条 `loadSessions()`（与 send() 同一路径），不新增取数通道。
+    """
+    page.evaluate("""async () => {
+        const d = window.Alpine.$data(document.querySelector('#qa-root'));
+        await d.loadSessions();
+        return true;
+    }""")
 
 
 def _current_session_state(page):
@@ -1048,11 +1080,13 @@ def t5_streaming_renders_progressively(page):
     """正常场景（渐进渲染）：**中途态必须真的存在**——带 `.streaming` 类且文本短于最终文本。
 
     ⚠️ 只等「`.qa-answer` 文本非空」是不够的——那把流式换成一次性非流式实现（拿到整段再
-    一次性写入）也照样通过，与用例名不符（假绿）。这里钉住两件事：
+    一次性写入）也照样通过，与用例名不符（假绿）。这里钉住三件事：
       ① 生成期间采样到的文本**严格短于**最终文本（真的在长）；
-      ② 收尾后 `.streaming` 类消失（降级样式只在生成期间存在）。
+      ② 收尾后 `.streaming` 类消失（降级样式只在生成期间存在）；
+      ③ 一次提问**只发一次** `/qa/ask`（R1 补：done/delta 分支抛错不得逃逸成兜底重发）。
     """
     _qa_open(page)
+    bodies = _track_ask_bodies(page)           # 必须在提问之前注册（③ 的判据）
     page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
     page.press(".qa-composer textarea", "Enter")
 
@@ -1076,6 +1110,16 @@ def t5_streaming_renders_progressively(page):
         " return a ? a.innerText.trim().length : 0; }")
     assert final_len > mid_len, \
         f"最终文本（{final_len} 字）未长于中途采样（{mid_len} 字）——不是渐进渲染，而是一次性写入"
+
+    # ③ **一次提问 = 一次请求**（R1 补，裁决 3 的判据）：`_handleSseChunk` 的 done/delta
+    #    分支内任一处抛错若**逃逸**到 send() 的 catch，就会被当成传输层失败而
+    #    `_fallbackAsk` **重发同一个问题**（用户看到两次生成、重复计费、重复落库）——
+    #    与 error 分支注释要避免的是同一件事。这里把"一轮只发一次 /qa/ask"钉住：
+    #    把 done 分支的加固撤掉并让它抛错，本断言即红（见报告 §变异 C）。
+    assert len(bodies) == 1, \
+        (f"一次提问发了 {len(bodies)} 次 POST /qa/ask（stream 标志："
+         f"{[b.get('stream') for b in bodies]}）—— done/delta 分支内的异常逃逸到了"
+         " send() 的 catch，触发了兜底重发")
 
 
 def t5_streaming_shows_plain_text_not_markdown(page):
@@ -1105,13 +1149,26 @@ def t5_streaming_shows_plain_text_not_markdown(page):
         "生成期间出现了 KaTeX 渲染产物"
 
 
+# 徽章文案的**独立镜像**（app 侧的真源是 qa.js 的 `rerankBadge()`）。
+# 做「done 帧上报值 → 渲染出来的徽章文本」这段比对时，判据必须是独立来源，
+# 否则拿 rerankBadge() 的输出与自己比对是循环论证。
+RERANK_BADGE_TEXT = {"crossencoder": "⚡ CE 精排", "vector": "≈ 向量精排", "none": "⚠️ 无精排"}
+
+
 def t5_rerank_badge_handles_unreported_state(page):
     """异常场景（防谎报）：后端未上报精排级别时不得显示降级标记。
 
-    `QAResponse.rerank_used` 的缺省是空串——那是**契约外的第四态**（未上报），
-    不是 `RERANK_NONE`。若把 `rerankBadge()` 写成 `else → 无精排`，会在字段
-    缺失时谎报「系统已降级」。本用例直接钉住三态 + 未上报态的返回值契约。
+    两条判据（② 是 R1 补的，见各自的说明）：
+      ① **值域契约**：`QAResponse.rerank_used` 的缺省是空串——那是**契约外的第四态**
+         （未上报），不是 `RERANK_NONE`。若把 `rerankBadge()` 写成 `else → 无精排`，
+         会在字段缺失时谎报「系统已降级」。故直接钉住三态 + 未上报态的返回值契约。
+      ② **接线**（裁决 R1-5）：① 是纯值域单测——它只调 `rerankBadge()`，把 `done` 分支里
+         `this.rerankUsed = data.rerank_used` 那行**删掉它照样绿**（字段恒为未上报态，
+         而单测自己设值）。故补一条**行为**判据：走一轮真实提问（mock），把
+         **网络响应体里 `done` 帧的 `rerank_used`** 与**渲染出来的徽章文本**直接比对。
+         取网络响应体（而不是组件字段）是为了让这条链完整：后端上报值 → 组件字段 → DOM。
     """
+    # ① 值域契约
     page.goto(f"{BASE}/qa")
     page.wait_for_selector("#qa-root", timeout=10000)
     got = page.evaluate("""() => {
@@ -1126,27 +1183,79 @@ def t5_rerank_badge_handles_unreported_state(page):
     assert got["vector"].strip(), "vector 态必须有标记"
     assert got["ce"].strip(), "crossencoder 态必须有标记"
 
+    # ② 接线（行为）：fresh 页面 ⇒ 未上报态 ⇒ 提问 ⇒ done 帧驱动徽章
+    _qa_open(page)
+    badge = page.locator(".qa-rerank-badge")
+    assert not badge.is_visible(), \
+        (f"提问前徽章不应显示（rerankUsed 初始为未上报态），实得文本 {badge.inner_text()!r}"
+         "——前置不成立，② 的比对无从判起")
+    responses = _track_ask_responses(page)     # 必须在提问之前注册
+    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
+    page.press(".qa-composer textarea", "Enter")
+    assert _qa_round_done(page, 2, timeout_ms=90000), \
+        "提问后本轮未收尾（无法判定徽章接线）"
+    reported = _wire_done_payload(page, responses).get("rerank_used", "")
+    assert reported in RERANK_BADGE_TEXT, \
+        (f"后端上报的 rerank_used 不在三态值域内：{reported!r}"
+         "——（未上报/未知值时前端应不显示标记，但本用例依赖后端如实上报）")
+    expected = RERANK_BADGE_TEXT[reported]
+    assert poll_until(page, lambda: badge.is_visible(), timeout_ms=3000), \
+        (f"done 帧上报 rerank_used={reported!r}，徽章却始终不显示"
+         "——该字段没有驱动徽章（done 分支里的赋值被删/徽章未绑 rerankUsed）")
+    assert badge.inner_text().strip() == expected, \
+        (f"徽章文本与 done 帧上报值不符：done.rerank_used={reported!r} 应显示 {expected!r}，"
+         f"实得 {badge.inner_text()!r}（徽章未取自 done 帧的 rerank_used）")
+
 
 def t5_stage_indicator_reflects_real_stage_events(page):
-    """正常场景：阶段提示随 `stage` 事件**变化**，不只是默认值。
+    """正常场景：阶段提示随 `stage` 事件**变化**，且与后端的两态顺序一致。
 
     ⚠️ 只断言 `.qa-stage` 文本非空是不够的——`stageText` 的默认值就是「正在检索…」，
     于是**整块 stage 事件处理可以缺失**（不解析 `stage` 帧、不写 `stageText`）而无人报警（假绿）。
-    这里断言出现**只有真的收到 stage 事件才会出现**的文案：后端依次发
-    `retrieving → generating`（**只有两态**；`reranking` 已在施工中删除），
-    对应「生成中…」——该文案在默认值「正在检索…」之外，故必须由真实 stage 事件驱动才会出现。
+
+    判据 = **观察到的文案序列**（R1 收紧）：
+      · 用 MutationObserver 在提问**之前**装上（JS 不补发注册之前的事件，与
+        `t5_search_hit_jump_...` 的高亮取样同一手法）⇒ 记录**必然命中**，不依赖轮询采样；
+      · 断言序列恰为 `['正在检索…', '生成中…']`：既钉住 `generating` 的落点，也钉住顺序；
+      · 序列里**不得**出现「处理中…」——那是映射表之外的 stage 才会走到的兜底文案，
+        它出现即意味着后端发了 `{retrieving, generating}` 之外的 stage（契约漂移）。
+      取样用 `textContent`（不是 `innerText`）：x-show 折叠时元素不参与渲染，`innerText`
+      的取值随渲染状态而变，而此处要比对的正是**文案本身**。
+
+    ⚠️ 旧写法在 `wait_for_function(/生成中/)` 之后又 `assert "生成中" in got`，是**同义反复**
+    （上一行已保证该条件），零信息量 ⇒ 已删，改为下面的序列判据。
     """
     _qa_open(page)
+    # 观察器必须在提问**之前**安装（它是 `generating` 那次改写的唯一取样点）
+    page.evaluate("""() => {
+        const el = document.querySelector('.qa-stage');
+        const seq = [];
+        window.__qaStageSeq = seq;
+        const read = () => {
+            const t = (el.textContent || '').trim();
+            if (t && seq[seq.length - 1] !== t) seq.push(t);
+        };
+        new MutationObserver(read).observe(el,
+            { childList: true, subtree: true, characterData: true });
+        read();
+        return true;
+    }""")
     page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
     page.press(".qa-composer textarea", "Enter")
-    page.wait_for_selector(".qa-stage:visible", timeout=15000)
+    # 等「生成中…」真的出现（只在收到 generating 帧后才会出现；等不到即红）
     page.wait_for_function(
         "() => { const s = document.querySelector('.qa-stage');"
-        " return s && /生成中/.test(s.innerText); }",
+        " return s && /生成中/.test(s.textContent || ''); }",
         timeout=15000)
-    got = page.locator(".qa-stage").first.inner_text()
-    assert "生成中" in got, \
-        f"阶段提示未随 stage 事件变化（仍是默认值/空）：{got!r}"
+    # 再等观察器把这次改写记下来（MutationObserver 在微任务里跑，早于上面的 rAF 轮询，
+    # 这一步只是把"序列已定型"变成显式前置条件，避免与下一行的取样竞态）
+    page.wait_for_function(
+        "() => (window.__qaStageSeq || []).indexOf('生成中…') !== -1", timeout=15000)
+    seq = page.evaluate("() => window.__qaStageSeq")
+    assert seq == ["正在检索…", "生成中…"], \
+        (f"阶段文案序列应为 ['正在检索…', '生成中…']（后端只有 retrieving → generating 两态），"
+         f"实得 {seq!r}——序列里出现 '处理中…' 说明收到了映射表之外的 stage，"
+         "缺 '生成中…' 说明生成阶段的 stage 事件未被处理")
 
 
 def _track_ask_bodies(page):
@@ -1168,6 +1277,42 @@ def _track_ask_bodies(page):
     return seen
 
 
+def _track_ask_responses(page):
+    """登记 POST /qa/ask 的**响应**监听器，返回累积列表（必须在提问之前调用）。
+
+    为什么要读响应体（而不是组件字段）：判「徽章文本来自 `done` 帧的 rerank_used」时，
+    组件字段与徽章文本都来自前端内存，两者比对只能证明「字段→DOM」这一段；
+    要比对「**后端上报值** → 徽章」，必须拿到网络上真实的那一帧。
+    """
+    seen = []
+    page.on("response", lambda r: seen.append(r) if r.url.endswith("/qa/ask") else None)
+    return seen
+
+
+def _wire_done_payload(page, responses, timeout_ms=5000):
+    """取最后一个 /qa/ask 响应的 SSE 体里 `done` 帧的载荷（**网络上的真实取值**）。
+
+    响应体要等流结束才可读，故有界轮询；读不出就**响亮失败**（不静默跳过，
+    否则整条判据会退化成恒真）。
+    """
+    body = ""
+    waited = 0
+    while True:
+        if responses:
+            try:
+                body = responses[-1].text()
+            except PlaywrightError as e:      # 流尚未结束/响应体不可读：等下一轮
+                body = f"<response.text() 不可读: {type(e).__name__}>"
+        m = re.search(r"event:\s*done\s*\r?\ndata:\s*(\{.*\})", body)
+        if m:
+            return json.loads(m.group(1))
+        assert waited < timeout_ms, \
+            (f"未从 /qa/ask 响应体里读到 done 帧（{timeout_ms}ms 内）：{body[:300]!r}"
+             "—— 本用例的判据依赖从网络上取 done 的取值")
+        page.wait_for_timeout(100)
+        waited += 100
+
+
 def t5_relax_resends_with_relaxed_flag(page):
     """正常场景（补漏）：点「放宽分类筛选」→ 以 `relaxed=true` 重发，且**不新建会话**。
 
@@ -1180,8 +1325,17 @@ def t5_relax_resends_with_relaxed_flag(page):
       ① 点放宽后**新发起**的 POST /qa/ask，请求体 `relaxed === true`
          （用请求体监听器判定——只看"又出现了气泡"无法区分「带 relaxed 重发」与
           「点了个寂寞但列表被别的路径刷新了」）；
-      ② 会话数**不增**：放宽是**同一会话里的一次新轮次**，不是新开会话
-         （有界观察窗：一旦新建立即判红）。
+      ② **会话 id 集合不变**：放宽是**同一会话里的一次新轮次**，不是新开会话。
+
+    ⚠️ ② 的旧写法（`timeout_ms=1500` 的观察窗 + `.qa-session-item` 的 **DOM 计数**）
+    是**不可证伪**的（裁决 R1-5），两处错叠加：
+      · 窗口太短：本轮**最短耗时** = 检索 ~1s + mock 流 ≥1.4s，之后才 `loadSessions`
+        ⇒ 观察窗结束时列表**必然**还没刷新 ⇒ 即使本轮真新建了会话，断言也红不了
+        （判据与它声明的原因之间没有因果关系）；
+      · DOM 计数与本文件自己的教义相悖（`.qa-session-item` 计数结构性不可证伪，
+        应按 `_qa_state()['ids']` 判）。
+    现在改为：先 `poll_until` 等这一轮**真的收尾**（复用 `_qa_round_done`），再**强制刷新**
+    会话列表后比对 id 集合（`_force_session_list` 的注释解释了为何必须强制刷新）。
     """
     _qa_open(page)
     click_first_tree_label(page)               # 勾一个分类维度 ⇒ 触发候选不足判定
@@ -1193,7 +1347,10 @@ def t5_relax_resends_with_relaxed_flag(page):
         ("分类筛选下未出现「候选不足」提示（后端 filtered_out>0 未上报，"
          "或 qa.retrieve.qa_min_candidates 未调到 30）——本用例的前置不成立")
 
-    n_before = page.locator(".qa-session-item").count()
+    # 基线：先强制刷新一次，保证两侧比对用的都是**权威列表**（不是"可能还没刷新的内存态"）
+    _force_session_list(page)
+    state_before = _qa_state(page)
+    n_msgs_before = page.locator(".qa-msg").count()
     bodies = _track_ask_bodies(page)           # 必须在点击之前注册
     # 取**最后一条**放宽提示：库里的旧会话也可能带提示，取第一条会点到别的轮次上
     page.locator(".qa-relax-hint button").last.click()
@@ -1202,12 +1359,19 @@ def t5_relax_resends_with_relaxed_flag(page):
         "点「放宽分类筛选」后未发出 POST /qa/ask（relax() 未复用 send()）"
     assert bodies[-1].get("relaxed") is True, \
         f"放宽重发的请求体未带 relaxed=true：{bodies[-1]}"
-    # ② 会话数不增（有界观察窗：等待与判据分离）
-    grew = poll_until(page, lambda: page.locator(".qa-session-item").count() != n_before,
-                      timeout_ms=1500)
-    assert not grew, \
-        (f"放宽重发不应新建会话（放宽前 {n_before} 条，放宽后 "
-         f"{page.locator('.qa-session-item').count()} 条）——应是同一会话里的新轮次")
+    # ② 前置：先等这一轮**真的收尾**（否则下面的取样落在本轮完成之前，判据无从判起）
+    assert _qa_round_done(page, n_msgs_before + 2, timeout_ms=90000), \
+        (f"放宽重发后本轮未收尾（.qa-msg={page.locator('.qa-msg').count()}，"
+         f"期望 >= {n_msgs_before + 2}；最后一条答案="
+         f"{_last_answer_text(page)!r}）——判据 ② 无从判起")
+    _force_session_list(page)
+    state_after = _qa_state(page)
+    assert set(state_after["ids"]) == set(state_before["ids"]), \
+        (f"放宽重发新建了会话（应为同一会话里的新轮次）：放宽前 ids={state_before['ids']}，"
+         f"放宽后 ids={state_after['ids']}")
+    assert state_after["current"] == state_before["current"], \
+        (f"放宽重发的当前会话变了：{state_before['current']} -> {state_after['current']}"
+         "（应为同一会话里的新轮次，session_id 必须随请求携带）")
 
 
 def t5_search_hit_jump_loads_session_and_highlights(page):
@@ -1297,27 +1461,102 @@ def _qa_ask_and_remember(page, question):
     return sid
 
 
-def _read_settings(page, keys):
-    """读运行期设置（只取关心的键）。"""
-    return page.evaluate("""async (keys) => {
-        const r = await fetch('/settings');
-        const d = await r.json();
-        const out = {};
-        for (const k of keys) out[k] = d[k];
-        return out;
-    }""", keys)
+# ── 运行期设置的读写通道：**不依赖页面 DOM/JS**（裁决 R1-4）─────────────────
+# 原写法走 `page.evaluate(fetch('/settings', ...))`。风险：用例失败若发生在页面崩溃 /
+# 导航之后，`finally` 里的 `page.evaluate` **自身**就会抛 ⇒ 还原失败 ⇒ 被置空的
+# `ai.custom.api_key` 留在**长期保留**的 `data/_probe_qa.db` 里，污染后续**所有**用例
+# （下一个用例的前置断言才响亮失败，冤枉对象已经错位）。
+# 故读写都改用与渲染进程无关的两条通道：
+#   ① HTTP：`page.request`（Playwright 侧的 HTTP 客户端，与浏览器上下文共享 cookie）
+#      ——不碰 DOM/JS，页面崩溃也照样能用；主通道（不需要额外环境变量）；
+#   ② sqlite3：直连 `DATABASE_PATH` 指向的库——连实例都没了也能还原/复验。
+#      **可选**：该环境变量未设置时明确报错，**绝不回落到 dev 库**（路径只认环境变量，不猜）。
+
+
+def _settings_http(page, method, payload=None):
+    """经 Playwright 的 HTTP 客户端读写 /settings（与页面 DOM/JS 无关）。"""
+    if method == "GET":
+        resp = page.request.get(f"{BASE}/settings")
+    else:
+        resp = page.request.put(f"{BASE}/settings", data=payload or {})
+    assert resp.ok, f"{method} /settings 失败：HTTP {resp.status}"
+    return resp.json()
+
+
+def _settings_sqlite(keys=None, payload=None):
+    """直连副本库读写 settings（备用通道）。
+
+    只读 `keys` 或只写 `payload`，二选一。`DATABASE_PATH` 未设置时抛 RuntimeError
+    （**不猜路径**——回落到 `data/spec_query.db` 就等于改写 dev 库）。
+    """
+    db_path = os.environ.get("DATABASE_PATH", "")
+    if not db_path:
+        raise RuntimeError(
+            "DATABASE_PATH 未设置：无法直连副本库操作 settings（拒绝猜路径，可能是 dev 库）。"
+            "如需这条备用通道，请按报告「环境」节 export DATABASE_PATH=<副本库>")
+    with sqlite3.connect(db_path, timeout=30) as conn:
+        if payload is not None:
+            for k, v in payload.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                    (str(k), str(v)),
+                )
+            return {}
+        out: dict[str, str] = {}
+        for k in keys or []:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = ?", (k,)
+            ).fetchone()
+            out[k] = row[0] if row else ""
+        return out
+
+
+def _read_origin_settings(page, keys):
+    """把原值取到 Python 侧（裁决 R1-4）：主通道 HTTP，HTTP 不通时直连副本库。"""
+    try:
+        allset = _settings_http(page, "GET")
+        return {k: allset.get(k) for k in keys}
+    except (PlaywrightError, AssertionError) as e:
+        print(f"[probe] 读设置走 HTTP 失败，改用 sqlite3 直连副本库：{type(e).__name__}: {e}",
+              file=sys.stderr)
+        return dict(_settings_sqlite(keys=keys))
 
 
 def _put_settings(page, payload):
-    """写运行期设置（探针内部用，**用完必须还原**）。"""
-    return page.evaluate("""async (body) => {
-        const r = await fetch('/settings', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        return r.ok;
-    }""", payload)
+    """写运行期设置（造错用；**用完必须还原**）。返回是否成功。"""
+    try:
+        _settings_http(page, "PUT", payload)
+        return True
+    except (PlaywrightError, AssertionError):
+        return False
+
+
+def _restore_settings(page, origin):
+    """把 origin 逐键写回运行期设置——**不依赖页面**（裁决 R1-4，见上方通道说明）。
+
+    两条通道依次尝试，任一成功即返回；第二条（sqlite3）是最后保底，
+    确保「页面崩了 ⇒ 还原不了 ⇒ 空 key 永久留在副本库」这个链路被切断。
+    """
+    try:
+        _settings_http(page, "PUT", origin)
+        return
+    except (PlaywrightError, AssertionError) as e:
+        print(f"[probe] HTTP 通道还原失败，改用 sqlite3 直连副本库：{type(e).__name__}: {e}",
+              file=sys.stderr)
+    _settings_sqlite(payload=origin)
+
+
+def _verify_settings_restored(page, keys):
+    """复验还原结果（返回实际值字典）；HTTP 不可用时退到 sqlite3；都不通则返回 None 值
+    （让调用点的断言响亮失败，而不是静默跳过复验）。"""
+    try:
+        allset = _settings_http(page, "GET")
+        return {k: allset.get(k) for k in keys}
+    except (PlaywrightError, AssertionError):
+        try:
+            return dict(_settings_sqlite(keys=keys))
+        except RuntimeError:
+            return {k: None for k in keys}
 
 
 def t5_error_frame_is_not_retried_as_fallback(page):
@@ -1338,10 +1577,17 @@ def t5_error_frame_is_not_retried_as_fallback(page):
       ① 界面上出现的是 **error 帧的文案**（「…不可用…」），不是兜底失败文案；
       ② 全程**只有一次** POST /qa/ask（负向判据走有界观察窗）；
       ③ 那一次请求体带 `stream: true`（钉「走的是流式入口」）。
+
+    ⚠️ 还原必须**无条件可靠**（裁决 R1-4）：本用例把 `ai.custom.api_key` 置空，而该库
+    （`data/_probe_qa.db`）是**长期保留**的复核资产——若失败发生在页面崩溃/导航之后，
+    旧写法 `finally` 里的 `page.evaluate` 自身会抛 ⇒ 空 key 留下 ⇒ 污染后续所有用例。
+    现在原值取到 Python 侧、还原走「`page.request` HTTP 通道 → 直连 sqlite3」两条
+    **不依赖页面**的通道（见 `_restore_settings`），并**复验**还原结果。
+    前置的「key 非空」断言**保留**：它在真被污染时响亮失败。
     """
     _qa_open(page)
     keys = ["ai.backend", "ai.custom.api_key"]
-    origin = _read_settings(page, keys)
+    origin = _read_origin_settings(page, keys)   # 原值取到 Python 侧（不经页面 JS）
     assert origin.get("ai.custom.api_key"), \
         f"前置不成立：副本库的 ai.custom.api_key 本应为 mock 值，实得 {origin!r}"
     bodies = _track_ask_bodies(page)      # 必须在提问之前注册
@@ -1365,7 +1611,14 @@ def t5_error_frame_is_not_retried_as_fallback(page):
         assert page.locator(".qa-msg").count() >= 2, \
             "error 帧是应用层错误：本轮已受理，用户消息不应被回滚"
     finally:
-        _put_settings(page, origin)       # 无论成败都还原后端设置，避免污染后续用例
+        # 无论成败都还原，且**不依赖页面**（裁决 R1-4）：页面崩溃/导航后 evaluate 会抛，
+        # 空 key 就会留在长期保留的副本库里，污染后续所有用例。
+        _restore_settings(page, origin)
+        # 复验：还原是"写回去了"还是"自以为写回去了"，必须读回来才算证据。
+        back = _verify_settings_restored(page, keys)
+        assert back.get("ai.custom.api_key") == origin["ai.custom.api_key"], \
+            (f"副本库的 ai.custom.api_key 未还原（应为 {origin['ai.custom.api_key']!r}，"
+             f"实得 {back.get('ai.custom.api_key')!r}）—— 空 key 会污染后续所有用例")
 
 
 # 登记进本 Task 的键：**键名 = Task 编号本身**（不是 t6）。
