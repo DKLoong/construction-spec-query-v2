@@ -2717,6 +2717,7 @@ import httpx
 import pytest
 
 from app.ai.api_client import APIBackend
+from app.ai.cli_client import CLIResponse   # CLI 表头用例要用（漏了会 NameError，两条用例都跑不起来）
 
 
 def _sse(*chunks: str) -> bytes:
