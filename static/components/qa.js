@@ -109,7 +109,15 @@ document.addEventListener('alpine:init', () => {
             this.currentSessionId = null;
             this.messages = [];
             this.input = '';
+            // 会话级**显示**状态必须一并复位：
+            //  - effectiveFiltersText 是上一会话的「本轮生效」基线，留着会让输入框上方常挂
+            //    一条（很可能已不成立的）「本轮生效：…」，且 filtersChanged() 会拿这个
+            //    **过时基线**比对当前选中 ⇒「已修改，将在下一轮生效」在新会话里
+            //    虚假出现或该出现却不出现（探针 t4_new_session_resets_session_scoped_display）。
+            //  - rerankUsed / stageText 同理（T5 起 stageText 会在流式期间被改写）。
+            this.effectiveFiltersText = '';
             this.rerankUsed = '';
+            this.stageText = '正在检索…';
         },
 
         async openSession(sid) {
