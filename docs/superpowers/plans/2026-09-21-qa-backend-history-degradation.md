@@ -1572,6 +1572,19 @@ git commit -m "feat: 多轮对话引用护栏（禁止引用本轮未提供的�
 - Consumes: `app.qa.sessions`（T5）、`app.qa.context.build_history`（T6）、`build_system_prompt(mode, multi_turn)`（T7）
 - Produces: `QaRequest.session_id: int | None`、`QaRequest.relaxed: bool = False`、`QAResponse.session_id: int`
 
+> 🔴 **本 Task 必须同时提供「历史段 token 可观测性」**（Task 6 复核移交，见 spec §4.5）：
+> `build_history` 是**纯函数、无 IO**，所以"历史段超预算"这件事**不会留下任何痕迹**。
+> 而实测算术表明：默认预算 800 + `estimate_tokens=ceil(len/2)` ⇒ **最新一轮 Q+A 超过约
+> 1590 字符时历史段恒为 1 轮**，`max_turns=6` 形同虚设——带条文引用的普通回答轻易越线。
+> 真实答案长度分布没有测量数据，故**不改默认值，先让它可测**。
+>
+> 具体：给 `QATrace` 增 `history_tokens: int` 与 `history_budget: int` 两字段，
+> 在组装处填入实际值与预算；**当 `history_tokens > history_budget` 时以
+> `logger.warning` 记录一行**（含两者数值），使超预算在服务端日志可见。
+> 两字段一并落 `qa_request_logs`（与该表既有指标同批），供按分位数调参。
+> 参数 `qa.history.max_turns` 与 `qa.token.max_history_tokens` 均已热生效，
+> 届时按真实分布调整即可。
+
 - [ ] **Step 1: 写失败测试**
 
 ```python
