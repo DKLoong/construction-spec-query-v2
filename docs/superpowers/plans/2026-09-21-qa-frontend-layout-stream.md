@@ -1668,6 +1668,22 @@ git commit -m "feat: QA 会话列表、切换载入与续聊交互"
 
 ## Task 5: 流式渲染（SSE + 降级渲染）
 
+> 📌 **施工后的补充（2026-09-23，控制器按 T5 实现者上报的三处修正回填）**：
+> 1. **本 Task 的用例集必须包含一条错误路径用例**：`t5_error_frame_is_not_retried_as_fallback`。
+>    控制器在派发时曾称两条边界「都有对应用例」——**该说法不成立**（Step 1 登记的 4 条一条都不碰错误路径），
+>    故 mutation「让 `error` 帧也 throw」在原样登记下**无从判红**。
+>    确定性做法：用 `PUT /settings` 把 `ai.custom.api_key` 置空造出稳定错误，断言**只发 1 次 `/qa/ask` 且带 `stream:true`**，
+>    用例内 `finally` 还原设置。
+> 2. **`jumpToHit` / `scrollToBottom` 有一个共同的真 bug（不只是缺 CSS）**：Alpine 3.15 的 magic
+>    （`$refs`/`$root`）解析上下文是**调用该方法的元素**（`.qa-hit` / 消息容器），故 `this.$refs.msgBox` 恒为 undefined
+>    ⇒ `jumpToHit` 抛 `TypeError`、**高亮类从未加上**；`scrollToBottom` 则被 `if (box)` 守卫**静默吞掉**（从未真正贴底，
+>    流式期间每帧都要贴底）。修法：新增 `_messageBox()` 按类名取（QA 页唯一），两处都改用它。
+> 3. **高亮判据不能只看「底色非透明」**：`.qa-bot` 自带不透明底色（实测 `rgb(251,252,252)`）⇒ 删掉 `.qa-highlight`
+>    规则该判据照样为真（假绿）。正确判据 = **同一元素「有类 / 无类」的底色必须不同** + 用 `MutationObserver` 取样
+>    （`jumpToHit` 只保留 2 秒高亮，轮询会采样落空）。
+> 4. **流式后 `_qa_ask` 必须多等一条件**：助手气泡先乐观占位 ⇒ 旧判据会在**流中途**返回，让依赖 `done` 帧字段的
+>    T4 用例成片假红。加「最后一条 `.qa-bot .qa-answer` 不得带 `.streaming`」。
+
 > ⚠️ **本 Task 同时补一件 T4 做不到的事：跨会话搜索命中的「高亮」样式**。
 > `qa.js` 会给命中的消息加 `.qa-highlight` 类（`jumpToHit` 的滚动+高亮），但 **`app.css` 里 0 处匹配**
 > ⇒ 目前**高亮是视觉 no-op**（T4 的 Files 不含 `app.css`，且那轮硬约束明确禁改它）。
