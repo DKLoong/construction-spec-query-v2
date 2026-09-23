@@ -1298,6 +1298,9 @@ def build_history(messages: list[dict], max_turns: int,
 
 ```python
     "history.max_turns": 6,     # 多轮历史窗口（轮）；0 = 关闭多轮
+    # 历史段的**独立** token 预算。不复用 token.max_context_tokens——
+    # 那是「条文上下文」的预算，两段各自按它截断会让总上下文达配置值的两倍
+    "token.max_history_tokens": 800,
 ```
 
 在 `app/params/registry.py` 的 qa 段末尾（`qa.token.summary_chars` 之后）追加：
@@ -1308,6 +1311,12 @@ def build_history(messages: list[dict], max_turns: int,
         float(QA_CONFIG_DEFAULTS["history.max_turns"]), 0, 50, "0~50",
         "注入模型的历史对话轮数上限；0 = 不带历史（纯单轮）。"
         "历史只含问答文本，不含条文上下文。", dtype="int"))
+    meta.append(_num(
+        "qa.token.max_history_tokens", "qa", "历史段 token 预算",
+        float(QA_CONFIG_DEFAULTS["token.max_history_tokens"]), 0, 4000, "0~4000",
+        "历史对话段的独立 token 预算，与「上下文 token 预算」（条文段）分开计。"
+        "两段合计上界 = 本值 + 上下文 token 预算 + system prompt。"
+        "0 = 不注入历史。", dtype="int"))
 ```
 
 - [ ] **Step 4: 运行测试确认通过**
@@ -1589,7 +1598,7 @@ Expected: FAIL — `KeyError: 'session_id'`
     history_messages = qa_sessions.get_messages(session_id) if session_id else []
     max_turns = get_qa_int("history.max_turns")
     history_str = build_history(
-        history_messages, max_turns, get_qa_int("token.max_context_tokens"),
+        history_messages, max_turns, get_qa_int("token.max_history_tokens"),
     )
 ```
 
@@ -2826,7 +2835,7 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
     history_messages = qa_sessions.get_messages(session_id) if session_id else []
     history_str = build_history(
         history_messages, get_qa_int("history.max_turns"),
-        get_qa_int("token.max_context_tokens"),
+        get_qa_int("token.max_history_tokens"),
     )
 
     pool = get_qa_int("retrieve.candidate_pool")
