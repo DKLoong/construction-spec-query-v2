@@ -791,7 +791,10 @@ Expected: FAIL — `QA 面板内不应再有「仅现行」复选框`
 
 - [ ] **Step 3: 实现**
 
-`app/templates/partials/tree_panel.html`，给 CE 复选框所在 label 加 `title`：
+`app/templates/partials/tree_panel.html`，给 CE 复选框所在 label 加 `title`。
+
+**同时**给「包含前言·条文说明」的 label 也加 `title`——说明文本兜底的存在，
+避免用户以为取消勾选就彻底不放行（见下方说明）：
 
 ```html
         <!-- CE 精排热切换：勾选/取消立即重搜（onCeChange 弹提示 + 触发重搜），结果实时按新开关排序。
@@ -803,6 +806,24 @@ Expected: FAIL — `QA 面板内不应再有「仅现行」复选框`
             <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">启用 CE 精排</span>
         </label>
 ```
+
+「包含前言·条文说明」的 label 同样加 `title`：
+
+```html
+        <!-- 勾选立即重搜：放行前言/条文说明等打标非条文（后端 include_non_clause=1）。
+             tooltip 说明文本兜底的存在——用户取消勾选后，若问句里出现
+             「前言」「条文说明」字样仍会放行打标非条文（后端兜底条款） -->
+        <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1"
+               title="勾选后放行前言/条文说明等打标非条文。注意：即使不勾选，若提问中含「前言」或「条文说明」字样，系统仍会包含这类内容">
+            <input type="checkbox" x-model="includeNonClause" @change="search()"
+                   style="width:0.875rem;height:0.875rem;flex:none;margin:0;padding:0">
+            <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">包含前言·条文说明</span>
+        </label>
+```
+
+> **为什么不改行为**（评审 D12②）：文本兜底是设计阶段明确选定的——问题里出现「前言/条文说明」
+> 说明用户正是在问这部分内容，此时不自动放行会让问答直接落空。改为 tooltip 说明，
+> 让「显式取消勾选 ≠ 完全排除」这件事可见，而不是让用户以为关掉了。
 
 `static/components/qa.js`，把本地状态与组合逻辑改为读 store：
 

@@ -401,15 +401,20 @@ git commit -m "feat: QA 响应透出实际生效的精排级别"
 
 **Files:**
 - Modify: `app/maintenance/health_check.py`（`LABELS`、`run_health_check`）
+- Modify: `app/ai/reranker.py`、`app/ai/embedding.py`（各新增 `is_ready()`）
 - Modify: `tests/conftest.py`（新增共享夹具 `qa_db`）
 - Test: `tests/test_health_check_models.py`
 
 **Interfaces:**
-- Consumes: `app.ai.reranker.get_reranker()`、`app.ai.embedding.get_model()`（均返回模型实例或 `None`）
+- Consumes: `app.ai.reranker.is_ready()`、`app.ai.embedding.is_ready()`（本 Task 新增，**不触发模型加载**）
 - Produces: 检查项 key `"model_ready"`，`severity ∈ {"ok", "warn", "error"}`，含 `hint` 字段说明缺失后果
+- Produces: `app.ai.reranker.is_ready()` / `app.ai.embedding.is_ready()`（供健康检查等只读场景使用）
 - Produces: 夹具 `qa_db`（隔离库、无用户），Task 4 起被多个测试文件复用
 
-> 说明：`get_reranker()` / `get_model()` 内部用三态哨兵缓存失败态（`False`），首次调用可能触发模型加载。健康检查是**主动触发**的低频路径，可接受该开销；不得在此处触发网络下载（两者均已是 `local_files_only=True`）。
+> 说明：两个模型模块内部用三态哨兵缓存失败态（`False`）。**健康检查不得调用
+> `get_reranker()` / `get_model()`**——未加载时它们会真实例化模型（数秒），
+> 而本检查在维护页每次打开都跑。改走新增的 `is_ready()`（只探测，不加载）。
+> 另：两者均已是 `local_files_only=True`，任何路径都不会触发网络下载。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -460,6 +465,21 @@ def test_model_ready_warns_when_reranker_missing(qa_db):
     assert "精排" in item["hint"]
 
 
+def test_health_check_does_not_instantiate_models(qa_db):
+    """异常场景（副作用守卫）：健康检查不得触发模型加载。
+
+    get_reranker()/get_model() 在未加载时会真实例化模型（数秒），而本检查
+    在维护页每次打开都跑。用「调用即抛」的桩钉住这一点。
+    """
+    def _boom(*a, **k):
+        raise AssertionError("健康检查触发了模型实例化")
+
+    with patch("app.ai.reranker.get_reranker", _boom),          patch("app.ai.embedding.get_model", _boom),          patch("app.ai.reranker.is_ready", return_value=True),          patch("app.ai.embedding.is_ready", return_value=True):
+        result = run_health_check()
+    item = next(c for c in result["checks"] if c["key"] == "model_ready")
+    assert item["severity"] == "ok"
+
+
 def test_model_ready_errors_when_embedding_missing(qa_db):
     """异常场景：缺 embedding → 向量召回一并失效，严重度高于仅缺精排。"""
     with patch("app.ai.reranker.get_reranker", return_value=None), \
@@ -487,17 +507,21 @@ Expected: FAIL — `StopIteration`（`checks` 中无 `model_ready` 项）
 
 ```python
 def _check_models() -> tuple[str, str]:
-    """返回 (severity, hint)，检查两个本地模型是否就绪。
+    """返回 (severity, hint)，探测两个本地模型是否就绪。
 
     分享场景下用户常常没放模型文件，而系统只会静默降级——此处显式暴露。
     - 缺 CrossEncoder：精排降级为向量/排名，质量下降但可用 → warn
     - 缺 embedding  ：向量召回一并失效，hybrid_search 退化为纯关键词 → error
-    """
-    from app.ai.reranker import get_reranker
-    from app.ai.embedding import get_model
 
-    has_reranker = get_reranker() is not None
-    has_embedding = get_model() is not None
+    **用 `is_ready()` 探测，不调用 `get_reranker()` / `get_model()`**——
+    后者在未加载时会真的实例化模型（数秒），而本检查在维护页每次打开都跑，
+    不能带这种副作用。
+    """
+    from app.ai.reranker import is_ready as reranker_ready
+    from app.ai.embedding import is_ready as embedding_ready
+
+    has_reranker = reranker_ready()
+    has_embedding = embedding_ready()
 
     if has_reranker and has_embedding:
         return "ok", ""
@@ -1578,6 +1602,19 @@ Expected: FAIL — `KeyError: 'session_id'`
     # 本次问答所属会话 id（惰性创建时为新 id）
     session_id: int = 0
 ```
+
+> **实现形态（重要，评审 D12③）**：本步**不要**把逻辑直接写进 `/qa/ask` 的函数体——
+> 请一开始就落在模块级 `_prepare_qa_context(question, body) -> QaContext` 中
+> （完整形状见 Task 15 的 Step 3c），`/qa/ask` 只负责调用它。
+>
+> 理由：Task 13 要在同一段代码里加 `filtered_out` / `effective_filters`，
+> Task 15 要加流式分支。若 T8/T13 先写内联版本、到 T15 才抽取，就是**事后重构**——
+> 同一段代码改三遍，回归风险全压在最后一步，而那一步还要同时引入 SSE。
+> **先建形状，后续任务只做加法。**
+>
+> 本步实现到「检索 → 过滤 → 精排 → 选条 → 分层 → 组装上下文 + 会话/历史解析」为止；
+> `QaContext.filtered_out` / `rerank_used` 可先留默认值（T13 补齐），流式分支完全不管（T15 补）。
+> 下面列出的改动点，一律落在 `_prepare_qa_context` 内或 `/qa/ask` 的调用处，不要复制成两份。
 
 在 `app/routes/qa_routes.py` 的 `/qa/ask` 中，import 段追加：
 
@@ -2790,8 +2827,27 @@ QA_DIM_FIELDS: tuple[str, ...] = (
 )
 ```
 
-**3c. `app/routes/qa_routes.py`** —— 顶部 `from app.models import ...` 追加 `QA_DIM_FIELDS`；
-在 `_emit_trace` 之后新增数据类与共享准备函数：
+**3c. `app/ai/reranker.py` / `app/ai/embedding.py`** —— 各新增一个**不触发加载**的就绪探测：
+
+```python
+def is_ready() -> bool:
+    """模型是否就绪：已加载成功，或本地模型文件存在。**不触发加载**。
+
+    供健康检查使用。get_reranker()/get_model() 在未加载时会真的实例化模型
+    （数秒），而健康检查在维护页每次打开都跑，不能带这种副作用。
+    """
+    if _model is False:
+        return False          # 曾尝试加载且失败，不会重试
+    if _model is not None:
+        return True           # 已成功加载
+    return any((p / "config.json").exists() for p in _LOCAL_MODEL_PATHS)
+```
+
+> 两个模块的三态哨兵与 `_LOCAL_MODEL_PATHS` 结构一致（见 `app/ai/reranker.py:11-16`、
+> `app/ai/embedding.py:10-17`），因此函数体逐字相同——**但各自定义一份**，
+> 不抽公共工具：它们读的是各自的模块级私有状态，抽出去反而要传参。
+
+**3d. `app/maintenance/health_check.py`** —— 挂上检查项：
 
 ```python
 @dataclass
