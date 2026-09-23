@@ -78,7 +78,9 @@ document.addEventListener('alpine:init', () => {
             if (this.ceRerank) {
                 showSearchToast('CE精排已开启，请耐心等待搜索结果');
             }
-            if (isQaView()) { syncQaUrl(); return; }
+            // 与 :127 同样带 typeof 守卫：isQaView 定义在 tree.js，base.html 当前加载顺序
+            // 保证它先于本文件；一旦顺序变化，裸调用就是 ReferenceError
+            if (typeof isQaView === 'function' && isQaView()) { syncQaUrl(); return; }
             this.search();
         },
 
@@ -87,7 +89,8 @@ document.addEventListener('alpine:init', () => {
             if (!this.statusCurrent && !this.statusRevising) {
                 showSearchToast('注意：当前展示结果未过滤非现行规范', 4000);
             }
-            if (isQaView()) { syncQaUrl(); return; }
+            // 同上：带 typeof 守卫，避免加载顺序变化导致 ReferenceError
+            if (typeof isQaView === 'function' && isQaView()) { syncQaUrl(); return; }
             this.search();
         },
 
