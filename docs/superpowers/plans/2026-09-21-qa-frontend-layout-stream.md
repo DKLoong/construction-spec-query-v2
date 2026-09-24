@@ -154,7 +154,7 @@ mock 的固定回答含**加粗 Markdown** 与 **《GB 50204》8.2.1** 条文引
 | `static/components/search.js` | 搜索框（`view` 判断） | 修改 |
 | `static/components/md-render.js` | 统一渲染管线 | **不改**（流式期间走纯文本，收尾才用完整管线） |
 | `static/app.css` | QA 页布局与折叠 | 修改 |
-| `scripts/probe_qa_ui.py` | Playwright 验证探针（一次性，验证完删） | **新建** |
+| `scripts/probe_qa_ui.py` | Playwright 行为回归套件（34 条，**保留**——2026-09-24 用户裁定） | **新建** |
 
 > **本计划不改** `search.js`/`tree.js` 的 htmx swap 目标，`result_list.html` 与 `#search-results` 语义完全不动——
 > 这是选择整页导航换来的收益（检索页零结构改动）。
@@ -2068,7 +2068,9 @@ git commit -m "feat: QA 流式输出（SSE 读取 + 流式期间降级渲染）"
 - [ ] **回归**：条文详情弹窗（回复中的超链接）行为**不变**
 - [ ] **回归**：AI 后端设置（⚙️）可从 QA 页头部打开；原文摘抄 / 综合问答模式切换正常
 - [ ] 5 个 Task 各自单次提交，提交信息符合 `type: 描述` 规范
-- [ ] 清理：删除 `data/_probe_qa.db` 与 `scripts/probe_qa_ui.py`（一次性探针，开发铁律七·3）
+- [x] 清理：删除 `data/_probe_qa.db`（副本库）✓
+- [x] ~~删除 `scripts/probe_qa_ui.py`~~ → **改为保留**（2026-09-24 用户裁定）：它是本仓唯一的前端行为验收网
+      （34 条用例），运行方式与前置已写进脚本自身的 docstring。**请勿按本条旧计划删它。**
 - [ ] 还原临时改动：若验证时改过 `DATABASE_PATH` 指向副本库，务必还原
 
 ## 遗留与后续

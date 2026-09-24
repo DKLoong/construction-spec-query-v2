@@ -1,6 +1,35 @@
-"""QA 界面改造的一次性验证探针（验证完删除）。
+"""QA 页的浏览器行为回归套件（t1~t5 共 34 条用例）。
 
-用法：先起隔离实例（本计划「前置」节），再
+**保留决定（2026-09-24，用户裁定）**：原计划把它当「一次性探针，验证完删除」，
+但它是本仓**唯一**的前端行为验收网（覆盖整页路由与 URL 筛选、折叠几何、筛选统一、
+会话续聊、流式两态渲染、搜索命中高亮、错误边界），故**保留**。
+⇒ 请勿按旧计划删它；若将来 UI 大改导致失效，请修用例而不是关掉。
+
+## 运行方式（缺一不可）
+
+```bash
+cd /d/CC-Workspace/construction-spec-query-v2
+cp data/spec_query.db data/_probe_qa.db                 # 副本库，**不要**在 dev 库上跑
+export DATABASE_PATH="$PWD/data/_probe_qa.db"           # 只走环境变量，禁止改源码常量
+D:/Python/python.exe "$TEMP/qa_mock_llm.py" 8199 &      # mock LLM（临时工具，不入仓）
+D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8123 &   # 不加 --reload
+# 副本库写入 mock 配置（否则 /qa/ask 会去调真实模型）：
+#   ai.backend='custom' / ai.custom.base_url='http://127.0.0.1:8199/v1'
+#   ai.custom.api_key='mock' / ai.custom.model='mock-model'
+D:/Python/python.exe scripts/probe_qa_ui.py t1          # t1|t2|t3|t4|t5
+```
+
+**前置要点**：
+- 全站受 `AuthMiddleware` 保护（`app/main.py:110-129`）：runner 会先登录（`PROBE_USER`/`PROBE_PASS` 可覆盖，
+  默认取 `scripts/create_admin.py` 的默认账号）。
+- **探针与 mock 强绑定**：共享助手 `_qa_ask` 要求回答含 mock 的确定性标记 `GB 50204`
+  ⇒ **不要**拿真实模型跑，会成片假红。
+- 用例自带前置（如 relax 用例自己把 `qa.retrieve.qa_min_candidates` 调到 30 并在 `finally` 还原）
+  ——**不要**依赖副本库里手工设过的状态（曾被「只在上一轮跑过的库里通过」咬过）。
+- 改静态 js/css 后，跑之前记得 `base.html` 的 `?v=N` 已递增或强刷（缓存会让探针读到旧文件）。
+- 跑完清理：杀掉 8123/8199 两个进程、删除 `data/_probe_qa.db`。
+
+用法（单组）：
   D:/Python/python.exe scripts/probe_qa_ui.py t1
 """
 import json
