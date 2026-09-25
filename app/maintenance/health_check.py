@@ -134,6 +134,65 @@ def _check_models() -> tuple[str, str]:
     )
 
 
+def pending_flag() -> dict:
+    """宫格「维护」红点数据源：**纯读，不落库**。
+
+    前端按「加载一次 + 事件驱动 + 5 分钟兜底」调用（见 T2）。沿用
+    rule_pending.pending_counts() 的硬约束：红点端点绝不可物化重对象、绝不写审计表
+    ——健康检查本体 run_health_check 每次调用都写一条 system_logs + 一条快照，
+    红点若复用它，日志表会被周期轮询撑爆。故此处只做计数判定。
+
+    分级（谓词与 run_health_check 同源，直接复用同一批 _count_* 函数，防口径漂移）：
+      red    — 可立即处理，或功能已失效：
+               orphan_parent / bad_classification / vector_orphan / fts_mismatch /
+               vector_missing（含「待重建」与「读取失败」）/
+               model_ready（缺 embedding 模型，向量召回整体失效）
+      yellow — 功能降级或仅报告：
+               empty_content（仅报告、不自动删）/ model_ready（缺 CrossEncoder 精排）
+
+    返回 {"red": [key...], "yellow": [key...], "labels": {key: 中文名}}；
+    两者皆空则前端不显示徽标。labels 只含被点名的项，由后端下发中文名，
+    避免前端再复制一份 LABELS 造成两处漂移。
+    """
+    vector_ids, vstate = _vector_ids_and_state()
+    vids = vector_ids if vstate == "ok" else None
+
+    red: list[str] = []
+    yellow: list[str] = []
+
+    if _count_orphan_parent():
+        red.append("orphan_parent")
+    if _count_bad_classification():
+        red.append("bad_classification")
+    if _count_fts_mismatch():
+        red.append("fts_mismatch")
+
+    if vstate in ("missing", "error"):
+        # 缺表（待重建）与读取失败都不必再比差集，直接归红
+        red.append("vector_missing")
+    else:
+        if _count_vector_missing(vids):
+            red.append("vector_missing")
+        if _count_vector_orphan(vids):
+            red.append("vector_orphan")
+
+    if _count_empty_content():
+        yellow.append("empty_content")
+
+    model_severity, _ = _check_models()
+    if model_severity == "error":
+        red.append("model_ready")
+    elif model_severity == "warn":
+        yellow.append("model_ready")
+
+    return {
+        "red": red,
+        "yellow": yellow,
+        # 中文名随红黄一并下发：前端 title 直接取用（只含被点名的项，无额外开销）
+        "labels": {k: LABELS[k] for k in red + yellow},
+    }
+
+
 def run_health_check(username: str = "system") -> dict:
     """执行全部检查，写 system_logs + health_check_snapshots，返回结果 dict
 

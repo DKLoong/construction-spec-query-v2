@@ -115,7 +115,10 @@
             <button class="outline" style="width:100%;font-size:0.8rem">📖 词库</button>
         </a>
         <a href="/maintenance" style="text-decoration:none">
-            <button class="outline" style="width:100%;font-size:0.8rem">🛠 维护</button>
+            <button class="outline" style="width:100%;font-size:0.8rem;position:relative">🛠 维护
+                <span id="maintenance-badge" style="display:none;position:absolute;top:50%;right:4px;transform:translateY(-50%);min-width:16px;height:16px;border-radius:50%;background:#d93025;color:#fff;font-size:10px;line-height:16px;text-align:center;padding:0 3px;box-sizing:border-box;font-weight:600"
+                      title="有待处理项"></span>
+            </button>
         </a>
         <!-- QA 页是整页导航（与 📚规范 / 📋规则 / 📖词库 同形）。
              href 由 buildQaUrl() 在点击时按当前筛选拼出，使 QA 页继承检索条件 -->
@@ -176,10 +179,51 @@
                 .catch(function () { /* 忽略瞬时错误，下次轮询重试 */ });
         }
         refresh();
+        // 监听必须挂在 body 上：这些事件由 document.body.dispatchEvent 发出且未设
+        // bubbles，挂 document 上的监听器收不到（已实测：0 命中；挂 body 或捕获监听才收到）。
+        // 此前事件刷新一直失效、全靠轮询在撑，故修正监听后才敢给轮询降频。
         ['reviewClausePending', 'reviewWordPending', 'reviewBlacklist'].forEach(function (ev) {
-            document.addEventListener(ev, refresh);
+            document.body.addEventListener(ev, refresh);
         });
-        setInterval(refresh, 30000);
+        // 5 分钟兜底：待审核项的产生时机都是同步路由的返回点（导入/AI 分类/审核操作），
+        // 均已被事件覆盖，周期轮询只用于兜住漏发与多标签页场景。
+        setInterval(refresh, 300000);
+    })();
+
+    /* 维护宫格徽标：红=可立即处理或功能已失效，黄=功能降级/仅报告。
+       刷新策略「加载一次 + 事件 + 5 分钟兜底」——维护项是系统状态，不会秒级突变，
+       且 /maintenance/pending-flag 要读向量表（比纯 COUNT 重），故不沿用审核红点的
+       高频轮询；状态真正变化的时刻（修复完成、重建完成、AI 分类完成）均由事件覆盖。 */
+    (function () {
+        var badge = document.getElementById('maintenance-badge');
+        if (!badge) return;
+        function refresh() {
+            fetch('/maintenance/pending-flag', { headers: { 'Accept': 'application/json' } })
+                .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+                .then(function (d) {
+                    var red = d.red || [], yellow = d.yellow || [];
+                    if (!red.length && !yellow.length) {
+                        badge.style.display = 'none';
+                        return;
+                    }
+                    var isRed = red.length > 0;
+                    var keys = isRed ? red : yellow;
+                    var labels = d.labels || {};
+                    badge.style.display = 'inline-block';
+                    badge.style.background = isRed ? '#d93025' : '#f9ab00';
+                    badge.textContent = '!';
+                    badge.title = (isRed ? '需处理：' : '功能降级：')
+                        + keys.map(function (k) { return labels[k] || k; }).join(' · ');
+                })
+                .catch(function () { /* 忽略瞬时错误，等下次兜底刷新 */ });
+        }
+        refresh();
+        document.body.addEventListener('maintenanceStateChanged', refresh);
+        // 重建/导入完成信号均广播在 window 上（全局 rebuild.js 与 import_progress.html），
+        // 这两个时刻最可能改变维护项，必须立即刷新
+        window.addEventListener('rebuild-finished', refresh);
+        window.addEventListener('import-finished', refresh);
+        setInterval(refresh, 300000);   // 5 分钟兜底
     })();
     </script>
 </div>

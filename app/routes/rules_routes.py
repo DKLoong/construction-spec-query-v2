@@ -846,8 +846,14 @@ async def run_classifier(request: Request):
     log_action("classify", "INFO", "运行AI分类",
                detail=json_detail({"count": count}),
                username=getattr(request.state, "username", ""))
+    # 本响应是 htmx 局部替换（只换规则列表），不重载左侧宫格；而分类完成会新增
+    # 待审核项、也可能改变维护项（如分类标签异常被填充），故显式广播刷新，
+    # 否则两处徽标都要等兜底周期（5 分钟）才更新。
+    _notify = ("<script>['reviewClausePending','reviewWordPending','maintenanceStateChanged']"
+               ".forEach(function (ev) { document.body.dispatchEvent(new CustomEvent(ev)); });"
+               "</script>")
     return HTMLResponse(f"""<p style="color:green">✅ AI 分类完成：{count} 条已处理</p>
-    <div hx-get="/rules/list" hx-trigger="load" hx-swap="outerHTML"></div>""")
+    <div hx-get="/rules/list" hx-trigger="load" hx-swap="outerHTML"></div>{_notify}""")
 
 
 @router.get("/classify/pending-stats")

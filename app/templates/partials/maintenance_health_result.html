@@ -40,6 +40,11 @@
 {% endif %}
 <button type="button" onclick="startRebuild()"
         class="outline" style="margin-top:0.5rem">🔄 重建向量索引</button>
+{% if notify_badge %}
+{# 修复动作改变了维护状态，但本结果是 htmx 局部替换、不重载左侧宫格，
+   故显式通知宫格徽标立即刷新（否则要等 5 分钟兜底才更新） #}
+<script>document.body.dispatchEvent(new CustomEvent('maintenanceStateChanged'));</script>
+{% endif %}
 {% else %}
 <p style="color:var(--pico-muted-color)">点击「运行健康检查」开始。</p>
 {% endif %}

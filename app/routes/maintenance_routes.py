@@ -11,10 +11,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _render_health_result(request: Request, result: dict):
+def _render_health_result(request: Request, result: dict, notify_badge: bool = False):
+    """notify_badge=True 时结果片段自带「刷新宫格徽标」脚本——仅修复类动作需要，
+    自动/手动健康检查只是读状态，不必多一次请求。"""
     from app.main import templates
     return templates.TemplateResponse(request, "partials/maintenance_health_result.html", {
         "checks": result.get("checks", []),
+        "notify_badge": notify_badge,
     })
 
 
@@ -26,6 +29,17 @@ async def maintenance_page(request: Request):
         "left_content": "partials/tree_panel.html",
         "center_content": "partials/maintenance.html",
     })
+
+
+@router.get("/maintenance/pending-flag")
+async def maintenance_pending_flag():
+    """宫格「维护」红点数据源：纯读、不落库。
+
+    被前端「加载一次 + 事件 + 5 分钟兜底」调用，绝不可复用 run_health_check——
+    后者每次调用都写 system_logs + health_check_snapshots，会被周期轮询撑爆。
+    """
+    from app.maintenance.health_check import pending_flag
+    return JSONResponse(pending_flag())
 
 
 @router.post("/maintenance/health-check")
@@ -48,7 +62,8 @@ async def health_fix_one(request: Request, key: str):
     from app.maintenance.health_check import fix_issue, run_health_check
     username = getattr(request.state, "username", "system")
     fix_issue(key, username=username)
-    return _render_health_result(request, run_health_check(username=username))
+    return _render_health_result(request, run_health_check(username=username),
+                                 notify_badge=True)
 
 
 @router.post("/maintenance/fix-all")
@@ -57,7 +72,8 @@ async def health_fix_all(request: Request):
     from app.maintenance.health_check import fix_all, run_health_check
     username = getattr(request.state, "username", "system")
     fix_all(username=username)
-    return _render_health_result(request, run_health_check(username=username))
+    return _render_health_result(request, run_health_check(username=username),
+                                 notify_badge=True)
 
 
 # 后台重建进度（task_id -> {status, progress, message}），与导入进度相互独立

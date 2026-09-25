@@ -77,3 +77,30 @@ def test_run_rebuild_updates_progress(monkeypatch, tmp_path):
     mr._run_rebuild("rb_sync")
     assert mr.rebuild_progress["rb_sync"]["status"] == "done"
     assert mr.rebuild_progress["rb_sync"]["progress"] == 100
+
+
+def test_pending_flag_endpoint_is_pure_read(auth_client, monkeypatch, tmp_path):
+    """红点端点：返回 {red, yellow} 且不写 system_logs / 快照
+
+    该端点被前端「加载一次 + 事件 + 5 分钟兜底」调用，一旦写入会随轮询累积；
+    故契约上锁死返回结构与零副作用两点。
+    """
+    _setup(monkeypatch, tmp_path, name="badge.db")
+    with get_db() as conn:
+        setup_search_data(conn)
+        logs_before = conn.execute("SELECT COUNT(*) FROM system_logs").fetchone()[0]
+        snaps_before = conn.execute(
+            "SELECT COUNT(*) FROM health_check_snapshots").fetchone()[0]
+
+    resp = auth_client.get("/maintenance/pending-flag")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {"red", "yellow", "labels"}
+    assert isinstance(body["red"], list) and isinstance(body["yellow"], list)
+    with get_db() as conn:
+        logs_after = conn.execute("SELECT COUNT(*) FROM system_logs").fetchone()[0]
+        snaps_after = conn.execute(
+            "SELECT COUNT(*) FROM health_check_snapshots").fetchone()[0]
+    assert (logs_after, snaps_after) == (logs_before, snaps_before), \
+        f"红点端点写入了审计记录：{(logs_before, snaps_before)} → {(logs_after, snaps_after)}"
