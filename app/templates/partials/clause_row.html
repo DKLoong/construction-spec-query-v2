@@ -1,0 +1,51 @@
+{# 条文「正常行」——**唯一的定义处**，三处引用：
+     1. clauses_table.html 的循环体（条文列表初次渲染）
+     2. clause_class_edit.html 的 saved 分支（分类取消 / 保存后回填）
+     3. PUT /specs/{id}/clauses/{cid} 与 PUT .../class 的响应（保存后回填）
+
+   ⚠️ 不要在别处复制这段结构。此前「正常行」有三份拷贝，其中两份的「编辑」按钮
+   没跟着升级到分栏编辑页，导致「点分类 → 取消 → 点编辑」掉回旧的行内输入框
+   （用户 2026-09-25 报的 bug）。tests/test_clause_row.py 会逐字比对三处渲染结果，
+   任何分叉都会红。
+
+   期望上下文：clause（dict）、spec_id。 #}
+<tr id="clause-row-{{ clause.id }}">
+    <td><code>{{ clause.clause_no }}</code></td>
+    <td>{{ clause.title or '-' }}</td>
+    <td class="clause-preview">
+        <div class="clause-preview-md" data-spec-id="{{ spec_id }}"
+             data-clause-id="{{ clause.id }}"
+             data-md='{{ clause.content | tojson }}'
+             title="点击查看条文详情"></div>
+    </td>
+    <td>
+        {% if clause.dim4_specialty or clause.dim5_location or clause.dim6_material %}
+            {% if clause.dim4_specialty %}<span class="dim-tag">{{ clause.dim4_specialty }}</span>{% endif %}
+            {% if clause.dim5_location %}<span class="dim-tag">{{ clause.dim5_location }}</span>{% endif %}
+            {% if clause.dim6_material %}<span class="dim-tag">{{ clause.dim6_material }}</span>{% endif %}
+        {% else %}
+            <span style="color:#999">-</span>
+        {% endif %}
+    </td>
+    <td>
+        <div style="display:flex;flex-direction:column;gap:0.2rem">
+            <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;width:100%"
+                    onclick="editClause({{ spec_id }}, {{ clause.id }})">
+                编辑
+            </button>
+            <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;width:100%"
+                    hx-get="/specs/{{ spec_id }}/clauses/{{ clause.id }}/edit-class"
+                    hx-target="#clause-row-{{ clause.id }}"
+                    hx-swap="outerHTML">
+                分类
+            </button>
+            <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;color:#c44;width:100%"
+                    hx-delete="/specs/{{ spec_id }}/clauses/{{ clause.id }}"
+                    hx-confirm="确定删除条文「{{ clause.clause_no }}」？"
+                    hx-target="#clause-row-{{ clause.id }}"
+                    hx-swap="outerHTML">
+                🗑
+            </button>
+        </div>
+    </td>
+</tr>

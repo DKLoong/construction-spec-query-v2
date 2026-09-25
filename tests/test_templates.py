@@ -324,8 +324,12 @@ def test_specs_list_return_reloads_clauses():
 
 
 def test_clauses_table_edit_button_navigates_to_edit_page():
-    """条文列表「编辑」按钮应跳转独立编辑页（editClause 记录滚动位置）"""
-    html = _read("clauses_table.html")
+    """条文行「编辑」按钮应跳转独立编辑页（editClause 记录滚动位置）
+
+    行结构已收敛到 partials/clause_row.html（2026-09-25），断言随之前移。
+    意图不变；「三处渲染必须逐字相同」另由 tests/test_clause_row.py 锁定。
+    """
+    html = _read("clause_row.html")
     specs = _read("specs_list.html")
     assert "editClause" in html, "编辑按钮应调用 editClause 跳转"
     assert "edit-page" in specs, "editClause 应跳转独立编辑页"
@@ -367,7 +371,7 @@ def test_clauses_table_preview_renders_markdown():
     故渲染挂到 htmx:afterSettle 钩子上。意图不变：统一走 mdRender（含 DOMPurify
     净化 + 图片改写），不得为了省事在各处另写一份。
     """
-    html = _read("clauses_table.html")
+    html = _read("clause_row.html")   # 行结构已收敛到 partial（2026-09-25）
     assert "clause-preview-md" in html, "预览列缺少渲染容器"
     assert "tojson" in html, "预览列 content 应以 tojson 传递"
     js = _read_static("components/specs.js")

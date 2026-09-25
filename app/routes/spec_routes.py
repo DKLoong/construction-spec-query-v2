@@ -173,24 +173,6 @@ async def spec_image(request: Request, spec_id: int, filename: str):
     return FileResponse(str(img_path))
 
 
-@router.get("/specs/{spec_id}/clauses/{clause_id}/edit")
-async def edit_clause_form(request: Request, spec_id: int, clause_id: int):
-    """行内编辑表单"""
-    with get_db() as conn:
-        clause = conn.execute(
-            "SELECT * FROM clauses WHERE id = ? AND spec_id = ?",
-            (clause_id, spec_id),
-        ).fetchone()
-        if not clause:
-            return HTMLResponse("<tr><td colspan='4'>条文不存在</td></tr>", status_code=404)
-
-    from app.main import templates
-    return templates.TemplateResponse(request, "partials/clause_edit_form.html", {
-        "clause": dict(clause),
-        "spec_id": spec_id,
-    })
-
-
 @router.get("/specs/{spec_id}/clauses/{clause_id}/edit-page")
 async def clause_edit_page(request: Request, spec_id: int, clause_id: int):
     """两栏条文编辑页（左编辑右实时预览），仿 OCR 审查页布局
@@ -276,10 +258,9 @@ async def update_clause(
                detail=json_detail({"spec_id": spec_id, "clause_id": clause_id}),
                username=getattr(request.state, "username", ""))
     from app.main import templates
-    return templates.TemplateResponse(request, "partials/clause_edit_form.html", {
+    return templates.TemplateResponse(request, "partials/clause_row.html", {
         "clause": updated,
         "spec_id": spec_id,
-        "saved": True,
     })
 
 

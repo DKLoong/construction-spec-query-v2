@@ -199,22 +199,6 @@ def test_clauses_list(auth_client, monkeypatch, tmp_path):
 # 条文编辑
 # ═══════════════════════════════════════════
 
-def test_edit_clause_form(auth_client, monkeypatch, tmp_path):
-    """编辑表单返回 HTML"""
-    db_path = tmp_path / "test_edit_form.db"
-    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
-    from app.database import init_db, get_db
-    init_db()
-    with get_db() as conn:
-        spec_id = _setup_spec_data(conn)
-        clause = conn.execute(
-            "SELECT id FROM clauses WHERE spec_id = ? LIMIT 1", (spec_id,)
-        ).fetchone()
-
-    resp = auth_client.get(f"/specs/{spec_id}/clauses/{clause['id']}/edit")
-    assert resp.status_code == 200
-
-
 def test_update_clause(auth_client, monkeypatch, tmp_path):
     """更新条文内容"""
     db_path = tmp_path / "test_update_clause.db"

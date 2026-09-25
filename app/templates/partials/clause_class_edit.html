@@ -1,46 +1,9 @@
-<!-- 条文分类行内编辑（仅分类字段） -->
+{# 条文分类行内编辑：saved（正常行）/ 编辑态（分类输入框）两种形态。
+
+   saved 分支**必须** include clause_row.html —— 它就是「正常行」，此前在这里
+   复制了一份自己的拷贝，导致取消后回填的行带着旧版「编辑」按钮（掉回行内编辑表单）。 #}
 {% if saved %}
-<tr id="clause-row-{{ clause.id }}">
-    <td><code>{{ clause.clause_no }}</code></td>
-    <td>{{ clause.title or '-' }}</td>
-    <td class="clause-preview">
-        <span title="{{ clause.content }}">
-            {{ (clause.content or '')[:50] }}{% if (clause.content or '')|length > 50 %}...{% endif %}
-        </span>
-    </td>
-    <td>
-        {% if clause.dim4_specialty or clause.dim5_location or clause.dim6_material %}
-            {% if clause.dim4_specialty %}<span class="dim-tag">{{ clause.dim4_specialty }}</span>{% endif %}
-            {% if clause.dim5_location %}<span class="dim-tag">{{ clause.dim5_location }}</span>{% endif %}
-            {% if clause.dim6_material %}<span class="dim-tag">{{ clause.dim6_material }}</span>{% endif %}
-        {% else %}
-            <span style="color:#999">-</span>
-        {% endif %}
-    </td>
-    <td>
-        <div style="display:flex;flex-direction:column;gap:0.2rem">
-            <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;width:100%"
-                    hx-get="/specs/{{ spec_id }}/clauses/{{ clause.id }}/edit"
-                    hx-target="#clause-row-{{ clause.id }}"
-                    hx-swap="outerHTML">
-                编辑
-            </button>
-            <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;width:100%"
-                    hx-get="/specs/{{ spec_id }}/clauses/{{ clause.id }}/edit-class"
-                    hx-target="#clause-row-{{ clause.id }}"
-                    hx-swap="outerHTML">
-                分类
-            </button>
-            <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;color:#c44;width:100%"
-                    hx-delete="/specs/{{ spec_id }}/clauses/{{ clause.id }}"
-                    hx-confirm="确定删除条文「{{ clause.clause_no }}」？"
-                    hx-target="#clause-row-{{ clause.id }}"
-                    hx-swap="outerHTML">
-                🗑
-            </button>
-        </div>
-    </td>
-</tr>
+{% include 'partials/clause_row.html' %}
 {% else %}
 <tr id="clause-row-{{ clause.id }}">
     <td><code>{{ clause.clause_no }}</code></td>

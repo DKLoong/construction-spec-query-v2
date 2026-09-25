@@ -19,47 +19,9 @@
             </tr>
         </thead>
         <tbody>
-        {% for c in clauses %}
-        <tr id="clause-row-{{ c.id }}">
-            <td><code>{{ c.clause_no }}</code></td>
-            <td>{{ c.title or '-' }}</td>
-            <td class="clause-preview">
-                <div class="clause-preview-md" data-spec-id="{{ spec.id }}"
-                     data-clause-id="{{ c.id }}"
-                     data-md='{{ c.content | tojson }}'
-                     title="点击查看条文详情"></div>
-            </td>
-            <td>
-                {% if c.dim4_specialty or c.dim5_location or c.dim6_material %}
-                    {% if c.dim4_specialty %}<span class="dim-tag">{{ c.dim4_specialty }}</span>{% endif %}
-                    {% if c.dim5_location %}<span class="dim-tag">{{ c.dim5_location }}</span>{% endif %}
-                    {% if c.dim6_material %}<span class="dim-tag">{{ c.dim6_material }}</span>{% endif %}
-                {% else %}
-                    <span style="color:#999">-</span>
-                {% endif %}
-            </td>
-            <td>
-                <div style="display:flex;flex-direction:column;gap:0.2rem">
-                    <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;width:100%"
-                            onclick="editClause({{ spec.id }}, {{ c.id }})">
-                        编辑
-                    </button>
-                    <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;width:100%"
-                            hx-get="/specs/{{ spec.id }}/clauses/{{ c.id }}/edit-class"
-                            hx-target="#clause-row-{{ c.id }}"
-                            hx-swap="outerHTML">
-                        分类
-                    </button>
-                    <button class="outline" style="font-size:0.7rem;padding:0.2rem 0.3rem;color:#c44;width:100%"
-                            hx-delete="/specs/{{ spec.id }}/clauses/{{ c.id }}"
-                            hx-confirm="确定删除条文「{{ c.clause_no }}」？"
-                            hx-target="#clause-row-{{ c.id }}"
-                            hx-swap="outerHTML">
-                        🗑
-                    </button>
-                </div>
-            </td>
-        </tr>
+        {% set spec_id = spec.id %}
+        {% for clause in clauses %}
+        {% include 'partials/clause_row.html' %}
         {% endfor %}
         </tbody>
     </table>

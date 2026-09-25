@@ -220,6 +220,73 @@ CASES = {
 }
 
 
+# ═══════════════════════════════════════════
+# f2：条文行的「编辑」入口（用户报的回归路径）
+# ═══════════════════════════════════════════
+
+def _first_row(page):
+    return page.locator(".clause-table > tbody > tr").first
+
+
+def _assert_split_editor(page):
+    """断言已进入分栏编辑页（左编辑右实时预览），而非旧的行内输入框"""
+    page.wait_for_url("**/edit-page", timeout=10000)
+    page.wait_for_selector(".review-panels textarea", timeout=10000)
+    assert page.locator(".review-preview").count() == 1, "分栏编辑页缺少右侧实时预览栏"
+
+
+def f2_class_cancel_then_edit_opens_split_editor(page):
+    """点「分类」→ 取消 → 点「编辑」：必须进分栏编辑页
+
+    用户 2026-09-25 报的路径：取消后回填的行带着旧版「编辑」按钮，点了掉回行内输入框。
+    根因是「正常行」有三份拷贝，回填那两份没跟着升级（已收敛为 clause_row.html）。
+    """
+    open_first_spec_clauses(page)
+    _first_row(page).locator("button:has-text('分类')").click()
+    page.wait_for_selector(".clause-table > tbody > tr input[name=dim4_specialty]", timeout=8000)
+    page.locator(".clause-table > tbody > tr").first.locator("button:has-text('取消')").click()
+    page.wait_for_selector(".clause-table > tbody > tr button:has-text('编辑')", timeout=8000)
+    _first_row(page).locator("button:has-text('编辑')").click()
+    _assert_split_editor(page)
+
+
+def f2_class_save_then_edit_opens_split_editor(page):
+    """点「分类」→ 保存 → 点「编辑」：同样必须进分栏编辑页（原值提交，不改数据）"""
+    open_first_spec_clauses(page)
+    _first_row(page).locator("button:has-text('分类')").click()
+    page.wait_for_selector(".clause-table > tbody > tr input[name=dim4_specialty]", timeout=8000)
+    page.locator(".clause-table > tbody > tr").first.locator("button:has-text('保存')").click()
+    page.wait_for_selector(".clause-table > tbody > tr button:has-text('编辑')", timeout=8000)
+    _first_row(page).locator("button:has-text('编辑')").click()
+    _assert_split_editor(page)
+
+
+def f2_restored_row_preview_is_rendered_markdown(page):
+    """分类取消回填的行，内容列须仍是**渲染后的 md**（旧版回填是纯文本截断）
+
+    判据：回填行存在 .clause-preview-md 且其内有块级子元素（mdRender 产物），
+    旧实现的回填行只有一个纯文本 <span>（无该 div/子元素）。
+    """
+    open_first_spec_clauses(page)
+    _first_row(page).locator("button:has-text('分类')").click()
+    page.wait_for_selector(".clause-table > tbody > tr input[name=dim4_specialty]", timeout=8000)
+    page.locator(".clause-table > tbody > tr").first.locator("button:has-text('取消')").click()
+    page.wait_for_selector(".clause-table > tbody > tr button:has-text('编辑')", timeout=8000)
+    info = _first_row(page).evaluate("""row => {
+        const box = row.querySelector('.clause-preview-md');
+        return { hasBox: !!box, childTags: box ? box.children.length : 0,
+                 text: box ? box.textContent.trim().length : 0 };
+    }""")
+    assert info["hasBox"], "回填行的内容列不是 .clause-preview-md 容器（退回了旧版纯文本行）"
+    assert info["childTags"] > 0 and info["text"] > 0, \
+        f"回填行内容列未渲染出内容：{info}"
+
+
+CASES["f2"] = [f2_class_cancel_then_edit_opens_split_editor,
+               f2_class_save_then_edit_opens_split_editor,
+               f2_restored_row_preview_is_rendered_markdown]
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "f1"
     with sync_playwright() as p:
