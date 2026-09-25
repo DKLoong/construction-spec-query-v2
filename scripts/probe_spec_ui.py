@@ -337,6 +337,44 @@ def f3_status_change_confirm_cancel_and_accept(page):
 CASES["f3"] = [f3_status_change_confirm_cancel_and_accept]
 
 
+# ═══════════════════════════════════════════
+# f4：规范分类保存后，表格标签同步
+# ═══════════════════════════════════════════
+
+def f4_class_save_updates_table_label(page):
+    """改规范分类并保存 → 表格里那一行的标签必须立刻变（用例自还原）
+
+    用户报的现象：下方出现了「✅ 分类已保存」，但表格的分类列纹丝不动。
+    """
+    page.goto(f"{BASE}/specs")
+    page.wait_for_selector("button:has-text('📋 分类')", timeout=15000)
+    # 落点是单元格**内部**的 span（不能是 td：htmx 用 DOMParser 提取 OOB 时顶层 td 会被丢弃）
+    cell = page.locator("[id^='spec-class-cell-']").first
+
+    # 从编辑表单读 dim2 原值（比从标签文本反推可靠：标签可能是占位「-」）
+    page.locator("button:has-text('📋 分类')").first.click()
+    page.wait_for_selector("#spec-class-area input[name=dim2_stage]", timeout=8000)
+    original = page.input_value("#spec-class-area input[name=dim2_stage]")
+
+    new_val = "施工" if original != "施工" else "验收"
+    page.fill("#spec-class-area input[name=dim2_stage]", new_val)
+    page.locator("#spec-class-area button[type=submit]").click()
+
+    assert poll_until(page, lambda: new_val in cell.inner_text(), timeout_ms=8000), \
+        f"保存后表格分类标签未同步更新（单元格仍为 {cell.inner_text()!r}）"
+
+    # 还原
+    page.locator("button:has-text('📋 分类')").first.click()
+    page.wait_for_selector("#spec-class-area input[name=dim2_stage]", timeout=8000)
+    page.fill("#spec-class-area input[name=dim2_stage]", original)
+    page.locator("#spec-class-area button[type=submit]").click()
+    assert poll_until(page, lambda: new_val not in cell.inner_text(), timeout_ms=8000), \
+        "用例未能还原分类（同轮后续用例不应继承本次改动）"
+
+
+CASES["f4"] = [f4_class_save_updates_table_label]
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "f1"
     with sync_playwright() as p:

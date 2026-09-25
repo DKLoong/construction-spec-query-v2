@@ -6,6 +6,17 @@
         工程阶段: {{ spec.dim2_stage or '(未设置)' }} | 工程用途: {{ spec.dim3_usage or '(未设置)' }}
     </p>
 </div>
+{# 同步更新表格里那一行的分类标签（本表单走 hx-put，htmx 会摘出并处理 OOB）。
+   没有它就会「下方提示已保存、表格标签纹丝不动」——用户 2026-09-25 报的现象。
+
+   ⚠️ 载体必须是 <span>，**不能是 <td>**：htmx 用 DOMParser 解析响应来提取 OOB 元素，
+   而在 HTML 解析器的 body 上下文中顶层 <td> 会被直接丢弃（实测
+   DOMParser().parseFromString('<td>x</td>','text/html').body.children 为空），
+   响应文本里明明有这段 HTML、后端测试也全绿，但前端永远收不到它。
+   故落点挂在表格单元格**内部**的 <span> 上（见 specs_table.html）。 #}
+<span id="spec-class-cell-{{ spec.id }}" hx-swap-oob="true">
+    {% with s = spec %}{% include 'partials/spec_class_cell.html' %}{% endwith %}
+</span>
 {% else %}
 <div style="padding:0.75rem;background:var(--pico-card-background-color);border:1px solid var(--pico-card-border-color);border-radius:6px;margin-top:0.5rem">
     <h4 style="margin:0 0 0.5rem 0">✏️ 编辑规范分类</h4>

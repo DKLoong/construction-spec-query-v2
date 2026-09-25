@@ -1,0 +1,10 @@
+{# 规范分类标签（dim2 工程阶段 / dim3 工程用途）的**内层内容**。
+
+   列表单元格与保存后的 OOB 更新共用这一份——两处各写一份正是用户报的
+   「改完分类、下方提示已保存，但表格里那行标签没变」的成因。
+   外层的 <td> 各自写（列表侧无 hx-swap-oob、保存侧有），因为属性无法由 include 参数化。
+
+   期望上下文：s（规范 dict，字段 dim2_stage / dim3_usage） #}
+{% if s.dim2_stage %}<span class="dim-tag">{{ s.dim2_stage }}</span>{% endif %}
+{% if s.dim3_usage %}<span class="dim-tag">{{ s.dim3_usage }}</span>{% endif %}
+{% if not s.dim2_stage and not s.dim3_usage %}<span style="color:#999">-</span>{% endif %}
