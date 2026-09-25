@@ -40,13 +40,15 @@
                       style="font-size:0.75rem">{{ clause.spec_status }}</span>
                 {% endif %}
             </div>
-            {% if clause.spec_status == '废止' or clause.replace_by_code %}
+            {# 废止/替代提示：新版规范信息三级兜底 ——
+               1. 库内有替代者（replace_by_code + 名称，导入新规范时反写关联）
+               2. 仅有导入时留存的替代者编号（replaced_by_code，新版尚未入库）
+               3. 都无：只给出提示，不留悬空冒号 #}
+            {% set new_code = clause.replace_by_code or clause.replaced_by_code %}
+            {% set new_title = clause.replace_by_title if clause.replace_by_code else '' %}
+            {% if clause.spec_status == '废止' or new_code %}
             <div style="margin-top:0.5rem;padding:0.5rem;background:#fdecec;border:1px solid #f2c4c4;border-radius:6px;font-size:0.8rem;color:#b00000">
-                {% if clause.replace_by_code %}
-                本规范已被《{{ clause.replace_by_code }} {{ clause.replace_by_title or '' }}》替代，请以新规范的规定为准
-                {% else %}
-                本规范已废止，请查阅新版规范
-                {% endif %}
+                本规范已废止，请查阅新版规范{% if new_code %}：{{ new_code }}{% if new_title %} {{ new_title }}{% endif %}{% endif %}
             </div>
             {% endif %}
             <small style="color:var(--pico-muted-color)">

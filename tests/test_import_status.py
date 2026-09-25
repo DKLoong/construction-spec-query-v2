@@ -77,3 +77,33 @@ def test_import_reverse_link_ignores_self(monkeypatch, tmp_path):
         ).fetchone()
     assert row["status"] == "现行"
     assert row["replace_by_spec_id"] is None
+
+
+def test_import_obsolete_spec_persists_replaced_by_code(monkeypatch, tmp_path):
+    """导入的是一本**废止**规范：校核出的新版编号须落到**自己**身上
+
+    用户反馈的场景：导入废止规范时界面显示了替代它的新版编号，条文详情页却只字未提
+    —— 因为该编号此前只被用来反查库中记录，查不到就直接丢弃、从未持久化。
+    """
+    db_path = tmp_path / "is4.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.routes.import_routes.OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setattr("app.routes.import_routes.UPLOAD_DIR", str(tmp_path / "up"))
+    init_db()
+    import app.routes.import_routes as ir
+    ir.progress_store["task4"] = {"status": "processing", "progress": 0}
+    ir.progress_store["task4"]["md_text"] = "# 第1章\n5.1.1 旧条文内容\n"
+    from app.routes.import_routes import _process_import_phase2
+    _process_import_phase2(
+        "task4", "# 第1章\n5.1.1 旧条文内容\n", "钢筋机械连接技术规程", "JGJ 107-2010",
+        str(tmp_path / "f4.md"), "hash4", status="废止", replaced_by_code="JGJ 107-2024",
+    )
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT status, replaced_by_code, replace_by_spec_id FROM specifications "
+            "WHERE code = 'JGJ 107-2010'"
+        ).fetchone()
+    assert row["status"] == "废止"
+    assert row["replaced_by_code"] == "JGJ 107-2024", \
+        "校核出的新版编号未持久化（详情页将无法给出编号）"
+    assert row["replace_by_spec_id"] is None, "新版不在库中，不该凭空关联"

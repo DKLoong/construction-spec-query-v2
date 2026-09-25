@@ -25,15 +25,19 @@ def _setup_with_replaced(conn):
 
 
 def test_clause_detail_shows_replacement_notice(auth_client, monkeypatch, tmp_path):
-    """详情弹窗底部显示「已被《新编号》替代」提示"""
+    """详情弹窗底部显示「已废止 → 请查阅新版规范：新编号 新名称」
+
+    文案于 2026-09-25 按用户要求统一：原「本规范已被《X》替代，请以新规范的规定为准」
+    与「本规范已废止，请查阅新版规范」两个分支合并为同一句式，并把新版规范编号
+    与名称一并给出（详情见 partials/clause_detail.html 的三级兜底注释）。
+    """
     db_path = tmp_path / "ld1.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
     init_db()
     with get_db() as conn:
         old_id = _setup_with_replaced(conn)
     resp = auth_client.get(f"/clause/{old_id}")
-    assert "已被" in resp.text
-    assert "GB 50010-2015" in resp.text
+    assert "本规范已废止，请查阅新版规范：GB 50010-2015 混凝土结构工程施工质量验收规范" in resp.text
 
 
 def test_clause_detail_shows_status_tag(auth_client, monkeypatch, tmp_path):

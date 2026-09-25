@@ -24,7 +24,11 @@ CREATE TABLE IF NOT EXISTS specifications (
     file_hash       TEXT,
     clause_count    INTEGER DEFAULT 0,
     created_at      TEXT DEFAULT (datetime('now','localtime')),
-    updated_at      TEXT DEFAULT (datetime('now','localtime'))
+    updated_at      TEXT DEFAULT (datetime('now','localtime')),
+    -- 替代本规范的**新规范编号**（导入校核所得）。与 replace_by_spec_id 只差一个 'd'，
+    -- 语义完全不同，勿混：replace_by_spec_id 是指向**库内**替代者的外键（新版未入库时为
+    -- NULL），本列是替代者的**编号字符串**（新版未入库时详情页仍能给出编号）。
+    replaced_by_code TEXT
 );
 
 CREATE TABLE IF NOT EXISTS clauses (
@@ -436,6 +440,13 @@ def init_db():
             pass  # 列已存在
         try:
             conn.execute("ALTER TABLE specifications ADD COLUMN spec_version TEXT")
+        except Exception:
+            pass  # 列已存在
+        # 迁移：为已有数据库添加 replaced_by_code（替代本规范的**新规范编号**，字符串）。
+        #   与上面 replace_by_spec_id 只差一个 'd'：那个是库内外键（新版未入库时为 NULL），
+        #   本列是编号本身，用于「新版尚未入库」时详情页也能给出可查的编号。详见建表处注释。
+        try:
+            conn.execute("ALTER TABLE specifications ADD COLUMN replaced_by_code TEXT")
         except Exception:
             pass  # 列已存在
         # 迁移：为已有数据库的 classification_rules 添加 label 列（规则赋值标签，NULL 回退 pattern）

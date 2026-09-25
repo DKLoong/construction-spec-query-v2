@@ -39,6 +39,49 @@ def _sanitize_replaced_by_code(replaced_by_code: str) -> str:
     return (replaced_by_code or "")[:REPLACED_BY_CODE_MAX_LEN]
 
 
+def _link_replacement(conn, spec_id: int, replaced_by_code: str, status: str) -> None:
+    """把校核出的「替代关系编号」落到本规范上，方向**按本规范状态推断**。
+
+    为什么必须推断而不是照抄：同一个 replaced_by_code 字段，prompt 写「被替代的规范
+    编号（废止/修订中时若有）」、导入界面标签写「被替代编号」、而本函数的历史实现拿它去
+    标记**库中该编号**的规范为废止（当成「我替代掉的旧规范」）。前两者读作「替代我的
+    新规范」，第三者读作「我替代的旧规范」——方向相反。AI 的输出方向也随之不稳
+    （文档写「本标准代替 X」→ 填旧的；写「本标准被 X 代替」→ 填新的）。
+
+    故按下表判定（两种 AI 输出都能落到正确方向）：
+
+    | 本规范状态   | 编号含义             | 动作                                                     |
+    |-------------|---------------------|----------------------------------------------------------|
+    | 废止/修订中 | 替代**它**的新规范   | 存入 replaced_by_code；库中有该新版则把自己的外键指向它     |
+    | 现行        | 被**它**替代的旧规范 | 把库中那本标为废止，外键指向本规范（历史行为，保持不变）     |
+    """
+    if not replaced_by_code:
+        return
+    norm = normalize_spec_code(replaced_by_code)
+    # 排除自引用：同码重导时 code = norm 会命中刚 INSERT 的行自身
+    other = conn.execute(
+        "SELECT id FROM specifications WHERE code = ? AND id != ?", (norm, spec_id)
+    ).fetchone()
+
+    if status in ("废止", "修订中"):
+        # 本规范被替代：留存替代者编号（即便新版尚未入库，详情页也能给出可查的编号）
+        conn.execute(
+            "UPDATE specifications SET replaced_by_code = ? WHERE id = ?",
+            (replaced_by_code, spec_id),
+        )
+        if other:
+            conn.execute(
+                "UPDATE specifications SET replace_by_spec_id = ? WHERE id = ?",
+                (other["id"], spec_id),
+            )
+    elif other:
+        # 本规范替代了旧规范：标记旧规范废止并反向关联（新规范状态不动）
+        conn.execute(
+            "UPDATE specifications SET status = '废止', replace_by_spec_id = ? WHERE id = ?",
+            (spec_id, other["id"]),
+        )
+
+
 def _compute_file_hash(file_bytes: bytes) -> str:
     """计算文件的 SHA256 哈希值"""
     return hashlib.sha256(file_bytes).hexdigest()
@@ -399,20 +442,8 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         )
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-        # 反向联动：replaced_by_code 命中库中旧规范 → 反写旧规范废止 + 关联
-        if replaced_by_code:
-            norm_old = normalize_spec_code(replaced_by_code)
-            # 排除自引用：同码重导时 code = norm_old 会命中刚 INSERT 的新行自身，
-            # 误把自己标废止；加 id != spec_id 只匹配真正的旧规范。
-            old = conn.execute(
-                "SELECT id FROM specifications WHERE code = ? AND id != ?",
-                (norm_old, spec_id),
-            ).fetchone()
-            if old:
-                conn.execute(
-                    "UPDATE specifications SET status = '废止', replace_by_spec_id = ? WHERE id = ?",
-                    (spec_id, old["id"]),
-                )
+        # 替代关系落库（方向按本规范状态推断，见 _link_replacement 文档）
+        _link_replacement(conn, spec_id, replaced_by_code, status)
 
         classified_count = 0
         # 向量阶段的失败信息先收集、commit 后再落日志：log_action 自开新连接，
