@@ -6,7 +6,7 @@
     <title>施工规范查询系统 V2</title>
     <link rel="stylesheet" href="/static/pico.min.css">
     <link rel="stylesheet" href="/static/pico.custom.css">
-    <link rel="stylesheet" href="/static/app.css?v=24">
+    <link rel="stylesheet" href="/static/app.css?v=25">
     <link rel="stylesheet" href="/static/katex/katex.min.css">
     <script src="/static/htmx.min.js"></script>
     <script src="/static/alpine.min.js" defer></script>
@@ -44,22 +44,28 @@
                 <span class="clause-modal-title">📋 条文详情</span>
                 <button onclick="window.closeClauseModal()" class="clause-modal-close" aria-label="关闭">&times;</button>
             </div>
-            <div class="clause-modal-body">
+            <div class="clause-modal-body" id="clause-modal-body">
                 <div class="clause-modal-loading" style="display:none">加载中...</div>
                 <div id="clause-modal-content"></div>
+            </div>
+            <!-- 底部翻页条：仅当打开时携带翻页上下文（来源列表的 id 序列）才显示 -->
+            <div class="clause-modal-footer" id="clause-modal-footer" style="display:none">
+                <button type="button" id="clause-nav-prev" class="outline">‹ 上一条</button>
+                <span id="clause-nav-count" class="clause-nav-count"></span>
+                <button type="button" id="clause-nav-next" class="outline">下一条 ›</button>
             </div>
         </div>
     </div>
     <script src="/static/katex/katex.min.js"></script>
     <script src="/static/katex/contrib/auto-render.min.js"></script>
     <script src="/static/components/md-render.js?v=13"></script>
-    <script src="/static/components/clause-modal.js?v=11"></script>
+    <script src="/static/components/clause-modal.js?v=12"></script>
     <script src="/static/components/settings.js?v=3"></script>
     <script src="/static/components/tree.js?v=7"></script>
     <script src="/static/components/qa.js?v=27"></script>
     <script src="/static/components/search.js?v=12"></script>
     <script src="/static/components/rebuild.js?v=1"></script>
     <script src="/static/components/import.js?v=3"></script>
-    <script src="/static/components/specs.js?v=2"></script>
+    <script src="/static/components/specs.js?v=3"></script>
 </body>
 </html>

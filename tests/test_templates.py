@@ -359,12 +359,20 @@ def test_katex_strict_ignores_unicode_text_in_math_mode():
 
 
 def test_clauses_table_preview_renders_markdown():
-    """条文列表预览列须渲染 markdown（clause-preview-md 容器 + 统一 mdRender 渲染）"""
+    """条文列表预览列须渲染 markdown（clause-preview-md 容器 + 统一 mdRender 渲染）
+
+    **渲染位置已从模板内联脚本搬到 specs.js**（2026-09-25）：模板内联脚本只在
+    「表格级」swap 时执行，而条文分类的保存/取消是**行级** swap（只换当前 tr），
+    换入的行不会重跑表格级脚本 ⇒ 回填行的内容列退化成纯文本、与初次渲染不一致。
+    故渲染挂到 htmx:afterSettle 钩子上。意图不变：统一走 mdRender（含 DOMPurify
+    净化 + 图片改写），不得为了省事在各处另写一份。
+    """
     html = _read("clauses_table.html")
     assert "clause-preview-md" in html, "预览列缺少渲染容器"
     assert "tojson" in html, "预览列 content 应以 tojson 传递"
-    # 渲染统一收敛到 md-render.js（含 DOMPurify 净化 + 图片改写），避免两处逻辑漂移
-    assert "mdRender.renderInto" in html, "预览列应复用统一 mdRender 渲染"
+    js = _read_static("components/specs.js")
+    assert "mdRender.renderInto" in js, "预览列应复用统一 mdRender 渲染"
+    assert "htmx:afterSettle" in js, "渲染须挂在 swap 钩子上，行级 swap 也要覆盖到"
 
 
 def test_search_state_store_registered_in_tree_js():

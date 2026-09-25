@@ -247,6 +247,22 @@
 }
 .clause-modal-close:hover { background: rgba(138, 158, 139, 0.12); color: var(--pico-color); }
 .clause-modal-body { overflow-y: auto; padding: 1.5rem; flex: 1; }
+/* 底部翻页条：三控件同一 flex 行、基线对齐。
+   按钮必须 margin:0 —— Pico 默认给 button 加 margin-bottom:14.4px，会把 flex 行撑高
+   导致控件视觉偏上（见 memory: pico-button-margin-bottom-flex）。 */
+.clause-modal-footer {
+    display: flex; justify-content: center; align-items: center; gap: 1rem;
+    padding: 0.7rem 1.5rem; border-top: 1px solid var(--pico-muted-border-color);
+    background: #faf7f3; border-radius: 0 0 12px 12px;
+}
+.clause-modal-footer button { margin: 0; font-size: 0.8rem; padding: 0.25rem 0.9rem; }
+.clause-modal-footer button:disabled { opacity: 0.4; cursor: not-allowed; }
+.clause-nav-count {
+    font-size: 0.8rem; color: var(--pico-muted-color); min-width: 4rem;
+    text-align: center; font-variant-numeric: tabular-nums;
+}
+/* 带条文引用的元素一律可点（点开详情弹窗） */
+[data-clause-id] { cursor: pointer; }
 .clause-modal-loading {
     text-align: center; color: var(--pico-muted-color);
     padding: 2rem; font-size: 0.9rem;

@@ -8,11 +8,13 @@
 </div>
 {% endif %}
 {% if results %}
+    {# data-clause-ids：本页结果 id 序列，只存这一份；各结果项只带自己的 data-clause-id，
+       点击后由 clause-modal.js 委托打开详情并据该序列提供「上一条/下一条」 #}
+    <div class="result-list"
+         data-clause-ids='{{ results | map(attribute="id") | list | tojson }}'>
     <p>共找到 {{ total }} 条结果</p>
     {% for r in results %}
-    <div class="result-item"
-         onclick="window.dispatchEvent(new CustomEvent('view-clause', {detail: {id: {{ r.id }}}}))"
-         style="cursor: pointer;">
+    <div class="result-item" data-clause-id="{{ r.id }}">
         <div class="clause-no">{{ r.spec_code }}{% if r.spec_title %} {{ r.spec_title }}{% endif %} — {{ r.clause_no }}</div>
         {% if r.title %}<div class="clause-title">{{ r.title }}</div>{% endif %}
         <!-- 摘要以原始 md 存入 data-md（Jinja 自动 HTML 转义，浏览器解析后 dataset 还原），前端统一渲染（含 KaTeX 公式） -->
@@ -32,6 +34,7 @@
         </div>
     </div>
     {% endfor %}
+    </div>
     {% if total > page_size %}
     <div class="pagination">
         {% if page > 1 %}

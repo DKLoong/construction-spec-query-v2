@@ -1,0 +1,236 @@
+"""规范管理页 UI 行为回归套件（f1=条文详情弹窗翻页；后续 Task 在此追加 f2/f3）。
+
+**保留决定（2026-09-25）**：与 probe_qa_ui.py 同性质——本仓前端行为的验收网，
+覆盖「点内容列开弹窗 / 翻页计数与边界 / 控件基线对齐 / 状态切换确认框 /
+分类输入悬浮提示」这些**后端测试看不见**的交互。请勿当一次性脚本删除；
+若 UI 大改导致失效，请修用例而不是关掉。
+
+## 运行方式（缺一不可）
+
+```bash
+cd /d/CC-Workspace/construction-spec-query-v2
+cp data/spec_query.db data/_probe_spec.db          # 副本库，**不要**在 dev 库上跑
+export DATABASE_PATH="$PWD/data/_probe_spec.db"    # 只走环境变量，禁止改源码常量
+D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8123 &   # 不加 --reload
+D:/Python/python.exe scripts/probe_spec_ui.py f1   # f1|f2|f3
+```
+
+**前置要点**：
+- 全站受 `AuthMiddleware` 保护，runner 会先登录（`PROBE_USER`/`PROBE_PASS` 可覆盖，
+  默认取 `scripts/create_admin.py` 的默认账号）。
+- **用例自带前置**：不依赖副本库里手工点过的状态；条文数从页面上现数，不写死。
+- 改静态 js/css 后，跑之前确认 `base.html` 的 `?v=N` 已递增（缓存会让探针读到旧文件）。
+- 跑完清理：杀掉 8123 进程、删除 `data/_probe_spec.db`。
+- **视口宽度会影响结论**（见 memory: ui-isolated-verification）：默认 1600×900，
+  窄视口相关用例请自行在用例内 resize 并在 finally 还原。
+
+用法（单组）：
+  D:/Python/python.exe scripts/probe_spec_ui.py f1
+"""
+import os
+import sys
+
+from playwright.sync_api import sync_playwright
+
+BASE = "http://127.0.0.1:8123"
+PROBE_USER = os.environ.get("PROBE_USER", "admin")
+PROBE_PASS = os.environ.get("PROBE_PASS", "admin123")
+
+
+def login(page):
+    """登录隔离实例。凭据默认取 dev 库副本里的管理员，可用环境变量覆盖。"""
+    page.goto(f"{BASE}/login")
+    page.fill("input[name=username]", PROBE_USER)
+    page.fill("input[name=password]", PROBE_PASS)
+    page.click("button[type=submit]")
+    page.wait_for_url(f"{BASE}/", timeout=10000)
+
+
+def poll_until(page, predicate, timeout_ms, interval_ms=100):
+    """有界轮询 `predicate()`；满足即返回 True，超时返回 False。
+
+    **不无限挂起、不抛异常**（超时交给调用点的 assert 给出精确失败信息）。
+    """
+    waited = 0
+    while True:
+        if predicate():
+            return True
+        if waited >= timeout_ms:
+            return False
+        page.wait_for_timeout(interval_ms)
+        waited += interval_ms
+
+
+# ═══════════════════════════════════════════
+# 共用步骤
+# ═══════════════════════════════════════════
+
+def open_first_spec_clauses(page):
+    """进入规范管理页 → 点第一本规范的「查看条文」→ 返回列表里的条文条数
+
+    ⚠️ 数行必须用 `>` 直接子选择器：条文内容里的 md 表格（PaddleOCR-VL 导出的
+    HTML `<table>`）渲染后会嵌进预览列，后代选择器 `.clause-table tbody tr`
+    会把这些**嵌套表格的行**一并数进来（实测 73 条条文数出 247 个 tr）。
+    """
+    page.goto(f"{BASE}/specs")
+    page.wait_for_selector("button:has-text('查看条文')", timeout=15000)
+    page.locator("button:has-text('查看条文')").first.click()
+    page.wait_for_selector(".clause-table > tbody > tr", timeout=15000)
+    # 预览列是 htmx swap 后由 specs.js 渲染的；等它落位再点，避免点到空 div
+    page.wait_for_selector(".clause-preview-md[data-clause-id]", timeout=15000)
+    return page.locator(".clause-table > tbody > tr").count()
+
+
+def open_modal_by_clicking_preview(page, nth=0):
+    """点第 nth 个内容列 → 等弹窗可见且详情加载完成"""
+    page.locator(".clause-preview-md[data-clause-id]").nth(nth).click()
+    assert poll_until(page, lambda: page.evaluate(
+        "() => document.getElementById('clause-modal-overlay').style.display === 'flex'"),
+        timeout_ms=5000), "点击条文内容列未打开详情弹窗"
+    page.wait_for_selector("#clause-modal-content article", timeout=10000)
+
+
+def nav_state(page):
+    """读取翻页条的当前状态：(计数文本, prev 是否禁用, next 是否禁用, 标题文本)"""
+    return {
+        "count": page.locator("#clause-nav-count").inner_text().strip(),
+        "prev_disabled": page.locator("#clause-nav-prev").is_disabled(),
+        "next_disabled": page.locator("#clause-nav-next").is_disabled(),
+        "title": page.locator("#clause-modal-content h4").inner_text().strip(),
+    }
+
+
+def close_modal(page):
+    page.keyboard.press("Escape")
+    assert poll_until(page, lambda: page.evaluate(
+        "() => document.getElementById('clause-modal-overlay').style.display === 'none'"),
+        timeout_ms=3000), "ESC 未能关闭弹窗"
+
+
+# ═══════════════════════════════════════════
+# f1：条文详情弹窗 —— 点内容列打开 + 底部翻页
+# ═══════════════════════════════════════════
+
+def f1_click_preview_opens_modal_with_footer(page):
+    """点内容列应打开详情弹窗，且底部出现翻页条（此前只能靠检索页打开）"""
+    n = open_first_spec_clauses(page)
+    assert n >= 2, f"探针需要至少 2 条条文才能验证翻页，副本库实有 {n} 条"
+    open_modal_by_clicking_preview(page)
+    footer_visible = page.locator("#clause-modal-footer").is_visible()
+    assert footer_visible, "条文详情弹窗底部未出现翻页条"
+    close_modal(page)
+
+
+def f1_first_clause_shows_1_of_n_with_prev_disabled(page):
+    """首条显示 1/N，且「上一条」禁用、「下一条」可用"""
+    n = open_first_spec_clauses(page)
+    open_modal_by_clicking_preview(page)
+    st = nav_state(page)
+    assert st["count"] == f"1/{n}", f"首条计数应为 1/{n}，实际 {st['count']}"
+    assert st["prev_disabled"], "首条时「上一条」应禁用"
+    assert not st["next_disabled"], "首条时「下一条」应可用"
+    close_modal(page)
+
+
+def f1_next_switches_content_and_count(page):
+    """点「下一条」：计数递增**且正文真的换成下一条**（只改计数不改内容是典型假实现）"""
+    open_first_spec_clauses(page)
+    open_modal_by_clicking_preview(page)
+    before = nav_state(page)
+    page.locator("#clause-nav-next").click()
+    # 等标题真的变化——这是「内容已换」的忠实代理，比 sleep 可靠
+    assert poll_until(page, lambda: page.locator("#clause-modal-content h4").inner_text().strip()
+                      != before["title"], timeout_ms=5000), \
+        "点「下一条」后正文标题没变——只更新了计数、没换内容"
+    after = nav_state(page)
+    assert after["count"] == f"2/{before['count'].split('/')[1]}", \
+        f"计数应递增到 2/N，实际 {after['count']}"
+    close_modal(page)
+
+
+def f1_prev_returns_to_first_and_disables_again(page):
+    """从第 2 条点「上一条」应回到 1/N，且「上一条」重新禁用（边界双向）"""
+    open_first_spec_clauses(page)
+    open_modal_by_clicking_preview(page)
+    first_title = nav_state(page)["title"]
+    page.locator("#clause-nav-next").click()
+    assert poll_until(page, lambda: page.locator("#clause-modal-content h4").inner_text().strip()
+                      != first_title, timeout_ms=5000), "「下一条」未生效，无法验证回退"
+    page.locator("#clause-nav-prev").click()
+    assert poll_until(page, lambda: page.locator("#clause-modal-content h4").inner_text().strip()
+                      == first_title, timeout_ms=5000), "点「上一条」未回到首条"
+    st = nav_state(page)
+    assert st["count"].startswith("1/"), f"回到首条后计数应为 1/N，实际 {st['count']}"
+    assert st["prev_disabled"], "回到首条后「上一条」应重新禁用"
+    close_modal(page)
+
+
+def f1_nav_controls_baseline_aligned(page):
+    """三控件须基线对齐：比较垂直中心（比 height 会被不同字号骗过）
+
+    ⚠️ 两个测量陷阱（都实测踩过）：
+      1. **必须同一帧内一次读完**。逐元素调用 bounding_box() 是三次独立往返，
+         期间弹窗里的图片异步加载会重排布局，footer 跟着移动 ⇒ 数出 3.3px 的
+         「未对齐」假红（实际三者中心完全一致）。故用一次 evaluate 取三个值。
+      2. 读之前先等图片加载完（下面 poll），否则拿到的是过渡态布局。
+    """
+    open_first_spec_clauses(page)
+    open_modal_by_clicking_preview(page)
+    # 尽力等布局稳定：图片全部 complete（无图片则立即通过；超时不判红，交给下面的断言说话）
+    poll_until(page, lambda: page.evaluate(
+        "() => Array.from(document.querySelectorAll('#clause-modal-content img'))"
+        ".every(i => i.complete)"), timeout_ms=8000)
+    centers = page.evaluate("""() => ['#clause-nav-prev', '#clause-nav-count', '#clause-nav-next']
+        .map(sel => { const r = document.querySelector(sel).getBoundingClientRect();
+                      return r.top + r.height / 2; })""")
+    spread = max(centers) - min(centers)
+    assert spread <= 1.0, \
+        f"翻页三控件未对齐：垂直中心最大相差 {spread:.1f}px（应 ≤1px）；实测中心 {centers}"
+    close_modal(page)
+
+
+def f1_search_result_opens_modal_with_nav(page):
+    """检索结果打开的弹窗同样带翻页上下文（同一套弹窗，行为一致）
+
+    ⚠️ 必须从**主页发起搜索**，不能 goto `/search?keyword=...`：`/search` 是
+    htmx 用的**片段路由**（只返回 result_content.html），直接打开它页面里既没有
+    弹窗容器也没有 clause-modal.js，点击必然无声无息（曾因此假红一次）。
+    """
+    page.goto(BASE)                       # 主页：完整 base.html + 弹窗容器
+    page.fill(".search-box input[type=search]", "钢筋")
+    page.press(".search-box input[type=search]", "Enter")
+    page.wait_for_selector(".result-item", timeout=15000)
+    n = page.locator(".result-item").count()
+    assert n >= 2, f"关键词「钢筋」命中 {n} 条，不足以验证翻页"
+    page.locator(".result-item").first.click()
+    page.wait_for_selector("#clause-modal-content article", timeout=10000)
+    st = nav_state(page)
+    assert st["count"] == f"1/{n}", f"检索页弹窗首条计数应为 1/{n}，实际 {st['count']}"
+    assert st["prev_disabled"], "检索页弹窗首条「上一条」应禁用"
+    close_modal(page)
+
+
+CASES = {
+    "f1": [f1_click_preview_opens_modal_with_footer,
+           f1_first_clause_shows_1_of_n_with_prev_disabled,
+           f1_next_switches_content_and_count,
+           f1_prev_returns_to_first_and_disables_again,
+           f1_nav_controls_baseline_aligned,
+           f1_search_result_opens_modal_with_nav],
+}
+
+
+if __name__ == "__main__":
+    which = sys.argv[1] if len(sys.argv) > 1 else "f1"
+    with sync_playwright() as p:
+        browser = p.chromium.launch(channel="chrome", headless=True)
+        pg = browser.new_page(viewport={"width": 1600, "height": 900})
+        login(pg)
+        n = 0
+        for fn in CASES[which]:
+            fn(pg)
+            print(f"PASS {fn.__name__}")
+            n += 1
+        # 自报条数：核对时一律照这一行，不在别处手写预计条数（会漂移）
+        print(f"== {which}: {n}/{len(CASES[which])} passed ==")
+        browser.close()
