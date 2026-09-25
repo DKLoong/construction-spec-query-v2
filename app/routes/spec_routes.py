@@ -68,13 +68,10 @@ async def update_spec_status(request: Request, spec_id: int, status: str = Form(
                detail=json_detail({"spec_id": spec_id, "code": existing["code"],
                                    "old": existing["status"], "new": status}),
                username=getattr(request.state, "username", ""))
-    return HTMLResponse(f"""<div id="spec-status-{spec_id}" hx-swap-oob="true">
-        <span class="spec-status-tag status-{_status_class(status)}">{status}</span>
-    </div>""")
+    # 返回 JSON 而非 HTML 片段：本端点由 specs.js 用 fetch 提交（不是 htmx），
+    # 此前返回的 hx-swap-oob 片段从未被任何一方消费，是纯粹的误导性死代码。
+    return JSONResponse({"ok": True, "status": status})
 
-
-def _status_class(status: str) -> str:
-    return {"现行": "current", "修订中": "revising", "废止": "obsolete"}.get(status, "current")
 
 
 @router.delete("/specs/{spec_id}")

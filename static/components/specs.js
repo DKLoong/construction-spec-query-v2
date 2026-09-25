@@ -15,27 +15,37 @@ function renderClausePreviews() {
 document.body.addEventListener('htmx:afterSettle', renderClausePreviews);
 renderClausePreviews();   // 初次（非 htmx 路径的兜底）
 
-// 规范页状态行内切换：监听 specs_table 下拉触发的 spec-status-change 事件，
-// 以 PUT /specs/{id}/status 提交新状态（值域校验由后端兜底），成功后轻提示。
-// 注意：specs_table 用 window.dispatchEvent 派发事件，监听必须用 window.addEventListener
-// （document 监听收不到 window 上 dispatch 的事件），与 qa.js/clause-modal.js 的 view-clause 惯例一致。
-window.addEventListener('spec-status-change', (e) => {
-    const { id, status } = e.detail;
+// ── 规范状态行内切换（带确认，防误触） ──────────────────────────────
+// 下拉框的 onchange 直接调本函数。规范状态影响检索默认过滤（「仅现行」下废止规范
+// 会从结果里消失），误改一次的代价远大于一次确认。
+//
+// 取消 = 把下拉框拨回 data-prev（模板下发的原值）并**不发请求**；
+// 失败同样回滚，避免界面显示的值与实际状态不一致（比报错更危险）。
+window.specStatusChange = function (sel) {
+    const id = sel.dataset.id;
+    const next = sel.value;
+    const prev = sel.dataset.prev;
+
+    if (next === prev) return;   // 选了同一项：不弹框、不发请求
+
+    if (!window.confirm(`规范状态已修改为「${next}」，是否应用？`)) {
+        sel.value = prev;        // 取消：保持修改前状态
+        return;
+    }
+
+    const rollback = function () { sel.value = prev; };
     fetch(`/specs/${id}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ status }),
+        body: new URLSearchParams({ status: next }),
     }).then(r => {
-        if (r.ok) {
-            // 轻量成功提示
-            const el = document.querySelector(`.spec-status-select[data-id="${id}"]`);
-            if (el) el.style.outline = '2px solid var(--pico-primary)';
-            setTimeout(() => { if (el) el.style.outline = ''; }, 800);
-        } else {
-            alert('状态更新失败');
-        }
+        if (!r.ok) { alert('状态更新失败'); rollback(); return; }
+        sel.dataset.prev = next;   // 成功：原值前移，后续切换以新值为基准
+        sel.style.outline = '2px solid var(--pico-primary)';
+        setTimeout(() => { sel.style.outline = ''; }, 800);
     }).catch(err => {
         console.error('状态更新请求失败:', err);
         alert('状态更新失败，请检查网络');
+        rollback();
     });
-});
+};

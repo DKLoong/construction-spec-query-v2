@@ -41,9 +41,10 @@
                 {% if not s.dim2_stage and not s.dim3_usage %}<span style="color:#999">-</span>{% endif %}
             </td>
             <td>
-                <select class="spec-status-select" data-id="{{ s.id }}"
+                {# data-prev：修改前的值，供确认框取消时回滚下拉框（前端只能由此获得原值） #}
+                <select class="spec-status-select" data-id="{{ s.id }}" data-prev="{{ s.status }}"
                         style="margin:0;font-size:0.75rem;padding:0.15rem 0.3rem"
-                        onchange="window.dispatchEvent(new CustomEvent('spec-status-change', {detail:{id:{{ s.id }}, status:this.value}}))">
+                        onchange="specStatusChange(this)">
                     {% for st in ['现行', '修订中', '废止'] %}
                     <option value="{{ st }}" {% if s.status == st %}selected{% endif %}>{{ st }}</option>
                     {% endfor %}

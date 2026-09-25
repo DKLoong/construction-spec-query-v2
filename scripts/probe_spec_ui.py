@@ -287,6 +287,56 @@ CASES["f2"] = [f2_class_cancel_then_edit_opens_split_editor,
                f2_restored_row_preview_is_rendered_markdown]
 
 
+# ═══════════════════════════════════════════
+# f3：规范状态切换的确认与回滚
+# ═══════════════════════════════════════════
+
+def _status_select(page):
+    page.goto(f"{BASE}/specs")
+    page.wait_for_selector(".spec-status-select", timeout=15000)
+    return page.locator(".spec-status-select").first
+
+
+def _status_value_after_reload(page):
+    """刷新后重读下拉框的值——用于判定「是否真的落库」（界面值可能只是本地状态）"""
+    page.reload()
+    page.wait_for_selector(".spec-status-select", timeout=15000)
+    return page.locator(".spec-status-select").first.input_value()
+
+
+def f3_status_change_confirm_cancel_and_accept(page):
+    """改状态：取消则回滚且不落库；确认则落库（用例自恢复原值）
+
+    判据用「刷新后重读」而非读界面值：只有服务端真改了，刷新才会变。
+    """
+    sel = _status_select(page)
+    before = sel.input_value()
+    target = "废止" if before != "废止" else "现行"
+
+    # 1) 取消：回滚 + 不落库
+    msgs = []
+    page.once("dialog", lambda d: (msgs.append(d.message), d.dismiss()))
+    sel.select_option(target)
+    assert msgs, "修改规范状态没有弹确认框（防误操作失效）"
+    assert target in msgs[0] and "是否应用" in msgs[0], f"确认框文案不符：{msgs[0]!r}"
+    assert sel.input_value() == before, "取消后下拉框未回滚到修改前的值"
+    assert _status_value_after_reload(page) == before, \
+        "取消后状态仍被写入服务端——取消必须不发请求"
+
+    # 2) 确认：落库
+    page.once("dialog", lambda d: d.accept())
+    _status_select(page).select_option(target)
+    assert _status_value_after_reload(page) == target, "确认后状态未落库"
+
+    # 3) 还原（副本库虽是一次性的，但同轮后续用例不应继承本用例的改动）
+    page.once("dialog", lambda d: d.accept())
+    _status_select(page).select_option(before)
+    assert _status_value_after_reload(page) == before, "用例未能恢复原状态"
+
+
+CASES["f3"] = [f3_status_change_confirm_cancel_and_accept]
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "f1"
     with sync_playwright() as p:
