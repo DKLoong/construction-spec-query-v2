@@ -6,7 +6,7 @@
     <title>施工规范查询系统 V2</title>
     <link rel="stylesheet" href="/static/pico.min.css">
     <link rel="stylesheet" href="/static/pico.custom.css">
-    <link rel="stylesheet" href="/static/app.css?v=25">
+    <link rel="stylesheet" href="/static/app.css?v=26">
     <link rel="stylesheet" href="/static/katex/katex.min.css">
     <script src="/static/htmx.min.js"></script>
     <script src="/static/alpine.min.js" defer></script>
@@ -56,6 +56,8 @@
             </div>
         </div>
     </div>
+    <!-- 输入框聚焦提示的落点（全局单例，position:fixed，见 field-hint.js 顶部说明） -->
+    <div id="field-hint-pop" class="field-hint-pop" style="display:none"></div>
     <script src="/static/katex/katex.min.js"></script>
     <script src="/static/katex/contrib/auto-render.min.js"></script>
     <script src="/static/components/md-render.js?v=13"></script>
@@ -67,5 +69,6 @@
     <script src="/static/components/rebuild.js?v=1"></script>
     <script src="/static/components/import.js?v=3"></script>
     <script src="/static/components/specs.js?v=4"></script>
+    <script src="/static/components/field-hint.js?v=1"></script>
 </body>
 </html>

@@ -263,6 +263,21 @@
 }
 /* 带条文引用的元素一律可点（点开详情弹窗） */
 [data-clause-id] { cursor: pointer; }
+
+/* ═══════════════════════════════════════════════════════════════
+   输入框聚焦提示（全局单例）
+   视觉沿用参数设置模块的 .param-pop（同一套暖底+描边观感）；
+   差异只有两点：等宽字体（让半角/全角标点的差别看得清）、position:fixed
+   （不受表格滚动容器 overflow 裁剪，见 components/field-hint.js）。
+   ═══════════════════════════════════════════════════════════════ */
+.field-hint-pop {
+    position: fixed; z-index: 20000; max-width: 22rem;
+    background: #fffdf8; border: 1px solid #ddd0bd; border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(74, 68, 84, .14); padding: 0.4rem 0.5rem;
+    font-size: 0.72rem; color: #5a4a33; line-height: 1.35;
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
+    pointer-events: none;   /* 别挡住用户点下面的输入框 */
+}
 .clause-modal-loading {
     text-align: center; color: var(--pico-muted-color);
     padding: 2rem; font-size: 0.9rem;

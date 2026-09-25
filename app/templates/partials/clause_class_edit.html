@@ -17,13 +17,16 @@
         <div style="display:flex;flex-direction:column;gap:0.3rem">
             <input type="text" name="dim4_specialty" value="{{ clause.dim4_specialty or '' }}"
                    placeholder="专业"
-                   style="font-size:0.75rem;padding:0.3rem 0.4rem;width:100%;box-sizing:border-box">
+                   style="font-size:0.75rem;padding:0.3rem 0.4rem;width:100%;box-sizing:border-box"
+                   data-hint='如需设置多个分类，请用半角标点(英文标点)","隔开。'>
             <input type="text" name="dim5_location" value="{{ clause.dim5_location or '' }}"
                    placeholder="部位"
-                   style="font-size:0.75rem;padding:0.3rem 0.4rem;width:100%;box-sizing:border-box">
+                   style="font-size:0.75rem;padding:0.3rem 0.4rem;width:100%;box-sizing:border-box"
+                   data-hint='如需设置多个分类，请用半角标点(英文标点)","隔开。'>
             <input type="text" name="dim6_material" value="{{ clause.dim6_material or '' }}"
                    placeholder="材料/工艺"
-                   style="font-size:0.75rem;padding:0.3rem 0.4rem;width:100%;box-sizing:border-box">
+                   style="font-size:0.75rem;padding:0.3rem 0.4rem;width:100%;box-sizing:border-box"
+                   data-hint='如需设置多个分类，请用半角标点(英文标点)","隔开。'>
         </div>
     </td>
     <td style="vertical-align:middle">

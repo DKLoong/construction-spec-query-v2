@@ -111,6 +111,26 @@ def close_modal(page):
 # f1：条文详情弹窗 —— 点内容列打开 + 底部翻页
 # ═══════════════════════════════════════════
 
+def _force_spec_status(page, status="现行"):
+    """把库内那本规范的状态幂等置为指定值（**用例自带前置**）。
+
+    为什么必须显式做：检索默认只搜「现行」，规范若停在废止态，检索用例会以
+    「没搜到结果」失败——离真实原因隔了一层。而状态确实可能不是现行：
+    f3 会改它；更隐蔽的是，**变异测试会让 f3 中途失败并跳过清理步骤**
+    （曾实测：变异版跑完库内留下「废止」，随后 f1 的检索用例莫名失败）。
+    不要依赖「上一轮留下的状态」——那是本仓探针反复踩过的老坑。
+    """
+    page.goto(f"{BASE}/specs")
+    page.wait_for_selector(".spec-status-select", timeout=15000)
+    sid = page.locator(".spec-status-select").first.get_attribute("data-id")
+    page.evaluate("""async ([id, status]) => {
+        await fetch(`/specs/${id}/status`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: new URLSearchParams({status}),
+        });
+    }""", [sid, status])
+
 def f1_click_preview_opens_modal_with_footer(page):
     """点内容列应打开详情弹窗，且底部出现翻页条（此前只能靠检索页打开）"""
     n = open_first_spec_clauses(page)
@@ -196,6 +216,7 @@ def f1_search_result_opens_modal_with_nav(page):
     htmx 用的**片段路由**（只返回 result_content.html），直接打开它页面里既没有
     弹窗容器也没有 clause-modal.js，点击必然无声无息（曾因此假红一次）。
     """
+    _force_spec_status(page, "现行")   # 检索默认只搜现行，先确保它可被搜到
     page.goto(BASE)                       # 主页：完整 base.html + 弹窗容器
     page.fill(".search-box input[type=search]", "钢筋")
     page.press(".search-box input[type=search]", "Enter")
@@ -373,6 +394,95 @@ def f4_class_save_updates_table_label(page):
 
 
 CASES["f4"] = [f4_class_save_updates_table_label]
+
+
+# ═══════════════════════════════════════════
+# f5：分类输入框的聚焦悬浮提示
+# ═══════════════════════════════════════════
+
+def _hint_state(page):
+    """读取提示框状态与「是否可能被裁剪」所需的三项事实。
+
+    ⚠️ **不要用 elementsFromPoint 判裁剪**：提示框带 `pointer-events:none`
+    （故意如此，免得挡住它下面的输入框），而 elementsFromPoint **会跳过这类元素**
+    —— 于是无论裁没裁都返回「不在渲染树」，是个恒假的判据（本用例踩过：
+    明明位置正确、在视口内，却报「被滚动容器裁剪」）。
+
+    改用三条充分判据：fixed 定位 + 不落在滚动容器内 + 完整矩形在视口内。
+    """
+    return page.evaluate("""() => {
+        const el = document.getElementById('field-hint-pop');
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return {display: cs.display, text: el.textContent.trim(), font: cs.fontFamily,
+                top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width,
+                position: cs.position,
+                inScrollContainer: !!el.closest('.clause-table-wrapper'),
+                inViewport: r.top >= 0 && r.left >= 0 &&
+                            r.bottom <= window.innerHeight && r.right <= window.innerWidth};
+    }""")
+
+
+def _assert_hint_below_input(page, inp):
+    box = inp.bounding_box()
+    assert box, "输入框不可见，无法测量"
+    assert poll_until(page, lambda: (_hint_state(page) or {}).get("display") == "block",
+                      timeout_ms=3000), "聚焦分类输入框后未出现提示框"
+    st = _hint_state(page)
+    assert "半角标点" in st["text"], f"提示文案不符：{st['text']!r}"
+    assert st["top"] >= box["y"] + box["height"] - 1, \
+        f"提示框未出现在输入框下方（top={st['top']:.1f} vs 输入框底 {box['y'] + box['height']:.1f}）"
+    assert abs(st["left"] - box["x"]) < 3, \
+        f"提示框未与输入框左对齐（left={st['left']:.1f} vs {box['x']:.1f}）"
+    assert "mono" in st["font"].lower() or "consolas" in st["font"].lower(), \
+        f"提示框未使用等宽字体：{st['font']}"
+    return st
+
+
+def f5_spec_class_hint_appears_below_and_hides_on_blur(page):
+    """规范分类：聚焦显示在输入框下方（等宽），失焦消失"""
+    page.goto(f"{BASE}/specs")
+    page.wait_for_selector("button:has-text('📋 分类')", timeout=15000)
+    page.locator("button:has-text('📋 分类')").first.click()
+    inp = page.locator("#spec-class-area input[name=dim2_stage]")
+    inp.wait_for(timeout=8000)
+
+    inp.focus()
+    _assert_hint_below_input(page, inp)
+
+    inp.evaluate("el => el.blur()")
+    assert poll_until(page, lambda: (_hint_state(page) or {}).get("display") == "none",
+                      timeout_ms=3000), "失焦后提示框未消失"
+
+
+def f5_clause_class_hint_survives_table_scroll_container(page):
+    """条文分类（表格行内）：聚焦**最后一行**的输入框，提示仍完整可见
+
+    这是选 fixed 定位的全部理由：表格外层 .clause-table-wrapper 是
+    max-height:55vh + overflow:auto 的滚动容器，absolute 提示块在最后一行会被裁掉。
+    """
+    open_first_spec_clauses(page)
+    rows = page.locator(".clause-table > tbody > tr")
+    last = rows.nth(rows.count() - 1)
+    last.locator("button:has-text('分类')").click()
+    inp = last.locator("input[name=dim6_material]")
+    inp.wait_for(timeout=8000)
+    inp.focus()
+
+    st = _assert_hint_below_input(page, inp)
+    assert st["position"] == "fixed", \
+        f"提示框不是 fixed 定位（{st['position']}），会被表格滚动容器裁剪"
+    assert not st["inScrollContainer"], "提示框落在了滚动容器内部，会被 overflow 裁掉"
+    assert st["inViewport"], f"提示框未完整落在视口内，用户看不到：{st}"
+
+    inp.evaluate("el => el.blur()")
+    assert poll_until(page, lambda: (_hint_state(page) or {}).get("display") == "none",
+                      timeout_ms=3000), "失焦后提示框未消失"
+
+
+CASES["f5"] = [f5_spec_class_hint_appears_below_and_hides_on_blur,
+               f5_clause_class_hint_survives_table_scroll_container]
 
 
 if __name__ == "__main__":
