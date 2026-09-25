@@ -415,11 +415,16 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 )
 
         classified_count = 0
+        # 向量阶段的失败信息先收集、commit 后再落日志：log_action 自开新连接，
+        # 在本函数未提交的事务内调用会 BUSY 并被其静默丢弃（同下方「导入成功」埋点注释）。
+        vector_warn = None
         vs = None
         try:
             vs = VectorStore()
-        except Exception:
-            pass
+        except Exception as e:
+            # 绝不静默：vs 为 None 意味着本批条文的向量一条都不会写，
+            # 事后唯一症状是维护页「缺失向量索引」而无从追查原因。
+            vector_warn = f"向量库不可用，本批条文未写向量索引: {e}"
 
         # 第一步：先插入所有条文到 SQLite，收集需要 embedding 的记录
         # 整批只取一次 AI 介入阈值（DB 覆盖热生效），避免条文循环内反复查
@@ -518,10 +523,12 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                         })
                     tbl.add(records)
             except Exception as e:
-                # 批量失败静默降级，不影响导入完成
+                # 不影响导入完成，但绝不静默：进度 message 随任务结束即消失，
+                # 故同时收集告警，commit 后落 system_logs（否则向量缺失无从追查）
                 progress_store[task_id].update(
                     progress=85, message=f"向量索引部分失败: {str(e)}"
                 )
+                vector_warn = f"向量索引写入失败，部分条文缺索引: {e}"
 
         conn.execute("UPDATE specifications SET clause_count = ? WHERE id = ?",
                     (len(clauses_data), spec_id))
@@ -532,6 +539,13 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                                        "clause_count": len(clauses_data),
                                        "replaced_by_code": replaced_by_code}),
                    username=progress_store.get(task_id, {}).get("owner", "system"))
+        if vector_warn:
+            # 向量阶段失败在此统一落 WARN：条文已入库但索引不全，
+            # 维护页会显示「缺失向量索引」，这条日志是唯一的追查线索
+            log_action("import", "WARN", "向量索引未完整写入",
+                       detail=json_detail({"code": code, "reason": vector_warn,
+                                           "clause_count": len(embedding_records)}),
+                       username=progress_store.get(task_id, {}).get("owner", "system"))
 
         progress_store[task_id].update(
             status="done", progress=100,
