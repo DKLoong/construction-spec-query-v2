@@ -430,6 +430,16 @@
 .qa-session-item:hover { background: var(--pico-card-sectioning-background-color, #f3f4f5); }
 .qa-session-item.active { background: var(--pico-primary-background); color: var(--pico-primary-inverse); }
 .qa-session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 会话重命名的内联输入框：pico 给 input 的是 width:100%，在 flex 行里
+   flex-basis:auto 会解析成 100% 而挤掉右侧操作按钮 ⇒ 必须写**确定的** flex-basis
+   （见项目记忆 pico-form-width100-flex：确定值 flex-basis 覆盖 width）。 */
+.qa-session-confirm { flex: 1 1 0; min-width: 0; display: flex; align-items: center;
+    gap: 0.35rem; font-size: 0.75rem; }
+.qa-session-confirm button { background: none; border: none; cursor: pointer;
+    padding: 0 0.2rem; font-size: 0.75rem; margin: 0; line-height: 1; text-decoration: underline; }
+.qa-session-rename-input { flex: 1 1 0; min-width: 0; width: auto;
+    font-size: 0.8rem; padding: 0.1rem 0.3rem; margin: 0; height: auto; }
+.qa-session-ops { display: flex; gap: 0.1rem; flex: 0 0 auto; white-space: nowrap; }
 .qa-session-ops button { background: none; border: none; cursor: pointer; padding: 0 0.15rem; font-size: 0.8rem; margin: 0; line-height: 1; }
 .qa-sessions-empty { color: var(--pico-muted-color); padding: 0.5rem 0.4rem; font-size: 0.8rem; }
 .qa-stage { color: var(--pico-muted-color); font-size: 0.8rem; padding: 0.3rem 0.1rem; }

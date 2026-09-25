@@ -58,6 +58,11 @@ document.addEventListener('alpine:init', () => {
         currentSessionId: null,      // null = 草稿态（首次发送才落库建会话）
         // 会话栏折叠态：T1 骨架的「◂ 会话」按钮已引用它
         sessionsCollapsed: false,
+        // 重命名内联态：为哪条会话开着输入框 + 草稿值（见 startRename/commitRename）
+        renamingId: null,
+        renameDraft: '',
+        // 删除确认态（页内确认，不用 window.confirm——同 prompt：原生对话框会被静默抑制）
+        confirmingDeleteId: null,
         rerankUsed: '',              // 后端上报的精排级别（'' = 未上报，不显示标记）
         stageText: '正在检索…',
 
@@ -167,11 +172,32 @@ document.addEventListener('alpine:init', () => {
             window.location.href = `/qa/sessions/${s.id}/export`;
         },
 
-        async renameSession(s) {
-            const next = window.prompt('新的会话名称：', s.title);
-            if (next === null) return;
-            const title = next.trim();
-            if (!title) return;
+        // ── 重命名：页内内联输入（**不用 window.prompt**）──
+        // 为什么不用原生对话框：它在部分浏览器设置/扩展下会被**静默抑制**
+        // ⇒ 用户点 ✎「没反应」，且没有任何报错可查（真实用户实测反馈）。
+        // 内联输入还顺带避免了打断操作流、并让新名字在原位可见。
+
+        startRename(s) {
+            this.renamingId = s.id;
+            this.renameDraft = s.title;
+            // 聚焦/全选交给 input 自己的 `x-init`（模板里）：
+            // 实测 `$nextTick` 在 x-if 重新渲染之前就跑了 ⇒ 元素还没进 DOM，focus() 落空
+            // （浏览器实机验证抓到：输入框出现但未聚焦、也未全选）。
+        },
+
+        cancelRename() {
+            this.renamingId = null;      // 置空即移除 input（x-if）⇒ 随后的 blur 会被下面的守卫挡掉
+            this.renameDraft = '';
+        },
+
+        async commitRename(s) {
+            // 守卫：Enter 提交后 input 被移除会再触发一次 blur；Esc 取消后的 blur 也走这里
+            if (this.renamingId !== s.id) return;
+            const title = (this.renameDraft || '').trim();
+            this.renamingId = null;
+            this.renameDraft = '';
+            // 空名或没改：静默取消（保持原标题），不发请求
+            if (!title || title === s.title) return;
             try {
                 const r = await fetch(`/qa/sessions/${s.id}`, {
                     method: 'PATCH',
@@ -185,9 +211,22 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        async deleteSession(s) {
-            // 删除不可撤销，必须二次确认（开发铁律 1.5）
-            if (!window.confirm(`确认删除会话「${s.title}」？该操作不可撤销。`)) return;
+        // ── 删除：页内二次确认（**不用 window.confirm**）──
+        // 删除不可撤销，必须二次确认（开发铁律 1.5），但确认**不能依赖原生对话框**：
+        // 它与 prompt 同类，会被部分浏览器设置/扩展静默抑制 ⇒ 用户点 🗑 毫无反应（且无报错可查）。
+        startDelete(s) {
+            this.renamingId = null;          // 与重命名互斥，避免同一行同时开两个态
+            this.renameDraft = '';
+            this.confirmingDeleteId = s.id;
+        },
+
+        cancelDelete() {
+            this.confirmingDeleteId = null;
+        },
+
+        async doDelete(s) {
+            if (this.confirmingDeleteId !== s.id) return;   // 守卫：与 commitRename 同款
+            this.confirmingDeleteId = null;
             try {
                 const r = await fetch(`/qa/sessions/${s.id}`, { method: 'DELETE' });
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);

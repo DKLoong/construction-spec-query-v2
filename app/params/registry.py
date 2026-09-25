@@ -165,7 +165,8 @@ def _build_meta():
         "历史只含问答文本，不含条文上下文。", dtype="int"))
     meta.append(_num(
         "qa.token.max_history_tokens", "qa", "历史段 token 预算",
-        float(QA_CONFIG_DEFAULTS["token.max_history_tokens"]), 0, 4000, "0~4000",
+        # 上限 20000（2026-09-25 用户要求：4000 太低，多轮长对话被截）——**只放上限，不动默认值 800**
+        float(QA_CONFIG_DEFAULTS["token.max_history_tokens"]), 0, 20000, "0~20000",
         "历史对话段的独立 token 预算，与「上下文 token 预算」（条文段）分开计。"
         "两段合计上界 = 本值 + 上下文 token 预算 + system prompt。"
         "0 = 不注入历史。", dtype="int"))

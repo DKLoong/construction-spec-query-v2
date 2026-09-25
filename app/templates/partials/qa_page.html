@@ -134,11 +134,35 @@
             <template x-for="s in sessions" :key="s.id">
                 <div class="qa-session-item" :class="{ active: s.id === currentSessionId }"
                      @click="openSession(s.id)">
-                    <span class="qa-session-title" x-text="s.title"></span>
+                    <!-- 重命名用**页内内联输入**，不用 window.prompt：
+                         原生对话框在部分浏览器设置/扩展下会被**静默抑制**（用户实测「点 ✎ 无反应」），
+                         且它会打断操作流。Enter 提交 / Esc 取消 / 失焦提交（重复提交由 commitRename 内的
+                         renamingId 守卫挡掉）。 -->
+                    <template x-if="renamingId === s.id">
+                        <input class="qa-session-rename-input" type="text" x-model="renameDraft"
+                               maxlength="60" aria-label="会话名称"
+                               x-init="$el.focus(); setTimeout(() => $el.select(), 0)"
+                               @click.stop
+                               @keydown.enter.prevent="commitRename(s)"
+                               @keydown.escape.prevent="cancelRename()"
+                               @blur="commitRename(s)">
+                    </template>
+                    <!-- 删除确认同样走**页内**（不用 window.confirm：与 prompt 同类，原生对话框会被
+                         部分浏览器静默抑制 ⇒ 点了没反应；而且它无法说明"删的是哪一条"）。 -->
+                    <template x-if="confirmingDeleteId === s.id">
+                        <span class="qa-session-confirm">
+                            <span>删除该会话？</span>
+                            <button type="button" @click.stop="doDelete(s)">确认</button>
+                            <button type="button" @click.stop="cancelDelete()">取消</button>
+                        </span>
+                    </template>
+                    <template x-if="renamingId !== s.id && confirmingDeleteId !== s.id">
+                        <span class="qa-session-title" x-text="s.title"></span>
+                    </template>
                     <span class="qa-session-ops">
                         <button type="button" title="导出 Markdown" @click.stop="exportSession(s)">⬇</button>
-                        <button type="button" title="重命名" @click.stop="renameSession(s)">✎</button>
-                        <button type="button" title="删除" @click.stop="deleteSession(s)">🗑</button>
+                        <button type="button" title="重命名" @click.stop="startRename(s)">✎</button>
+                        <button type="button" title="删除" @click.stop="startDelete(s)">🗑</button>
                     </span>
                 </div>
             </template>

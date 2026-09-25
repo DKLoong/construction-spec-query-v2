@@ -75,22 +75,23 @@ document.addEventListener('alpine:init', () => {
 
         // 勾选/取消「启用 CE 精排」→ 弹提示 + 立即重搜（热切换，结果实时按新开关排序）
         onCeChange() {
+            // ⚠️ QA 页**不弹**这个提示：文案说的是"搜索结果"，而 QA 页勾选 CE 只更新状态 + 同步 URL、
+            // 不发起检索（D8）⇒ 弹出来会误导用户（用户实测反馈）。
+            // 故先判视图再决定是否提示：守卫 + 同步 + return 必须在 toast **之前**。
+            if (typeof isQaView === 'function' && isQaView()) { syncQaUrl(); return; }
             if (this.ceRerank) {
                 showSearchToast('CE精排已开启，请耐心等待搜索结果');
             }
-            // 与 :127 同样带 typeof 守卫：isQaView 定义在 tree.js，base.html 当前加载顺序
-            // 保证它先于本文件；一旦顺序变化，裸调用就是 ReferenceError
-            if (typeof isQaView === 'function' && isQaView()) { syncQaUrl(); return; }
             this.search();
         },
 
         // 勾选/取消「仅现行」「修订中」→ 全不勾选时顶部轻提示（复用 showSearchToast）+ 立即重搜
         onStatusChange() {
+            // 同 onCeChange：QA 页不弹（文案"当前展示结果"指的是检索结果，与 QA 的下一轮筛选无关）
+            if (typeof isQaView === 'function' && isQaView()) { syncQaUrl(); return; }
             if (!this.statusCurrent && !this.statusRevising) {
                 showSearchToast('注意：当前展示结果未过滤非现行规范', 4000);
             }
-            // 同上：带 typeof 守卫，避免加载顺序变化导致 ReferenceError
-            if (typeof isQaView === 'function' && isQaView()) { syncQaUrl(); return; }
             this.search();
         },
 

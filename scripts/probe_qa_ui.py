@@ -522,6 +522,13 @@ def t3_left_panel_status_unchecked_sends_empty_status_filter(page):
             "(window.Alpine && Alpine.store('searchState')).buildStatusFilter()") is None,
         timeout_ms=3000), \
         "取消「仅现行」后共享 store 的 buildStatusFilter() 未变为 null（左栏状态未写进 store）"
+    # QA 页**不得**弹检索语境的轻提示（用户实测反馈：勾 CE 弹「CE精排已开启，请耐心等待搜索结果」很误导）。
+    # 文案说的是"搜索结果"，而 QA 页的开关只更新状态 + 同步 URL、不发起检索（D8）。
+    # 判据：`showSearchToast` 会写 `#search-toast` 的 `.show` 类 ⇒ 断言它没有该类。
+    assert not page.evaluate(
+        "() => { const el = document.getElementById('search-toast');"
+        " return !!(el && el.classList.contains('show')); }"), \
+        "QA 页操作左栏筛选弹出了检索语境的轻提示（应为 QA 页不弹；showSearchToast 的调用必须在 isQaView 早退之后）"
     page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
     page.press(".qa-composer textarea", "Enter")
     page.wait_for_selector(".qa-bot", timeout=60000)
@@ -559,6 +566,22 @@ def t3_ce_rerank_not_disabled_in_qa_page(page):
     box = page.locator("#ce-rerank-toggle")
     assert box.count() == 1, "左栏未找到 #ce-rerank-toggle（CE 精排复选框 id 丢失？）"
     assert not box.is_disabled(), "CE 精排复选框在 QA 页被置灰了，应仅用 tooltip 说明"
+    # 顺带钉住另一条用户实测反馈：**QA 页勾 CE 不得弹检索语境的轻提示**
+    # （原文案「CE精排已开启，请耐心等待搜索结果」说的是搜索结果，而 QA 页只更新状态 + 同步 URL、不检索）。
+    # 判据同 t3_left_panel_status_unchecked…：showSearchToast 会写 `#search-toast` 的 `.show` 类。
+    box.check()
+    # **正向证据优先**：先等「这次勾选确实被处理了」（共享 store 已翻转）——
+    # 否则「没有提示」可能只是因为事件还没跑（负断言的经典假绿）。
+    # 不用固定 sleep：判据是 store 的值本身（onCeChange 在同一次事件里先读它、再决定是否提示）。
+    assert poll_until(
+        page,
+        lambda: page.evaluate("(window.Alpine && Alpine.store('searchState')).ceRerank") is True,
+        timeout_ms=3000), "勾选 CE 后共享 store 的 ceRerank 未翻转（左栏 CE 未接 store？）"
+    assert not page.evaluate(
+        "() => { const el = document.getElementById('search-toast');"
+        " return !!(el && el.classList.contains('show')); }"), \
+        "QA 页勾选 CE 精排弹出了「等待搜索结果」轻提示（showSearchToast 的调用必须在 isQaView 早退之后）"
+    box.uncheck()
 
 
 def t3_pending_filter_hint_appears_after_change(page):
@@ -1044,15 +1067,24 @@ def t4_session_ops_reach_the_right_routes(page):
 
     page.on("request", _on_request)
 
-    # 重命名：window.prompt（prefill 当前标题）→ PATCH /qa/sessions/{id}
-    def _on_dialog(d):
-        d.accept("改名后的标题" if d.type == "prompt" else None)
-
-    page.on("dialog", _on_dialog)
+    # 重命名：**页内内联输入**（不依赖浏览器原生对话框）→ PATCH /qa/sessions/{id}
+    # ⚠️ 为什么不用 `window.prompt`：原生对话框在部分浏览器设置/扩展下会被**静默抑制**
+    #    （真实用户反馈「点 ✎ 无反应」；而探针环境里 Playwright 能接住 dialog ⇒ **探针绿而用户红**，
+    #    这正是「测试锁不住真实可用性」的一种：它验的是"请求发出去了"，验不了对话框在用户浏览器里出不出来）。
+    # 判据三层：① 点击后出现内联输入框；② **没有任何**原生对话框被触发；③ PATCH 体带新标题。
+    dialogs = []
+    page.on("dialog", lambda d: (dialogs.append(d.type), d.dismiss()))
     page.click(".qa-session-item.active >> .qa-session-ops button[title='重命名']")
+    assert poll_until(page, lambda: page.locator(".qa-session-rename-input").count() == 1,
+                      timeout_ms=5000), \
+        "点 ✎ 后未出现内联重命名输入框（是否仍在用 window.prompt？原生对话框会被浏览器静默抑制）"
+    page.fill(".qa-session-rename-input", "改名后的标题")
+    page.press(".qa-session-rename-input", "Enter")
     assert poll_until(page, lambda: any(x["method"] == "PATCH" for x in seen),
                       timeout_ms=5000), \
         f"点「重命名」未发出 PATCH /qa/sessions/{{id}}（已见请求 {seen}）"
+    assert not dialogs, \
+        f"重命名不应依赖浏览器原生对话框（用户会被静默抑制 ⇒ 点了没反应），实测触发了 {dialogs}"
     patch = next(x for x in seen if x["method"] == "PATCH")
     assert _route_session_id(patch["url"]) == target, \
         (f"重命名打到了**别的会话**：期望 /qa/sessions/{target}，实得 {patch['url']}"
@@ -1075,14 +1107,26 @@ def t4_session_ops_reach_the_right_routes(page):
         (f"导出打到了**别的会话**：期望 /qa/sessions/{target}/export，实得 {download_url}"
          "—— 只校验路由形状（/qa/sessions/\\d+/export$）时，指向任意会话都判绿")
 
-    # 删除：window.confirm 二次确认后 → DELETE /qa/sessions/{id}（**最后**执行，见 docstring）
+    # 删除：**页内二次确认**（不用 window.confirm）→ DELETE /qa/sessions/{id}（**最后**执行，见 docstring）
+    # ⚠️ 与重命名同因：原生 confirm 会被部分浏览器静默抑制 ⇒ 用户点 🗑 毫无反应。
+    #    本用例三层判据：① 点 🗑 出现页内确认行；② 点「确认」才发 DELETE（点 🗑 本身**不得**直接删）；
+    #    ③ 全程**没有**原生对话框（dialogs 空——上面已注册记录器）。
     page.click(".qa-session-item.active >> .qa-session-ops button[title='删除']")
+    assert poll_until(page, lambda: page.locator(".qa-session-confirm").count() == 1,
+                      timeout_ms=5000), "点 🗑 后未出现页内删除确认（是否仍在用 window.confirm？）"
+    assert not any(x["method"] == "DELETE" for x in seen), \
+        "点 🗑 就直接删了——二次确认没起作用（删除不可撤销，必须确认后才发请求）"
+    page.click(".qa-session-confirm button:has-text('确认')")
     assert poll_until(page, lambda: any(x["method"] == "DELETE" for x in seen),
                       timeout_ms=5000), \
         f"点「删除」未发出 DELETE /qa/sessions/{{id}}（已见请求 {seen}）"
     dele = next(x for x in seen if x["method"] == "DELETE")
     assert _route_session_id(dele["url"]) == target, \
         f"删除打到了**别的会话**：期望 /qa/sessions/{target}，实得 {dele['url']}"
+    # 收尾：整个「重命名 / 导出 / 删除」流程**全程不得依赖浏览器原生对话框**
+    # （prompt/confirm 会被部分浏览器设置或扩展静默抑制 ⇒ 用户点了没反应、且无报错可查）
+    assert not dialogs, \
+        f"会话操作不应依赖浏览器原生对话框（会被静默抑制），实测触发了 {dialogs}"
 
 
 # 登记进本 Task 的键：**键名 = Task 编号本身**（不是 t5）。
