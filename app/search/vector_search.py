@@ -152,18 +152,31 @@ class VectorStore:
             self._get_table().delete(f"clause_id = {clause_id}")
 
     def clear_all(self):
-        """删除整个向量表及磁盘文件，用于完全重建索引"""
+        """删除整个向量表及磁盘文件，用于完全重建索引
+
+        磁盘路径的**唯一来源是本实例实际连接的库**（self.db.uri），
+        绝不重新读 app.config.LANCE_DB_PATH——历史实现那样写会与 self.db
+        的来源脱钩（测试只 patch 模块级常量，self.db 连临时目录而 rmtree
+        落到真实库），导致跑测试静默删掉开发机真实向量表。
+        """
         import shutil
         from pathlib import Path
-        from app.config import LANCE_DB_PATH
 
         # 先通过 LanceDB API 删表
         if self._table_exists():
             self.db.drop_table("clause_embeddings")
 
         # 清理可能残留的 WAL/日志文件，防止旧数据被重放到新表
-        table_dir = Path(LANCE_DB_PATH) / "clause_embeddings.lance"
+        conn_dir = Path(self.db.uri).resolve()
+        table_dir = conn_dir / "clause_embeddings.lance"
+        # 守卫：解析后必须仍落在本实例库目录内，否则拒绝删除。
+        # 当前拼接方式恒真，此判断防的是将来改成动态路径时静默越界删库。
+        if not table_dir.is_relative_to(conn_dir):
+            logger.warning("拒绝删除越界的向量表目录: %s（本实例库: %s）",
+                           table_dir, conn_dir)
+            return
         if table_dir.exists():
+            logger.info("清理向量表目录: %s", table_dir)
             shutil.rmtree(table_dir, ignore_errors=True)
 
     def batch_index(self, clauses: list[dict], batch_size: int = 32,
