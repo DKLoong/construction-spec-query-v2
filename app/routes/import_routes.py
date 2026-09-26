@@ -516,9 +516,19 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         # 第二步：批量计算 embedding（比逐条快一个数量级）
         if vs is not None and embedding_records:
             try:
-                from app.ai.embedding import embed_texts
+                from app.ai.embedding import embed_texts, get_model
                 import numpy as np
 
+                n_vec = len(embedding_records)
+                # 模型首次加载约 30 秒，是本流程最长的单点停顿。若与编码合并为一步，
+                # 进度条会静止半分钟——单列一档，用户才知道在等什么。
+                progress_store[task_id].update(
+                    progress=80, message="正在加载向量模型（首次约 30 秒）…")
+                if get_model() is None:
+                    raise RuntimeError("Embedding 模型不可用")
+
+                progress_store[task_id].update(
+                    progress=84, message=f"正在生成向量（{n_vec} 条）…")
                 texts = [r["text"] for r in embedding_records]
                 embeddings = embed_texts(texts)
 
@@ -551,13 +561,20 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 #    且每次 add 产生一个新版本（真实表曾落到 rows=73 / version=173）
                 # 2) 不得单次 add 全量——上万条时写入期间进度完全不动
                 # 回归测试：tests/test_import_vector_batch.py
-                for start in range(0, len(records), VECTOR_WRITE_BATCH):
+                total = len(records)
+                for start in range(0, total, VECTOR_WRITE_BATCH):
                     vs._get_table().add(records[start:start + VECTOR_WRITE_BATCH])
+                    done = min(start + VECTOR_WRITE_BATCH, total)
+                    progress_store[task_id].update(
+                        progress=90 + int(9 * done / total),
+                        message=f"正在写入向量索引（{done}/{total}）…")
             except Exception as e:
                 # 不影响导入完成，但绝不静默：进度 message 随任务结束即消失，
-                # 故同时收集告警，commit 后落 system_logs（否则向量缺失无从追查）
+                # 故同时收集告警，commit 后落 system_logs（否则向量缺失无从追查）。
+                # 只改文案、不动 progress——此处进度可能已推进到 90+，写回固定值
+                # 会造成进度回退，反而更像故障。
                 progress_store[task_id].update(
-                    progress=85, message=f"向量索引部分失败: {str(e)}"
+                    message=f"向量索引部分失败: {str(e)}"
                 )
                 vector_warn = f"向量索引写入失败，部分条文缺索引: {e}"
 

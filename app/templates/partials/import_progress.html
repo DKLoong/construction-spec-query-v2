@@ -4,7 +4,13 @@
      hx-trigger="every 2s"
      hx-swap="outerHTML"
      {% endif %}>
-    <progress value="{{ progress.progress }}" max="100"></progress>
+    {# pico 给 progress 设了 width:100%，放进 flex 行必须用确定值 flex-basis，
+       否则 flex:1 1 auto 会解析成 100% 而独占整行（见 pico-form-width100-flex） #}
+    <div style="display:flex;align-items:center;gap:0.5rem">
+        <progress value="{{ progress.progress }}" max="100"
+                  style="flex:1 1 0;margin:0"></progress>
+        <small style="min-width:2.5rem;text-align:right">{{ progress.progress }}%</small>
+    </div>
     <p>{{ progress.message }}</p>
     {% if progress.status == "done" %}
     <p style="color: green; font-weight: bold;">导入完成！<a href="/">刷新页面</a>查看新导入的规范。</p>
