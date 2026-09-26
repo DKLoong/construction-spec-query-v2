@@ -48,7 +48,8 @@ def test_confirm_review_resumes_import(auth_client, monkeypatch, tmp_path):
 
     resp = auth_client.post(
         f"/import/review/{task_id}/confirm",
-        data={"content": "# 测试规范（审查后）\n## 1.1 修正条文\n修正内容"},
+        content="# 测试规范（审查后）\n## 1.1 修正条文\n修正内容".encode("utf-8"),
+        headers={"Content-Type": "text/plain; charset=utf-8"},
     )
     assert resp.status_code == 200
     assert "继续导入" in resp.text or "import-status" in resp.text
@@ -77,7 +78,8 @@ def test_confirm_review_rejects_duplicate(auth_client):
 
     resp = auth_client.post(
         f"/import/review/{task_id}/confirm",
-        data={"content": "# 再次提交的内容"},
+        content="# 再次提交的内容".encode("utf-8"),
+        headers={"Content-Type": "text/plain; charset=utf-8"},
     )
     assert resp.status_code == 200
     # 应提示正在处理中

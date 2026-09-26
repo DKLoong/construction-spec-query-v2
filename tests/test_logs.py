@@ -152,7 +152,9 @@ def test_confirm_review_logs_info(auth_client, monkeypatch, tmp_path):
     }
     monkeypatch.setattr(ir, "_process_import_phase2", lambda *a, **k: None)
     try:
-        resp = auth_client.post(f"/import/review/{tid}/confirm", data={"content": "# x"})
+        resp = auth_client.post(
+            f"/import/review/{tid}/confirm", content=b"# x",
+            headers={"Content-Type": "text/plain; charset=utf-8"})
         assert resp.status_code == 200
         rows = _logs(action="审查确认继续导入", category="import")
         assert len(rows) == 1 and rows[0]["username"] == "admin"

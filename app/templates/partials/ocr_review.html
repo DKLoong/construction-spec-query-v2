@@ -28,20 +28,20 @@
                 display:flex;justify-content:space-between;align-items:center">
         <small style="color:var(--pico-muted-color)">审查完毕后点击确认继续导入流程（解析 + 分类 + 索引）</small>
         <div style="display:flex;gap:0.75rem;align-items:center">
-            <form hx-post="/import/review/{{ task_id }}/confirm"
-                  hx-target="#review-result" hx-swap="innerHTML"
-                  @submit="prepareSubmit">
-                <input type="hidden" name="content" :value="mdContent">
-                <button type="submit">✅ 确认并继续导入</button>
-            </form>
-            <button type="button" class="secondary"
+            {# md 走 raw body 由 confirmImport() 以 fetch 提交：表单字段有 1MB 上限，
+               大规范（md 46 万字符）会被 400 拒掉且页面毫无反应 #}
+            <button type="button" style="margin:0" @click="confirmImport()"
+                    x-text="submitting ? '提交中…' : '✅ 确认并继续导入'"></button>
+            <button type="button" class="secondary" style="margin:0"
                     hx-post="/import/review/{{ task_id }}/cancel"
                     hx-confirm="确定取消本次导入？已上传的文件和识别结果将被删除。">
                 ✖ 取消导入
             </button>
         </div>
     </div>
-    <div id="review-result" style="margin-top:0.5rem"></div>
+    <div id="review-result" style="margin-top:0.5rem">
+        <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
+    </div>
 </div>
 
 <script>
@@ -56,6 +56,8 @@ document.addEventListener('alpine:init', () => {
         currentMatchIdx: -1,
         hasMatches: false,
         matchInfo: '',
+        submitting: false,
+        submitError: '',
 
         async init() {
             try {
@@ -178,11 +180,34 @@ document.addEventListener('alpine:init', () => {
             this.findMatches();
         },
 
-        prepareSubmit(event) {
-            // 确保 hidden input 在提交前取到最新 mdContent
-            const form = event.target;
-            const hidden = form.querySelector('input[name="content"]');
-            if (hidden) hidden.value = this.mdContent;
+        async confirmImport() {
+            // md 以 raw body（text/plain）提交，不走表单字段——表单字段有 1MB 上限，
+            // 大规范（如 CJJ 2-2008 的 46 万字符）会被 400 拒掉且页面毫无反应。
+            if (this.submitting) return;
+            this.submitting = true;
+            this.submitError = '';
+            const taskId = window.location.pathname.split('/').pop();
+            try {
+                const resp = await fetch(`/import/review/${taskId}/confirm`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'text/plain; charset=utf-8'},
+                    body: this.mdContent || '',
+                });
+                const html = await resp.text();
+                const box = document.getElementById('review-result');
+                if (box) box.innerHTML = html;
+                if (!resp.ok) {
+                    this.submitError = (html || '').replace(/<[^>]+>/g, '').trim()
+                        || `提交失败（HTTP ${resp.status}）`;
+                } else if (window.htmx && box) {
+                    // 响应里的进度 div 带 hx-get/hx-trigger，需让 htmx 处理新节点才会开始轮询
+                    window.htmx.process(box);
+                }
+            } catch (e) {
+                this.submitError = '提交失败：' + e;
+            } finally {
+                this.submitting = false;
+            }
         },
 
         syncScroll(event) {

@@ -660,9 +660,16 @@ async def confirm_review(
     request: Request,
     task_id: str,
     background_tasks: BackgroundTasks,
-    content: str = Form(...),
 ):
-    """审查确认：提交修改后的 Markdown 文本，继续 Phase 2"""
+    """审查确认：提交修改后的 Markdown 文本（raw body），继续 Phase 2
+
+    **md 走 raw body，不走表单字段**：Starlette 对表单字段有 1MB 硬上限
+    （`MultiPartParser.max_part_size`，urlencoded 同样受管），超限时在**路由体执行
+    之前**就抛 400，导致既无确认日志也无成功/失败日志、Phase 2 从未启动；而 HTMX
+    对 4xx 默认不 swap，页面毫无反应。实测 CJJ 2-2008 的 md 46 万字符编码后 1.52MB
+    即触发（JGJ 107-2016 的 5.7 万字符则正常），是「大规范根本导不进来」的堵点。
+    raw body 无此限制。回归测试见 tests/test_confirm_transport.py。
+    """
     task = progress_store.get(task_id)
     if not task:
         return HTMLResponse("<p style='color:red'>任务不存在或已过期</p>")
@@ -672,6 +679,20 @@ async def confirm_review(
         return HTMLResponse(
             f"""<div id="import-status" hx-get="/import/progress/{task_id}" hx-trigger="every 2s" hx-swap="outerHTML">
             <p style="color:#c08552">⏳ 导入正在处理中，请勿重复提交...</p></div>"""
+        )
+
+    # 读取 raw body 并按 UTF-8 解码（外部输入校验：编码非法/内容为空一律拒绝，
+    # 且必须在改动任务状态之前返回，避免"没提交内容却已置为 processing"）
+    try:
+        content = (await request.body()).decode("utf-8")
+    except UnicodeDecodeError:
+        return HTMLResponse(
+            "<p style='color:red'>审查内容编码非法（需 UTF-8），未提交</p>",
+            status_code=400,
+        )
+    if not content.strip():
+        return HTMLResponse(
+            "<p style='color:red'>审查内容为空，未提交</p>", status_code=400
         )
 
     title = task.get("title", "")
