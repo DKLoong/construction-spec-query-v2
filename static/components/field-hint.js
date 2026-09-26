@@ -26,6 +26,10 @@
         const box = el();
         if (!box || !active) return;
         const r = active.getBoundingClientRect();
+        // 宽度上限贴着触发输入框（不窄于 160px，免得换行太碎）：
+        // 条文分类的输入框紧邻「保存/取消」操作列，提示框若按自身内容宽度铺开会横向
+        // 盖住那些按钮。宁可多换一两行，也不要横向压到相邻列。
+        box.style.maxWidth = Math.max(r.width, 160) + 'px';
         const w = box.offsetWidth;
         let left = r.left;
         const maxLeft = window.innerWidth - w - 8;

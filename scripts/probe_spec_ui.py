@@ -435,6 +435,9 @@ def _assert_hint_below_input(page, inp):
         f"提示框未出现在输入框下方（top={st['top']:.1f} vs 输入框底 {box['y'] + box['height']:.1f}）"
     assert abs(st["left"] - box["x"]) < 3, \
         f"提示框未与输入框左对齐（left={st['left']:.1f} vs {box['x']:.1f}）"
+    assert st["width"] <= box["width"] + 1, \
+        f"提示框比输入框宽（{st['width']:.0f} > {box['width']:.0f}）——" \
+        "条文分类的输入框紧邻操作列，铺开会横向盖住「保存/取消」按钮"
     assert "mono" in st["font"].lower() or "consolas" in st["font"].lower(), \
         f"提示框未使用等宽字体：{st['font']}"
     return st
