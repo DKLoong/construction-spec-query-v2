@@ -25,6 +25,9 @@ progress_store = {}
 # replaced_by_code 长度上限（防超长输入污染 DB / 前端渲染）
 REPLACED_BY_CODE_MAX_LEN = 100
 
+# 向量索引分批写入的批大小：兼顾「批量语义」（勿退回逐条 add）与「写入进度可观测」
+VECTOR_WRITE_BATCH = 500
+
 
 def _sanitize_status(status: str) -> str:
     """status 白名单校验（单一来源 SPEC_STATUS_ALLOWED）：非法值回退默认「现行」。
@@ -519,20 +522,19 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 texts = [r["text"] for r in embedding_records]
                 embeddings = embed_texts(texts)
 
-                # 批量添加到 LanceDB
-                if vs._table_exists():
-                    # 表已存在，逐条添加
-                    for i, r in enumerate(embedding_records):
-                        emb = np.array(embeddings[i], dtype=np.float32)
-                        vs._get_table().add([{
-                            "clause_id": r["clause_id"],
-                            "spec_id": r["spec_id"],
-                            "text": r["text"],
-                            "embedding": emb,
-                            "dim_scores": r["dim_scores"],
-                        }])
-                else:
-                    # 表不存在，创建 schema 并批量添加
+                records = [
+                    {
+                        "clause_id": r["clause_id"],
+                        "spec_id": r["spec_id"],
+                        "text": r["text"],
+                        "embedding": np.array(embeddings[i], dtype=np.float32),
+                        "dim_scores": r["dim_scores"],
+                    }
+                    for i, r in enumerate(embedding_records)
+                ]
+
+                # 表不存在时先按显式 schema 建表，确保 embedding 列是固定大小向量类型
+                if not vs._table_exists():
                     first_emb = np.array(embeddings[0], dtype=np.float32)
                     import pyarrow as pa
                     schema = pa.schema([
@@ -542,17 +544,15 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                         pa.field("embedding", pa.list_(pa.float32(), len(first_emb))),
                         pa.field("dim_scores", pa.string()),
                     ])
-                    tbl = vs.db.create_table("clause_embeddings", schema=schema)
-                    records = []
-                    for i, r in enumerate(embedding_records):
-                        records.append({
-                            "clause_id": r["clause_id"],
-                            "spec_id": r["spec_id"],
-                            "text": r["text"],
-                            "embedding": np.array(embeddings[i], dtype=np.float32),
-                            "dim_scores": r["dim_scores"],
-                        })
-                    tbl.add(records)
+                    vs.db.create_table("clause_embeddings", schema=schema)
+
+                # 分批写入。两条约束同时成立：
+                # 1) 不得退回逐条 add——实测逐条（且每行重开表）比批量慢 40 倍，
+                #    且每次 add 产生一个新版本（真实表曾落到 rows=73 / version=173）
+                # 2) 不得单次 add 全量——上万条时写入期间进度完全不动
+                # 回归测试：tests/test_import_vector_batch.py
+                for start in range(0, len(records), VECTOR_WRITE_BATCH):
+                    vs._get_table().add(records[start:start + VECTOR_WRITE_BATCH])
             except Exception as e:
                 # 不影响导入完成，但绝不静默：进度 message 随任务结束即消失，
                 # 故同时收集告警，commit 后落 system_logs（否则向量缺失无从追查）
