@@ -2375,7 +2375,11 @@ level 1，会把 条文说明 弹出栈，靠继承打标的基调在每个章�
 降级为上一章的内容。章名以 `。；：！？` 结尾则几乎不可能 —— 用长度换来的那点召回不值得假拒风险。
 故判据只取一条。
 
-- [ ] **Step 1: 写失败测试（3 条）**
+- [ ] **Step 1: 写失败测试（4 条）**
+
+> 前 3 条为本 Task 原有；**第 4 条**（`test_long_chapter_name_with_bare_number_is_still_a_node`）
+> 是 fix round 3 / R-T14-7 补的**可证伪护栏** —— 复核的变异 M3 证明：没有它，选定判据与被否决
+> 判据在语料上无法区分（76 条用例全绿、CJJ2 指标一致）。
 
 ```python
 def test_hash_line_with_bare_number_and_prose_is_not_a_node():
@@ -2393,13 +2397,15 @@ def test_hash_line_with_bare_number_and_prose_is_not_a_node():
     assert not any(r["clause_no"] == "4" for r in rows), "伪 level-1 节点仍在"
     assert not any(r["section_path"].startswith("4 ") for r in rows), "面包屑被伪节点污染"
     # 该行的文本必须**归属其所在的条**——**当存在可归属的候选行时**（不是丢掉，也不是自成一条）。
-    # ⚠️ 前提已按复核 F1 收窄：若该行是**首个候选行**或其后只有内节点章标题，其自身文本与中间正文
-    #    会无处归属而被丢弃（复核实测 41 字符）。该行为**非 `#` 路径既有**（对照用例修复前后一致），
-    #    本 Task 只让 `#` 分支与之对齐；CJJ2 上不触发（净 +13）；真实 OCR 输出带 `## 第X页` 页标记
-    #    故栈通常非空。已记 TODOS.md（缓冲孤儿文本挂到下一候选行，属行为设计变更，本批不做）。
+    # ⚠️ 前提已按复核 F1 收窄：若该行**是首个候选行**（或其后只有内节点章标题），其自身文本与
+    #    中间正文会无处归属而被丢弃（复核实测 41 字符）。该行为**非 `#` 路径既有**（对照用例
+    #    修复前后完全一致：实测两边都是 0 条 / 0 字符），本 Task 只让 `#` 分支与之对齐，故为
+    #    **已登记的已知增量**，不是新一类丢失；CJJ2 上不触发（净 +13）；真实 OCR 输出带
+    #    `## 第X页` 页标记（保留为候选）故栈通常非空。已记 TODOS.md（T20：缓冲孤儿文本挂到
+    #    下一候选行，属**行为设计变更**，本批不做）。
     target = [r for r in rows if r["clause_no"] == "11.5.3"]
     assert target and "现浇混凝土柱允许偏差" in target[0]["content"], \
-        "被收窄的行其文本应归入所属条"
+        "被收窄的行其文本应归入所属条（当存在可归属的候选行时）"
 
 
 def test_hash_line_with_bare_number_and_chapter_name_is_still_a_node():
@@ -2411,10 +2417,34 @@ def test_hash_line_with_bare_number_and_chapter_name_is_still_a_node():
     assert hit and hit[0]["section_path"] == "3 施工准备 > 3.1 一般规定"
 
 
+def test_long_chapter_name_with_bare_number_is_still_a_node():
+    """长章名（>20 字）不得被 20 字长度门误伤 —— 本 Task 判据取舍的**唯一**可证伪护栏。
+
+    ⚠️ 该章名是**假设性构造**：夹具只有其短版 `3 施工准备`，全仓语料无此长版（已 grep 核实）。
+    它存在的理由：实测选定判据（只取句末标点）与被否决判据（`not _looks_like_title(...)`）
+    在 CJJ2 上**数值完全相同**（都是 −6 行、覆盖率 0.9986）→ 语料**无法**区分二者，
+    只有本用例能。变异 M3（把判据换成被否决的那条）下本用例**必须变红**（已实跑验证）：
+    没有它，未来有人把判据换成 `_looks_like_title`，语料上毫无差别，而长章名被静默降级、
+    其下条文的章节关系一起丢失，无人能发现。
+    """
+    md = ("## 3 施工准备与临时设施（含施工便道、临时用电）\n\n"
+          "### 3.1 一般规定\n\n3.1.1 施工准备应符合下列规定。\n")
+    rows = parse_markdown(md)
+    assert any(r["clause_no"] == "3" for r in rows), \
+        "长章名被判为非节点（20 字长度门误伤）"
+    hit = [r for r in rows if r["clause_no"] == "3.1.1"]
+    assert hit, "长章名被误判后，其下条文一同丢失"
+    assert hit[0]["section_path"].startswith("3 "), \
+        f"长章名未进入面包屑：{hit[0]['section_path']!r}"
+
+
 def test_cjj2_has_no_bare_number_nodes_carrying_prose(cjj2_md):
     """端到端：CJJ2 里裸数字节点的内容量不得再是大块正文。
 
-    实测 5,176 → 1,712 字符、22 → 16 条（余下 16 条都是章节点，携带章首引言）。
+    实测 5,176 → 1,712 字符、22 → 16 条。余下 16 条**并非全是章节点**：13 条是真章标题，
+    另 3 条（`1 一次张拉法` / `2 多次张拉` / `2 中塔柱施工防倾措施`，夹具 L7144–L7218）
+    在**条文说明段内部**，是注释子标题而非章 —— 计数 `== 16` 不变，仅描述订正
+    （fix round 3 / R-T14-8：原写「余下 16 条都是章节点」说过头了）。
     """
     from app.ai.text_clean import plain_text
     bare = [c for c in parse_markdown(cjj2_md) if c["clause_no"].isdigit()]
@@ -2437,10 +2467,30 @@ Expected: FAIL —— `clause_no == "4"` 的伪节点存在；CJJ2 的裸数字�
         # 成因：OCR 会给表格/款文本误加 `##` 前缀（`## 3 钢箱梁悬臂拼装允许偏差应符合表17.5.7-2的规定。`、
         # `## 2 预应力筋安装应符合下列要求：`，夹具共 6 行）。它们是 level 1 的伪节点 →
         # 弹空栈、吞掉其后正文（实测 6 行 / 3,464 字符），并把真条文的 section_path
-        # 污染成该伪节点标题（实测 `18.8.10` → `'3'` —— 伪节点被 R14 投票判为正文型、title 为空，`）。
+        # 污染成该伪节点标题。**实测值 `'3'`**（修复前 `bf9b419` 上复测：`18.8.9`/`18.8.10`/
+        # `18.8.11`/`17.5.8`/`14.3` 的 section_path 恰为 `'3'`）—— 成因是该伪节点被 R14
+        # 兄弟表决判为**正文型** → `title=''` → `_build_section_path` 的 `f"{clause_no} {title}".strip()`
+        # 只剩编号。即「一个编号为 3 的伪 level-1 祖先」。
+        # ⚠️ **已知的行为增量（本 Task 只让它与非 `#` 路径对齐，未新增丢失类别）**：被收窄的行，
+        #    其自身文本与中间正文**不是折进所属条，而是无处归属被丢弃** —— 触发条件：它**是首个
+        #    候选行**，或其前不存在可归属的候选行（即「归属其所在的条」只在**存在**可归属候选行时成立）。
+        #    缓解事实（三条）：① 非 `#` 路径（Task 4 的 `clause_no.isdigit()`）**本就是这个行为**——
+        #    同一行不加 `#` 时修复前后完全一致（实测两边都是 0 条 / 0 字符），故此非新缺陷类；
+        #    ② 在本语料上不触发（净 +13 字符）；③ 真实 OCR 输出带 `## 第X页` 页标记（保留为候选）
+        #    → 栈通常非空。已按 R-T14-3 记入 TODOS（缓冲孤儿文本挂到下一候选行，属行为设计变更）。
         # ⚠️ 判据**只取「以句末标点结尾」一条**，不要用 `_looks_like_title`：后者另含 20 字长度门，
-        #    会误伤长章名（`3 施工准备与临时设施（含施工便道、临时用电）` 23 字）——实测两者
-        #    在本语料上数值完全相同（−6 行、覆盖率 0.9986），故取假拒风险更低的那条。
+        #    会误伤长章名（`3 施工准备与临时设施（含施工便道、临时用电）`，全文 23 字）。
+        #    ⚠️ 该长章名是**假设性构造**：夹具只有其短版 `3 施工准备`，全仓语料无此长版；且实测
+        #    选定判据与被否决判据在本语料上**数值完全相同**（都是 −6 行、覆盖率 0.9986）—— 即
+        #    **语料无法区分二者**。唯一护栏是合成用例
+        #    `tests/test_md_parser.py::test_long_chapter_name_with_bare_number_is_still_a_node`
+        #    （已实跑变异 M3：换成 `not _looks_like_title(...)` 时该用例变红，其余全绿）。
+        # ⚠️ `_TITLE_END_PUNCT` 的 `.` 成员在此调用点**不可达**：走到这里必有 `clause_no.isdigit()`，
+        #    即 `_extract_clause_no` 已由 `_NUM_PATTERNS` 命中，故 `_extract_title` 必走同一分支并
+        #    `rstrip(' .…')` —— 尾随半角 `.` 早被剥掉（实测 `3 施工准备.` → `'施工准备'`）；
+        #    全角 `．`（U+FF0E）不在元组里、也不在 rstrip 集里，故**未覆盖**（实测
+        #    `3 施工准备．` → 保留）。**两者都偏向「保留为节点」**＝假拒的安全方向，与本判据的
+        #    取舍一致，故不补。
         # ⚠️ 本判据必须写在 `#` 分支：非 `#` 路径的同类收窄在 `_match_clause_line`
         #    （Task 4 的 `clause_no.isdigit()`），那条**覆盖不到本条缺陷**。
         if clause_no.isdigit() and _extract_title(raw_title).strip().endswith(_TITLE_END_PUNCT):
@@ -2454,7 +2504,7 @@ Expected: FAIL —— `clause_no == "4"` 的伪节点存在；CJJ2 的裸数字�
 - [ ] **Step 4: 跑测试确认通过 + 指标对照**
 
 Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -v`
-Expected: PASS（3 条新用例全绿）。再跑 `scripts/survey_structure.py tests/fixtures/cjj2_source.md`，
+Expected: PASS（4 条新用例全绿；实测 `test_md_parser.py` **77 passed**）。再跑 `scripts/survey_structure.py tests/fixtures/cjj2_source.md`，
 对照上文「实测证据」右列：`clause_count` **892**、`content_chars_plain` **145,269**、
 覆盖率（只条文行）**0.9986**、打标数 **168**、`missing_sections` **`['10.7','14','17.5']`**（3 项）。
 

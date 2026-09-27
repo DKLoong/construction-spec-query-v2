@@ -990,10 +990,16 @@ def test_hash_line_with_bare_number_and_prose_is_not_a_node():
     rows = parse_markdown(md)
     assert not any(r["clause_no"] == "4" for r in rows), "伪 level-1 节点仍在"
     assert not any(r["section_path"].startswith("4 ") for r in rows), "面包屑被伪节点污染"
-    # 该行的文本必须**归属其所在的条**（不是丢掉，也不是自成一条）
+    # 该行的文本必须**归属其所在的条**——**当存在可归属的候选行时**（不是丢掉，也不是自成一条）。
+    # ⚠️ 前提已按复核 F1 收窄：若该行**是首个候选行**（或其后只有内节点章标题），其自身文本与
+    #    中间正文会无处归属而被丢弃（复核实测 41 字符）。该行为**非 `#` 路径既有**（对照用例
+    #    修复前后完全一致：实测两边都是 0 条 / 0 字符），本 Task 只让 `#` 分支与之对齐，故为
+    #    **已登记的已知增量**，不是新一类丢失；CJJ2 上不触发（净 +13）；真实 OCR 输出带
+    #    `## 第X页` 页标记（保留为候选）故栈通常非空。已记 TODOS.md（T20：缓冲孤儿文本挂到
+    #    下一候选行，属**行为设计变更**，本批不做）。
     target = [r for r in rows if r["clause_no"] == "11.5.3"]
     assert target and "现浇混凝土柱允许偏差" in target[0]["content"], \
-        "被收窄的行其文本应归入所属条"
+        "被收窄的行其文本应归入所属条（当存在可归属的候选行时）"
 
 
 def test_hash_line_with_bare_number_and_chapter_name_is_still_a_node():
@@ -1005,10 +1011,34 @@ def test_hash_line_with_bare_number_and_chapter_name_is_still_a_node():
     assert hit and hit[0]["section_path"] == "3 施工准备 > 3.1 一般规定"
 
 
+def test_long_chapter_name_with_bare_number_is_still_a_node():
+    """长章名（>20 字）不得被 20 字长度门误伤 —— 本 Task 判据取舍的**唯一**可证伪护栏。
+
+    ⚠️ 该章名是**假设性构造**：夹具只有其短版 `3 施工准备`，全仓语料无此长版（已 grep 核实）。
+    它存在的理由：实测选定判据（只取句末标点）与被否决判据（`not _looks_like_title(...)`）
+    在 CJJ2 上**数值完全相同**（都是 −6 行、覆盖率 0.9986）→ 语料**无法**区分二者，
+    只有本用例能。变异 M3（把判据换成被否决的那条）下本用例**必须变红**（已实跑验证）：
+    没有它，未来有人把判据换成 `_looks_like_title`，语料上毫无差别，而长章名被静默降级、
+    其下条文的章节关系一起丢失，无人能发现。
+    """
+    md = ("## 3 施工准备与临时设施（含施工便道、临时用电）\n\n"
+          "### 3.1 一般规定\n\n3.1.1 施工准备应符合下列规定。\n")
+    rows = parse_markdown(md)
+    assert any(r["clause_no"] == "3" for r in rows), \
+        "长章名被判为非节点（20 字长度门误伤）"
+    hit = [r for r in rows if r["clause_no"] == "3.1.1"]
+    assert hit, "长章名被误判后，其下条文一同丢失"
+    assert hit[0]["section_path"].startswith("3 "), \
+        f"长章名未进入面包屑：{hit[0]['section_path']!r}"
+
+
 def test_cjj2_has_no_bare_number_nodes_carrying_prose(cjj2_md):
     """端到端：CJJ2 里裸数字节点的内容量不得再是大块正文。
 
-    实测 5,176 → 1,712 字符、22 → 16 条（余下 16 条都是章节点，携带章首引言）。
+    实测 5,176 → 1,712 字符、22 → 16 条。余下 16 条**并非全是章节点**：13 条是真章标题，
+    另 3 条（`1 一次张拉法` / `2 多次张拉` / `2 中塔柱施工防倾措施`，夹具 L7144–L7218）
+    在**条文说明段内部**，是注释子标题而非章 —— 计数 `== 16` 不变，仅描述订正
+    （fix round 3 / R-T14-8：原写「余下 16 条都是章节点」说过头了）。
     """
     from app.ai.text_clean import plain_text
     bare = [c for c in parse_markdown(cjj2_md) if c["clause_no"].isdigit()]
