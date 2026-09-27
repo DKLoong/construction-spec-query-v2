@@ -46,6 +46,10 @@ def _is_zero_segment_node(clause_no: str) -> bool:
 # 裸露的 4 位年份（如封面页的 "2008"）不是条文号
 _BARE_YEAR = re.compile(r'^(19|20)\d{2}$')
 
+# OCR 管线的页分隔标记（`## 第X页`）。它必须被 parse_markdown 保留为独立候选，
+# 否则每页不再隔离——见 `_candidate_of` 里 (a) 的说明与 `ocr_clean.py:11-12` 的契约。
+_PAGE_MARKER = re.compile(r'^第\s*\d+\s*页$')
+
 # 标题式编号行特征：编号后的文本较短且无句末标点，视为标题而非正文
 _TITLE_END_PUNCT = ('。', '；', '：', '.', '！', '？')
 
@@ -131,7 +135,7 @@ def _match_clause_line(line: str):
     **层级不由本函数推断**，调用方统一用 `_level_from_clause_no`（唯一尺子）。
 
     排除：目录行（含 5 个以上连续点）、纯日期行、无中文行、
-    裸阿拉伯数字编号行（如 `1 钢筋`／`6 焊缝外观质量…`，按 R7 是条内的「项」）。
+    裸阿拉伯数字编号行（如 `1 钢筋`／`6 焊缝外观质量…`，它是条内的「项」，见下）。
     """
     s = line.strip()
     if not s:
@@ -156,10 +160,15 @@ def _match_clause_line(line: str):
             # 排除数值噪音：以 0 开头的数字编号（0.95 是正文数值，非条文号）
             if re.match(r'^0', clause_no):
                 return None
-            # 裸阿拉伯数字编号行（如 "1 混凝土结构…" / "6 焊缝外观质量…"）不是条文：
-            # 按 R7，它们是次分组单元内部的「项」，归属其所在的条。旧实现用
-            # _looks_like_title 按字数猜，导致同一份文档里长项成正文、短项成条文，
-            # 判定不一致（实测库里同时存在裸 '1'…'22' 与未被识别的裸项）。
+            # 裸阿拉伯数字编号行（如 "1 混凝土结构…" / "6 焊缝外观质量…"）不是条文，
+            # 而是所属条内部的「项」，归属其所在的条。**成因是两处收窄的合力，
+            # 不是 R7**：R7（182 号第三十三条）讲的是次分组单元用**大写罗马数字**
+            # 编号（`Ⅰ 主控项目`），与裸阿拉伯数字项无关——旧注释误引 R7，此处订正。
+            #   ① 层级只由编号点数推导、`_NUM_PATTERNS` 不再含层级兜底后，裸编号
+            #      与条内的「项」同形（`1 总则` 与 `1 钢筋` 无法区分）；
+            #   ② 本判据把裸阿拉伯数字项整体排除出候选行。
+            # 旧实现用 _looks_like_title 按字数猜，导致同一份文档里长项成正文、短项成
+            # 条文，判定不一致（实测库里同时存在裸 '1'…'22' 与未被识别的裸项）。
             #
             # ⚠ 判据必须是 `isdigit()` 而**不是** `'.' not in clause_no`：
             # `附录A` 同样没有点号，但它是合法的结构编号，必须继续作为候选行
@@ -188,165 +197,242 @@ def _looks_like_title(tail: str) -> bool:
     return True
 
 
+def _candidate_of(line: str) -> tuple[int, str, str] | None:
+    """识别候选行 → `(level, clause_no, tail)`；不是候选行返回 `None`。
+
+    **预扫投票（`_vote_title_mode`）与正式解析必须共用本函数**：两者判据若
+    不一致，投票结果会对不上正式解析的那一行，兄弟表决就失去意义。
+    """
+    if not line.strip():
+        return None
+    m_hash = re.match(r"^(#{1,6})\s+(.+)$", line)
+    if m_hash:
+        raw_title = m_hash.group(2).strip()
+        clause_no = _extract_clause_no(raw_title)
+        if clause_no is None:
+            # 无编号标题：以下三类保留为候选，其余（如英文标题）不当条文（R1 ⑦）。
+            t = _clean_title(_extract_title(raw_title))
+            # (a) 页分隔标记（`## 第X页`）：**必须保留为候选**，以维持「每页独立隔离」的契约
+            # ——`app/parser/ocr_clean.py:11-12` 明文承诺「保留它才能让 parse_markdown
+            # 为封面页生成独立条文，再由 import 侧的 is_cover_clause 丢弃」。
+            # 若它被筛掉：封面/前引文字会并入**首条真条文**，而 `is_cover_clause()`
+            # 可能对该首条返回 True（实测特征词 ≥2 即 True）→ `_filter_cover_clauses`
+            # （`import_routes.py:381`）把首条真条文连同其正文一并丢弃。
+            # （Task 1 复核 Important #2，探针复现；旧实现靠该标记自成一格来隔离。）
+            # 注意它必须走**本分支**：Task 1 已删掉 `第…[节章条]` 兜底，故
+            # `_extract_clause_no("第1页")` 返回 None。处置：保留为候选，并在主循环里
+            # 标 is_non_clause=1（隐藏不检索），等价于旧行为「自成一格 → 被封面过滤丢弃」，
+            # 但不再依赖封面特征词。
+            if _PAGE_MARKER.match(t):
+                return (1, t, t)
+            # (b) 法定非条文块（前言/条文说明/公告/引用标准名录/用词说明…）
+            return (1, t, t) if is_non_clause_title(t) else None
+        if _BARE_YEAR.match(clause_no):
+            return None
+        title_txt = _clean_title(_extract_title(raw_title))
+        # ⚠️ 本分支的判据顺序是**承重**的，四处顺序都不可随意调换：
+        #   ① 目次/Contents（过滤类）必须先于「无中文」检查 —— `Contents` 是英文、
+        #      无中文，若先做中文检查会把它筛掉，于是主循环里的 `is_filter_non_clause_title`
+        #      永远不触发、`discard_section` 从未置位，目录行会泄漏进下一条正文
+        #      （Task 1 复核 Important #1，已探针复现）。
+        #   ② 非条文块（前言/条文说明/公告…）必须先于 0 段检查 —— 否则
+        #      `### 1.0 条文说明` 这种「占位号 + 非条文标题」会被整条丢掉，
+        #      而不是以 is_non_clause=1 保留（Task 2 复核 Minor #1）。
+        #   ③ 0 段检查必须在 `#` 分支**存在** —— 否则 Task 3 删掉 Task 2 的脚手架行后，
+        #      `### 3.0` 重新成为节点，`test_zero_segment_is_not_a_node` 在本 Task
+        #      的检查点上失败（Task 2 复核 Minor #2，前瞻性缺陷）。
+        #   ④ 无中文检查最后。
+        if is_filter_non_clause_title(title_txt):
+            return (_level_from_clause_no(clause_no), clause_no, title_txt)
+        if is_non_clause_title(title_txt):
+            return (_level_from_clause_no(clause_no), clause_no, title_txt)
+        if _is_zero_segment_node(clause_no):
+            return None
+        if not re.search(r'[一-鿿]', raw_title):
+            return None
+        return (_level_from_clause_no(clause_no), clause_no, title_txt)
+    m_num = _match_clause_line(line.strip())
+    if not m_num:
+        return None
+    clause_no, tail = m_num                      # Task 4 之后的返回形状
+    if _is_zero_segment_node(clause_no):         # R3：末段为 0 的节位占位
+        return None
+    return (_level_from_clause_no(clause_no), clause_no, tail)
+
+
+def _parent_key(stack: list[dict], level: int) -> str:
+    """父键 = 栈中层级**严格小于** `level` 的最深候选行的 `clause_no`。
+
+    投票与正式解析**共用本函数**，保证分组键一致。
+    """
+    for entry in reversed(stack):
+        if entry["level"] < level:
+            return entry["clause_no"]
+    return ""
+
+
+def _vote_title_mode(lines: list[str]) -> dict[tuple[int, str], bool]:
+    """R14 兄弟多数表决（预扫，只读，不改任何状态）。
+
+    按 `(层级, 父键)` 分组；父键只用「编号 + 层级」推导，与标题/正文判定无关，
+    因此可在正式解析之前算准。组内多数决定该组是「带标题条」还是「无标题条」。
+
+    平票（偶数条且恰好半数）**一律判「无标题」**：判「无标题」时该行文本进入
+    自身 content，不会丢；若回退首元素且它像标题，则整组判标题型，组内无自身
+    正文的那条会按内节点被丢弃（工程评审 SC-6）。
+    """
+    rows: list[tuple[int, str, str]] = []
+    stack: list[dict] = []
+    for line in lines:
+        cand = _candidate_of(line)
+        if cand is None:
+            continue
+        level, clause_no, tail = cand
+        rows.append((level, _parent_key(stack, level), tail))
+        while stack and stack[-1]["level"] >= level:
+            stack.pop()
+        stack.append({"level": level, "clause_no": clause_no})
+
+    groups: dict[tuple[int, str], list[str]] = {}
+    for level, parent_key, tail in rows:
+        groups.setdefault((level, parent_key), []).append(tail)
+
+    verdict: dict[tuple[int, str], bool] = {}
+    for key, tails in groups.items():
+        yes = sum(1 for t in tails if _looks_like_title(t))
+        # 平票 → False（无标题，保内容）；否则严格的多数
+        verdict[key] = (yes * 2 > len(tails)) if yes * 2 != len(tails) else False
+    return verdict
+
+
+def _build_section_path(ancestors: list[dict]) -> str:
+    """由**祖先**（不含自身）构建面包屑快照：`"6 混凝土分项工程 > 6.1 模板"`。
+
+    非条文块（前言/条文说明等）不进面包屑——它们不是结构层级。
+    无祖先返回**空串**（不带尾随分隔符：详情弹窗与批二的 FTS `breadcrumb` 列
+    都会直接使用该串）。
+    """
+    return " > ".join(
+        f"{a['clause_no']} {a['title']}".strip()
+        for a in ancestors if not a.get("is_non_clause")
+    )
+
+
 def parse_markdown(md_text: str) -> list[dict]:
-    """解析 Markdown，按标题层级切割条文。
+    """解析 Markdown，按**编号层级**切割条文。
 
     规则：
-    - # 视为规范标题，忽略
-    - ## ~ ###### 视为章节/条文标题
-    - 无 # 前缀的编号行（如 3.1、D.4、附录A）也视为标题（兼容纯文本/OCR 输出）
-    - 标题后的正文归属该条文
-    - 中间层级标题（无正文或仅有子标题）不生成条文，但作为标签路径继承
-    - 子条文自动继承父标题的标签路径（parent_path）
+    - 候选行由 `_candidate_of` 唯一认定（`#` 标题行与无 `#` 的编号行共用一套判据）
+    - 层级只由编号点数推导（`_level_from_clause_no`，唯一尺子）；与 `#` 数量无关
+    - 同层各条「有无标题」由 R14 兄弟多数表决统一裁定（`_vote_title_mode` 预扫）：
+      带标题条的编号后文本进 title，无标题条的编号后文本进 content
+    - **无条件结算**：每条候选行在被下一条候选行取代（或文本结束）时结算一次
+    - **内节点判据**：无自身正文的候选行（章名/节名）只作祖先、不入库
+    - 非候选行的文本归属当前条，构成其 content
+    - 祖先链取栈中**不含自身**的部分：`parent_path`（标签路径）与 `section_path`（面包屑）
 
     返回: [{
         "clause_no": "5.2.1",
         "title": "原材料",
         "content": "钢筋进场时...",
-        "level": 4,
+        "level": 3,
         "parent_path": ["混凝土分项工程", "钢筋"],
-        "is_non_clause": False   # True 表示非条文块（前言/条文说明/用词说明等，保留但默认隐藏）
+        "section_path": "5 混凝土分项工程 > 5.2 钢筋",   # 面包屑，不含自身
+        "is_non_clause": False   # True 表示非条文块（前言/条文说明/页标记等，保留但默认隐藏）
     }, ...]
 
     黑名单行为：
-    - 目次/Contents → 直接过滤，不生成 clause
+    - 目次/Contents → 直接过滤，不生成 clause，段内内容一律丢弃
     - 前言/条文说明/本规程用词说明 → 保留进库，is_non_clause=True
     - 「条文说明」段的正文型编号行（如 3.0.1 条文内容）继承打标
+    - `## 第X页` 页分隔标记 → 保留为隐藏条文（is_non_clause=True），使每页正文互不污染
     """
     if not md_text.strip():
         return []
 
     lines = md_text.split("\n")
-    clauses = []
-    stack = []
-    current_content_lines = []
-    title_stack = []
-    # 非条文继承标志：最近的非空标题命中「条文说明」等保留类非条文时，
-    # 后续正文型编号行生成的 clause 也标记 is_non_clause=True
-    inherit_non_clause = False
-    # 过滤段标志：目次/Contents 段内的一切内容一律丢弃，直到下一个真实标题
-    discard_section = False
+    title_mode = _vote_title_mode(lines)        # 改动①：R14 预扫投票
+
+    clauses: list[dict] = []
+    stack: list[dict] = []          # 标题栈；只放候选行，末位即「当前条」
+    pending: list[str] = []         # 当前条的待落内容
+    discard_section = False         # 目次段：段内一切丢弃
+    inherit_non_clause = False      # 条文说明段：正文型行继承打标
+
+    def flush() -> None:
+        """结算「当前条」= `stack[-1]`。
+
+        改动② **无条件结算**：旧实现只在 `current_content_lines` 非空时才结算，
+        于是「标题型且无后续内容」的行从未被结算——实测 3.0.1 就是这样消失的。
+
+        改动③ **内节点判据**：无自身正文者只作祖先、不入库。
+          - 标题型且有后续内容 → 有自身正文 → 叶条文
+          - 标题型且无后续内容 → 内节点（章名/节名）
+          - 正文型（title 为空）→ 其 tail 就是自身正文 → 必然产出
+
+        改动④ 祖先链取 `stack[:-1]`，**不含自身**（与旧实现一致）。
+        """
+        nonlocal pending
+        if stack:
+            entry = stack[-1]
+            content = "\n".join(pending).strip()
+            has_own_body = (entry["title"] == "") or bool(content)
+            if has_own_body and _should_emit_clause(entry["title"], content):
+                ancestors = stack[:-1]
+                clauses.append({
+                    "clause_no": entry["clause_no"],
+                    "title": entry["title"],
+                    "content": content,
+                    "level": entry["level"],
+                    "parent_path": [a["title"] for a in ancestors],
+                    "section_path": _build_section_path(ancestors),
+                    "is_non_clause": entry["is_non_clause"],
+                })
+        pending = []
 
     for line in lines:
-        m_hash = re.match(r"^(#{1,6})\s+(.+)$", line)
-        m_num = None
-        if not m_hash:
-            m_num = _match_clause_line(line)
+        cand = _candidate_of(line)
+        if cand is None:
+            if not discard_section and line.strip():
+                # 非候选行 → 当前条的内容。次分组单元的标题行也走这里，
+                # 需剥掉 Markdown 井号前缀，避免标记混进正文。
+                pending.append(re.sub(r'^#{1,6}\s*', '', line))
+            continue
 
-        if m_hash or m_num:
-            # 如果之前有积累内容且有当前条文号，保存之（完全空条文不生成）
-            if current_content_lines and stack:
-                entry = stack[-1]
-                content = "\n".join(current_content_lines).strip()
-                if _should_emit_clause(entry["title"], content):
-                    clauses.append({
-                        "clause_no": entry["clause_no"],
-                        "title": entry["title"],
-                        "content": content,
-                        "level": entry["level"],
-                        "parent_path": list(entry["parent_path"]),
-                        "is_non_clause": entry.get("is_non_clause", False),
-                    })
-                current_content_lines = []
+        flush()                                  # 新候选行到达 → 先结算上一条
+        level, clause_no, tail = cand
 
-            if m_hash:
-                raw_title = m_hash.group(2).strip()
-                clause_no = _extract_clause_no(raw_title)
-                title = _clean_title(_extract_title(raw_title))
-                # R3：节位为 0 的占位号不成节点（`3.0` 不入库、不进 title_stack；
-                # `3.0.1` 末段非 0，照常入库）
-                if clause_no is not None and _is_zero_segment_node(clause_no):
-                    continue
-                # 黑名单：目次/Contents 直接过滤（不生成条文，丢弃段内内容）。
-                # 必须**先于**下文的中文检查——`Contents` 无中文，若被中文检查提前
-                # continue，`discard_section` 永不置位，目录行会漏进后一条正文。
-                if is_filter_non_clause_title(title):
-                    current_content_lines = []
-                    inherit_non_clause = False
-                    discard_section = True
-                    continue
-                if clause_no is None:
-                    # 无编号标题：只有「非条文块」（前言/条文说明等，R8/R8b 打标保留）
-                    # 继续以标题本身作编号走黑名单链路（旧行为）；
-                    # 其余（如 `### 某英文标题`）不当条文（R1 ⑦）。
-                    if not is_non_clause_title(title):
-                        continue
-                    clause_no = title
-                # 编号是裸露年份，或标题无中文 → 不当条文（与 _match_clause_line 判据一致）
-                if _BARE_YEAR.match(clause_no):
-                    continue
-                if not re.search(r'[一-鿿]', raw_title):
-                    continue
-                level = _level_from_clause_no(clause_no)
-                discard_section = False
-                is_non = is_non_clause_title(title)
-                inherit_non_clause = is_non
-                while title_stack and title_stack[-1][0] >= level:
-                    title_stack.pop()
-                title_stack.append((level, title))
-                parent_path = [t[1] for t in title_stack[:-1]]
-                stack.append({
-                    "level": level, "clause_no": clause_no, "title": title,
-                    "parent_path": parent_path, "is_non_clause": is_non,
-                })
-            else:
-                # m_num 在此分支必定非 None（满足 if m_hash or m_num）
-                assert m_num is not None
-                clause_no, tail = m_num
-                level = _level_from_clause_no(clause_no)
-                if _looks_like_title(tail):
-                    # 标题型编号行：与 # 标题行为一致
-                    title = _clean_title(tail)
-                    # 黑名单：目次/Contents 直接过滤
-                    if is_filter_non_clause_title(title):
-                        current_content_lines = []
-                        inherit_non_clause = False
-                        discard_section = True
-                        continue
-                    discard_section = False
-                    is_non = is_non_clause_title(title)
-                    inherit_non_clause = is_non
-                    while title_stack and title_stack[-1][0] >= level:
-                        title_stack.pop()
-                    title_stack.append((level, title))
-                    parent_path = [t[1] for t in title_stack[:-1]]
-                    stack.append({
-                        "level": level, "clause_no": clause_no, "title": title,
-                        "parent_path": parent_path, "is_non_clause": is_non,
-                    })
-                else:
-                    # 正文型编号行：编号即条文号，编号后文本即正文首行
-                    # 不进入 title_stack（不作为后续条文的父级）
-                    if discard_section:
-                        # 目次/Contents 段内编号行：直接丢弃
-                        continue
-                    while title_stack and title_stack[-1][0] >= level:
-                        title_stack.pop()
-                    parent_path = [t[1] for t in title_stack]
-                    stack.append({
-                        "level": level, "clause_no": clause_no, "title": "",
-                        "parent_path": parent_path,
-                        "is_non_clause": inherit_non_clause,
-                    })
-                    current_content_lines.append(tail)
-        else:
-            if line.strip() and not discard_section:
-                current_content_lines.append(line)
+        # 投票键缺失只可能出现在「目次/Contents 行被主循环筛掉、未入栈」之后；
+        # 回退 False（判「无标题」）与平票规则同向：文本进 content，不丢内容。
+        is_titled = title_mode.get((level, _parent_key(stack, level)), False)
+        title = _clean_title(tail) if is_titled else ""
 
-    # 处理最后一条（完全空条文不生成）
-    if current_content_lines and stack:
-        entry = stack[-1]
-        content = "\n".join(current_content_lines).strip()
-        if _should_emit_clause(entry["title"], content):
-            clauses.append({
-                "clause_no": entry["clause_no"],
-                "title": entry["title"],
-                "content": content,
-                "level": entry["level"],
-                "parent_path": list(entry["parent_path"]),
-                "is_non_clause": entry.get("is_non_clause", False),
-            })
+        if is_filter_non_clause_title(title or tail):
+            discard_section = True               # 目次 / Contents：段内一切丢弃
+            inherit_non_clause = False
+            continue
+        discard_section = False
 
+        # 非条文打标。**标题型行以自身裁定为准，并重置本段基调**——`## 1 总则`
+        # 必须把前言段留下的 True 拨回 False，否则打标会外溢到其后**全部**条文
+        # （旧实现 `:283` 即此语义；`test_parse_qianyan_retained_and_marked` 守之，
+        # 且提交前的字面写法实测把它打挂：1.0.1 的 is_non_clause 变成 True）。
+        # **正文型行**（title 为空）才继承本段基调：条文说明段内的编号行据此打标。
+        own_non = (is_non_clause_title(title or tail)
+                   or bool(_PAGE_MARKER.match(title or tail)))  # 页分隔标记：隐藏但保留（见 _candidate_of）
+        is_non = own_non if title else (own_non or inherit_non_clause)
+        inherit_non_clause = is_non
+
+        while stack and stack[-1]["level"] >= level:
+            stack.pop()
+        stack.append({
+            "level": level, "clause_no": clause_no, "title": title,
+            "is_non_clause": is_non,
+        })
+        if not title:
+            pending.append(tail)                 # 正文型：编号后文本即正文首行
+
+    flush()                                      # 收尾：结算最后一条
     return clauses
 
 

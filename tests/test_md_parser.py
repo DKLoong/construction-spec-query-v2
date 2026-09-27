@@ -581,3 +581,179 @@ def test_appendix_without_dots_is_still_a_candidate():
     r = [c for c in results if c["clause_no"] == "A.1.1"]
     assert len(r) == 1
     assert any("接头型式检验的加载制度" in p for p in r[0]["parent_path"])
+
+
+# ═══════════════════════════════════════════
+# 解析主循环：R14 投票 / 无条件 flush / 内节点判据 / section_path（Task 3）
+# ═══════════════════════════════════════════
+
+# ── 组 1：R14 兄弟多数表决 ──
+def test_r14_sibling_majority_rescues_long_untitled_clause():
+    """R14 / GB/T 1.1 §7.3.3：同层各条有无标题应一致。
+
+    `3.0.1 接头设计应满足强度及变形性能的要求` 旧实现按 ≤20 字判为标题型；
+    同层 3.0.2~3.0.9 皆为无标题条 → 多数表决判它也无标题 → 正文归其自身。
+    实测背景：JGJ107 库里 3.0.1 缺失而 3.0.2~3.0.9 都在（都是 title='' 的正文型）。
+    """
+    md = "\n\n".join(
+        ["3.0.1 接头设计应满足强度及变形性能的要求"] +
+        [f"3.0.{i} 接头安装应符合本规程第{i}章的规定。" for i in range(2, 10)]
+    )
+    r = [c for c in parse_markdown(md) if c["clause_no"] == "3.0.1"]
+    assert len(r) == 1
+    assert r[0]["title"] == ""
+    assert "接头设计应满足强度及变形性能的要求" in r[0]["content"]
+
+def test_r14_group_of_titles_stays_titles():
+    md = "3.0.1 一般规定\n\n正文甲。\n\n3.0.2 材料要求\n\n正文乙。\n\n3.0.3 检验方法\n\n正文丙。\n"
+    titles = {c["clause_no"]: c["title"] for c in parse_markdown(md)}
+    assert titles["3.0.1"] == "一般规定"
+    assert titles["3.0.3"] == "检验方法"
+
+def test_tie_prefers_untitled():
+    """平票一律判「无标题」——保内容优先（工程评审 SC-6）
+
+    2 条组 1:1 时若回退首元素且它像标题，则整组判标题型，组内无自身正文的
+    那条会按内节点被丢弃、其 tail 文本消失。
+    """
+    md = "3.0.1 一般规定\n\n3.0.2 接头安装应符合本规程的规定。\n"
+    clauses = {c["clause_no"]: c for c in parse_markdown(md)}
+    assert clauses["3.0.2"]["title"] == ""
+    assert "接头安装应符合本规程的规定" in clauses["3.0.2"]["content"]
+
+# ── 组 2：无条件 flush（救回「标题型且无后续内容」的行） ──
+def test_body_type_clause_emitted_without_following_lines():
+    """正文型编号行即使后面没有任何内容行也必须产出。
+
+    旧实现只在 `current_content_lines` 非空时才结算，于是 `3.0.1` 这类
+    「标题型且无后续内容」的行**从未被结算**、直接从库里消失。
+    """
+    md = "3.0.1 接头设计应满足强度及变形性能的要求\n\n3.0.2 钢筋连接用套筒应符合规定。\n"
+    clauses = {c["clause_no"]: c for c in parse_markdown(md)}
+    assert "3.0.1" in clauses
+    assert "接头设计应满足强度及变形性能的要求" in clauses["3.0.1"]["content"]
+
+def test_body_type_clause_keeps_tail_in_content():
+    """既有行为不得回归：正文型编号行的编号后文本进 content、title 为空"""
+    md = "1.0.1  为在混凝土结构中使用钢筋机械连接，制定本规程。\n"
+    r = parse_markdown(md)
+    assert r[0]["title"] == ""
+    assert r[0]["content"] == "为在混凝土结构中使用钢筋机械连接，制定本规程。"
+
+# ── 组 3：内节点判据 + R7 内容回流（56%） ──
+def test_inner_node_without_body_is_not_emitted_but_serves_as_ancestor():
+    """内节点判据 = 有无自身正文（不是「是章/节还是条」）"""
+    md = ("## 6 混凝土分项工程\n\n### 6.1 模板\n\n"
+          "#### 6.1.1 一般规定\n\n模板及其支架应进行设计。\n")
+    nos = [c["clause_no"] for c in parse_markdown(md)]
+    assert "6" not in nos and "6.1" not in nos       # 无自身正文 → 只作祖先
+    assert "6.1.1" in nos
+
+def test_appendix_with_own_body_is_a_leaf_clause():
+    """附录A 有自身正文（CJJ2 是 35K 字符验收记录表）→ 叶条文，入库可检索（R11）"""
+    md = "附录A 验收记录表\n\n<table><tr><td>序号</td><td>项目</td></tr></table>\n"
+    r = [c for c in parse_markdown(md) if c["clause_no"] == "附录A"]
+    assert len(r) == 1
+    assert "序号" in r[0]["content"]
+
+def test_page_marker_isolates_pages():
+    """`## 第X页` 必须自成一格，使封面/前引文字**不并入首条真条文**。
+
+    契约出处：`app/parser/ocr_clean.py:11-12`（明文承诺保留该标记）。
+    失败形态（Task 1 复核 Important #2 探针复现）：页标记被筛掉后，前引文字
+    并入 `1 总则`，使 `is_cover_clause()` 对其返回 True（特征词 ≥2）→
+    `_filter_cover_clauses`（`import_routes.py:381`）把首条真条文**连同其正文**丢弃。
+    """
+    md = ("## 第1页\n\nICS 77.140.60\n\n中华人民共和国国家标准\n\n代替 GB/T 1499.1-2008\n\n"
+          "## 1 总则\n\n1.0.1 正文内容。\n")
+    clauses = {c["clause_no"]: c for c in parse_markdown(md)}
+    # 页标记自身保留但隐藏（is_non=1），前引文字归它，不污染真实条文
+    page = [c for c in clauses.values() if c["clause_no"] == "第1页"]
+    assert len(page) == 1 and page[0]["is_non_clause"] is True
+    assert "ICS" in page[0]["content"]
+    # 首条真条文不得带上封面特征词（否则会被 _filter_cover_clauses 误删）
+    # ⚠ 断言偏离计划：计划写的 `clauses["1"]["content"].strip() == ""` 与本 Task 的
+    #    内节点判据**互斥**——`## 1 总则` 无自身正文，按组 3 判据不入库，该键直接
+    #    `KeyError: '1'`（实测）。改为同一命题的更强形式：`1` 根本不成条文
+    #    （封面文字既没并进它、也没并进 `1.0.1`），且**任何**非页标记条文都不带封面词。
+    assert "1" not in clauses
+    real = [c for c in clauses.values() if c["clause_no"] != "第1页"]
+    assert real                                        # 防空断言：必须有真条文
+    assert all(is_cover_clause(c["content"]) is False for c in real)
+    assert clauses["1.0.1"]["content"].strip() == "正文内容。"
+
+
+def test_group_heading_content_flows_to_enclosing_clause():
+    """R7 次分组单元的内容回流到所属条（实测规模：252,514 字符 / 占全部正文 56%）
+
+    `#### 主控项目` / `#### 一般项目` 在 Task 1 之后已**不是候选行**（无编号且
+    非非条文块），裸编号项在 Task 4 之后也不是——于是它们与其后的
+    `检查数量：` / `检验方法：` / 表格**连续落进所属的条** `14.3.1`。
+    """
+    md = """### 14.3 检验标准
+
+14.3.1 钢梁制作质量检验应符合下列规定：
+
+#### 主控项目
+
+1 钢材的品种、规格应符合设计要求。
+
+检查数量：全数检查。
+
+检验方法：检查质量证明文件。
+
+#### 一般项目
+
+6 焊缝外观质量应符合本规范第14.2.7条规定。
+
+检查数量：同类部件抽查10%。
+
+14.3.2 钢梁现场安装检验应符合下列规定：
+
+正文乙。
+"""
+    clauses = {c["clause_no"]: c for c in parse_markdown(md)}
+    body = clauses["14.3.1"]["content"]
+    assert "钢材的品种" in body and "焊缝外观质量" in body
+    assert "检查数量：全数检查。" in body and "检验方法：检查质量证明文件。" in body
+    assert "主控项目" in body and "一般项目" in body      # 标签文本不丢，只是不再是节点
+    assert "####" not in body                              # 井号标记必须剥掉
+    # ⚠ 断言偏离计划：计划写的 `clauses["14.3.2"]["content"].strip() == "正文乙。"`
+    #    预设 14.3.2 是**标题型**行，但 `_looks_like_title` 把「以句末标点（含全角
+    #    「：」）结尾」判为非标题，而本组 (层级 3, 父键 "14.3") 的两条 tail 均非标题
+    #    → 投票判「无标题」→ 编号后文本进 content（旧实现同样按正文型处理，故此断言
+    #    描述的并非既有行为）。改为断言其**语义意图**：分组内容只归 14.3.1、
+    #    14.3.2 保留自有正文，两者互不串味。
+    assert "正文乙。" in clauses["14.3.2"]["content"]
+    assert "钢材的品种" not in clauses["14.3.2"]["content"]
+    assert "检查数量" not in clauses["14.3.2"]["content"]
+    assert clauses["14.3.2"]["title"] == ""
+
+# ── 组 4：section_path / parent_path（**祖先链不含自身**） ──
+def test_section_path_includes_each_ancestor_with_number():
+    md = "## 6 混凝土分项工程\n\n### 6.1 模板\n\n#### 6.1.1 一般规定\n\n正文甲。\n"
+    r = [c for c in parse_markdown(md) if c["clause_no"] == "6.1.1"][0]
+    assert r["section_path"] == "6 混凝土分项工程 > 6.1 模板"     # ← 不含自身
+
+def test_section_path_has_no_trailing_separator_when_root():
+    r = parse_markdown("1.0.1 正文甲。\n")[0]
+    assert r["section_path"] == ""
+
+def test_no_cross_chapter_leak():
+    md = ("## 6 混凝土分项工程\n\n### 6.1 模板\n\n"
+          "#### 6.1.1 一般规定\n\n正文甲。\n\n"
+          "## 7 预应力分项工程\n\n7.0.1 预应力筋应抽样检验。\n")
+    r = [c for c in parse_markdown(md) if c["clause_no"] == "7.0.1"][0]
+    assert "混凝土" not in r["section_path"]
+    assert "预应力" in r["section_path"]
+
+def test_parent_path_excludes_self():
+    """`parent_path` **不含自身**——与旧实现一致，保 `classify_clause` 的输入不变。
+
+    `parent_path` 会被 `import_routes.py:469` 送进 `classify_clause` 作为规则
+    匹配文本的一部分（`rule_engine.py:66` 的 `augmented_text`），语义漂移会
+    直接改变 dim 得分与标签（工程评审 CRITICAL-2 / C3）。
+    """
+    md = "## 6 混凝土分项工程\n\n### 6.1 模板\n\n#### 6.1.1 一般规定\n\n正文甲。\n"
+    r = [c for c in parse_markdown(md) if c["clause_no"] == "6.1.1"][0]
+    assert r["parent_path"] == ["混凝土分项工程", "模板"]
