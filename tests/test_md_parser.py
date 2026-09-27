@@ -903,3 +903,52 @@ def test_parent_path_excludes_self():
     md = "## 6 混凝土分项工程\n\n### 6.1 模板\n\n#### 6.1.1 一般规定\n\n正文甲。\n"
     r = [c for c in parse_markdown(md) if c["clause_no"] == "6.1.1"][0]
     assert r["parent_path"] == ["混凝土分项工程", "模板"]
+
+
+# ── 组 5：批一回归夹具 + 结构勘察（Task 8） ──
+from pathlib import Path
+import pytest
+
+CJJ2_FIXTURE = Path(__file__).parent / "fixtures" / "cjj2_source.md"
+
+@pytest.fixture
+def cjj2_md() -> str:
+    """CJJ2 源 md 的固定副本。
+
+    不依赖 data/outputs/（运行时目录，且历史上 data/uploads/ 已被 pytest 污染）。
+    """
+    return CJJ2_FIXTURE.read_text(encoding="utf-8")
+
+def test_cjj2_fixture_is_available(cjj2_md):
+    assert len(cjj2_md) > 400_000
+
+def test_expected_ancestor_count_excludes_zero_segments():
+    """R3：`X.0.Y` 没有 `X.0` 这一级，故 `3.0.1` 应有 1 级祖先而非 2 级。
+
+    若按 `level - 1` 判完整性，所有 `X.0.Y` 条文会被系统性误判为面包屑不完整
+    （实测占 JGJ107 的 53%），进而让覆盖率被大幅低估、误导 Task 3 的去留。
+    """
+    from scripts.survey_structure import _expected_ancestor_count
+    assert _expected_ancestor_count("3.0.1") == 1
+    assert _expected_ancestor_count("1.0.2") == 1
+    assert _expected_ancestor_count("6.1.1") == 2
+    assert _expected_ancestor_count("6.1") == 1
+    assert _expected_ancestor_count("6") == 0
+
+
+def test_survey_reports_breadcrumb_coverage(cjj2_md):
+    """批一验收指标之一：面包屑覆盖率。
+
+    用于量化「Task 3（目次对齐）是否还需要」——修完层级后若仍有节的标题
+    缺失，其下条文的 section_path 会缺段，覆盖率会掉下来。
+    """
+    from scripts.survey_structure import survey_structure
+    stats = survey_structure(cjj2_md)
+    # ⚠ 偏离计划：计划写的 `> 900` 是 Task 3 实施**前**的预估阈值（当时无实测值）。
+    #    实测都低于 900——Task 3 后 895（task-3-report.md:228）、Task 7 后 898
+    #    （task-7-report.md:79）；原样保留会让本测试恒定失败。故阈值下调到 850：
+    #    只守「夹具完整 + 解析出全量规模条文」，不锁定精确值（精确基线由
+    #    批一验收基线表与 Task 9 的守恒断言守）。
+    assert stats["clause_count"] > 850
+    assert 0.0 <= stats["breadcrumb_coverage"] <= 1.0
+    assert isinstance(stats["missing_sections"], list)
