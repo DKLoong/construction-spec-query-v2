@@ -1668,7 +1668,11 @@ import pytest
 from app.classifier.rule_engine import classify_clause
 from app.parser.md_parser import parse_markdown
 
-# ⚠ 阈值必须 ≤ 0.45（控制器派单前预跑实测）：`_match_score` 的 keyword 分支是
+# ⚠ 阈值必须 **< 0.45**（控制器派单前预跑实测；⚠️ 我原写「≤ 0.45」**照做必坏**，被 Task 10 复核的浮点实测更正）：
+#   单次命中 = min(1.0, 0.3 + 1*0.15) * (1 + 0.1*0) 的**浮点结果 repr 是 `0.44999999999999996`**，
+#   于是 `0.44999999999999996 >= 0.45` 为 **False**（而 `>= 0.4` 为 True）→ 取 0.45 会让**所有规则失配**，
+#   正是这段注释想拦的故障。故取 0.4。
+#   `_match_score` 的 keyword 分支是
 #   `min(1.0, 0.3 + count * 0.15) * (1 + 0.1 * priority)` —— priority=0 时**单次命中 = 0.45**。
 #   初稿写的 `threshold: 0.6` 会让**任何**规则都不命中（0.45 < 0.6），
 #   于是 `_labels(MD)` 返回空标签、断言①③必然失败（实测：`{'6.1.1': '', '6.2.1': ''}`）。
@@ -1750,7 +1754,7 @@ def test_classification_labels_stable_against_baseline():
 > 所以「先失败」不适用。它的价值在于：日后 `parent_path` 的构成再变时立刻报警。
 
 > **⚠️ 本基线的覆盖边界（实施者如实报告，控制器裁定接受；写清以免后人高估它）**：
-> **只覆盖** dim4、两条 `keyword` 规则、8 行样例；**覆盖不到** `regex`/`exact` 分支、
+> **只覆盖** dim4、两条 `keyword` 规则、**13 行样例（非空 7 行 / 解析出 2 条条文）**；**覆盖不到** `regex`/`exact` 分支、
 > 非空 `label` 赋值路径、`_PARENT_NOISE_TITLES` 过滤、`synonyms` 词库归一化。
 > 窄口径是**设计**（C8 刻意收窄以隔离 `parent_path` 耦合），**不是**通用分类回归套件 ——
 > 改分类器的其它路径时**不要**以为本文件会报警。
