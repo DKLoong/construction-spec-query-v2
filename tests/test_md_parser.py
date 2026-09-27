@@ -955,7 +955,13 @@ def test_survey_reports_breadcrumb_coverage(cjj2_md):
     #    这里不走「先落 M14 的 0.85 再提高」：执行顺序表把 Task 13 排在 Task 12 之前，
     #    本 Task 落地的就是终值；0.85 对 0.9781 会放走 −0.13 的退化，门禁形同虚设。
     assert stats["breadcrumb_coverage"] >= 0.95
-    assert isinstance(stats["missing_sections"], list)
+    # ⚠️ 偏离简报（fix round 1，裁定）：原断言 `isinstance(..., list)` **空表也过**，
+    #    是 M14 点名的「恒真门禁」。换成**集合断言**（实测恰为这三项）。
+    #    它同时是 **R3 护栏**：脚本里「`X.0.Y` 的节位为 0 → 该级不存在」的剔除若被删掉，
+    #    `1.0` / `2.0` / `3.0` / `23.0` 会立刻进集合（实测），本断言随即变红。
+    #    另注：`missing_sections` 口径已收窄为**只统计条文行**（R-T13-5），
+    #    故这里的精确值 3 同时替代了 Task 8 那批「47」——47 里 44 个是条文说明段噪声。
+    assert stats["missing_sections"] == ["10.7", "11.5", "8"]
 
 
 # ═══════════════════════════════════════════

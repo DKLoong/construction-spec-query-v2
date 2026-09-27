@@ -6,7 +6,11 @@
   3. content_chars_plain    同上，但经 `plain_text` 归一（**Task 9 守恒断言的基线口径**）
   4. fake_clause_no_count   不含数字的条文号个数（伪条文号）
   5. breadcrumb_coverage    **条文行**的 section_path 段数 == 应有祖先数（按 R3 剔除 0 段）的占比
-  6. missing_sections       被引用却找不到标题的节号（量目次对齐的残余缺口）
+  6. missing_sections       **条文行**被引用却找不到标题的节号（量目次对齐的残余缺口）
+
+⚠️ 指标 5/6 均**只统计条文行**（R-T13-4/R-T13-5）：非条文行的面包屑按 `_build_section_path`
+的契约本应为空，把它们算进来会系统性虚增缺口——Task 8 记录的 47 个「缺失节」里
+**44 个是条文说明段噪声**（注释行引用正文结构里本就不存在的节号）。修正后残余缺口为 3。
 
 用法：python scripts/survey_structure.py <md路径> [--json]
 """
@@ -56,9 +60,18 @@ def survey_structure(md_text: str) -> dict:
     # ⚠ R3：`X.0.Y` 的上一级是 `X.0`，而它按设计**不存在**（0 段不构成节点）
     #   → 必须跳过，否则 `3.0` / `1.0` / `2.0` 会被系统性报成「缺失的节」，
     #   与覆盖率指标一样夸大残余缺口、误导 Task 3 的去留判断（D6.2）。
+    # ⚠️ R-T13-5（裁定，2026-09-27）：本指标与覆盖率同源，**只统计条文行**。
+    #   理由与 R-T13-4 同：非条文行的面包屑按 `_build_section_path` 的契约**本应为空**，
+    #   于是段内注释行引用的节号（`10.1`/`13.1`/`17.2`… 这些在**正文结构里本就不存在**）
+    #   会被系统性报成「缺失」。实测两种口径 × 两个 commit：
+    #     Task 13 前（9119d62）全行 47 / 只条文行 **47**
+    #     Task 13 后（ee37e10）全行 **50** / 只条文行 **3** = ['10.7', '11.5', '8']
+    #   → 全行口径的 47→50 是**口径错**（3 条由新打标的非条文行引入），不是回归；
+    #     且 Task 8 记录的 47 个里有 **44 个是条文说明段噪声**，此前严重高估残余缺口。
+    #   `present` 仍用全量 clause_no（父级节点只要以任何形式存在就不算缺失）。
     present = {c["clause_no"] for c in clauses}
     missing: set[str] = set()
-    for c in clauses:
+    for c in real:
         parts = c["clause_no"].split('.')
         if len(parts) < 2:
             continue
