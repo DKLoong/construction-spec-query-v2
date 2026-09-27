@@ -10,14 +10,29 @@
   7. duplicate_clause_no    出现 >1 次的条号 → 次数（Task 11 重复诊断）
   8. duplicate_rows         落在重复号上的行数（= 指标 7 的次数之和）
   9. duplicate_rows_is_non  指标 8 里 `is_non_clause=1` 的行数（拆分「合法/缺陷」用）
+ 10. duplicate_group_kinds  **组级**三分解（Task 11 fix round 1）：按组内 `is_non_clause`
+                            的分布分类 → `{"designed": 119, "body_only": 2, "commentary_only": 2}`
 
-⚠️ 指标 7~9（Task 11）：CJJ2 实测 123 组 / 258 行，其中打标 135 行。分解（探针实测，无余项）：
-**119 组**是**设计性**的「正文 + 条文说明同号」（1 条正文 + N 条逐款解释，注释侧已由 Task 13
-打标；样例 `16.8.3` = L4177 正文 + L7120/7122/7124/7126/7128 五条逐款说明）；
-**2 组**是**真重复**（`10.7.3`、`17.5.1`）——两者都是**被 PDF 断行劈开的交叉引用**，其下半行
-以「条文号形状的 token」起头而被认成候选行（源行 L3077 / L4802，见 TODOS.md T22）；
-**2 组**在条文说明段内自重复（`前言`、`2`）。指标 7 的值只对**重复号集合**有意义，
-故 `main()` 里不逐项打印（123 项），只打印按打标情况拆分的汇总。
+⚠️ 指标 7~10（Task 11）：CJJ2 实测 123 组 / 258 行，其中打标 135 行。**组级**分解（探针实测，无余项）：
+**119 组** `designed` —— **设计性**的「正文 + 条文说明同号」（1 条正文 + N 条逐款解释，注释侧
+已由 Task 13 打标；样例 `16.8.3` = L4177 正文 + L7120/7122/7124/7126/7128 五条逐款说明）；
+**2 组** `body_only` —— **真重复**（`10.7.3`、`17.5.1`），两次都在正文，属缺陷；
+**2 组** `commentary_only` —— 条文说明段内自重复（`前言`、`2`）。
+
+⚠️ **为什么必须有指标 10（指标 9 是弱信号）**：指标 9 只数「打标行总数」，把 `designed`
+（合法）与 `commentary_only`（段内自重复）混在同一个数字里——①↔③ 此消彼长时它会**纹丝不动**。
+指标 10 是**组级**分类，能分辨「是哪一类组变了」。可失败性已实测：把 `前言` 组 1 行的
+`is_non_clause` 翻为 False、同时把 `10.7.3` 组 1 行翻为 True（**仅 2 处 flag 翻转**），
+指标 7/8/9 全部**不变**（123 / 258 / 135），而指标 10 由 `119/2/2` 变为 `121/1/1` → 断言变红。
+
+⚠️ 指标 7 的值只对**重复号集合**有意义，故 `main()` 里不逐项打印（123 项），只打印指标 10 的分解。
+
+⚠️ **字符量必须标口径（本批已多次踩坑）**：② 的两条伪影节点合计
+**raw 3134 字符（0.703% of raw 445906）/ plain 484 字符（0.333% of plain 145269）**；
+其中 `10.7.3` 伪节点 raw 3119 / plain 469 —— raw 与 plain 差 6.5 倍，全部来自渲染载荷
+（`表 11.5.6-1` 的 HTML/LaTeX 标记）在 `plain_text` 下被剥离。简报引用的「484 字符」是
+**plain 口径**，与本脚本指标 3 同口径；本脚本指标 2 是 raw 口径。两者都对，**不可混比**。
+成因的正确描述是「**错位节点 + 吞并正文**」：该伪节点把 `表 11.5.6-1` 的正文记到了第 11 章下。
 
 ⚠️ 指标 5/6 均**只统计条文行**（R-T13-4/R-T13-5）：非条文行的面包屑按 `_build_section_path`
 的契约本应为空，把它们算进来会系统性虚增缺口——Task 8 记录的 47 个「缺失节」里
@@ -50,6 +65,25 @@ def _expected_ancestor_count(clause_no: str) -> int:
     """
     segs = clause_no.split('.')[:-1]          # 去掉末段（条号）
     return sum(1 for s in segs if s != '0')   # R3：0 段不构成节点
+
+
+def _duplicate_group_flags(clauses: list[dict]) -> dict[str, list[bool]]:
+    """重复号 → 组内各行的 `is_non_clause` 列表（指标 7~10 的唯一数据源）。"""
+    counts = Counter(c["clause_no"] for c in clauses)
+    flags: dict[str, list[bool]] = {}
+    for c in clauses:
+        if counts[c["clause_no"]] > 1:
+            flags.setdefault(c["clause_no"], []).append(bool(c["is_non_clause"]))
+    return flags
+
+
+def _kind_of(flags: list[bool]) -> str:
+    """组级分类：既有正文又有注释 / 全在正文 / 全在注释（指标 10 的三键）。"""
+    if all(flags):
+        return "commentary_only"
+    if any(flags):
+        return "designed"
+    return "body_only"
 
 
 def survey_structure(md_text: str) -> dict:
@@ -110,13 +144,21 @@ def _survey(clauses: list[dict]) -> dict:
             missing.add(parent_no)
 
     # Task 11 重复条文号诊断：按 `clause_no` 计数，只留出现 >1 次的号。
-    # ⚠️ 本指标**不区分**「正文 / 条文说明」——同号重复的**合法性**恰恰要靠
-    # `is_non_clause` 拆分来判定（见模块 docstring 指标 7~9 的分解），故一并输出
-    # `duplicate_rows` 与其中打标的行数。
+    # ⚠️ 指标 8/9**不区分**「正文 / 条文说明」——同号重复的**合法性**恰恰要靠
+    # `is_non_clause` 拆分来判定，故一并输出指标 10 的**组级**分解（指标 9 是弱信号，
+    # 会把 `designed` 与 `commentary_only` 混成一个数字，见模块 docstring）。
     counts = Counter(c["clause_no"] for c in clauses)
     duplicate_clause_no = {k: v for k, v in counts.items() if v > 1}
     dup_rows = [c for c in clauses if counts[c["clause_no"]] > 1]
     dup_non = sum(1 for c in dup_rows if c["is_non_clause"])
+
+    flags: dict[str, list[bool]] = {}
+    for c in dup_rows:
+        flags.setdefault(c["clause_no"], []).append(bool(c["is_non_clause"]))
+    duplicate_group_kinds = {
+        kind: sum(1 for v in flags.values() if _kind_of(v) == kind)
+        for kind in ("designed", "body_only", "commentary_only")
+    }
 
     return {
         "clause_count": len(clauses),
@@ -132,6 +174,7 @@ def _survey(clauses: list[dict]) -> dict:
         "duplicate_clause_no": duplicate_clause_no,
         "duplicate_rows": len(dup_rows),
         "duplicate_rows_is_non": dup_non,
+        "duplicate_group_kinds": duplicate_group_kinds,
     }
 
 
@@ -151,25 +194,25 @@ def main() -> int:
         if k == "missing_sections":
             print(f"{k}: {len(v)} 个 -> {v[:20]}")
         elif k == "duplicate_clause_no":
-            print(f"{k}: {len(v)} 个（明细见下）")
+            print(f"{k}: {len(v)} 个（明细见指标 10 的组级分解）")
         else:
             print(f"{k}: {v}")
 
-    # 重复号按**打标情况**拆分（Task 11 的交付物就是这张分解，而不是三个数字）：
-    #   全打标   = 条文说明段内自重复（`前言`、`2`）——段内子标题/块重名
-    #   混合     = 正文 1 条 + 条文说明 N 条 —— **设计性**（逐款解释同号），合法
-    #   全未打标 = **真重复**（两次都在正文）—— 缺陷，须定位源行
-    flags: dict[str, list[bool]] = {}
-    for c in clauses:
-        if stats["duplicate_clause_no"].get(c["clause_no"], 0) > 1:
-            flags.setdefault(c["clause_no"], []).append(bool(c["is_non_clause"]))
-    all_non = sorted(k for k, v in flags.items() if all(v))
-    mixed = sorted(k for k, v in flags.items() if any(v) and not all(v))
-    all_real = sorted(k for k, v in flags.items() if not any(v))
-    print("  [重复成因拆分]")
-    print(f"    设计性（正文 + 条文说明同号）: {len(mixed)} 组（样例 {mixed[:5]}）")
-    print(f"    条文说明段内自重复          : {len(all_non)} 组 -> {all_non[:20]}")
-    print(f"    真重复（两次都在正文）      : {len(all_real)} 组 -> {all_real[:20]} —— 批一验收必答项")
+    # 组级分解的三类各列出**号名**（Task 11 的交付物是这张分解，不是那三个数字）：
+    #   designed        = 正文 1 条 + 条文说明 N 条 —— **设计性**（逐款解释同号），合法
+    #   commentary_only = 条文说明段内自重复（段内子标题/块重名）
+    #   body_only       = **真重复**（两次都在正文）—— 缺陷，须定位源行
+    kinds = stats["duplicate_group_kinds"]
+    names = {"designed": "设计性（正文 + 条文说明同号）",
+             "commentary_only": "条文说明段内自重复",
+             "body_only": "真重复（两次都在正文）"}
+    by_kind: dict[str, list[str]] = {}
+    for no, v in _duplicate_group_flags(clauses).items():
+        by_kind.setdefault(_kind_of(v), []).append(no)
+    print("  [重复成因组级分解]")
+    for key in ("designed", "commentary_only", "body_only"):
+        tail = " —— 批一验收必答项" if key == "body_only" else ""
+        print(f"    {names[key]}: {kinds[key]} 组 -> {sorted(by_kind.get(key, []))}{tail}")
     return 0
 
 
