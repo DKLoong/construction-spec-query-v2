@@ -1036,6 +1036,27 @@ def test_expected_ancestor_count_excludes_zero_segments():
     assert _expected_ancestor_count("6") == 0
 
 
+def test_survey_docstring_lists_every_metric(cjj2_md):
+    """M15：脚本 docstring 的指标**数字/清单/返回键**三者必须一致（可失败的门禁）。
+
+    背景：Task 8 的 docstring 写「产出五项指标」却列了六项（提交信息同），Task 11 再加 5 个键。
+    人工维护的计数必然再次过期（本批 R-T10-8 的教训：一次「补样例」让两处计数同时过期），
+    故改为机器比对：改 `_survey` 的返回键而不同步 docstring 即变红，反之亦然。
+    """
+    import re
+    from scripts import survey_structure as ss
+    listed = re.findall(r'^\s+(\d{1,2})\.\s+(\S+)', ss.__doc__ or "", re.M)
+    assert listed, "docstring 的指标清单没被本门禁解析到（格式变了）"
+    assert [int(n) for n, _ in listed] == list(range(1, len(listed) + 1)), "清单编号不连续"
+    m = re.search(r'产出\s+\*{0,2}(\d+)\s*项', ss.__doc__ or "")
+    assert m, "docstring 首行必须写明指标项数（阿拉伯数字，供本门禁读取）"
+    keys = list(ss.survey_structure(cjj2_md))
+    assert int(m.group(1)) == len(listed) == len(keys), (
+        f"docstring 写 {m.group(1)} 项 / 清单列 {len(listed)} 项 / 返回 {len(keys)} 项，三者不一致"
+    )
+    assert [k for _, k in listed] == keys, "清单与实际返回键的顺序/名称不一致"
+
+
 def test_survey_reports_breadcrumb_coverage(cjj2_md):
     """批一验收指标之一：面包屑覆盖率。
 

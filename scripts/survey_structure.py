@@ -1,6 +1,10 @@
 """结构勘察：批次验收的回归门禁。
 
-产出指标（批一验收用，见 spec §6 与 CEO 评审记录 Section 6）：
+产出 **11 项**指标（批一验收用，见 spec §6 与 CEO 评审记录 Section 6）：
+⚠️ M15：上面这个数字**必须**与下方清单、与 `_survey` 的返回键**三者一致** —— 本批已因
+   「写了五项却列六项」栽过一次（Task 11 又加了 5 个键）。故不再靠人工同步：
+   `tests/test_md_parser.py::test_survey_docstring_lists_every_metric` 同时比对
+   数字、清单项与返回键，任一变动而不同步即变红（用阿拉伯数字而非「十一」即为了可被该门禁读）。
   1. clause_count           条文数
   2. content_chars          全部 content 的字符总数（**含 PaddleOCR-VL 标记的原始口径**）
   3. content_chars_plain    同上，但经 `plain_text` 归一（**Task 9 守恒断言的基线口径**）
@@ -66,6 +70,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.ai.text_clean import plain_text  # noqa: E402
 from app.parser.md_parser import parse_markdown  # noqa: E402
 
+# ── 格式/显示常量（M15：原先散落为内联字面量与魔法数字） ──────────────────────
+# ⚠️ `PATH_SEP` 必须与**产出侧**逐字一致：`section_path` 由
+#    `app/parser/md_parser.py::_build_section_path` 用同一字面量 `" > "` 拼出
+#    —— 那是本常量的**第三份字面量**，位于本批冻结的解析器内（本批不动它）。
+#    改这里的值必须同步改那里，否则本脚本的两个指标会把整条面包屑当成一段、
+#    覆盖率与缺口集合同时静默失真。
+PATH_SEP = " > "
+COVERAGE_DECIMALS = 4   # breadcrumb_coverage 的小数位（门禁断言取到 3 位有效小数）
+MISSING_PREVIEW = 20    # CLI 里 missing_sections 的预览条数（明细走 --json）
+
 
 def _expected_ancestor_count(clause_no: str) -> int:
     """按 R3 计算该条文**应有**多少级祖先（即面包屑应有的段数）。
@@ -113,6 +127,16 @@ def survey_structure(md_text: str) -> dict:
 
 def _survey(clauses: list[dict]) -> dict:
     """指标计算（与解析解耦）。拆出它是为了让 `main()` 只解析一次仍能拿到重复号明细。"""
+    # ⚠️ M16：`fake_clause_no_count` **不是「缺陷个数」** —— 判据（逐字来自 brief）是
+    #    「条号里不含阿拉伯数字」，故它把**合法的附录编号**一并计入。
+    #    实测 CJJ2 该值为 **6**，逐行**全部**是合法条号（本 Task 探针实测，无余项）：
+    #      `中华人民共和国住房和城乡建设部 公告` / `关于发布行业标准《…》的公告`
+    #      / `前言` ×2 / `本规范用词说明` —— 5 行是**合法的非条文块**（is_non_clause=1，
+    #      R8/R8b 明令「打标保留」）；第 6 行 `附录A` 是**合法结构编号**，
+    #      且它自己持有 raw 35,122 / plain 1,992 字符的表格（`附录A 验收表`）。
+    #    即：**6 = 5 个合法非条文块 + 1 个合法附录号，缺陷数为 0**。
+    #    后续 Task 不要把「残余 6」当作待清信号追 —— 要追的是**该值重新变大**
+    #    （即某处又冒出不带数字的伪条号），而不是「归零」。
     fake = [c for c in clauses if not re.search(r'\d', c["clause_no"])]
 
     # ⚠️ R-T13-4：覆盖率**只对条文行**统计。`_build_section_path` 的 docstring 明文写
@@ -124,7 +148,7 @@ def _survey(clauses: list[dict]) -> dict:
     real = [c for c in clauses if not c["is_non_clause"]]
     complete = 0
     for c in real:
-        segs = [s for s in (c.get("section_path") or "").split(" > ") if s]
+        segs = [s for s in (c.get("section_path") or "").split(PATH_SEP) if s]
         if segs and len(segs) == _expected_ancestor_count(c["clause_no"]):
             complete += 1
     coverage = complete / len(real) if real else 0.0
@@ -160,7 +184,7 @@ def _survey(clauses: list[dict]) -> dict:
             continue
         if parent_no in present:
             continue
-        if not any(f"{parent_no} " in s for s in (c.get("section_path") or "").split(" > ")):
+        if not any(f"{parent_no} " in s for s in (c.get("section_path") or "").split(PATH_SEP)):
             missing.add(parent_no)
 
     # Task 11 重复条文号诊断：按 `clause_no` 计数，只留出现 >1 次的号。
@@ -192,7 +216,7 @@ def _survey(clauses: list[dict]) -> dict:
         # 供 Task 9 直接取基线值。
         "content_chars_plain": sum(len(plain_text(c["content"])) for c in clauses),
         "fake_clause_no_count": len(fake),
-        "breadcrumb_coverage": round(coverage, 4),
+        "breadcrumb_coverage": round(coverage, COVERAGE_DECIMALS),
         "missing_sections": sorted(missing),
         "duplicate_clause_no": duplicate_clause_no,
         # 指标 8/9 同样由 flags 派生（= 各组的行数之和 / 其中的 True 数），不再单独扫一遍 clauses
@@ -217,7 +241,7 @@ def main() -> int:
 
     for k, v in stats.items():
         if k == "missing_sections":
-            print(f"{k}: {len(v)} 个 -> {v[:20]}")
+            print(f"{k}: {len(v)} 个 -> {v[:MISSING_PREVIEW]}")
         elif k == "duplicate_clause_no":
             print(f"{k}: {len(v)} 个（明细见指标 10 的组级分解）")
         else:
@@ -241,3 +265,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
