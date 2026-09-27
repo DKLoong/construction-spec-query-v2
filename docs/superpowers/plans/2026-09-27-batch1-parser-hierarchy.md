@@ -1749,6 +1749,19 @@ def test_classification_labels_stable_against_baseline():
 > （characterization）测试。三个用例都是对**已批准行为**的断言，不是待实现的新行为，
 > 所以「先失败」不适用。它的价值在于：日后 `parent_path` 的构成再变时立刻报警。
 
+> **⚠️ 本基线的覆盖边界（实施者如实报告，控制器裁定接受；写清以免后人高估它）**：
+> **只覆盖** dim4、两条 `keyword` 规则、8 行样例；**覆盖不到** `regex`/`exact` 分支、
+> 非空 `label` 赋值路径、`_PARENT_NOISE_TITLES` 过滤、`synonyms` 词库归一化。
+> 窄口径是**设计**（C8 刻意收窄以隔离 `parent_path` 耦合），**不是**通用分类回归套件 ——
+> 改分类器的其它路径时**不要**以为本文件会报警。
+
+> **⚠️ 技术事实：子串匹配对「加后缀」的扰动天然免疫（写给所有写「可证伪性演示」的人）** —
+> `_match_score` 的 keyword 分支是 **`text.count(pattern)` 子串计数**，于是
+> `6.1 模板` → `6.1 模板X` **不会**改变标签（`模板X` 仍含子串 `模板`，count 仍 1 → 0.45 ≥ 0.4 仍命中）。
+> **要让关键词规则失效，必须让原词整体消失**（改成无关词或删掉该行）—— 实测：改名到 `6.1 支撑体系`
+> 或删除该祖先行，`6.1.1` 的 label 均由 `模板` 变为 `''`（0.45 → 0.0）。
+> 与既有 learning「断言标记别用短串」同源。
+
 Run: `D:/Python/python.exe -m pytest tests/test_classify_baseline.py -v`
 Expected: **PASS**（Task 1–4 落地后，`parent_path` 已恢复「不含自身」的正确语义）
 
@@ -2048,6 +2061,7 @@ netstat -ano | grep :8000 | grep LISTENING        # 应恰好 1 个
 | M10 正文句以「公告」结尾被误标 | R-M10-1 | 正确形状＝给候选行加「是否来自 `#` 路径」的来源标记；**不可**用 `title` 非空门（实测倒退立项目标）|
 | 截断伪影类（行首被 PDF 换行截断成编号形态）| R-T14-4 + Task 11 | 造出伪节点：`10.7.3`/`17.5.1` 的真重复与 `missing_sections` 的 3 项同源；检测需位置/状态 |
 | 孤儿文本应挂到下一候选行 | R-T14-5（复核 F1）| 被收窄/被跳过的行在**无候选行可归属**时其文本被丢弃；属行为设计变更 |
+| 拓宽分类基线覆盖面 | R-T10-2 | `tests/test_classify_baseline.py` **刻意窄口径**（dim4 / 两条 keyword 规则 / 8 行），不覆盖 `regex`·`exact` 分支、非空 `label` 赋值、`_PARENT_NOISE_TITLES`、`synonyms` 归一化。批一之后若要把它当通用分类门禁，须先补这几条路径 |
 
 - [ ] **Step 6: 记录验收结论并提交**
 
