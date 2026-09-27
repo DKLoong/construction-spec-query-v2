@@ -1036,6 +1036,30 @@ def test_expected_ancestor_count_excludes_zero_segments():
     assert _expected_ancestor_count("6") == 0
 
 
+def test_pyright_config_includes_scripts():
+    """M13 的**防倒退门禁**：`pyrightconfig.json` 的 `include` 必须含 `scripts`。
+
+    守的是**那个洞**：`include` 只有 `["app","tests"]` 时 pyright **根本不看 `scripts/`**，
+    于是「脚本 0 errors」全是空话 —— 实测（Task 12）往脚本注入类型错误后根 CLI 仍报
+    `0 errors`；把 `scripts` 加进 `include` 后同一注入立刻报 `1 error`（定位到 270:41）。
+    没有本用例的话，日后有人删掉这行，洞会**静默**重开（此前的「0 errors」结论又变成不可信）。
+
+    放在本文件的原因：本文件已是批一各道门禁的落点（`survey_structure` 的覆盖率/重复号指标、
+    `_NUM_PATTERNS` 循环形态的源码文本断言都在此），本用例同属「批一验收门禁」。
+
+    ⚠️ 边界：只断言配置里**在**，不真跑 pyright —— 真跑要 node 侧 CLI（旁路工具链），
+    不适合塞进 pytest。故它锁的是「配置没被悄悄删掉」，不是「pyright 此刻 0 errors」。
+    """
+    import json
+    from pathlib import Path
+    cfg_path = Path(__file__).resolve().parent.parent / "pyrightconfig.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert "scripts" in cfg["include"], (
+        f"scripts/ 不在 pyrightconfig 的 include 里（当前 {cfg['include']}）→ scripts/ 下的类型错误"
+        f"不可见，「pyright 0 errors」对脚本是空话（M13，根因见本用例 docstring）"
+    )
+
+
 def test_survey_docstring_lists_every_metric(cjj2_md):
     """M15：脚本 docstring 的指标**数字/清单/返回键**三者必须一致（可失败的门禁）。
 
