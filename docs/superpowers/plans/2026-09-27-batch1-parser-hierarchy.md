@@ -1334,7 +1334,7 @@ breadcrumb_coverage / missing_sections，作为批一验收门禁。"
 > Task 13 的段级规则一次标记 164 条该段条文后，全行口径从 0.8541「跌」到 **0.7951**（−0.059），
 > 而**只统计条文行**的口径从 0.8589 **升到 0.9781**（+0.119）——后者才是面包屑机制的真实质量。
 > 真正残余的缺口由「126 条」收敛到 **16 条**，**D6.2 的结论因此被加强**：
-> 目次对齐的边际价值更低。`missing_sections` 口径不变。
+> 目次对齐的边际价值更低。**`missing_sections` 同口径修正**（实施后追加，见下）。
 > （本口径在 `scripts/survey_structure.py` 落地，是本批**唯一**一处指标定义变更，`breadcrumb_coverage` 键名不变。）
 
 > **⚠️ 基线口径（实施中查出的坑）**：必须取**批次开始前的 main**，不是批次内的中间 commit。
@@ -1348,7 +1348,7 @@ breadcrumb_coverage / missing_sections，作为批一验收门禁。"
 > | `content_chars_plain` | 145,256 | **145,269** | 不得低于 144,300（批次前基线） |
 > | `breadcrumb_coverage` | 0.8541（全行口径） | **0.9986**（**只条文行**口径，R-T13-4） | 不得低于 0.95 |
 > | `is_non_clause` 打标数 | 5 | **168** | 不得低于 100 |
-> | `missing_sections` | 47 | 47（预期不变） | 变化须列出并解释 |
+> | `missing_sections` | 47 | **3**（`{8, 10.7, 11.5}`，**同口径修正**） | = 3，且集合恰为上列三项 |
 >
 > 上表 Task 8 时点的 `898` / `0.8541` / `5` 是**历史记录**，不是验收目标。
 > **取法**：`git show <批次前 commit>:app/parser/md_parser.py` 写入临时文件、以 `importlib` 加载后
@@ -1428,13 +1428,27 @@ def test_content_is_conserved(cjj2_md):
 
 
 def test_no_fake_clause_no_carries_bulk_content(cjj2_md):
-    """伪条文号不得再持有大块正文（旧的 一般项目 单条吞 9,795 字符）"""
+    """伪条文号不得再持有大块**正文**（旧的 `一般项目` 单条吞 9,795 字符）。
+
+    **口径必须排除两类**（控制器实施前预检实测，否则本断言必然红）：
+    - `is_non_clause` 行 —— `前言` 块合法持有 **3,496** 字符，它不是「伪条文号吞正文」；
+    - `附录X` —— 合法结构编号，只因不含阿拉伯数字被 `fake_clause_no_count` 计数（M16），
+      `附录A 验收表` 合法持有 **1,992** 字符（表格，离 2000 阈值仅 8 字符）。
+
+    故本测试针对 CRITICAL-1 的**真实形态**：既非非条文块、也非附录的伪条文号不得持有大块正文。
+    另加一条正向断言（旧缺陷的直接指纹），比阈值更锋利：
+    """
     import re
     clauses = parse_markdown(cjj2_md)
     fake_big = [c for c in clauses
                 if not re.search(r'\d', c["clause_no"])
+                and not c["is_non_clause"]
+                and not c["clause_no"].startswith("附录")
                 and len(plain_text(c["content"])) > 2_000]
     assert not fake_big, f"仍有伪条文号持有超 2000 字符正文: {[(c['clause_no'], len(c['content'])) for c in fake_big]}"
+    nos = {c["clause_no"] for c in clauses}
+    for leaked in ("一般项目", "主控项目"):
+        assert leaked not in nos, f"次分组单元 {leaked} 仍在充当条文号（CRITICAL-1 未修）"
 ```
 
 - [ ] **Step 2: 跑测试，确认它现在**通过**（改造已完成），并填入基线**
@@ -1517,8 +1531,9 @@ tmp.unlink()                    # 清理临时文件
 > **负向对照（证明判据可失败）**：把新输出的所有字段清空，未找到应为 **971**（全部）——实测正是 971 ✓。
 > 该核对**不是恒真断言**。
 >
-> **Task 13 落地后须复测**：段级规则会让条文说明段的 `section_path` 变空（非条文祖先被剔），
-> 而 `section_path` 在被核对的三字段里。预测不变，但**不得沿用本表数字**，须实测复现。
+> **Task 13 落地后已复测（控制器，HEAD = `ee37e10`）：仍是 3 条，且就是上表那三条封面文字** ✓
+> （段级规则虽让条文说明段的 `section_path` 变空，但封面文字本来就不在那些行里）。
+> **Task 14 落地后须再复测一次**（它删除 6 个伪节点、会改变内容归属），不得沿用本表数字。
 
 - [ ] **Step 4: 变异验证（证明断言可失败——不得省略）**
 
@@ -1600,11 +1615,16 @@ import pytest
 from app.classifier.rule_engine import classify_clause
 from app.parser.md_parser import parse_markdown
 
+# ⚠ 阈值必须 ≤ 0.45（控制器派单前预跑实测）：`_match_score` 的 keyword 分支是
+#   `min(1.0, 0.3 + count * 0.15) * (1 + 0.1 * priority)` —— priority=0 时**单次命中 = 0.45**。
+#   初稿写的 `threshold: 0.6` 会让**任何**规则都不命中（0.45 < 0.6），
+#   于是 `_labels(MD)` 返回空标签、断言①③必然失败（实测：`{'6.1.1': '', '6.2.1': ''}`）。
+#   取 0.4：单次命中 0.45 过线；父路径为空时 count=0 → 0.0 < 0.4 → 不命中（断言②成立）。
 RULES = [
     {"id": 1, "dimension": "dim4", "pattern": "钢筋", "match_type": "keyword",
-     "priority": 0, "threshold": 0.6, "is_active": 1},
+     "priority": 0, "threshold": 0.4, "is_active": 1},
     {"id": 2, "dimension": "dim4", "pattern": "模板", "match_type": "keyword",
-     "priority": 0, "threshold": 0.6, "is_active": 1},
+     "priority": 0, "threshold": 0.4, "is_active": 1},
 ]
 
 MD = """## 6 混凝土分项工程
@@ -1712,8 +1732,27 @@ classify_clause 把 parent_path 拼进匹配文本，故层级改造会改变 di
 
 ## Task 11: 重复条文号诊断
 
-> CEO 评审实测：**131 个条文号重复、涉及 388 行（占解析结果 38%）**，其中仅 2 行
-> `is_non_clause=1`。R14 的兄弟组按 `(层级, 父键)` 分组，重复条文号会使组定义失效。
+> ⚠️ **数字已由控制器实测更新**（诊断的期望值必须是被测代码**终态**的值，见执行顺序原则）：
+>
+> | 时点 | 重复组数 | 重复行数 | 其中 `is_non_clause=1` | 未打标 |
+> |---|---|---|---|---|
+> | 批次前（CEO 评审引用） | 131 | 388（38%） | 2 | — |
+> | Task 8 后（`edfbc45` 基线） | 126 | 267（29.7%） | **2** | 265 |
+> | **Task 13+14 终态** | **123** | **258**（28.9%） | **135** | **123** |
+>
+> 计划初稿引用的「131 组 / 388 行 / 38%」与「仅 2 行 `is_non_clause=1`」是**批次前**的数字，已过期；
+> **验收按终态那一行读**。R14 的兄弟组按 `(层级, 父键)` 分组，重复条文号会使组定义失效。
+>
+> **诊断的真正交付物不是数字，而是成因分类。** 控制器已预分解（终态，探针实测）：
+>
+> | 成因 | 号数 | 说明 |
+> |---|---|---|
+> | **① 设计性：正文 + 条文说明同号** | **119** | 条文说明逐款解释正文条文，注释侧**已被 Task 13 打标**（`is_non_clause=1`）。`16.8.3`×6 = 1 条正文 + 5 条逐款解释即此形态 |
+> | **② 真重复：两次都在正文** | **2** | `10.7.3`、`17.5.1` —— 都是**正文句被截断、后半句被当成新条文的开头**（`'条第2款的规定。…'`、`'条和第 13.7.2 条规定。'`），合计 484 字符（全篇 0.1%） |
+>
+> **本 Task 的交付物**：① 复现该分解（脚本输出即可）；② 为 ② 的 2 例**定位到夹具源行**并说明成因；
+> ③ 结论写进报告。② 的 2 例**本批不修**（R-T14-3：解析器改动到此为止）→ 记 **TODOS.md**，
+> 附源行号与字符量，供批二处置。
 
 **Files:**
 - Modify: `scripts/survey_structure.py`（追加重复诊断）
@@ -1727,12 +1766,22 @@ classify_clause 把 parent_path 拼进匹配文本，故层级改造会改变 di
 
 ```python
 def test_survey_reports_duplicates(cjj2_md):
-    """重复条文号必须被量化：它们会让 R14 的兄弟组定义失效"""
+    """重复条文号必须被量化，且**数字要可证伪**（初稿只断言 `isinstance(dict)`，是摆设）。
+
+    期望值 = Task 13+14 终态的实测（控制器探针）：
+      重复组 123 / 重复行 258 / 其中 is_non_clause=1 的 135
+    任一项不符即说明重复形态变了 —— 必须解释后再改此断言，不得静默更新。
+    """
     from scripts.survey_structure import survey_structure
     stats = survey_structure(cjj2_md)
     dups = stats["duplicate_clause_no"]
     assert isinstance(dups, dict)
-    assert all(v > 1 for v in dups.values())
+    assert all(v > 1 for v in dups.values()), "重复组里混进了单次出现的号"
+    assert len(dups) == 123, f"重复组数 {len(dups)}（预期 123）"
+    assert stats["duplicate_rows"] == 258, f"重复行数 {stats['duplicate_rows']}（预期 258）"
+    assert stats["duplicate_rows_is_non"] == 135, \
+        f"重复行中打标的 {stats['duplicate_rows_is_non']}（预期 135）——" \
+        f"条文说明段的同号重复应全部打标（Task 13）"
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -1891,6 +1940,9 @@ netstat -ano | grep :8000 | grep LISTENING        # 应恰好 1 个
 1. 条文数、`content_chars` 与勘察脚本一致
 2. `fake_clause_no_count` 明显下降
 3. 详情弹窗能打开 `14.3.1` 且其正文**包含**主控项目/一般项目下的项与检查数量
+   （**控制器预验实测**：`14.3.1` 存在、`plain_text` **1,946** 字符、`section_path` = `14 钢 梁 > 14.3 检验标准`、
+   正文含「主控项目」「一般项目」「检查数量」「检验方法」**四词俱全** ✓；
+   全篇 content 含「检查数量」的条文 **90** 条。Task 14 不改动第 14 章，故预期不变）
 4. 维护宫格无红点
 
 - [ ] **Step 6: 记录验收结论并提交**
@@ -1958,7 +2010,16 @@ git commit -m "docs: 批一验收结论（六项指标实测对照）
 把它算作「不完整」测不到任何东西。改为只对 `is_non_clause=False` 的行统计后：**0.8589 → 0.9781（+0.119）**。
 这不是「换个口径让数字变好看」——**本计划第 1319 行早已记录**：缺口集中在**条文说明段**（它重复条文号却不带节标题），
 **正文侧已接近完备（0.97~0.99）**。段级规则标记掉的正是这批行，故真正残余的缺口从「126 条」收敛到 **16 条**，
-**D6.2「目次对齐边际价值低」的结论因此被加强，而非被推翻**。`missing_sections` 口径不变（预期仍 47）。
+**D6.2「目次对齐边际价值低」的结论因此被加强，而非被推翻**。
+
+**同口径修正也适用于 `missing_sections`（R-T13-4 的延伸，实施后由实施者报出、控制器实测取证）**：
+段级规则使全行口径的 `missing_sections` 47 → **50**（+`10`/`20`/`21`）。这同样是口径错——
+那 3 个是由**非条文行**引入的（段内 `10.5.x` 的祖先 `## 10 基础` 现在自身是非条文行 →
+`_build_section_path` 按设计剔除 → 其 `section_path` 变空 → 计入缺失）。
+改为**只统计条文行**后实测：**47 → 3**，集合 = **`{8, 10.7, 11.5}`** —— 这才是真正的规范性结构缺口。
+> **⚠️ 顺带更正 Task 8 的记录**：那 47 个里 **44 个是条文说明段引入的噪声**（注释行引用 `10.1`/`13.1`/`17.2`… 等
+> 在**正文结构里本就不存在**的节号）。故该指标此前严重高估残余缺口 —— 修正后只剩 3 个，
+> **D6.2 由此被进一步支持**：目次对齐要补的缺口比原先读到的更小。
 
 - [ ] **Step 0: 先撤销首版改动（候选门）**
 
@@ -2147,7 +2208,10 @@ def _is_commentary_marker(line: str) -> bool:
 ```
 
 同时把脚本 docstring 的第 5 项描述改为「**条文行**的 section_path 段数 == 应有祖先数的占比」。
-`missing_sections` 口径**不变**（预期仍 47，若变化须在报告里列出）。
+**`missing_sections` 同口径修正**（R-T13-4 延伸）：把它的循环也限定为**只统计条文行**
+（与非条文行的 `section_path` 按设计为空同一理由）。实测：全行口径 47 → 50（+`10`/`20`/`21`），
+**只条文行口径 = 3 = `{8, 10.7, 11.5}`** —— 那 47 个里 44 个是条文说明段引入的噪声。
+⚠️ 这一项**改变了已记录的基线**（Task 8 的 47），须在报告里显式写明「47 → 3 是口径修正、不是缺口变少」。
 
 **同步修门禁阈值（注意时序）**：执行顺序表把 **Task 13 排在 Task 12（验收）之前**，
 故 M14 此刻**尚未落地**——覆盖率断言仍是恒真的 `0.0 <= coverage <= 1.0`（`tests/test_md_parser.py` 内）。
@@ -2167,7 +2231,7 @@ Expected: PASS（5 条新用例全绿）。再跑 `D:/Python/python.exe scripts/
 | `content_chars_plain` | **145,256** | **不得减少**（撤候选门后恢复无损） |
 | `fake_clause_no_count` | 6 | 不得增加（**7 即失败**，说明标记行成了条文） |
 | `breadcrumb_coverage`（新口径） | **0.9781** | 不得低于 0.8589 的旧口径值 |
-| `missing_sections` | 47 | 变化须列出 |
+| `missing_sections` | 47 | **3**（只条文行口径；集合须恰为 `{8, 10.7, 11.5}`） |
 | `is_non_clause` 打标数 | **168** | **> 100**，且段前不得被误标（应恰为 4 条 + 段内 164 条） |
 
 另须核：全文 `is_non_clause=True` 的行里**没有** `clause_no` 含「条文说明」的（标记行本身不该成条文）。
@@ -2309,7 +2373,8 @@ Expected: FAIL —— `clause_no == "4"` 的伪节点存在；CJJ2 的裸数字�
 Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -v`
 Expected: PASS（3 条新用例全绿）。再跑 `scripts/survey_structure.py tests/fixtures/cjj2_source.md`，
 对照上文「实测证据」右列：`clause_count` **892**、`content_chars_plain` **145,269**、
-覆盖率（只条文行）**0.9986**、打标数 **168**。
+覆盖率（只条文行）**0.9986**、打标数 **168**、`missing_sections` **3**（只条文行口径，R-T13-7；
+若本 Task 的节点删除使其变化，须在报告里列出集合差）。
 ⚠️ **`clause_count` 由 898 降到 892 是预期正确行为**（删掉 6 个伪节点），**不是退化** ——
 后序 Task 12 的「任一指标退化即失败」判据不得据此判红（见验收节的标注）。
 
