@@ -795,7 +795,12 @@ git commit -m "feat: 解析主循环四处改动（R14 投票 / 无条件 flush 
 
 **Interfaces:**
 - Consumes: 无
-- Produces: `_match_clause_line(line: str) -> tuple[int, str, str] | None` — **无点号行一律返回 `None`**
+- Produces: `_match_clause_line(line: str) -> tuple[str, str] | None`
+  —— **返回 `(clause_no, tail)` 二元组**（层级不再由它提供；Task 1 的 C10 修正已生效）
+  —— **裸阿拉伯数字行返回 `None`**，判据 `clause_no.isdigit()`。
+  注意措辞**不是**「无点号行一律返回 None」：`附录A` 同样无点号，但它是合法结构编号，
+  **必须继续作为候选行**（`test_parse_appendix_clauses` 是受保护用例，Task 1 已验证过这个坑）。
+  （Task 4 复核 Concern #3 更正了此处旧文案：原文误写 `tuple[int, str, str]` 3 元组与「无点号行一律」。）
 
 - [ ] **Step 1: 写失败测试**
 
