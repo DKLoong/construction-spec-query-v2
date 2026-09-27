@@ -1,6 +1,6 @@
 from app.parser.md_parser import (
     parse_markdown, is_non_clause_title, is_cover_clause, _should_emit_clause,
-    _is_zero_segment_node,
+    _is_zero_segment_node, _extract_title, _candidate_of,
 )
 
 SAMPLE_MD = """# GB 50204-2015 混凝土结构工程施工质量验收规范
@@ -100,19 +100,31 @@ def test_parse_non_hash_numbered_clauses():
 
 
 def test_parse_letter_numbered_clauses():
-    """带字母的编号（D.4）应正确分离编号与标题"""
+    """带字母的编号（D.4）应正确分离编号与标题
+
+    ⚠ M1（Task 3 复核 Minor #1）：原实现断言的是 `clause_no == "D.4"` 的那一行，而
+    `D.4` 是**内节点**（标题型且无自身正文 → 只作祖先、不入库），本夹具只产出 `D.4.1`，
+    故那个 `if` 是**死分支** —— 「编号与标题分离」这条断言一次都没执行过（删掉它测试照绿）。
+    实测（本 Task 探针）本夹具的唯一产出：
+    `('D.4.1', title='', content='开挖深度 20 m 及以上的岸坡开挖工程。',
+      parent_path=['疏浚、吹填工程'])`。
+    故改为断言**真正落地的形态**：`D.4.1` 的父链携带的是**剥掉编号后**的纯标题
+    （`疏浚、吹填工程`，不含 `D.4`）—— 分离若坏掉（`_extract_title` 退回原串），
+    父链会变成 `['D.4 疏浚、吹填工程']`，本断言立刻变红。
+    """
     md = """D.4 疏浚、吹填工程
 
 D.4.1 开挖深度 20 m 及以上的岸坡开挖工程。
 """
     results = parse_markdown(md)
-    # D.4 是标题，D.4.1 是更细的条文
-    nums = [r["clause_no"] for r in results]
-    assert any(n.startswith("D.4") for n in nums)
-    for r in results:
-        if r["clause_no"] == "D.4":
-            assert r["title"] == "疏浚、吹填工程"
-            assert "D.4" not in r["title"]
+    # 先钉住夹具形态：下面两条断言的可证伪性依赖「D.4 不入库、D.4.1 入库」
+    assert [r["clause_no"] for r in results] == ["D.4.1"], \
+        f"夹具形态变了（D.4 是否入内节点、D.4.1 是否产出）：{[r['clause_no'] for r in results]}"
+    assert results[0]["parent_path"] == ["疏浚、吹填工程"], \
+        f"字母编号未与标题分离，父链标题应为纯标题：{results[0]['parent_path']!r}"
+    # 直接钉住提取函数本身（父链走的正是同一个 `_extract_title`）
+    assert _extract_title("D.4 疏浚、吹填工程") == "疏浚、吹填工程"
+    assert "D.4" not in _extract_title("D.4 疏浚、吹填工程")
 
 
 def test_parse_appendix_clauses():
@@ -191,11 +203,12 @@ def test_multi_space_title_cleanup():
 1.0.1  条文内容。
 """
     results = parse_markdown(md)
-    for r in results:
-        if r["clause_no"] == "1.0.1":
-            path = r.get("parent_path", [])
-            assert any(p == "总则" for p in path)
-            break
+    # ⚠ M3（Task 3 复核 Minor #5）：原写法是 `for r in results: if ...: assert ...; break` ——
+    #    夹具若不产出 `1.0.1`（如实现回归），循环体一次都不执行、父链断言被**静默跳过**、
+    #    本用例照样变绿。故先钉住夹具产出，再取该行断言。
+    hits = [r for r in results if r["clause_no"] == "1.0.1"]
+    assert hits, f"夹具必须产出 1.0.1，否则下面的父链断言是空断言：{[r['clause_no'] for r in results]}"
+    assert any(p == "总则" for p in hits[0]["parent_path"])
     # 直接验证标题提取
     from app.parser.md_parser import _clean_title
     assert _clean_title("总    则") == "总则"
@@ -347,6 +360,41 @@ def test_announcement_and_reference_list_are_non_clause():
     assert is_non_clause_title("公告") is True
     assert is_non_clause_title("引用标准名录") is True
 
+
+def test_reference_list_block_is_not_merged_into_previous_clause():
+    """M11（Task 7 复核 Minor #2）：`引用标准名录` 块要有**解析级**回归用例，不能只有谓词断言。
+
+    上一条用例只断言 `is_non_clause_title("引用标准名录")`，而 Task 7 真正修的是**解析行为**：
+    该标题（无编号、无 `#` 之外的编号）此前不是候选行 → `### 引用标准名录` 这一行连同其下
+    全部列表项被**并进上一条的 `content`**，成为用户可见的正文（且无法按非条文隐藏）。
+
+    夹具按真实语料形状**逐字**构造（源：`data/outputs/95a76719/95a76719.md:587-620`，即 JGJ107；
+    注意该块标题行与其上一行之间**没有空行**，这是原样保留的形状）。三条断言分别钉住：
+    ① 标题自成一格且打标；② 它**不再**并进上一条（本用例的直接回归点）；③ 列表项随块保留
+    （「打标保留」而非「直接过滤」，与目次的处置不同）。
+    """
+    md = (
+        "#### 本规程用词说明\n"
+        "\n"
+        "2 条文中指明应按其他有关标准执行的写法为：“应符合……的规定”或“应按…执行”。\n"
+        "### 引用标准名录\n"
+        "\n"
+        "1 《混凝土结构设计规范》GB 50010\n"
+        "\n"
+        "2《不锈钢棒》GB/T 1220\n"
+        "\n"
+        "10 《钢筋机械连接用套筒》JG/T 163\n"
+    )
+    got = {c["clause_no"]: c for c in parse_markdown(md)}
+    assert "引用标准名录" in got and got["引用标准名录"]["is_non_clause"] is True
+    prev = got["本规程用词说明"]
+    assert "引用标准名录" not in prev["content"], "该块标题仍被并进上一条"
+    assert "GB 50010" not in prev["content"], "该块的列表项仍被并进上一条"
+    body = got["引用标准名录"]["content"]
+    for item in ("《混凝土结构设计规范》GB 50010", "《不锈钢棒》GB/T 1220",
+                 "《钢筋机械连接用套筒》JG/T 163"):
+        assert item in body, f"列表项未随块保留（打标保留 ≠ 丢弃）：{item!r} 不在 {body!r}"
+
 def test_announcement_variants_from_cjj2_are_non_clause():
     """R8：CJJ2 的两条**真实**公告标题按法定名称后缀命中，且打标保留、不整段丢弃。
 
@@ -440,6 +488,33 @@ def test_toc_section_is_discarded_entirely():
     assert all(c["clause_no"] != "目次" for c in results_hash)
     assert all("总则 ..... 1" not in c["content"] for c in results_hash)
     assert any(c["clause_no"] == "1.0.2" for c in results_hash)
+
+
+def test_vote_key_falls_back_after_toc_candidate_is_skipped():
+    """M2（Task 3 复核 Minor #3）：`title_mode.get(..., False)` 的回退路径要有一条回归用例。
+
+    为什么既有两条目次用例覆盖不到：它们都在目次之后跟一条 `## 1 总则`，把**预扫栈**与
+    **主循环栈**重新对齐，于是后续条文的分组键在两个栈里相同 → 取得到值、走不到回退。
+
+    分叉是这样产生的：`## 目次` 在预扫里**是**候选行（`_candidate_of` 认它）→ 被压入预扫栈
+    → 其后 `1.0.1` 的分组键带上父键 `目次`；而主循环里目次行在 `is_filter_non_clause_title`
+    处 `continue`（**在压栈之前**）→ 主循环栈为空 → `1.0.1` 的分组键父键是 `""` →
+    **键缺失**。若这里改成 `title_mode[key]` 会直接 `KeyError` 崩掉整篇解析。
+
+    夹具**刻意取标题形态的尾文本**（`1.0.1 正文甲`，短、无句末标点 → `_looks_like_title` 为真）：
+    简报给的那条（`1.0.1 正文。`）只能证伪「键缺失 → 崩」，证伪不了**回退值的方向** —— 因为
+    `is_titled = <回退值> and _looks_like_title(tail)` 的右半在 `正文。` 上恒为 False，
+    回退写 True 也看不出来。换成 `正文甲` 后，回退若写 True 就会把它判成标题型 →
+    该行无自身正文 → 被内节点判据丢弃（`title` 与 `content` 两条断言同时变红）。
+    """
+    md = "## 目次\n\n1.0.1 正文甲\n\n随后正文。\n"
+    results = parse_markdown(md)
+    assert [r["clause_no"] for r in results] == ["1.0.1"], \
+        f"回退判成「带标题」会让该行按内节点被丢弃：{[r['clause_no'] for r in results]}"
+    r = results[0]
+    assert r["title"] == "", "回退值必须与平票规则同向（判「无标题」），文本须进 content"
+    assert r["content"] == "正文甲\n随后正文。"
+    assert r["is_non_clause"] is False
 
 
 # ═══════════════════════════════════════════
@@ -663,6 +738,22 @@ def test_zero_segment_predicate_is_last_segment_only():
     assert _is_zero_segment_node("3") is False
 
 
+def test_candidate_of_rejects_zero_segment_on_non_hash_path():
+    """M3（Task 3 复核 Minor #5 / Task 4 复核 Minor #4）：**无 `#` 路径**上的 0 段守卫要直接钉住。
+
+    `_candidate_of` 有**两个** 0 段守卫：`#` 分支（走 `test_zero_segment_is_not_a_node` 的
+    `### 3.0` 夹具）与 `m_num` 分支（`md_parser.py:356`）。后者此前**没有任何直接用例** ——
+    删掉它本文件仍全绿，`3.0 节名`（真实文档里的节位占位行）会重新成为候选行、进而成节点。
+    故本用例不经 `parse_markdown`、直接断言判据函数，并配一条**控制组**（`3.0.1` 必须照常
+    是候选行），否则「恒返回 None」的实现也能让断言通过。
+    """
+    assert _candidate_of("3.0 不应存在的节") is None          # 节位占位行不成候选
+    assert _candidate_of("3.0") is None
+    assert _candidate_of("1.0 术语") is None
+    # 控制组：0 段在**中间**时该行是条，不得被同一条守卫误伤（判据只看末段）
+    assert _candidate_of("3.0.1 接头设计应满足强度要求。") == (3, "3.0.1", "接头设计应满足强度要求。")
+
+
 # ═══════════════════════════════════════════
 # 裸编号项不作为条文（Task 4）
 # ═══════════════════════════════════════════
@@ -685,9 +776,18 @@ def test_bare_numbered_short_title_is_still_not_a_clause():
     正文，使夹具产出条文、断言可证伪。Task 3 无条件结算后原夹具才会变为有效。
     """
     md = "5.1.1 一般规定\n\n正文甲。\n\n1 钢筋\n\n正文乙。\n\n2 水泥\n\n正文丙。\n"
-    nos = [c["clause_no"] for c in parse_markdown(md)]
+    results = parse_markdown(md)
+    nos = [c["clause_no"] for c in results]
     assert nos   # 夹具须产出条文，否则下面的断言是空断言
     assert "1" not in nos and "2" not in nos
+    # ⚠ M4（Task 4 复核 Minor #6）：需求是「裸编号项**归属其所在的条**」，上式只断言了
+    #    「不成条文」这**一半**——把裸编号行整行丢弃的实现同样能让它通过。补另一半：
+    #    项自身的文本（`钢筋`/`水泥`）与行首编号都必须留在所属条 `content` 里（不丢内容）。
+    #    实测 content == '正文甲。\n1 钢筋\n正文乙。\n2 水泥\n正文丙。'（行首编号原样保留）。
+    #    另注：本夹具只产出 1 条，故 `results[0]` 恒为 `5.1.1`（上面 `nos` 断言已钉住）。
+    assert "钢筋" in results[0]["content"] and "水泥" in results[0]["content"], \
+        f"裸编号项的文本未归属其所在的条：{results[0]['content']!r}"
+    assert "1 钢筋" in results[0]["content"], "项的行首编号被剥掉了（内容形态变了）"
 
 def test_appendix_without_dots_is_still_a_candidate():
     """边界回归：`附录A` 也没有点号，但它是合法结构编号，不得被裸编号项规则误伤。
