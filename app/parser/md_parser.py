@@ -53,6 +53,15 @@ def _is_zero_segment_node(clause_no: str) -> bool:
 # 裸露的 4 位年份（如封面页的 "2008"）不是条文号
 _BARE_YEAR = re.compile(r'^(19|20)\d{2}$')
 
+# fix ④: 目录点引行（TOC dot-leader：≥5 个连续半角/全角点）。
+# 它们从不是规范正文（只是目次的页码对齐），故既不作候选行（`_match_clause_line`
+# 已据此排除）、也不得进 `pending`（fix ④ 补上这后一半）。
+_DOT_LEADER = re.compile(r'[\.．]{5,}')
+
+# fix ③: 纯数字条号（只对这类做跨章/重复一致性检查）。
+# 附录编号（`A.1`）与字母编号是**另一命名空间**，不受「跨章越级回跳」约束。
+_NUMERIC_CLAUSE_NO = re.compile(r'^\d+(?:\.\d+)*$')
+
 # OCR 管线的页分隔标记（`## 第X页`）。它必须被 parse_markdown 保留为独立候选，
 # 否则每页不再隔离——见 `_candidate_of` 里 (a) 的说明与 `ocr_clean.py:11-12` 的契约。
 _PAGE_MARKER = re.compile(r'^第\s*\d+\s*页$')
@@ -209,7 +218,7 @@ def _match_clause_line(line: str):
     if not s:
         return None
     # 排除目录行：含 "........."（含全角点）或 "第 x 页"
-    if re.search(r'[\.．]{5,}', s) or re.match(r'^第\s*\d+\s*页', s):
+    if _DOT_LEADER.search(s) or re.match(r'^第\s*\d+\s*页', s):
         return None
     # 排除纯日期行: 2020-04-23 发布 / 2003 年3 月21 日
     if re.match(r'^\d{4}-\d{2}-\d{2}', s) or re.match(r'^\d{2,4}\s*年', s):
@@ -273,7 +282,23 @@ def _is_hash_line(line: str) -> bool:
     return re.match(r"^#{1,6}\s", line) is not None
 
 
-def _candidate_of(line: str) -> tuple[int, str, str] | None:
+class _ParseState:
+    """一次解析的**单调/位置状态**（fix ①②③ 共用）。
+
+    预扫（`_vote_title_mode`）与主循环**各建一份**、按文档顺序同步推进，
+    故两者的候选行判据一致（批一设计不变量：预扫投票与主循环必须用同一判据）。
+    ⚠️ **不可跨两遍共享同一份**——预扫先跑完会把状态推到文末，主循环再从零读会全错。
+    """
+
+    __slots__ = ("max_bare_chapter", "in_commentary", "seen_clause_nos")
+
+    def __init__(self) -> None:
+        self.max_bare_chapter = -1           # fix ①: body 内已见的最高裸数字章号
+        self.in_commentary = False           # 条文说明段标记（fix ①③ 的豁免边界，单向）
+        self.seen_clause_nos: set[str] = set()  # fix ③: body 内已出现的纯数字条号
+
+
+def _candidate_of(line: str, state: _ParseState | None = None) -> tuple[int, str, str] | None:
     """识别候选行 → `(level, clause_no, tail)`；不是候选行返回 `None`。
 
     **预扫投票（`_vote_title_mode`）与正式解析必须共用本函数**：两者判据若
@@ -342,6 +367,19 @@ def _candidate_of(line: str) -> tuple[int, str, str] | None:
         #    （Task 4 的 `clause_no.isdigit()`），那条**覆盖不到本条缺陷**。
         if clause_no.isdigit() and _extract_title(raw_title).strip().endswith(_TITLE_END_PUNCT):
             return None
+        # fix ①: body 内 `#`+裸数字节点的章号必须**严格递增**。章号已见过的行不是节点
+        # （其文本像普通非候选行一样流入当前条 content）。成因（JGJ107 实测，源行
+        # `data/outputs/aa96b73a/aa96b73a.md:422`）：附录 A 里 `## 2 变形测量标距` 是
+        # A.1.1 的**子项**、被 OCR 误加 `##`，成了 chapter 2 的重复节点（真章号 1..7，
+        # `2` 在 `7` 之后再次出现）。
+        # 判据**只取「章号严格递增」**：`n <= max` 即重复/回跳 → 拒；否则推进 max。
+        # ⚠️ 只在 body 内生效（`in_commentary` 豁免）：条文说明段会合法地重新从 1 编章号。
+        # ⚠️ 预扫与主循环各持一份 state、按文档顺序同步推进同一判据 → 两者一致（不变量）。
+        if state is not None and clause_no.isdigit() and not state.in_commentary:
+            n = int(clause_no)
+            if n <= state.max_bare_chapter:
+                return None
+            state.max_bare_chapter = n
         title_txt = _clean_title(_extract_title(raw_title))
         # ⚠️ 本分支的判据顺序是**承重**的，四处顺序都不可随意调换：
         #   ① 目次/Contents（过滤类）必须先于「无中文」检查 —— `Contents` 是英文、
@@ -384,6 +422,34 @@ def _parent_key(stack: list[dict], level: int) -> str:
     return ""
 
 
+def _reject_cross_chapter(cand: tuple[int, str, str], state: _ParseState) -> bool:
+    """fix ③ (TODOS T22): 交叉引用被 PDF 断行后，下半行以「条号形状 token」起头，
+    被 `_candidate_of` 误认成候选行、自成一条条文。
+
+    判据 = **同号重复**：该纯数字条号在 body 内**已出现过**，即不是本条文档里
+    合法的新条文，而是上文交叉引用的下半行。三条夹具伪影都是本类：
+      - L3077 `10.7.3 条第2款的规定。` —— 正文侧已有真 `10.7.3`；
+      - L4802 `17.5.1 条和第 13.7.2 条规定。` —— 正文侧已有真 `17.5.1`；
+      - L4926 `14.3 节有关规定…` —— 正文已有节标题 `### 14.3 检验标准`。
+    命中则**不是节点**，其文本折入当前条 content（与普通非候选行同一路径）。
+
+    ⚠️ 只在 body 内生效（`in_commentary` 豁免）：条文说明段会**合法地**复用正文
+    条号（每条正文对应一条逐款解释，同号、is_non_clause=1），故段内不得判重复。
+    附录/字母编号（`A.1`）是另一命名空间，豁免。
+    ⚠️ **为何不用「父号 vs `_parent_key`」的跨章比对**：T22 建议的该判据在
+    「节标题缺失」的合法形态上会误拒——最小夹具 `1.1 总则 → 1.0.1`（X.0.Y 的
+    有效父号按 R3 是 `1`，而栈内是节 `1.1`）、`## 条文说明 → 3.0.1`（父号 `3`
+    而栈内是非数字的 `条文说明`）都会被误判。同号重复是**三条伪影共有、且唯一
+    无假阳性的共性**，故只取这一条。
+    """
+    if state.in_commentary:
+        return False
+    _level, clause_no, _tail = cand
+    if not _NUMERIC_CLAUSE_NO.match(clause_no):
+        return False
+    return clause_no in state.seen_clause_nos
+
+
 def _vote_title_mode(lines: list[str]) -> dict[tuple[int, str], bool]:
     """R14 兄弟多数表决（预扫，只读，不改任何状态）。
 
@@ -393,18 +459,28 @@ def _vote_title_mode(lines: list[str]) -> dict[tuple[int, str], bool]:
     平票（偶数条且恰好半数）**一律判「无标题」**：判「无标题」时该行文本进入
     自身 content，不会丢；若回退首元素且它像标题，则整组判标题型，组内无自身
     正文的那条会按内节点被丢弃（工程评审 SC-6）。
+
+    ⚠️ 本函数自带一份 `_ParseState`，按文档顺序推进与主循环**同一套**判据
+    （fix ① 的章号单调在 `_candidate_of` 内、fix ③ 的跨章/重复在本函数内），
+    保证预扫投票的行集合与主循环的行集合**逐行一致**（批一设计不变量）。
     """
+    state = _ParseState()
     rows: list[tuple[int, str, str]] = []
     stack: list[dict] = []
     for line in lines:
-        cand = _candidate_of(line)
+        if _is_commentary_marker(line):
+            state.in_commentary = True
+        cand = _candidate_of(line, state)
         if cand is None:
             continue
         level, clause_no, tail = cand
+        if _reject_cross_chapter(cand, state):
+            continue
         rows.append((level, _parent_key(stack, level), tail))
         while stack and stack[-1]["level"] >= level:
             stack.pop()
         stack.append({"level": level, "clause_no": clause_no})
+        state.seen_clause_nos.add(clause_no)
 
     groups: dict[tuple[int, str], list[str]] = {}
     for level, parent_key, tail in rows:
@@ -471,6 +547,7 @@ def parse_markdown(md_text: str) -> list[dict]:
     lines = md_text.split("\n")
     title_mode = _vote_title_mode(lines)        # 改动①：R14 预扫投票
 
+    state = _ParseState()          # fix ①②③：与预扫各持一份、同序推进同一判据
     clauses: list[dict] = []
     stack: list[dict] = []          # 标题栈；只放候选行，末位即「当前条」
     pending: list[str] = []         # 当前条的待落内容
@@ -518,12 +595,24 @@ def parse_markdown(md_text: str) -> list[dict]:
         # （它不成为候选行，见 `_candidate_of` docstring），只开启延伸至文末的非条文段。
         if _is_commentary_marker(line):
             in_commentary = True
-        cand = _candidate_of(line)
+            state.in_commentary = True           # fix ①②③：与预扫同步推进豁免边界
+        cand = _candidate_of(line, state)
         if cand is None:
             if not discard_section and line.strip():
                 # 非候选行 → 当前条的内容。次分组单元的标题行也走这里，
                 # 需剥掉 Markdown 井号前缀，避免标记混进正文。
-                pending.append(re.sub(r'^#{1,6}\s*', '', line))
+                # fix ④：目录点引行（≥5 连续点）从不是规范正文，不进 pending
+                # （CJJ2 夹具无「目次」标题 → discard_section 不触发，138 行点引行
+                # 曾漏进 `前言` 的 content）。
+                if not _DOT_LEADER.search(line):
+                    pending.append(re.sub(r'^#{1,6}\s*', '', line))
+            continue
+
+        if _reject_cross_chapter(cand, state):   # fix ③：同号重复一致性
+            # 拒绝的候选行当作普通内容行：其文本折入当前条 content（与上分支同一条路径）。
+            if not discard_section and line.strip():
+                if not _DOT_LEADER.search(line):
+                    pending.append(re.sub(r'^#{1,6}\s*', '', line))
             continue
 
         flush()                                  # 新候选行到达 → 先结算上一条
@@ -581,6 +670,7 @@ def parse_markdown(md_text: str) -> list[dict]:
             "level": level, "clause_no": clause_no, "title": title,
             "is_non_clause": is_non,
         })
+        state.seen_clause_nos.add(clause_no)     # fix ③：与预扫同步记录已见条号
         if not title:
             pending.append(tail)                 # 正文型：编号后文本即正文首行
 

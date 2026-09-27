@@ -32,7 +32,14 @@ CJJ2_FIXTURE = Path(__file__).parent / "fixtures" / "cjj2_source.md"
 #     Task 3 修后                 → 144,974
 #   取法：`git show <批次前 commit>:app/parser/md_parser.py` 到临时模块执行同一条公式
 #   （控制器已实测过该手法，见 ledger 的 R-CONS）。
-BASELINE_PLAIN_CHARS = 144300
+# ✅ **fix ④ 下调基线（2026-09-27，fix/parser-three-narrowings，可预期、非回归）**：
+#   目录点引行（TOC dot-leader，161 行 / plain 约 3,167 字符）从不是规范正文，fix ④
+#   把它们移出 `前言` 的 content（CJJ2 夹具无「目次」标题，此前 `discard_section` 不触发，
+#   它们漏进了 `前言`）。content_chars_plain 由 144,915 → **141,770**（−3,145，其中
+#   fix ③ 的断行重复修复反而 +22 字符）。这是**有意删除非规范正文**、不是内容丢失，
+#   故基线随之下调（144,300 → 141,770）。TOC 点引行的去向：`_match_clause_line` 早已
+#   排除其候选资格，本批只是补上「也不进 pending」这后一半。
+BASELINE_PLAIN_CHARS = 141770
 
 
 @pytest.fixture

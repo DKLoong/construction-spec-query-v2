@@ -1147,8 +1147,10 @@ def test_survey_reports_breadcrumb_coverage(cjj2_md):
     #    → `10.7.3`/`17.5.1`/`14.3` 成了错位节点），把这三行的前缀补回「本规范第」使其
     #    不再是候选行后 `missing_sections` 立刻为 `[]`。即**真正的规范缺口为 0**，
     #    这 3 项只是伪影的表现（详见 TODOS.md T22 与裁定 R-T14-4）。
-    #    仍保留本断言：它是**当下事实**的忠实记录（且是 R3 护栏），T22 修好后须随其更新。
-    assert stats["missing_sections"] == ["10.7", "14", "17.5"]
+    # ✅ **随 T22 修复而更新（fix/parser-three-narrowings 的 fix ③，可预期、非回归）**：
+    #    三条伪影行（L3077/L4802/L4926）不再成节点 → `missing_sections` 归零，
+    #    与 T22 记录的反事实实测（`[]`）一致。缺口集合由 3 项收敛为 0 项。
+    assert stats["missing_sections"] == []
 
 
 def test_survey_reports_duplicates(cjj2_md):
@@ -1199,8 +1201,8 @@ def test_survey_reports_duplicates(cjj2_md):
     dups = stats["duplicate_clause_no"]
     assert isinstance(dups, dict)
     assert all(v > 1 for v in dups.values()), "重复组里混进了单次出现的号"
-    assert len(dups) == 123, f"重复组数 {len(dups)}（预期 123）"
-    assert stats["duplicate_rows"] == 258, f"重复行数 {stats['duplicate_rows']}（预期 258）"
+    assert len(dups) == 121, f"重复组数 {len(dups)}（预期 121）"
+    assert stats["duplicate_rows"] == 254, f"重复行数 {stats['duplicate_rows']}（预期 254）"
     assert stats["duplicate_rows_is_non"] == 135, \
         f"重复行中打标的 {stats['duplicate_rows_is_non']}（预期 135）——" \
         f"条文说明段的同号重复应全部打标（Task 13）"
@@ -1208,25 +1210,24 @@ def test_survey_reports_duplicates(cjj2_md):
     #    把 `designed`（合法）与 `commentary_only`（段内自重复）混在同一个数字里，
     #    ① ↔ ③ 此消彼长时它**纹丝不动**（实测：两处 flag 翻转后 123/258/135 **全部不变**，
     #    而下面的三元组由 119/2/2 变 121/1/1）。故必须精确等值断言**三元组**。
+    # ✅ **随 T22 修复而更新（fix ③，可预期、非回归）**：三条伪影行不再成节点 →
+    #    `body_only` 2→0、重复组 123→121、重复行 258→254（T22 记录的反事实实测吻合）。
     assert stats["duplicate_group_kinds"] == \
-        {"designed": 119, "body_only": 2, "commentary_only": 2}, \
-        f"重复号的组级分解 {stats['duplicate_group_kinds']}（预期 119/2/2）——" \
+        {"designed": 119, "body_only": 0, "commentary_only": 2}, \
+        f"重复号的组级分解 {stats['duplicate_group_kinds']}（预期 119/0/2）——" \
         f"designed=正文+条文说明同号（合法）、body_only=真重复、commentary_only=段内自重复"
-    # ⚠️ **号身份**断言（fix round 2）：上面三元组仍是**计数**——「`body_only` 有 2 组」并
-    #    不等于「就是 `10.7.3`/`17.5.1`」。本 Task 要写进验收报告的结论恰是**号身份**
-    #    （「2 个真重复是 `10.7.3`/`17.5.1`，由夹具 L3077/L4802 造成」），**它必须被守住**，
-    #    否则某个 `body_only` 号被另一个新伪影号**替换**（计数不变）时，报告会**无声地继续
-    #    宣称旧结论**。可失败性已实测：把 `10.7.3` 组**两行**的 `clause_no` 一起改写成
-    #    `99.9.9`（纯换号，行数/打标数/组数全不变），指标 7~10 **全部不变**
-    #    （123 / 258 / 135 / 119/2/2），仅本断言变红。
+    # ⚠️ **号身份**断言（fix round 2）：上面三元组仍是**计数**——「`body_only` 有 N 组」并
+    #    不等于「就是哪几个号」。本 Task 要写进验收报告的结论恰是**号身份**（真重复是
+    #    `10.7.3`/`17.5.1`，由夹具 L3077/L4802 造成），**它必须被守住**，否则某个 `body_only`
+    #    号被另一个新伪影号**替换**（计数不变）时，报告会**无声地继续宣称旧结论**。
     #    依本批范式（Task 10 冻结的是**具体字典** `{'6.1.1':'模板',…}` 而非「3 条标签」）：
     #    **冻具体值，不冻计数**。只钉两个短集合；`designed` 有 119 个号，计数已够，不逐号断言。
-    #    📌 **将来若批二真修掉该伪影（TODOS T22 / T23），本断言应随之更新为 `set()`** ——
-    #    那是**可预期的行为变更，不是回归**（届时重复号本身也会一起消失）。
+    #    ✅ **已随 T22 修复更新为 `set()`（可预期、非回归）**：伪影消失后 `body_only` 为空集，
+    #    与 TODOS T22 尾注约定的「伪影消失时即 `set()`」一致。
     members = stats["duplicate_group_kinds_members"]
-    assert set(members["body_only"]) == {"10.7.3", "17.5.1"}, \
-        f"真重复的号身份 {members['body_only']}（预期 10.7.3 / 17.5.1）——" \
-        f"报告将据此宣称「2 个真重复由 L3077/L4802 造成」"
+    assert set(members["body_only"]) == set(), \
+        f"真重复的号身份 {members['body_only']}（预期空集——伪影已修掉）——" \
+        f"修复前为 10.7.3 / 17.5.1（夹具 L3077/L4802）"
     assert set(members["commentary_only"]) == {"前言", "2"}, \
         f"条文说明段内自重复的号身份 {members['commentary_only']}（预期 前言 / 2）"
 
@@ -1417,3 +1418,89 @@ def test_cjj2_commentary_section_is_marked(cjj2_md):
     """
     marked = [c for c in parse_markdown(cjj2_md) if c["is_non_clause"]]
     assert len(marked) > 100, f"仅 {len(marked)} 条被打标——条文说明段仍未生效"
+
+
+# ═══════════════════════════════════════════
+# 组 7：三处收窄（fix/parser-three-narrowings：① 章号单调 / ③ 断行重复 / ④ 目录点引行）
+# ═══════════════════════════════════════════
+
+def test_hash_bare_digit_chapter_number_must_strictly_increase():
+    """fix ①：body 内 `#`+裸数字节点的章号必须**严格递增**，重复/回跳的章号不是节点。
+
+    实测（JGJ107 `data/outputs/aa96b73a/aa96b73a.md:422`）：附录 A 里
+    `## 2 变形测量标距` 是 A.1.1 的**子项**、被 OCR 误加 `##`，成了 chapter 2 的
+    重复节点（真章号 1..7，`2` 在 `7` 之后再次出现）。被拒行的文本像普通非候选行
+    一样折入所属条（A.1.1）的 content。
+    """
+    md = (
+        "## 1 总则\n\n1.0.1 正文甲。\n\n"
+        "## 2 术语和符号\n\n2.0.1 正文乙。\n\n"
+        "### A.1 型式检验\n\n"
+        "A.1.1 试件型式检验的仪表布置和变形测量标距应符合下列规定：\n\n"
+        "1 单向拉伸试验时的仪表应布置在钢筋两侧。\n\n"
+        "## 2 变形测量标距\n\n"
+        "1）单向拉伸残余变形测量应按下式计算。\n"
+    )
+    rows = parse_markdown(md)
+    assert not any(r["clause_no"] == "2" for r in rows), "重复的裸章号 2 仍是节点"
+    a11 = [r for r in rows if r["clause_no"] == "A.1.1"]
+    assert a11, "A.1.1 应产出"
+    assert "变形测量标距" in a11[0]["content"], "被拒行的文本应折入所属条 content"
+
+
+def test_cross_reference_fragment_is_not_a_node():
+    """fix ③ (T22)：PDF 断行把交叉引用劈开，下半行以条号形状 token 起头，
+    被误认成候选行。判据：body 内同号**已出现过** → 不是节点，文本折入当前条。
+
+    夹具 `tests/fixtures/cjj2_source.md` 的两处形态：
+    ① L4926 `14.3 节有关规定，且应符合下列规定：` —— 正文已有节标题 `### 14.3 检验标准`，
+       故 `14.3` 是同号重复（曾吞掉其后 `表 17.5.8-1` 4504 字符）；
+    ② L4802 `17.5.1 条和第 13.7.2 条规定。` —— 正文真 `17.5.1` 之后的分片重复。
+    """
+    md = (
+        "## 14 钢梁\n\n### 14.3 检验标准\n\n"
+        "14.3.1 钢梁质量检验应符合下列规定。\n\n"
+        "## 17 斜拉桥\n\n### 17.5 检验标准\n\n"
+        "17.5.8 结合梁的工字钢梁段悬臂拼装质量检验应符合本规范第\n\n"
+        "14.3 节有关规定，且应符合下列规定：\n\n"
+        "表 17.5.8-1 结合梁的工字钢梁段悬臂拼装允许偏差\n"
+    )
+    rows = parse_markdown(md)
+    assert not any(r["clause_no"] == "14.3" for r in rows), "跨章伪节点仍在"
+    c = [r for r in rows if r["clause_no"] == "17.5.8"]
+    assert c and "14.3 节有关规定" in c[0]["content"], "被拒行的文本应折入当前条"
+
+    md2 = (
+        "## 17 斜拉桥\n\n### 17.5 检验标准\n\n"
+        "17.5.1 悬臂浇筑混凝土主梁质量检验应符合下列规定。\n\n"
+        "17.5.4 支架上浇筑混凝土主梁质量检验应符合本规范第\n"
+        "17.5.1 条和第 13.7.2 条规定。\n"
+    )
+    rows2 = parse_markdown(md2)
+    assert sum(1 for r in rows2 if r["clause_no"] == "17.5.1") == 1, "同号重复仍在"
+    c2 = [r for r in rows2 if r["clause_no"] == "17.5.4"]
+    assert c2 and "17.5.1 条和第 13.7.2 条规定" in c2[0]["content"], "被拒行文本应折入当前条"
+
+
+def test_toc_dot_leader_lines_kept_out_of_content():
+    """fix ④：目录点引行（≥5 连续点）从不是规范正文，不得进 pending/content。
+
+    夹具 `tests/fixtures/cjj2_source.md` 无「目次」标题（OCR 丢了它），故
+    `discard_section` 不触发，138 行点引行（L94 起，如 `1 总则 ..... 1`）曾漏进
+    `前言` 的 content。`_match_clause_line` 已据此排除候选行，此处补「不进 pending」
+    这后一半。
+    """
+    md = (
+        "## 前言\n\n"
+        "本规范为适应混凝土结构工程发展的需要而编制。\n\n"
+        "1 总则 ..... 1\n"
+        "2 术语 ..... 3\n\n"
+        "## 1 总则\n\n"
+        "1.0.1 正文内容。\n"
+    )
+    rows = parse_markdown(md)
+    qy = [r for r in rows if r["title"] == "前言"]
+    assert qy, "前言应产出"
+    assert "总则 ..... 1" not in qy[0]["content"], "目录点引行仍留在前言 content"
+    assert "术语 ..... 3" not in qy[0]["content"], "目录点引行仍留在前言 content"
+    assert "为适应混凝土结构工程发展的需要而编制" in qy[0]["content"], "前言正文不得被误删"
