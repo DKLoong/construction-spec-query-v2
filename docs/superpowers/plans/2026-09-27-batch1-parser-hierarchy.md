@@ -1044,11 +1044,12 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'scripts.survey_structu
 """结构勘察：批次验收的回归门禁。
 
 产出五项指标（批一验收用，见 spec §6 与 CEO 评审记录 Section 6）：
-  1. clause_count          条文数
-  2. content_chars         全部 content 的字符总数（守恒断言的分母）
-  3. fake_clause_no_count  不含数字的条文号个数（伪条文号，目标：12 以内）
-  4. breadcrumb_coverage   section_path 非空且段数 == level-1 的条文占比
-  5. missing_sections      被引用却找不到标题的节号（量 Task 3 的残余缺口）
+  1. clause_count           条文数
+  2. content_chars          全部 content 的字符总数（**含 PaddleOCR-VL 标记的原始口径**）
+  3. content_chars_plain    同上，但经 `plain_text` 归一（**Task 9 守恒断言的基线口径**）
+  4. fake_clause_no_count   不含数字的条文号个数（伪条文号）
+  5. breadcrumb_coverage    section_path 段数 == 应有祖先数（按 R3 剔除 0 段）的条文占比
+  6. missing_sections       被引用却找不到标题的节号（量目次对齐的残余缺口）
 
 用法：python scripts/survey_structure.py <md路径> [--json]
 """
@@ -1059,6 +1060,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.ai.text_clean import plain_text  # noqa: E402
 from app.parser.md_parser import parse_markdown  # noqa: E402
 
 
@@ -1107,6 +1109,11 @@ def survey_structure(md_text: str) -> dict:
     return {
         "clause_count": len(clauses),
         "content_chars": sum(len(c["content"]) for c in clauses),
+        # ⚠ SDD 实施前扫描 F2：Task 9 的守恒断言口径是 `plain_text` 归一后的字符数
+        # （避免 PaddleOCR-VL 标记残留导致自然波动），而上面的 `content_chars` 是
+        # **含标记的原始口径**——两者不可混用。故本脚本必须同时输出归一口径，
+        # 供 Task 9 直接取基线值。
+        "content_chars_plain": sum(len(plain_text(c["content"])) for c in clauses),
         "fake_clause_no_count": len(fake),
         "breadcrumb_coverage": round(coverage, 4),
         "missing_sections": sorted(missing),
@@ -1159,9 +1166,10 @@ breadcrumb_coverage / missing_sections，作为批一验收门禁。"
 | 指标 | Task 8 实测（改造前基线） | 批一目标 |
 |---|---|---|
 | `clause_count` | 待填 | 不再含裸编号 / 次分组单元 / 年份等伪条文 |
-| `content_chars` | 待填（旧实现 444,976） | **不得减少**（守恒） |
+| `content_chars` | 待填（旧实现 444,976，**含标记口径**） | 参考值；不作断言 |
+| **`content_chars_plain`** | 待填（`plain_text` 归一口径） | **不得减少**（守恒）——**Task 9 的 `BASELINE_PLAIN_CHARS` 取此值** |
 | `fake_clause_no_count` | 待填（旧实现 124） | **明显下降**（目标 ≤ 12） |
-| `breadcrumb_coverage` | 待填 | 提升；缺口清单用于决定 Task 3 去留 |
+| `breadcrumb_coverage` | 待填 | 提升；缺口清单用于决定目次对齐（Task 3）去留 |
 | `missing_sections` | 待填 | 作为 Task 3 是否启用的证据 |
 
 ---
