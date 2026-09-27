@@ -1269,13 +1269,20 @@ breadcrumb_coverage / missing_sections，作为批一验收门禁。"
 
 > Task 8 Step 5 首次运行后**立即填入真实值**，后续 Task 以此为对照。未填不得进入 Task 9。
 
-| 指标 | Task 8 实测（改造前基线） | 批一目标 |
+| 指标 | 批次**前**（main `2011760`） | 批一目标 |
 |---|---|---|
-| `clause_count` | 待填 | 不再含裸编号 / 次分组单元 / 年份等伪条文 |
-| `content_chars` | 待填（旧实现 444,976，**含标记口径**） | 参考值；不作断言 |
-| **`content_chars_plain`** | 待填（`plain_text` 归一口径） | **不得减少**（守恒）——**Task 9 的 `BASELINE_PLAIN_CHARS` 取此值** |
-| `fake_clause_no_count` | 待填（旧实现 124） | **明显下降**（目标 ≤ 12） |
-| `breadcrumb_coverage` | 待填 | 提升；缺口清单用于决定目次对齐（Task 3）去留 |
+| `clause_count` | 1012 | 下降（内节点不建行 + 伪条文号消失）——Task 3 后实测 **895** |
+| `content_chars` | 444,976（**含 PaddleOCR-VL 标记的原始口径**） | 参考值；不作断言 |
+| **`content_chars_plain`** | **144,300**（`plain_text` 归一口径） | **不得减少**（守恒）——Task 3 后实测 **144,974（+674）** ✓ |
+| `fake_clause_no_count` | 124 | **明显下降** |
+| `breadcrumb_coverage` | 0（该列当时不存在） | 提升——Task 3 后实测 **857/895** |
+| `missing_sections` | — | 缺口清单用于决定目次对齐去留 |
+
+> **⚠️ 基线口径（实施中查出的坑）**：必须取**批次开始前的 main**，不是批次内的中间 commit。
+> 实测同一命令在三个状态下的值：`2011760`→144,300、`c0b4278`（Task 1/2/4 后）→144,363、
+> Task 3 后→144,974。拿中间态当基线会低估且口径不可比。
+> **取法**：`git show <批次前 commit>:app/parser/md_parser.py` 写入临时文件、以 `importlib` 加载后
+> 执行与当前完全相同的公式（控制器已用该手法实测，见 ledger 的 `R-CONS` 与 Task 3 的守恒表）。
 | `missing_sections` | 待填 | 作为 Task 3 是否启用的证据 |
 
 ---
@@ -1317,8 +1324,15 @@ from app.parser.md_parser import parse_markdown
 
 CJJ2_FIXTURE = Path(__file__).parent / "fixtures" / "cjj2_source.md"
 
-# 改造前的实测基线（旧实现，plain_text 归一口径）——由 Task 8 Step 5 填入
-BASELINE_PLAIN_CHARS = 0  # ← 待填
+# 批次**前**的实测基线（旧实现，plain_text 归一口径）。
+# ⚠️ 口径必须取「批次开始前的 main」，**不是**批次内的中间 commit：
+#   实测同一条命令（CJJ2 源 + sum(len(plain_text(content)))）：
+#     main 2011760（批次前）      → 144,300
+#     c0b4278（Task 1/2/4 后）    → 144,363   ← 拿这个当基线会低估，两栈口径不同
+#     Task 3 修后                 → 144,974
+#   取法：`git show <批次前 commit>:app/parser/md_parser.py` 到临时模块执行同一条公式
+#   （控制器已实测过该手法，见 ledger 的 R-CONS）。
+BASELINE_PLAIN_CHARS = 144300
 
 
 @pytest.fixture
