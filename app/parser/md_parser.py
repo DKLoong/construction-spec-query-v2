@@ -130,7 +130,8 @@ def _match_clause_line(line: str):
     tail 为编号后的文本。是否作为标题由调用方按 _looks_like_title 判断。
     **层级不由本函数推断**，调用方统一用 `_level_from_clause_no`（唯一尺子）。
 
-    排除：目录行（含 5 个以上连续点）、纯日期行、无中文行。
+    排除：目录行（含 5 个以上连续点）、纯日期行、无中文行、
+    裸阿拉伯数字编号行（如 `1 钢筋`／`6 焊缝外观质量…`，按 R7 是条内的「项」）。
     """
     s = line.strip()
     if not s:
@@ -155,9 +156,16 @@ def _match_clause_line(line: str):
             # 排除数值噪音：以 0 开头的数字编号（0.95 是正文数值，非条文号）
             if re.match(r'^0', clause_no):
                 return None
-            # 单数字编号行（无点，如列表项 "1 混凝土结构..."）：仅当尾随短标题才视为标题，
-            # 否则视为正文列表项（作为当前条文的内容，不切分）
-            if '.' not in clause_no and not _looks_like_title(tail):
+            # 裸阿拉伯数字编号行（如 "1 混凝土结构…" / "6 焊缝外观质量…"）不是条文：
+            # 按 R7，它们是次分组单元内部的「项」，归属其所在的条。旧实现用
+            # _looks_like_title 按字数猜，导致同一份文档里长项成正文、短项成条文，
+            # 判定不一致（实测库里同时存在裸 '1'…'22' 与未被识别的裸项）。
+            #
+            # ⚠ 判据必须是 `isdigit()` 而**不是** `'.' not in clause_no`：
+            # `附录A` 同样没有点号，但它是合法的结构编号，必须继续作为候选行
+            # （tests/test_md_parser.py::test_parse_appendix_clauses 断言
+            #  `附录A 接头型式检验的加载制度` 出现在后代条文的 parent_path 中）。
+            if clause_no.isdigit():
                 return None
             return (clause_no, tail)
     return None

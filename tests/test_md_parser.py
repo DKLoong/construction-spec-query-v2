@@ -178,8 +178,15 @@ def test_toc_lines_filtered():
 
 
 def test_multi_space_title_cleanup():
-    """多空格标题应清理（1  总    则 → 总则）"""
-    md = """1  总    则
+    """多空格标题应清理（1.1  总    则 → 总则）
+
+    ⚠ 夹具偏离计划：原为裸编号 `1  总    则`。Task 4 起裸编号行不再是候选行
+    （R7：`1 总则` 与条内的「项」`1 钢筋` 同形，无法区分），故该行既不进
+    title_stack 也不再是 1.0.1 的父级 → 原夹具在 Task 4 后必失败。改用带点的
+    `1.1`（层级 2 < 1.0.1 的 3，父链语义不变），继续覆盖「非 # 前缀标题型行的
+    _clean_title(tail)」这条路径；断言与子条文号均未改动。
+    """
+    md = """1.1  总    则
 
 1.0.1  条文内容。
 """
@@ -535,3 +542,42 @@ def test_zero_segment_predicate_is_last_segment_only():
     assert _is_zero_segment_node("1.0.2") is False
     assert _is_zero_segment_node("10.1") is False       # 10 不是 0
     assert _is_zero_segment_node("3") is False
+
+
+# ═══════════════════════════════════════════
+# 裸编号项不作为条文（Task 4）
+# ═══════════════════════════════════════════
+
+def test_bare_numbered_item_is_not_a_clause():
+    """裸编号项（无点号，如 `1`、`6`）不是条文，是所属条内部的「项」"""
+    md = "5.1.1 模板安装应满足下列要求：\n\n1 模板的接缝不应漏浆；\n\n2 接触面应清理干净。\n"
+    results = parse_markdown(md)
+    nos = [c["clause_no"] for c in results]
+    assert nos == ["5.1.1"]          # 裸 1/2 不成条文
+    assert "模板的接缝" in results[0]["content"]
+    assert "接触面应清理干净" in results[0]["content"]
+
+def test_bare_numbered_short_title_is_still_not_a_clause():
+    """短标题形态的裸编号项同样不成条文（旧实现按 ≤20 字会误判为标题型）
+
+    ⚠ 夹具偏离计划：计划给的 `"5.1.1 一般规定\\n\\n1 钢筋\\n\\n2 水泥\\n"` 在本
+    Task 的检查点上**恒返回 `[]`**（旧循环只在缓冲非空时结算，三条标题型行的
+    条目从未被结算）→ 原断言是空断言（`assert nos` 可证）。故每条编号行后补一句
+    正文，使夹具产出条文、断言可证伪。Task 3 无条件结算后原夹具才会变为有效。
+    """
+    md = "5.1.1 一般规定\n\n正文甲。\n\n1 钢筋\n\n正文乙。\n\n2 水泥\n\n正文丙。\n"
+    nos = [c["clause_no"] for c in parse_markdown(md)]
+    assert nos   # 夹具须产出条文，否则下面的断言是空断言
+    assert "1" not in nos and "2" not in nos
+
+def test_appendix_without_dots_is_still_a_candidate():
+    """边界回归：`附录A` 也没有点号，但它是合法结构编号，不得被裸编号项规则误伤。
+
+    判据必须是 `clause_no.isdigit()`，不是 `'.' not in clause_no`。
+    """
+    md = ("附录A 接头型式检验的加载制度\n\nA.1 检验设备\n\n"
+          "A.1.1 加载装置应满足要求。\n")
+    results = parse_markdown(md)
+    r = [c for c in results if c["clause_no"] == "A.1.1"]
+    assert len(r) == 1
+    assert any("接头型式检验的加载制度" in p for p in r[0]["parent_path"])
