@@ -295,6 +295,18 @@ def _candidate_of(line: str) -> tuple[int, str, str] | None:
             return (1, t, t) if is_non_clause_title(t) else None
         if _BARE_YEAR.match(clause_no):
             return None
+        # `#` + **裸数字**行：只有其后文本不像正文句子时才算节点。
+        # 成因：OCR 会给表格/款文本误加 `##` 前缀（`## 3 钢箱梁悬臂拼装允许偏差应符合表17.5.7-2的规定。`、
+        # `## 2 预应力筋安装应符合下列要求：`，夹具共 6 行）。它们是 level 1 的伪节点 →
+        # 弹空栈、吞掉其后正文（实测 6 行 / 3,464 字符），并把真条文的 section_path
+        # 污染成该伪节点标题（实测 `18.8.10` → `3 吊索和锚头允许偏差应符合表 18.8.10-2 的规定。`）。
+        # ⚠️ 判据**只取「以句末标点结尾」一条**，不要用 `_looks_like_title`：后者另含 20 字长度门，
+        #    会误伤长章名（`3 施工准备与临时设施（含施工便道、临时用电）` 23 字）——实测两者
+        #    在本语料上数值完全相同（−6 行、覆盖率 0.9986），故取假拒风险更低的那条。
+        # ⚠️ 本判据必须写在 `#` 分支：非 `#` 路径的同类收窄在 `_match_clause_line`
+        #    （Task 4 的 `clause_no.isdigit()`），那条**覆盖不到本条缺陷**。
+        if clause_no.isdigit() and _extract_title(raw_title).strip().endswith(_TITLE_END_PUNCT):
+            return None
         title_txt = _clean_title(_extract_title(raw_title))
         # ⚠️ 本分支的判据顺序是**承重**的，四处顺序都不可随意调换：
         #   ① 目次/Contents（过滤类）必须先于「无中文」检查 —— `Contents` 是英文、

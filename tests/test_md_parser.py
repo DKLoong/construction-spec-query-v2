@@ -954,7 +954,10 @@ def test_survey_reports_breadcrumb_coverage(cjj2_md):
     #    `_build_section_path` 的契约本应为空），阈值**直接**收到 0.95——实测 0.9781。
     #    这里不走「先落 M14 的 0.85 再提高」：执行顺序表把 Task 13 排在 Task 12 之前，
     #    本 Task 落地的就是终值；0.85 对 0.9781 会放走 −0.13 的退化，门禁形同虚设。
-    assert stats["breadcrumb_coverage"] >= 0.95
+    # ⚠️ Task 14 随实现收敛而**收紧**这里（不是放宽）：`#` 分支的裸数字行收窄后，
+    #    6 个伪 level-1 节点消失、真条文的面包屑归位 → 实测 0.9781 → 0.9986。
+    #    故阈值由 0.95 提到 0.998（留 0.0006 余量，但不放走 Task 14 修掉的那 −0.0205）。
+    assert stats["breadcrumb_coverage"] >= 0.998
     # ⚠️ 偏离简报（fix round 1，裁定）：原断言 `isinstance(..., list)` **空表也过**，
     #    是 M14 点名的「恒真门禁」。换成**集合断言**（实测恰为这六项）。
     #    它同时是 **R3 护栏**：脚本里「`X.0.Y` 的节位为 0 → 该级不存在」的剔除若被删掉，
@@ -962,10 +965,56 @@ def test_survey_reports_breadcrumb_coverage(cjj2_md):
     #    另注：`missing_sections` 口径已收窄为**只统计条文行**，且**判断父级是否已存在
     #    也只用条文行**（R-T13-5 fix round 2）——若后者退回全量口径，本集合会缩回
     #    `['10.7','11.5','8']`（段内注释行 `14`/`17.5`/`18.8` 把三个真缺口掩盖掉），同样变红。
-    # ⏭️ **Task 14 会把本断言收紧为 `["10.7", "14", "17.5"]`**：这六项里 `14`/`17.5`/`18.8`
+    # ⚠️ Task 14 随实现收敛而**收紧**这里（不是放宽）：原先那六项里 `14`/`17.5`/`18.8`
     #    的面包屑被伪 level-1 节点污染（实测 `14.3`→`'3'`、`17.5.8`→`'3'`、`18.8.9`→`'3'`），
-    #    伪节点修好后 `18.8`/`8`/`11.5` 不再缺失。**本 Task 不抢跑**（不预先写入该值）。
-    assert stats["missing_sections"] == ["10.7", "11.5", "14", "17.5", "18.8", "8"]
+    #    伪节点修好后 `18.8`/`8`/`11.5` 不再缺失（实测 `17.5.8` → `'17 斜拉桥 > 17.5 检验标准'`），
+    #    缺口集合由 6 项收敛为 3 项。**遗留的这 3 项是真实缺口，转由后序任务处置。**
+    assert stats["missing_sections"] == ["10.7", "14", "17.5"]
+
+
+# ═══════════════════════════════════════════
+# 组 5b：`#` + 裸数字行的候选收窄（Task 14）
+# ═══════════════════════════════════════════
+
+def test_hash_line_with_bare_number_and_prose_is_not_a_node():
+    """`#` + 裸数字 + 正文句 → 不是节点（OCR 会给表格/款文本误加 `##`）。
+
+    实测（夹具行 4901）：`## 3 钢箱梁悬臂拼装允许偏差应符合表17.5.7-2的规定。`
+    成了 clause_no='3'、level 1 的候选 → 弹空栈、吞掉其后表格正文，
+    并把真条文 18.8.10 的面包屑污染成该伪节点标题。
+    """
+    md = ("## 11 墩台\n\n### 11.5 检验标准\n\n"
+          "11.5.3 现浇混凝土墩台允许偏差应符合下列规定。\n\n"
+          "## 4 现浇混凝土柱允许偏差应符合表11.5.3-2的规定。\n\n"
+          "表 11.5.3-2 现浇混凝土柱允许偏差\n")
+    rows = parse_markdown(md)
+    assert not any(r["clause_no"] == "4" for r in rows), "伪 level-1 节点仍在"
+    assert not any(r["section_path"].startswith("4 ") for r in rows), "面包屑被伪节点污染"
+    # 该行的文本必须**归属其所在的条**（不是丢掉，也不是自成一条）
+    target = [r for r in rows if r["clause_no"] == "11.5.3"]
+    assert target and "现浇混凝土柱允许偏差" in target[0]["content"], \
+        "被收窄的行其文本应归入所属条"
+
+
+def test_hash_line_with_bare_number_and_chapter_name_is_still_a_node():
+    """短章名照旧是节点 —— 本 Task 的安全边界（收窄不得误伤真章标题）。"""
+    md = ("## 3 施工准备\n\n### 3.1 一般规定\n\n3.1.1 施工准备应符合下列规定。\n"
+          "1 施工单位应编制施工组织设计。\n")
+    rows = parse_markdown(md)
+    hit = [r for r in rows if r["clause_no"] == "3.1.1"]
+    assert hit and hit[0]["section_path"] == "3 施工准备 > 3.1 一般规定"
+
+
+def test_cjj2_has_no_bare_number_nodes_carrying_prose(cjj2_md):
+    """端到端：CJJ2 里裸数字节点的内容量不得再是大块正文。
+
+    实测 5,176 → 1,712 字符、22 → 16 条（余下 16 条都是章节点，携带章首引言）。
+    """
+    from app.ai.text_clean import plain_text
+    bare = [c for c in parse_markdown(cjj2_md) if c["clause_no"].isdigit()]
+    assert len(bare) == 16, f"裸数字节点数 {len(bare)}（预期 16）"
+    total = sum(len(plain_text(c["content"])) for c in bare)
+    assert total < 2_500, f"裸数字节点内容量 {total}——伪节点仍在吞正文"
 
 
 # ═══════════════════════════════════════════
