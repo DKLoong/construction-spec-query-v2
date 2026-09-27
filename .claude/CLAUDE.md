@@ -73,8 +73,17 @@ async with async_playwright() as p:
    - `wmic process where "name='python.exe'" get ProcessId,CommandLine | grep multiprocessing` —— 找 worker 子进程（其 `parent_pid` 指向 reloader）
    - reloader + worker **全部显式 `taskkill //F //PID <pid>` 逐个执行**，观察每条输出；`tasklist` 找不到的 netstat PID 是幽灵（进程已死），真实进程用 wmic 定位 multiprocessing worker
 2. **验证端口干净**：`netstat -ano | grep :8000 | grep LISTENING` 应**无输出**
+   ⚠️ **但 netstat 会留「幽灵行」，别只信它**：死进程的 LISTENING 条目可能**长期不消失**。
+   实测（2026-09-27 批一验收）：reloader 已被 `taskkill` 终止、`tasklist /FI "PID eq <pid>"` 与
+   `wmic process where "ProcessId=<pid>"` **双双确认该进程不存在**，而 8 秒后 `netstat` 那一行 **仍在**。
+   故**判据不是「netstat 无输出」，而是「没有 uvicorn/spawn_main 的活进程」**：
+   `wmic process where "name='python.exe'" get ProcessId,CommandLine` → 其中不含 uvicorn/spawn_main。
+   （注意 `wmic` 的 CommandLine 会**折行**，用 `| grep` 会漏，建议 `wmic ... /format:csv` 或在 Python 里解析。）
 3. **启动**：`D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload`（后台）
-4. **复验唯一监听**：启动后 `netstat :8000 LISTENING` 应**恰好 1 个**，且 wmic 确认该 PID 命令行是 uvicorn
+4. **复验唯一监听**：**以活进程数为准，不数 netstat 行数** ——
+   `tasklist` / `wmic` 确认为**活**的监听进程应**恰好 1 个**（其命令行是 uvicorn）。
+   ⚠️ 此时 `netstat` 可能显示 **2 行**（1 活 + 1 幽灵），**不是**双监听：实测过这一情形
+   （旧 PID 24104 已死仍留在表里，新服务 PID 27980 才是活的）。
 5. **改静态文件/模板后**：浏览器必须 `Ctrl+F5` 强刷；`base.html` 里 `<script src="...?v=N">` 的版本号 `N` 必须**递增**，否则浏览器缓存旧 js 不失效（改 `qa.js`/`md-render.js` 等必查）
 
 ---
