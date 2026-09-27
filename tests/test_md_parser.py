@@ -1504,3 +1504,61 @@ def test_toc_dot_leader_lines_kept_out_of_content():
     assert "总则 ..... 1" not in qy[0]["content"], "目录点引行仍留在前言 content"
     assert "术语 ..... 3" not in qy[0]["content"], "目录点引行仍留在前言 content"
     assert "为适应混凝土结构工程发展的需要而编制" in qy[0]["content"], "前言正文不得被误删"
+
+
+# ═══════════════════════════════════════════
+# 组 8：次分组标签空壳节点打标隐藏（feature ②，round 2）
+# ═══════════════════════════════════════════
+
+def test_subgroup_label_only_body_is_non_clause():
+    """feature ②：自身正文**完全**由次分组标签组成的节点 → is_non_clause=True（保留但隐藏）。
+
+    CJJ2 的 `### 9.6 检验标准` 后紧跟 `#### 主控项目`（标签行非候选 → 折入 9.6 自身正文），
+    使 9.6 成为 content 仅「主控项目」4 字的空壳条文。这类节点应打标隐藏；其子条照常解析、
+    面包屑仍含该节名（stack 内节点的 is_non_clause 不变，故 `_build_section_path` 不丢它）。
+    """
+    md = ("### 5 模板\n\n### 5.4 检验标准\n\n#### 主控项目\n\n"
+          "5.4.1 模板制作应符合下列规定。\n\n检查数量：全数检查。\n")
+    rows = {c["clause_no"]: c for c in parse_markdown(md)}
+    assert rows["5.4"]["is_non_clause"] is True, "label-only 空壳节点未打标"
+    assert rows["5.4"]["content"] == "主控项目", "打标不改变其自身正文（保留）"
+    assert rows["5.4.1"]["is_non_clause"] is False, "子条不得被误打标"
+    assert rows["5.4.1"]["section_path"] == "5 模板 > 5.4 检验标准", "子条面包屑不得丢节名"
+
+
+def test_subgroup_label_only_body_with_roman_prefix_and_control():
+    """feature ②的罗马数字前缀形态 + 控制组（标签夹在正文中间不得打标）。
+
+    罗马前缀来自 R7（182 号第三十三条）：次分组单元用大写罗马数字编号（`Ⅰ 主控项目`）。
+    控制组（14.3.1 形态）：`主控项目`/`一般项目` 夹在正文中间是有效的分组标记，不得打标。
+    """
+    md = "### 9 砌体\n\n### 9.6 检验标准\n\n#### Ⅰ 主控项目\n\n9.6.1 石材强度应符合设计要求。\n"
+    rows = {c["clause_no"]: c for c in parse_markdown(md)}
+    assert rows["9.6"]["is_non_clause"] is True, "带罗马前缀的 label-only 空壳未打标"
+
+    md2 = ("### 14 钢梁\n\n### 14.3 检验标准\n\n"
+           "14.3.1 钢梁质量检验应符合下列规定：\n\n#### 主控项目\n\n"
+           "1 钢材品种应符合设计要求。\n\n检查数量：全数检查。\n\n#### 一般项目\n\n"
+           "6 焊缝外观应符合规定。\n\n"
+           "14.3.2 钢梁现场安装检验应符合下列规定：\n\n正文乙。\n")
+    rows2 = {c["clause_no"]: c for c in parse_markdown(md2)}
+    assert rows2["14.3.1"]["is_non_clause"] is False, "标签夹在正文中间的分组标记不得导致打标"
+    assert "主控项目" in rows2["14.3.1"]["content"]
+    assert "一般项目" in rows2["14.3.1"]["content"]
+
+
+def test_cjj2_label_only_sections_are_non_clause(cjj2_md):
+    """feature ②端到端：CJJ2 恰好 6 个「自身正文全是次分组标签」的空壳节被打标（168 → 174）。
+
+    6 行均为 `### X 检验标准` 后紧跟一个 `主控项目` 标签行（无其他正文），其 content 恰为
+    「主控项目」4 字。JGJ107 语料 0 行（无任何 `主控项目`/`一般项目`，由探针实测、不进本用例）。
+    """
+    clauses = parse_markdown(cjj2_md)
+    expect = {"5.4", "6.5", "7.13", "8.5", "9.6", "12.5"}
+    label_only = [c for c in clauses if c["clause_no"] in expect]
+    assert {c["clause_no"] for c in label_only} == expect, \
+        f"label-only 空壳节集合变了：{[c['clause_no'] for c in label_only]}"
+    assert all(c["is_non_clause"] and c["content"] == "主控项目" for c in label_only), \
+        "6 个空壳节应全部打标且 content 仍为「主控项目」"
+    marked = sum(1 for c in clauses if c["is_non_clause"])
+    assert marked == 174, f"打标总数 {marked}（预期 174 = 168 + 6）"

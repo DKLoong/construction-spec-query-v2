@@ -62,6 +62,14 @@ _DOT_LEADER = re.compile(r'[\.．]{5,}')
 # 附录编号（`A.1`）与字母编号是**另一命名空间**，不受「跨章越级回跳」约束。
 _NUMERIC_CLAUSE_NO = re.compile(r'^\d+(?:\.\d+)*$')
 
+# feature ②: 次分组单元标签（R7/182 号第三十三条）：主控项目 / 一般项目，
+# 可带大写罗马数字前缀（`Ⅰ `）。某节点的自身正文**完全**由这类标签行组成时，
+# 该节点不是可检索条文，打标 is_non_clause=1（保留但默认隐藏）——CJJ2 的
+# `### 9.6 检验标准` 后紧跟 `#### 主控项目`（标签行非候选 → 折入 9.6 自身正文），
+# 使 9.6 成为 content 仅「主控项目」4 字的空壳条文（实测 6 行：5.4/6.5/7.13/8.5/9.6/12.5）。
+_SUBGROUP_LABELS = ("主控项目", "一般项目")
+_ROMAN_NUMERAL_PREFIX = re.compile(r'^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*')
+
 # OCR 管线的页分隔标记（`## 第X页`）。它必须被 parse_markdown 保留为独立候选，
 # 否则每页不再隔离——见 `_candidate_of` 里 (a) 的说明与 `ocr_clean.py:11-12` 的契约。
 _PAGE_MARKER = re.compile(r'^第\s*\d+\s*页$')
@@ -530,6 +538,7 @@ def parse_markdown(md_text: str) -> list[dict]:
         "parent_path": ["混凝土分项工程", "钢筋"],
         "section_path": "5 混凝土分项工程 > 5.2 钢筋",   # 面包屑，不含自身
         "is_non_clause": False   # True 表示非条文块（前言/条文说明/页标记等，保留但默认隐藏）
+                                  #   —— 或自身正文全是次分组标签的空壳节点（feature ②）
     }, ...]
 
     黑名单行为：
@@ -586,7 +595,9 @@ def parse_markdown(md_text: str) -> list[dict]:
                     "level": entry["level"],
                     "parent_path": [a["title"] for a in ancestors],
                     "section_path": _build_section_path(ancestors),
-                    "is_non_clause": entry["is_non_clause"],
+                    # feature ②：自身正文全是次分组标签的空壳节点同样打标（保留但默认隐藏）。
+                    # 不改 stack 内 entry 的 is_non_clause，故其子条的面包屑仍含该节名。
+                    "is_non_clause": entry["is_non_clause"] or _is_subgroup_label_only_body(content),
                 })
         pending = []
 
@@ -710,6 +721,27 @@ def _extract_clause_no(raw_title: str) -> str | None:
 def _clean_title(title: str) -> str:
     """清理标题中的多余空格。如 '总    则' -> '总则'"""
     return re.sub(r'\s{2,}', '', title).strip()
+
+
+def _is_subgroup_label_only_body(content: str) -> bool:
+    """该节点的自身正文是否**完全**由次分组单元标签行组成（feature ②）。
+
+    只对「整段**全是**标签」成立；标签**夹在**正文中间（如 14.3.1 的
+    `主控项目`/`一般项目` 分组标记）不算——那些标签是有效的分组语义，
+    必须原样保留（实测 CJJ2 约 119 处）。17 条有前言正文的节（如 15.4）
+    也因含非标签正文而不命中。
+    """
+    body = (content or "").strip()
+    if not body:
+        return False
+    for line in body.split("\n"):
+        t = line.strip()
+        if not t:
+            continue
+        t = _ROMAN_NUMERAL_PREFIX.sub("", t)
+        if t not in _SUBGROUP_LABELS:
+            return False
+    return True
 
 
 def _should_emit_clause(title, content) -> bool:
