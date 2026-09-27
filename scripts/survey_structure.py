@@ -12,8 +12,10 @@
   9. duplicate_rows_is_non  指标 8 里 `is_non_clause=1` 的行数（拆分「合法/缺陷」用）
  10. duplicate_group_kinds  **组级**三分解（Task 11 fix round 1）：按组内 `is_non_clause`
                             的分布分类 → `{"designed": 119, "body_only": 2, "commentary_only": 2}`
+ 11. duplicate_group_kinds_members  指标 10 每一类里的**号身份**（fix round 2）：
+                            `{"body_only": ["10.7.3", "17.5.1"], "commentary_only": ["2", "前言"], …}`
 
-⚠️ 指标 7~10（Task 11）：CJJ2 实测 123 组 / 258 行，其中打标 135 行。**组级**分解（探针实测，无余项）：
+⚠️ 指标 7~11（Task 11）：CJJ2 实测 123 组 / 258 行，其中打标 135 行。**组级**分解（探针实测，无余项）：
 **119 组** `designed` —— **设计性**的「正文 + 条文说明同号」（1 条正文 + N 条逐款解释，注释侧
 已由 Task 13 打标；样例 `16.8.3` = L4177 正文 + L7120/7122/7124/7126/7128 五条逐款说明）；
 **2 组** `body_only` —— **真重复**（`10.7.3`、`17.5.1`），两次都在正文，属缺陷；
@@ -25,7 +27,18 @@
 `is_non_clause` 翻为 False、同时把 `10.7.3` 组 1 行翻为 True（**仅 2 处 flag 翻转**），
 指标 7/8/9 全部**不变**（123 / 258 / 135），而指标 10 由 `119/2/2` 变为 `121/1/1` → 断言变红。
 
-⚠️ 指标 7 的值只对**重复号集合**有意义，故 `main()` 里不逐项打印（123 项），只打印指标 10 的分解。
+⚠️ **为什么还要有指标 11（指标 10 仍是计数）**：指标 10 只说「`body_only` 有 2 组」，不说
+**是哪两个号**。而本 Task 要写进验收报告的结论恰是**号身份**——「2 个真重复是 `10.7.3`/`17.5.1`，
+由夹具 L3077/L4802 造成」。若某个 `body_only` 号被另一个新伪影号**替换**（计数不变），
+只有指标 11 会变红；否则报告会**无声地继续宣称旧结论**。可失败性已实测：把 `10.7.3` 组
+**两行**的 `clause_no` 一起改写成 `99.9.9`（纯换号，行数/打标数/组数全不变），
+指标 7~10 **全部不变**（123 / 258 / 135 / 119/2/2），而指标 11 的 `body_only` 由
+`['10.7.3','17.5.1']` 变为 `['17.5.1','99.9.9']` → 断言变红。
+按本批范式（Task 10 冻结的是**具体字典** `{'6.1.1':'模板',…}` 而非「3 条标签」）：
+**冻具体值，不冻计数**。默认只钉 `body_only`/`commentary_only` 两类（短集合）；
+`designed` 有 119 个号，计数已足够，不逐号断言。
+
+⚠️ 指标 7 的值只对**重复号集合**有意义，故 `main()` 里不逐项打印（123 项），只打印指标 10/11 的分解。
 
 ⚠️ **字符量必须标口径（本批已多次踩坑）**：② 的两条伪影节点合计
 **raw 3134 字符（0.703% of raw 445906）/ plain 484 字符（0.333% of plain 145269）**；
@@ -155,9 +168,15 @@ def _survey(clauses: list[dict]) -> dict:
     flags: dict[str, list[bool]] = {}
     for c in dup_rows:
         flags.setdefault(c["clause_no"], []).append(bool(c["is_non_clause"]))
+    kinds = ("designed", "body_only", "commentary_only")
     duplicate_group_kinds = {
-        kind: sum(1 for v in flags.values() if _kind_of(v) == kind)
-        for kind in ("designed", "body_only", "commentary_only")
+        kind: sum(1 for v in flags.values() if _kind_of(v) == kind) for kind in kinds
+    }
+    # 指标 11：每一类里的**号身份**（排序后的列表，便于 `--json` 与断言）。指标 10 只是
+    # 计数——号被同类的新号替换时计数不变，只有本键能发现（见模块 docstring）。
+    duplicate_group_kinds_members = {
+        kind: sorted(no for no, v in flags.items() if _kind_of(v) == kind)
+        for kind in kinds
     }
 
     return {
@@ -175,6 +194,7 @@ def _survey(clauses: list[dict]) -> dict:
         "duplicate_rows": len(dup_rows),
         "duplicate_rows_is_non": dup_non,
         "duplicate_group_kinds": duplicate_group_kinds,
+        "duplicate_group_kinds_members": duplicate_group_kinds_members,
     }
 
 
@@ -203,16 +223,14 @@ def main() -> int:
     #   commentary_only = 条文说明段内自重复（段内子标题/块重名）
     #   body_only       = **真重复**（两次都在正文）—— 缺陷，须定位源行
     kinds = stats["duplicate_group_kinds"]
+    members = stats["duplicate_group_kinds_members"]
     names = {"designed": "设计性（正文 + 条文说明同号）",
              "commentary_only": "条文说明段内自重复",
              "body_only": "真重复（两次都在正文）"}
-    by_kind: dict[str, list[str]] = {}
-    for no, v in _duplicate_group_flags(clauses).items():
-        by_kind.setdefault(_kind_of(v), []).append(no)
     print("  [重复成因组级分解]")
     for key in ("designed", "commentary_only", "body_only"):
         tail = " —— 批一验收必答项" if key == "body_only" else ""
-        print(f"    {names[key]}: {kinds[key]} 组 -> {sorted(by_kind.get(key, []))}{tail}")
+        print(f"    {names[key]}: {kinds[key]} 组 -> {members[key]}{tail}")
     return 0
 
 
