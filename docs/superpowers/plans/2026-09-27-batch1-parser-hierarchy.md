@@ -1537,39 +1537,77 @@ tmp.unlink()                    # 清理临时文件
 
 - [ ] **Step 4: 变异验证（证明断言可失败——不得省略）**
 
-变异体取**工程评审 SC-1 实测过的真实缺陷**：把 Task 2 的 `_is_zero_segment_node`
-判据放宽回「任意段为 0」，于是所有 `X.0.Y` 条文被跳过（实测 JGJ107 丢 39 条 /
-44,353 字符、CJJ2 丢 44 条 / 12,796 字符）。这条变异精确代表「内容被吞」这一类
-缺陷，且是一行可复现的改动。
+> ⚠️ **本节已按 Task 9 的实测回报整段重写（2026-09-27）**：初稿指定的变异体**不能**证伪本断言，
+> 且它引用的数字**不是当前口径**。两点都由实施者实测给出、经控制器独立复现：
+
+**（一）初稿的变异体为什么无效 —— 这是架构性质的正面证据，不是断言失效**
+
+把 `_is_zero_segment_node` 放宽回「任意段为 0」（`'0' in parts`）后，**断言仍 PASS**。实测（控制器复现）：
+
+| | 条数 | `content_chars` | `content_chars_plain` | 含 0 段的条数 |
+|---|---|---|---|---|
+| 基线（当前 HEAD） | **892** | 445,906 | 145,269 | **45** |
+| 变异（放宽 0 段） | **854（−38）** | 446,237 | **145,600（+331）** | **0** |
+
+**根因**：本批终态架构里「一条**不再成为节点**」＝ 它的文本落进 `pending`、**结算给祖先条**
+（无条件 flush + 内节点判据的组合）→ **不存在丢失路径**。所以该变异只减少条数、**不减少文本**。
+> **这是对本批设计的强力正面证据**：把一条降级为非节点**不会**让它承载的正文蒸发。
+> 也正因如此，**守恒断言不该、也无法**用这一类变异来证伪。
+
+**（二）分工（这条很重要，别让守恒断言去管它管不了的事）**
+
+- **守恒断言管「文本不丢」**；
+- **「结构降级」由行为测试管** —— 变异后 `X.0.Y` 条归零（45 → 0）意味着 Task 1 救回的 `3.0.1`
+  会再次消失，那一类回归由 Task 2 的行为用例（`test_zero_segment_is_not_a_node` 等）守住。
+- **不要**给守恒断言加「条数不得减少」：本批**合法地**在删条（Task 14 删 6 个伪节点、Task 1/4 删次分组泄漏），
+  那样会把它变成假红门禁。
+
+**（三）真正能证伪它的变异体（照此执行；脚本已由控制器实测）**
 
 ```bash
 # 1) 先确认基线通过
-D:/Python/python.exe -m pytest tests/test_parse_conservation.py -v
-# Expected: PASS
+D:/Python/python.exe -m pytest tests/test_parse_conservation.py -v      # Expected: PASS
 
-# 2) 施加变异（一行）：把末段判据放宽为「任意段为 0」
-D:/Python/python.exe - <<'PY'
-import re, pathlib
-p = pathlib.Path("app/parser/md_parser.py")
+# 2) 施加变异体：把**伪条文号的 content 清空**（模拟「内容随伪条文号一并丢失」）
+#    ⚠️ 脚本必须**写成文件**再跑：本环境 heredoc 会把 \ 折叠，含反斜杠的正则会静默变形。
+#       跑完删除该临时文件（不要留在仓库里 —— 实施者上一轮的经验：仓库根会残留）。
+```
+
+```python
+# 临时脚本（跑完即删）
+from pathlib import Path
+p = Path("app/parser/md_parser.py")
 src = p.read_text(encoding="utf-8")
-old = "    return len(parts) > 1 and parts[-1] == '0'"
-new = "    return len(parts) > 1 and '0' in parts   # MUTANT"
+old = '                    "content": content,'
+# 注意：下面这行里的 \d 必须是**单反斜杠**（写在 markdown 里时不要多转义）
+new = '                    "content": ("" if not re.search(r"\d", entry["clause_no"]) else content),'
 assert src.count(old) == 1, "变异目标行未唯一命中，先核对源码形态"
 p.write_text(src.replace(old, new), encoding="utf-8")
-print("变异已施加")
-PY
+print("变异体已施加")
+```
 
-# 3) 断言必须失败，且报出字符数下降
+```bash
+# 3) 断言必须失败
 D:/Python/python.exe -m pytest tests/test_parse_conservation.py -v
-# Expected: FAIL — 报错文案形如「正文总量从 N 降到 M——有内容随伪条文号一并丢失」
+# Expected: FAIL，文案为「正文总量从 144300 降到 N——有内容随伪条文号一并丢失（CRITICAL-1）」
+#   N 取决于变异体清空的范围（实测值随范围而变，**不是固定常量**）：
+#     清空全部 6 个伪条文号 → N = 138,529（控制器实测）
+#     实施者当轮的变体       → N = 143,277（见 task-9-report.md）
+#   **只要断言变红即达成目的**，不要执着于某个特定数字。
 
 # 4) 立即还原（本步骤结束后必须回到干净状态）
 git checkout -- app/parser/md_parser.py
-D:/Python/python.exe -m pytest tests/test_parse_conservation.py -v
-# Expected: PASS（确认还原成功，不得留下变异体）
+D:/Python/python.exe -m pytest tests/test_parse_conservation.py -v      # Expected: PASS
+grep -c "MUTANT\|entry\[.clause_no.\]" app/parser/md_parser.py          # 必须为 0
 ```
 
-**判据**：第 3 步若仍然 PASS，说明守恒断言无效——**必须先修断言再继续，不得进入 Task 10**。
+**判据**：第 3 步若仍然 PASS，说明守恒断言无效——**必须先修断言再继续，不得进入下一个 Task**。
+
+> **⚠️ 旧数字的口径更正（C2）**：初稿引用的「JGJ107 39 条 / 44,353 字符、CJJ2 44 条 / 12,796 字符」
+> **不是批次前口径** —— 批次前 main（`2011760`）**根本没有 `_is_zero_segment_node`** 这个函数
+> （实测该版本出现 0 次；它是 Task 2 新引入的）。该数字应为**批次中间态（Task 2 时点）**测得；
+> 当前 HEAD 口径下 `X.0.Y` 为 **45 条**。引用它时须标注该口径，不得当作基线。
+> （原文见 Task 2 与决策记录 SC-1；本注不追改历史记录，只标注口径。）
 
 - [ ] **Step 5: 提交**
 
@@ -1913,6 +1951,7 @@ git commit -m "feat: 重复条文号诊断 + R14 分组键按需隔离
 | M10 | Task 7 复核 Minor #1（**潜在生产风险，语料影响 0**） | 主循环用 `is_non_clause_title(title or tail)` 做打标：对**正文型**行传入的是它自己的内容 `tail`，于是「内容以『公告』/『用词说明』结尾」的条文会被打成 `is_non_clause=1` → **被排除出检索与 AI 分类**，并经 `inherit_non_clause` 传染后续行（实测触发形态：`1.0.1 …并以住房和城乡建设部公告`、`5.2.1 …应按本规范用词说明` 均返回非空 tail 候选）。今日语料六份全量扫描 11 处命中**全为真公告/用词说明**，故影响 0 | **⚠️ 已重裁（2026-09-27，R-T14-3）→ 本批不修，记 TODOS.md**：原判「本批修」，但修正所需的形状是**给候选行加「是否来自 `#` 路径」的来源标记** —— 那是**改变候选判据的数据结构**（`_candidate_of` 的签名/状态），与 R-T14-1 明确否决的「章号单调递增」属同一类：**设计变更，不是收窄**。且实测**语料影响为 0**（今日语料六份全量扫描 11 处命中**全为真公告/用词说明**）→ 无现网风险。故交批二：附正确形状（`#` 路径来源标记，把后缀匹配限定在标题/`#` 路径）与必须带的那条钉住用例。**不要**用复核者建议的 `title` 非空门 —— 我实测证实那会**倒退立项目标**（CJJ2 的长公告 `关于发布行业标准《…》的公告` **28** 字（我原记 25，2026-09-27 实测更正），`_looks_like_title` 判 False → `title == ""` → 加门后不再打标）|
 | M11 | Task 7 复核 Minor #2 | `引用标准名录` 只有谓词级断言，**无解析级用例**（它真正修的是「spec20 的该块不再并入上一条」）；行为已实测存在但无回归护栏 | **本批修**：补一条 spec20 形状的夹具 |
 | M9 | Task 7 复核（实施者反驳 + 控制器复核） | 守恒门禁目前只查 CJJ2 夹具、只量 `content`。**⚠️「逐文件 content 不减少」不是口径稳健的判据**（我先前如此裁定，被实施者以证据驳回并证实）：本批**合法地**在字段间搬移文本 —— content↔title（`64409491.md` −17、CJJ2 首轮 −8）与内节点标题移入 `parent_path`/`section_path`（`content+title` 在 CJJ2 −515、JGJ107 −169）。这些都**不是丢失**，任何单字段的逐文件比较都会误报 | **本批修**：门禁改为 (a) 保留 CJJ2 的 `content` 总量不减少（批次前 144,300 → 实测 **145,256**）；(b) 增加**字段无关**的严格守恒检查 —— 旧实现每条条文 `plain_text` 归一后的文本，必须能在新输出的 `content + title + section_path` 文本中找到。⚠️ **数字已由控制器实测校正**（Task 9 Step 3）：参与核对 971 条、**未找到 3 条**，三条**全是封面/出版信息页文字**（旧实现把英文书名行当条文号，托着封面三块）。我初稿写的「13 → 1」转引自 Task 3 实施者的另一口径、**未复现就写进计划**，属本批同类错误第 3 次。注释须写明「`content+title` 下降属设计，不作失败判据」 |
+| M17 | Task 9 复核 Concern C3（**新增，控制器裁定 park**） | `tests/test_parse_conservation.py` 的 `test_no_fake_clause_no_carries_bulk_content`：**筛选用 `plain_text` 归一口径、失败文案却打印原始 `len(c['content'])`** —— 两者单位不同，报错时读者会看到「超 2000 字符」旁边一个量纲不同的数字（可能 5,000 而 plain 只有 2,100） | **本批修**（1 行）：把文案里的长度也换成 `len(plain_text(c["content"]))`，与筛选同口径；或在文案里显式写明口径。**纯文案，零断言影响** —— 故按 R-T14-11 的比例原则**不单独派 fix round**，并入本清单 |
 
 - [ ] **Step 1: 全量测试（本批属大范围改动，跑全量）**
 
