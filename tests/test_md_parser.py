@@ -867,6 +867,33 @@ def test_vote_only_confirms_title_never_promotes_long_tail():
     assert "顶推施工适用于跨径 40～60m" in clauses["14.4"]["content"]
     assert not any("顶推施工适用于跨径" in c["title"] for c in results)
 
+
+def test_hash_heading_with_long_tail_is_still_title_type():
+    """`#` 前缀行**无条件**判标题型：长尾（>20 字）也不得被 `_looks_like_title` 降级。
+
+    回归守卫（final-fix Finding 1）：批一的「统一」把 `is_titled = 投票 and
+    `_looks_like_title(tail)` 应用到**所有**候选行，而 `_looks_like_title` 拒收
+    >20 字或句末标点结尾的 tail——旧实现的 `#` 分支从不调用它，`#` 标题恒为 title。
+    长 `#` 标题（如 `### 21.4 防冲刷结构（锥坡、护坡、护岸、海墁、导流坝）` 22 字）
+    被降级后：自身成为 title='' 的畸形条文，其子条文（21.4.1~4）的 parent_path 含
+    空串、section_path 只剩编号、节名消失（实测 22 条 `#` 标题被降级）。
+
+    可证伪：把主循环的 `is_titled` 恢复为 `title_mode.get(...) and
+    `_looks_like_title(tail)`（去掉 `_is_hash_line(...) or` 前缀）后，下面这条
+    `21.4` 的 title 变为 ''、`21.4.1` 的面包屑不再含「防冲刷结构」。
+    """
+    md = ("## 21 附属结构\n\n"
+          "### 21.4 防冲刷结构（锥坡、护坡、护岸、海墁、导流坝）\n\n"
+          "防冲刷结构应满足抗冲刷与防护功能要求。\n\n"
+          "21.4.1 锥坡及护坡应符合下列规定。\n")
+    clauses = {c["clause_no"]: c for c in parse_markdown(md)}
+    # 长 `#` 标题自身必须是标题型（title 非空）
+    assert clauses["21.4"]["title"] == "防冲刷结构（锥坡、护坡、护岸、海墁、导流坝）"
+    # 其子条文的面包屑必须含该节名（而不是只剩 `21.4` 编号）
+    assert "防冲刷结构" in clauses["21.4.1"]["section_path"], \
+        f"长 `#` 标题的节名从子条文面包屑消失：{clauses['21.4.1']['section_path']!r}"
+
+
 # ── 组 2：无条件 flush（救回「标题型且无后续内容」的行） ──
 def test_body_type_clause_emitted_without_following_lines():
     """正文型编号行即使后面没有任何内容行也必须产出。
@@ -1263,11 +1290,15 @@ def test_long_chapter_name_with_bare_number_is_still_a_node():
     md = ("## 3 施工准备与临时设施（含施工便道、临时用电）\n\n"
           "### 3.1 一般规定\n\n3.1.1 施工准备应符合下列规定。\n")
     rows = parse_markdown(md)
-    assert any(r["clause_no"] == "3" for r in rows), \
-        "长章名被判为非节点（20 字长度门误伤）"
     hit = [r for r in rows if r["clause_no"] == "3.1.1"]
     assert hit, "长章名被误判后，其下条文一同丢失"
-    assert hit[0]["section_path"].startswith("3 "), \
+    # ⚠️ final-fix（Finding 1）后 `#` 行恢复标题型语义：`3` 章名是**内节点**、不再
+    #    自成一格 body 条文（`any(clause_no == "3")` 随之不成立，与组 3 的
+    #    `test_inner_node_without_body_is_not_emitted_but_serves_as_ancestor` 一致）。
+    #    但它的**标题文本必须保留在子条文面包屑里** —— 这正是本护栏的语义意图，
+    #    且比旧断言更强：若未来有人把 `_candidate_of` 的判据换成 `_looks_like_title`
+    #    （M3），`## 3 <长章名>` 会被整体筛掉，面包屑不含「施工准备与临时设施」→ 本断言变红。
+    assert hit[0]["section_path"].startswith("3 施工准备与临时设施"), \
         f"长章名未进入面包屑：{hit[0]['section_path']!r}"
 
 

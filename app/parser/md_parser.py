@@ -265,6 +265,14 @@ def _looks_like_title(tail: str) -> bool:
     return True
 
 
+def _is_hash_line(line: str) -> bool:
+    """该行是否以 Markdown 井号标题前缀开头（`#`~`######` + 空白）。
+
+    与 `_candidate_of` 的 `#` 分支正则同源：只判前缀、不判是否成候选行。
+    """
+    return re.match(r"^#{1,6}\s", line) is not None
+
+
 def _candidate_of(line: str) -> tuple[int, str, str] | None:
     """识别候选行 → `(level, clause_no, tail)`；不是候选行返回 `None`。
 
@@ -473,8 +481,12 @@ def parse_markdown(md_text: str) -> list[dict]:
     def flush() -> None:
         """结算「当前条」= `stack[-1]`。
 
-        改动② **无条件结算**：旧实现只在 `current_content_lines` 非空时才结算，
-        于是「标题型且无后续内容」的行从未被结算——实测 3.0.1 就是这样消失的。
+        改动② **无条件结算**：旧实现只在 `current_content_lines` 非空时才结算。
+        ⚠️ **归因更正（Task 3 复核）**：`3.0.1` 获救**不是**这一改动的作用 —— 它是被
+        改动①（R14 投票判它**正文型**）救的：正文型把 tail 推进 `pending`，于是无论
+        条件还是无条件结算都会产出它。本改动的**唯一真实行为效果**是「`stack` 为空时
+        （即首个候选行之前）丢弃 `pending`」＝封面/前引文字不再并入首条真条文
+        （设计性的泄漏修复，旧实现把它们并进了伪条文号）。
 
         改动③ **内节点判据**：无自身正文者只作祖先、不入库。
           - 标题型且有后续内容 → 有自身正文 → 叶条文
@@ -524,7 +536,16 @@ def parse_markdown(md_text: str) -> list[dict]:
         # 变成标题、进而因无自身正文被判为内节点而整条丢弃（实测修掉 CJJ2 的
         # 627 字符 / 21 条丢失——条文说明章的 `13.5 <整句>` 与正文 `13.5 悬臂拼装`
         # 同组，组内多数把长句推成 title）。
-        is_titled = (
+        # `#` 前缀行**无条件**判标题型：恢复批一前的语义——旧实现的 `#` 分支直接
+        # `title = _clean_title(_extract_title(raw_title))`，从不调用 `_looks_like_title`，
+        # `#` 标题恒为 title。批一的「统一」把「投票 + `_looks_like_title`」应用到
+        # **所有**候选行，于是长 `#` 标题（>20 字，如 `### 21.4 防冲刷结构（锥坡、护坡、
+        # 护岸、海墁、导流坝）` 22 字）与句末标点结尾的 `#` 标题被降级为正文型
+        # （title=''）：自身成为 title='' 的畸形条文，其子条文的 parent_path 出现空串、
+        # section_path 丢失节名（实测 22 条 `#` 标题被降级，其中 `21.4` 的 4 条子条文
+        # parent_path 含空串、section_path 只剩编号）。
+        # 此处只对 `#` 行放宽；非 `#` 行维持既有「投票 + `_looks_like_title`」逻辑不变。
+        is_titled = _is_hash_line(line) or (
             title_mode.get((level, _parent_key(stack, level)), False)
             and _looks_like_title(tail)
         )
