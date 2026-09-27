@@ -39,6 +39,30 @@
 
 ---
 
+## 执行顺序（工程评审 R1 决议，2026-09-27）
+
+本计划共 12 个 Task，Task 编号**不按执行顺序**。按 R1「顺序调整 + 补齐第二遍代码」的决议，
+执行顺序如下（编号保持不变以避免大面积重编号，但**必须按本表顺序执行**）：
+
+| 序 | Task | 为何在此位置 |
+|---|---|---|
+| 1 | Task 1 层级的单一来源 + 三小修复 | 定义层级尺子 |
+| 2 | Task 2 R3 的 0 段不构成节点 | 判据，被第二遍消费 |
+| 3 | **Task 4** 裸编号项不作为条文 | 收窄「什么是候选行」——必须在重写主循环**之前** |
+| 4 | **Task 5** 两遍解析 + R14 兄弟表决 | **重写 `parse_markdown` 主体，给出第二遍完整代码** |
+| 5 | **Task 3** 次分组单元（R7）内容回流 | 在 Task 5 的第二遍代码上**增量添加**（不再先写后删） |
+| 6 | **Task 6** 内节点判据 + `section_path` | 同上，在 Task 5 的第二遍代码上增量添加 |
+| 7 | Task 7 非条文块名单 | 独立 |
+| 8 | Task 8 勘察脚本 + 五项指标 | 需要 Task 1–7 的产出 |
+| 9 | Task 9 守恒断言（含变异验证） | 门禁 |
+| 10 | Task 10 分类标签分布回归基线 | 门禁 |
+| 11 | Task 11 重复条文号诊断 | 诊断 |
+| 12 | Task 12 批一验收 | 收口 |
+
+> **为何把 Task 4 提到 Task 3 之前**：Task 4 决定「哪些行算候选行」，Task 3 决定
+> 「次分组单元不是节点」；两者都作用于候选行的集合，而 Task 5 会重写整个主循环。
+> 先收窄集合、再重写循环，可以少写一遍。
+
 ## Task 1: 层级的单一来源 + 三个小修复
 
 **Files:**
@@ -138,12 +162,40 @@ _BARE_YEAR = re.compile(r'^(19|20)\d{2}$')
                 level = _level_from_clause_no(clause_no)
 ```
 
+> **⚠️ 工程评审修正 SC-2（P1）**：`_NUM_PATTERNS` 由 `(pattern, level_base)` 二元组改为**纯字符串**后，
+> 全仓共有 **三处**解包它的循环，初稿只改了 `_extract_clause_no` 一处：
+>
+> ```
+> app/parser/md_parser.py:113   for pattern, level_base in _NUM_PATTERNS:   ← _match_clause_line
+> app/parser/md_parser.py:299   for pattern, _ in _NUM_PATTERNS:            ← _extract_title
+> app/parser/md_parser.py:314   for pattern, _ in _NUM_PATTERNS:            ← _extract_clause_no（已改）
+> ```
+>
+> 另两处不改会因「字符串解包成两个名字」抛 `ValueError`。三处**全部**改为 `for pattern in _NUM_PATTERNS:`；
+> `_match_clause_line` 内原先用 `level_base` 算层级的那一行同时删除（层级改由 `_level_from_clause_no` 提供）。
+> Step 5 增加一条源码断言把它钉死。
+
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 补三个小修复的针对性用例**
+- [ ] **Step 5: 补三个小修复的针对性用例 + 三处解包点的源码断言**
+
+```python
+def test_all_num_patterns_loops_use_single_unpack():
+    """`_NUM_PATTERNS` 已是纯字符串列表；三处循环都不得再解包成两个名字。
+
+    初稿只改了 _extract_clause_no，漏掉的 :113 与 :299 会抛 ValueError。
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "app/parser/md_parser.py").read_text(encoding="utf-8")
+    assert "for pattern, level_base in _NUM_PATTERNS" not in src
+    assert "for pattern, _ in _NUM_PATTERNS" not in src
+    assert src.count("for pattern in _NUM_PATTERNS") == 3
+```
+
 
 ```python
 def test_hash_heading_without_clause_no_is_not_clause():
@@ -181,13 +233,21 @@ git commit -m "refactor: 层级改为只由编号点数推导（单一尺子）+
 
 ## Task 2: R3 的 0 段不构成层级节点
 
+> **⚠️ 工程评审修正 SC-1（P0，2026-09-27）**：本 Task 初稿的判据是
+> `len(parts) > 1 and '0' in parts`（任意段为 0），它会把 **`3.0.1` 这类合法的「条」整体跳过**。
+> 实测规模：**JGJ107 39 条 / 44,353 字符（占其 content 的 80%）、CJJ2 44 条 / 12,796 字符**。
+> 182 号第三十五条说的是「条编号中**对应节的编号**用 0 表示」——即 `3.0.1` **本身是条**，
+> 只是不存在 `3.0` 这个「节」节点。判据必须收窄为**末段为 0**（见下方 Step 3）。
+> 本 Task 自己的测试 `test_zero_segment_is_not_a_node` 断言 `3.0.1` 必被产出，
+> 与初稿判据直接矛盾——评审据此定位到该缺陷。
+
 **Files:**
 - Modify: `app/parser/md_parser.py`（新增判定函数，Task 5 的第二遍会调用）
 - Test: `tests/test_md_parser.py`
 
 **Interfaces:**
 - Consumes: `_level_from_clause_no`（Task 1）
-- Produces: `_has_zero_segment(clause_no: str) -> bool`
+- Produces: `_is_zero_segment_node(clause_no: str) -> bool` —— **末段为 `'0'` 才是节位占位**
 
 - [ ] **Step 1: 写失败测试**
 
@@ -195,62 +255,78 @@ git commit -m "refactor: 层级改为只由编号点数推导（单一尺子）+
 def test_zero_segment_is_not_a_node():
     """R3：章内不分节时条编号的节位用 0 表示（3.0.1）。该 0 段不构成节点。
 
-    even 若文档里真的写了 `### 3.0 某某节`，也不得成为 3.0.1 的父级。
+    关键：`3.0.1` **本身是合法的条**，必须照常入库；只有末段为 0 的 `3.0`
+    （节位占位，真实文档里通常不出现）才不是节点。
     """
     md = ("### 3 章名\n\n### 3.0 不应存在的节\n\n"
           "3.0.1 接头设计应满足强度要求。\n")
     results = parse_markdown(md)
     r = [c for c in results if c["clause_no"] == "3.0.1"]
-    assert len(r) == 1
-    assert r[0]["parent_path"] == ["章名"]        # 父链里没有 `3.0` 那一级
+    assert len(r) == 1                            # ← 3.0.1 必须被产出（不是被跳过）
+    assert r[0]["parent_path"] == ["章名"]         # 父链里没有 `3.0` 那一级
     assert all(c["clause_no"] != "3.0" for c in results)  # 3.0 本身不入库
 
-def test_ten_is_not_a_zero_segment():
-    """`10.1` 的 10 不是 0 段"""
-    assert _has_zero_segment("10.1") is False
-    assert _has_zero_segment("3.0.1") is True
-    assert _has_zero_segment("1.0") is True
-    assert _has_zero_segment("3") is False
+def test_zero_segment_predicate_is_last_segment_only():
+    """判据只看**末段**：`3.0` 是节位占位；`3.0.1` 是条，不得被误伤。
+
+    实测：若按「任意段为 0」判定，JGJ107 会丢掉 39 条 / 44,353 字符（占其 80%）。
+    """
+    assert _is_zero_segment_node("3.0") is True
+    assert _is_zero_segment_node("1.0") is True
+    assert _is_zero_segment_node("3.0.1") is False      # ← 条，不是节点
+    assert _is_zero_segment_node("1.0.2") is False
+    assert _is_zero_segment_node("10.1") is False       # 10 不是 0
+    assert _is_zero_segment_node("3") is False
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py::test_zero_segment_is_not_a_node -v`
-Expected: FAIL — `ImportError: cannot import name '_has_zero_segment'`
+Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -k "zero_segment" -v`
+Expected: FAIL — `ImportError: cannot import name '_is_zero_segment_node'`
 
 - [ ] **Step 3: 实现**
 
 ```python
-def _has_zero_segment(clause_no: str) -> bool:
-    """R3（182 号第三十五条）：章内不分节时，条编号中对应节的编号用 "0" 表示。
+def _is_zero_segment_node(clause_no: str) -> bool:
+    """R3（182 号第三十五条）：章内不分节时，条编号中**对应节的编号**用 "0" 表示。
 
-    `3.0.1` 的 `0` 段表示「本章不分节」，因此不构成一个层级节点：
-    它既不入库、也不进入后代条文的父链（父链 = ['3 章名']）。
+    因此 `X.0.Y` 里的 `0` 段表示「本章不分节」：它不构成一个层级节点，
+    所以不存在 `3.0` 这个「节」，`3.0.1` 的父链直接是 [`3 章名`]。
 
-    注意按**段**判断，避免误伤 `10.1`（首段 10 不是 0）。
+    ⚠️ 判据只能看**末段**：末段为 `'0'`（如 `3.0`）才是节位占位、不当节点；
+    `3.0.1` / `1.0.2` 的末段是条号，它们**本身是条，必须照常入库**。
+    若写成「任意段为 0」，会把所有 `X.0.Y` 条文一起丢掉——实测 JGJ107
+    39 条 / 44,353 字符（占其 content 80%）、CJJ2 44 条 / 12,796 字符。
     """
     parts = clause_no.split('.')
-    return len(parts) > 1 and '0' in parts
+    return len(parts) > 1 and parts[-1] == '0'
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -k "zero_segment or ten_is_not" -v`
+Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -k "zero_segment" -v`
 Expected: PASS
 
 - [ ] **Step 5: pyright + 提交**
 
 ```bash
 git add app/parser/md_parser.py tests/test_md_parser.py
-git commit -m "feat: R3 的 0 段不构成层级节点
+git commit -m "feat: R3 的 0 段不构成层级节点（判据只看末段）
 
-按 182 号第三十五条，章内不分节时条编号的节位用 0 表示（3.0.1），
-该段不是层级节点：不入库、也不进入后代父链。按段判断，10.1 不受影响。"
+按 182 号第三十五条，章内不分节时条编号的节位用 0 表示，故不存在 `3.0`
+这个节节点，`3.0.1` 的父链直接是 [3 章名]。判据只看末段——`3.0.1` 本身
+是合法的条，必须照常入库。工程评审 SC-1 修正：初稿「任意段为 0」的写法会
+让 JGJ107 丢掉 39 条 / 44,353 字符（占其 80%）。"
 ```
 
 ---
 
 ## Task 3: 次分组单元（R7）不产生层级，其内容回流到所属条
+
+> **执行时点（工程评审 R1 决议）**：本 Task 在 **Task 5 之后**执行。
+> Task 5 已把 `parse_markdown` 重写为两遍结构并给出第二遍的完整代码；
+> 本 Task 只在那段代码上**增量添加**次分组单元的处置，**不再去改旧的单遍实现**
+> （初稿那样写会在 Task 5 被整体替换，属返工）。
 
 > **本 Task 是批一的核心**：实测 124 条伪条文号吞掉 252,514 字符（占全部 content 的 56%），
 > 其中 `一般项目` 单条最多吞 9,795 字符。来源就是这个：`#### 一般项目`（次分组单元）被当成标题行，
@@ -359,15 +435,32 @@ def is_non_level_group_title(title: str) -> bool:
     return _strip_roman_prefix(t) in _NON_LEVEL_GROUP_TITLES
 ```
 
-在 `parse_markdown` 的 `#` 路径与编号行路径中，判定为次分组单元时：**不推入 `title_stack`**，但把其标题文本作为一行内容追加到当前内容缓冲（这样 `主控项目` 字样不丢，且它自然落到所属条的 content 里）：
+在 Task 5 的 `_collect_candidates` 中，判定为次分组单元时**不产出候选行**（于是它既不成为节点、也不进入祖先栈）：
 
 ```python
-                if is_non_level_group_title(title):
-                    # R7 次分组单元：不入栈（不是层级），其标签文本与后续内容
-                    # 一并归入当前打开的那条（本函数第二遍中的 stack[-1]）
-                    current_content_lines.append(title)
-                    continue
+            if is_non_level_group_title(title):
+                # R7 次分组单元（主控项目 / 一般项目）：不是层级节点，也不成条文。
+                # 直接跳过 → 它不进入 `_RawLine` 列表，因此：
+                #   1) 不会进入 `ancestor_stack`（不是层级）
+                #   2) 不会成为条文（不是条）
+                continue
 ```
+
+**标签文本的保留**由 `_parse_two_pass` 的 `row is None` 分支自然完成——但**必须剥掉 Markdown 井号**，
+否则 content 里会混进 `#### 主控项目` 这样的标记（`plain_text` 不会去掉它）。因此在
+`_parse_two_pass` 的非候选行分支上加一处清洗：
+
+```python
+        if row is None:
+            if line.strip():
+                # 非候选行 → 当前条的内容。次分组单元的标题行也走这里，
+                # 需要剥掉 `####` 井号前缀，避免标记混入正文。
+                pending.append(re.sub(r'^#{1,6}\s*', '', line))
+            continue
+```
+
+> 这条同时也是「次分组单元的名字不丢」的实现：`主控项目` / `一般项目` 字样会作为普通文本
+> 留在所属条的 `content` 里，只是不再是一个节点。Task 3 Step 1 的测试已断言这一点。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -382,8 +475,9 @@ git commit -m "feat: R7 次分组单元不产生层级，其内容回流到所�
 
 实测 124 条伪条文号吞掉 252,514 字符（占 content 总字符 56%），根因是
 主控项目/一般项目（R7 次分组单元）被当标题行，其下裸编号项与检查数量/
-检验方法/表格全挂到它身上。改为不推入 title_stack，标签文本与后续内容
-一并归入所属的条。"
+检验方法/表格全挂到它身上。改为：在 _collect_candidates 里不产出候选行
+（于是既不成为节点、也不进祖先栈），其标题行随非候选行落入当前条的内容，
+并剥掉 Markdown 井号前缀。"
 ```
 
 ---
@@ -613,9 +707,142 @@ def _vote_title_mode(rows: list[_RawLine]) -> dict[tuple[int, str], bool]:
     return verdict
 ```
 
-> **平票语义**：`yes * 2 == len(members)` 只在偶数条且恰好半数时为真；`len(members) == 1` 时 `yes*2` ∈ {0, 2}，都不等于 1，故单条组由多数规则直接决定（`yes=1` → 判为带标题）。**这条必须在 Step 4 的测试里被锁定**（`test_degenerate_single_item_group_falls_back_to_own_verdict`）。
+> **平票语义（工程评审 SC-6 修正；R1 决议采纳）**：
+> - `len(members) == 1` 时 `yes*2` ∈ {0, 2}，都不等于 1 → 由多数规则直接决定（等价于该行自身判据），行为确定。
+> - **平票（偶数条且恰好半数）一律判「无标题」**，不再回退 `members[0]`。
+>   理由：判「无标题」时该行文本进入自身 `content`，**不会丢**；平票时若回退到
+>   首元素且它像标题，则整个组都判标题型，组内**无自身正文**的那条会按内节点
+>   被丢弃，其 tail 文本随之消失（实测 `3.0.1` 就是这样从库里消失的——它没有
+>   后续正文行，标题型且无待落内容 → 从未被 flush）。
+> - 这条必须在 Step 4 的测试里锁定（`test_tie_prefers_untitled`）。
 
-第二遍生成条文（同一次改写中完成）：用 `verdict` 决定每条候选行是标题型还是正文型；`own_body` 为假者按内节点处理（只做祖先、不入库）。
+第二遍：按候选行顺序生成条文。**这是决定内容归属的那一段**——内容行必须落到
+**当前打开的条**上，而不是外层标题上：
+
+```python
+def _parse_two_pass(lines: list[str]) -> list[dict]:
+    """第二遍：按候选行顺序生成条文。
+
+    - 标题型 / 正文型由 R14 兄弟多数表决（`_vote_title_mode`）决定
+    - **内容行归属「当前打开的条」**，不归属外层标题：这正是修掉
+      「主控项目 / 一般项目 吞走 56% 正文」的关键——那些次分组单元与裸编号项
+      都不是候选行（Task 3 / Task 4 已排除），于是它们之间的全部内容
+      （裸编号项、检查数量、检验方法、表格）会**连续落到前一条真条文**上
+    - `section_path` 由编号祖先栈构建，栈里只放**有编号**的祖先
+    - 本 Task 先让每条候选行都产出条文；「无自身正文者按内节点处理、不入库」
+      由 Task 6 在本函数上增量添加
+    """
+    rows = _collect_candidates(lines)
+    verdict = _vote_title_mode(rows)
+    by_index = {r.index: r for r in rows}
+
+    clauses: list[dict] = []
+    ancestor_stack: list[tuple[int, str, str]] = []   # [(level, clause_no, label)]
+    pending: list[str] = []                            # 当前条待收的内容行
+    open_row: _RawLine | None = None                   # 当前打开的候选行
+    open_title = ""
+
+    def flush() -> None:
+        """把待收内容落到当前打开的条上（无待收内容则不产出）。"""
+        nonlocal pending, open_row, open_title
+        if open_row is not None:
+            content = "\n".join(pending).strip()
+            if _should_emit_clause(open_title, content):
+                clauses.append({
+                    "clause_no": open_row.clause_no,
+                    "title": open_title,
+                    "content": content,
+                    "level": open_row.level,
+                    "parent_path": [label for _, _, label in ancestor_stack],
+                    "section_path": _build_section_path(ancestor_stack),
+                    "is_non_clause": is_non_clause_title(open_title or open_row.tail),
+                })
+        pending = []
+        open_row = None
+
+    for i, line in enumerate(lines):
+        row = by_index.get(i)
+        if row is None:
+            if line.strip():
+                pending.append(line)      # 非候选行 → 当前条的内容
+            continue
+
+        flush()                           # 新候选行到达：先结算上一条
+
+        while ancestor_stack and ancestor_stack[-1][0] >= row.level:
+            ancestor_stack.pop()
+
+        if verdict[(row.level, row.parent_key)]:
+            open_title = row.tail         # 带标题条：tail 是标题
+        else:
+            open_title = ""               # 无标题条：tail 是正文首行
+            pending.append(row.tail)
+
+        ancestor_stack.append((row.level, row.clause_no, open_title or row.tail))
+        open_row = row
+
+    flush()                               # 收尾：结算最后一条
+    return clauses
+```
+
+并把 `_vote_title_mode` 的平票分支改为偏向「无标题」：
+
+```python
+    for key, members in groups.items():
+        yes = sum(1 for m in members if _looks_like_title(m.tail))
+        if yes * 2 == len(members):
+            # 平票（偶数条且恰好半数）→ 一律判「无标题」。
+            # 判「无标题」时该行文本进入自身 content，不会丢；平票时若回退
+            # 首元素且它像标题，则整组判标题型，组内无自身正文的那条会按
+            # 内节点被丢弃、其 tail 文本消失（实测 3.0.1 即如此消失）。
+            verdict[key] = False
+        else:
+            verdict[key] = yes * 2 > len(members)
+    return verdict
+```
+
+Step 1 的测试相应增加：
+
+```python
+def test_tie_prefers_untitled():
+    """平票一律判「无标题」——保内容优先（工程评审 SC-6）
+
+    两条同层：一条像标题、一条像正文，1:1 平票。整组判「无标题」，
+    于是两者文本都进各自 content，不丢；若回退首元素判「标题型」，
+    则无自身正文的那条会按内节点被丢弃。
+    """
+    md = "3.0.1 一般规定\n\n3.0.2 接头安装应符合本规程的规定。\n"
+    clauses = {c["clause_no"]: c for c in parse_markdown(md)}
+    assert clauses["3.0.2"]["title"] == ""                      # 平票 → 无标题
+    assert "接头安装应符合本规程的规定" in clauses["3.0.2"]["content"]
+```
+
+`parse_markdown` 改为调用第二遍（签名与返回结构不变）：
+
+```python
+def parse_markdown(md_text: str) -> list[dict]:
+    if not md_text.strip():
+        return []
+    return _parse_two_pass(md_text.split("\n"))
+```
+
+`_build_section_path` 也**在本 Task 定义**（`_parse_two_pass` 已调用它）：
+
+```python
+def _build_section_path(stack: list[tuple[int, str, str]]) -> str:
+    """由编号祖先栈构建面包屑快照：`"6 混凝土分项工程 > 6.1 模板"`。
+
+    R3 的 0 段已在收集阶段排除，故此处无需再过滤。无祖先返回**空串**
+    （不带尾随分隔符——详情弹窗与 FTS 的 breadcrumb 列都会直接使用该串）。
+    """
+    return " > ".join(f"{no} {label}".strip() for _, no, label in stack)
+```
+
+> **工程评审修正（R1 的连带项）**：初稿把 `_build_section_path` 放在 Task 6，
+> 但 `_parse_two_pass` 在本 Task 就已调用它；按 R1 的执行顺序（Task 5 先于 Task 6）
+> 会立即 `NameError`。故下沉到本 Task。**Task 6 随之只负责内节点判据**
+> （在 `flush()` 里加 `own_body` 过滤）**与 `section_path` 的测试**，
+> 不再重复实现该函数。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -638,6 +865,12 @@ git commit -m "feat: 两遍解析 + R14 兄弟多数表决
 
 ## Task 6: 内节点判据「有无自身正文」+ `section_path` 栈式构建
 
+> **执行时点（工程评审 R1 决议）**：本 Task 在 **Task 5（及 Task 3）之后**执行。
+> Task 5 的第二遍代码已让**每条候选行都产出条文**；本 Task 在其 `flush()`
+> 里增量加入 `own_body` 判据（无自身正文者按内节点处理、只作祖先不入库）。
+> `section_path` 的构建函数 `_build_section_path` 已由 Task 5 的第二遍代码引用，
+> 本 Task 只需实现它（初稿把两者拆在两处、且只给一行片段）。
+
 **Files:**
 - Modify: `app/parser/md_parser.py`
 - Test: `tests/test_md_parser.py`
@@ -649,6 +882,18 @@ git commit -m "feat: 两遍解析 + R14 兄弟多数表决
 - [ ] **Step 1: 写失败测试**
 
 ```python
+def test_body_type_clause_is_emitted_even_without_following_lines():
+    """正文型编号行即使后面没有任何内容行也必须产出——不能按内节点丢掉。
+
+    这正是 `3.0.1` 从库里消失的机制：它是**标题型且无待落内容**，从未被 flush。
+    正文型候选行的 tail 已进 `pending`，故必然产出；本条把它钉死。
+    """
+    md = "3.0.1 接头设计应满足强度及变形性能的要求\n\n3.0.2 钢筋连接用套筒应符合规定。\n"
+    clauses = {c["clause_no"]: c for c in parse_markdown(md)}
+    assert "3.0.1" in clauses
+    assert "接头设计应满足强度及变形性能的要求" in clauses["3.0.1"]["content"]
+
+
 def test_inner_node_without_body_is_not_emitted_but_serves_as_ancestor():
     """内节点判据 = 有无自身正文（不是「是章/节还是条」）"""
     md = ("## 6 混凝土分项工程\n\n### 6.1 模板\n\n"
@@ -691,23 +936,43 @@ def test_no_cross_chapter_leak():
 Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -k "inner_node or appendix_with_own or section_path or cross_chapter" -v`
 Expected: FAIL — `KeyError: 'section_path'`
 
-- [ ] **Step 3: 实现**
+- [ ] **Step 3: 实现（在 Task 5 的 `flush()` 上增量添加内节点判据）**
+
+`_build_section_path` 与 `section_path` 的写入已由 Task 5 完成（本 Task 不再重复实现）。
+本 Task 只改 `flush()` 的产出条件：**无自身正文的候选行按内节点处理，只作祖先、不入库**。
 
 ```python
-def _build_section_path(stack: list[tuple[int, str, str]]) -> str:
-    """由祖先链构建面包屑快照：`"6 混凝土分项工程 > 6.1 模板"`。
+    def flush() -> None:
+        """把待收内容落到当前打开的条上。
 
-    R3 的 0 段已在收集阶段排除，故此处无需再过滤。无祖先返回空串
-    （**不带尾随分隔符**——详情弹窗会直接拼接该串）。
-    """
-    return " > ".join(f"{no} {t}".strip() for _, no, t in stack)
+        Task 6 增量：`own_body` 为假的候选行是**内节点**（章名/节名这类
+        没有自身正文的编号行）——它已经进了 `ancestor_stack` 作为祖先，
+        但**不产出条文**（无自身正文即无内容可检索）。
+        """
+        nonlocal pending, open_row, open_title
+        if open_row is not None and open_row.own_body:
+            content = "\n".join(pending).strip()
+            if _should_emit_clause(open_title, content):
+                clauses.append({
+                    "clause_no": open_row.clause_no,
+                    "title": open_title,
+                    "content": content,
+                    "level": open_row.level,
+                    "parent_path": [label for _, _, label in ancestor_stack],
+                    "section_path": _build_section_path(ancestor_stack),
+                    "is_non_clause": is_non_clause_title(open_title or open_row.tail),
+                })
+        pending = []
+        open_row = None
 ```
 
-第二遍中，仅当 `own_body` 为真才产出 clause，并把 `section_path` 写入其 dict：
-
-```python
-                "section_path": _build_section_path(ancestor_stack),
-```
+> **`own_body` 的语义与边界**：`_collect_candidates` 回填的 `own_body` 表示
+> 「本候选行与其后第一个候选行之间是否存在非空内容行」。因此：
+> - 有编号 + 有自身正文 → 叶条文，入库 ✓（`附录A` 那张 35K 字符的验收记录表即此类）
+> - 有编号 + 无自身正文 → 内节点，只作祖先 `✓`
+> 但**正文型**候选行的 `tail` 已经被推进 `pending`（见 Task 5 的 `else` 分支），
+> 所以它天然 `own_body=True`，不会被误判为内节点——这一点必须由 Step 1 的
+> `test_body_type_clause_is_emitted_even_without_following_lines` 锁定。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -880,6 +1145,20 @@ def test_cjj2_fixture_is_available(cjj2_md):
 
 ```python
 # tests/test_md_parser.py 追加
+def test_expected_ancestor_count_excludes_zero_segments():
+    """R3：`X.0.Y` 没有 `X.0` 这一级，故 `3.0.1` 应有 1 级祖先而非 2 级。
+
+    若按 `level - 1` 判完整性，所有 `X.0.Y` 条文会被系统性误判为面包屑不完整
+    （实测占 JGJ107 的 53%），进而让覆盖率被大幅低估、误导 Task 3 的去留。
+    """
+    from scripts.survey_structure import _expected_ancestor_count
+    assert _expected_ancestor_count("3.0.1") == 1
+    assert _expected_ancestor_count("1.0.2") == 1
+    assert _expected_ancestor_count("6.1.1") == 2
+    assert _expected_ancestor_count("6.1") == 1
+    assert _expected_ancestor_count("6") == 0
+
+
 def test_survey_reports_breadcrumb_coverage(cjj2_md):
     """批一验收指标之一：面包屑覆盖率。
 
@@ -922,6 +1201,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.parser.md_parser import parse_markdown  # noqa: E402
 
 
+def _expected_ancestor_count(clause_no: str) -> int:
+    """按 R3 计算该条文**应有**多少级祖先（即面包屑应有的段数）。
+
+    `X.0.Y`（章内不分节）没有 `X.0` 这一级，故 `3.0.1` 应有 1 级祖先（`3`）。
+    **不能**用 `level - 1`：`3.0.1` 的层级是 3，`level-1=2` ≠ 实际 1 级，
+    会把所有 `X.0.Y` 条文系统性误判为「面包屑不完整」——实测这类条文占
+    JGJ107 的 53%（39/73）、CJJ2 的 44 条，足以让覆盖率被大幅低估，
+    进而错误地让 Task 3（目次对齐）看起来有必要（D6.2 正是用本指标决策）。
+    """
+    segs = clause_no.split('.')[:-1]          # 去掉末段（条号）
+    return sum(1 for s in segs if s != '0')   # R3：0 段不构成节点
+
+
 def survey_structure(md_text: str) -> dict:
     clauses = parse_markdown(md_text)
     fake = [c for c in clauses if not re.search(r'\d', c["clause_no"])]
@@ -929,11 +1221,14 @@ def survey_structure(md_text: str) -> dict:
     complete = 0
     for c in clauses:
         segs = [s for s in (c.get("section_path") or "").split(" > ") if s]
-        if segs and len(segs) == c["level"] - 1:
+        if segs and len(segs) == _expected_ancestor_count(c["clause_no"]):
             complete += 1
     coverage = complete / len(clauses) if clauses else 0.0
 
-    # 残余缺口：条文编号的上一级节点号（如 18.3.1 → 18.3）在祖先链里找不到
+    # 残余缺口：条文编号的上一级节点号（如 18.3.1 → 18.3）在祖先链里找不到。
+    # ⚠ R3：`X.0.Y` 的上一级是 `X.0`，而它按设计**不存在**（0 段不构成节点）
+    #   → 必须跳过，否则 `3.0` / `1.0` / `2.0` 会被系统性报成「缺失的节」，
+    #   与覆盖率指标一样夸大残余缺口、误导 Task 3 的去留判断（D6.2）。
     present = {c["clause_no"] for c in clauses}
     missing: set[str] = set()
     for c in clauses:
@@ -941,6 +1236,8 @@ def survey_structure(md_text: str) -> dict:
         if len(parts) < 2:
             continue
         parent_no = ".".join(parts[:-1])
+        if parts[-2] == '0':          # R3：节位为 0 → 该级本就不存在
+            continue
         if parent_no in present:
             continue
         if not any(f"{parent_no} " in s for s in (c.get("section_path") or "").split(" > ")):
@@ -1082,17 +1379,39 @@ Expected: PASS（若 FAIL，说明 Task 3–6 丢了内容，**必须先修再�
 
 - [ ] **Step 3: 变异验证（证明断言可失败——不得省略）**
 
-临时把 Task 3 的次分组单元处理改为「整段丢弃」（模拟内容丢失），跑断言：
+变异体取**工程评审 SC-1 实测过的真实缺陷**：把 Task 2 的 `_is_zero_segment_node`
+判据放宽回「任意段为 0」，于是所有 `X.0.Y` 条文被跳过（实测 JGJ107 丢 39 条 /
+44,353 字符、CJJ2 丢 44 条 / 12,796 字符）。这条变异精确代表「内容被吞」这一类
+缺陷，且是一行可复现的改动。
 
 ```bash
-# 临时改 app/parser/md_parser.py：把 is_non_level_group_title 判定分支的
-# `current_content_lines.append(title); continue` 改为 `continue`（丢标签且
-# 让该段内容按原路径继续）——此处用最直接的模拟：把 Task 4 的裸编号项
-# `if '.' not in clause_no: return None` 改为 `return None` 之外的丢弃分支。
-# 任一「内容被吞」的变异都必须让 test_content_is_conserved 失败。
+# 1) 先确认基线通过
 D:/Python/python.exe -m pytest tests/test_parse_conservation.py -v
+# Expected: PASS
+
+# 2) 施加变异（一行）：把末段判据放宽为「任意段为 0」
+D:/Python/python.exe - <<'PY'
+import re, pathlib
+p = pathlib.Path("app/parser/md_parser.py")
+src = p.read_text(encoding="utf-8")
+old = "    return len(parts) > 1 and parts[-1] == '0'"
+new = "    return len(parts) > 1 and '0' in parts   # MUTANT"
+assert src.count(old) == 1, "变异目标行未唯一命中，先核对源码形态"
+p.write_text(src.replace(old, new), encoding="utf-8")
+print("变异已施加")
+PY
+
+# 3) 断言必须失败，且报出字符数下降
+D:/Python/python.exe -m pytest tests/test_parse_conservation.py -v
+# Expected: FAIL — 报错文案形如「正文总量从 N 降到 M——有内容随伪条文号一并丢失」
+
+# 4) 立即还原（本步骤结束后必须回到干净状态）
+git checkout -- app/parser/md_parser.py
+D:/Python/python.exe -m pytest tests/test_parse_conservation.py -v
+# Expected: PASS（确认还原成功，不得留下变异体）
 ```
-Expected: **FAIL** — 断言必须报出字符数下降。**验证完成后立即还原改动**（`git checkout app/parser/md_parser.py`）。
+
+**判据**：第 3 步若仍然 PASS，说明守恒断言无效——**必须先修断言再继续，不得进入 Task 10**。
 
 - [ ] **Step 4: 提交**
 
@@ -1261,6 +1580,41 @@ Expected: FAIL — `KeyError: 'duplicate_clause_no'`
     stats["duplicate_rows_is_non"] = non
 ```
 
+> **⚠️ 工程评审修正 SC-3（P1，改 Task 8 的覆盖率判据）**：初稿的完整性判据是
+> `len(segs) == c["level"] - 1`，它把 **R3 的 `X.0.Y` 系统性误判为不完整**：
+> `3.0.1` 的层级是 3（两个点），但它的祖先只有 `3` 一节（不存在 `3.0`），
+> 实际段数 1 ≠ 2 → 被计为「不完整」。实测这类条文占 **JGJ107 的 53%（39/73）**。
+>
+> 后果不只是数字难看：`breadcrumb_coverage` 与 `missing_sections` 正是 **D6.2
+> 用来决定 Task 3（目次对齐）去留的证据**。判据偏低会让覆盖率被大幅低估，
+> 从而**错误地**让目次对齐看起来有必要。
+>
+> 正确判据：期望段数 = 「`clause_no` 去掉末段、再剔除所有 `0` 段」后的段数。
+> Task 8 Step 4 的实现改为：
+
+```python
+def _expected_ancestor_count(clause_no: str) -> int:
+    """按 R3 计算该条文**应有**多少级祖先（面包屑段数）。
+
+    `X.0.Y`（章内不分节）没有 `X.0` 这一级，故 `3.0.1` 应有 1 级祖先（`3`）。
+    直接用 `level - 1` 会把它算成 2 级 → 系统性误判为不完整。
+    """
+    segs = clause_no.split('.')[:-1]          # 去掉末段（条号）
+    return sum(1 for s in segs if s != '0')   # R3：0 段不构成节点
+```
+
+```python
+    complete = 0
+    for c in clauses:
+        segs = [s for s in (c.get("section_path") or "").split(" > ") if s]
+        if segs and len(segs) == _expected_ancestor_count(c["clause_no"]):
+            complete += 1
+    coverage = complete / len(clauses) if clauses else 0.0
+```
+
+Step 2 的测试相应增加一条：`_expected_ancestor_count("3.0.1") == 1`、
+`_expected_ancestor_count("6.1.1") == 2`、`_expected_ancestor_count("1.0.2") == 1`。
+
 - [ ] **Step 4: 跑测试 + 输出真实诊断**
 
 Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -k "duplicates" -v`
@@ -1343,6 +1697,154 @@ git commit -m "docs: 批一验收结论（五项指标实测对照）
 ```
 
 ---
+
+## Decision ledger
+
+> 本节的记录由 `/plan-eng-review`（2026-09-27，目标 = 本文件）写入。
+> 四项**事实性修正**（SC-1~SC-4）已直接落到对应 Task 的正文，按决策程序
+> 「更正与行为不符的陈述无需另开决策」处理，记录如下备查：
+
+| ID | 严重度 | 置信 | 位置 | 修正 |
+|---|---|---|---|---|
+| SC-1 | P0 | 9/10 | Task 2 Step 3 | `_has_zero_segment` 判据由「任意段为 0」收窄为**末段为 0**，并改名 `_is_zero_segment_node`；否则 `X.0.Y` 条文整体不入库（实测 JGJ107 39 条 / 44,353 字符 = 80%、CJJ2 44 条 / 12,796 字符），且与 Task 2 自己的测试直接矛盾 |
+| SC-2 | P1 | 9/10 | Task 1 Step 3 | `_NUM_PATTERNS` 改形态后**三处**解包点只有一处被改；补 `:113`（`_match_clause_line`）与 `:299`（`_extract_title`），并加源码断言 |
+| SC-3 | P1 | 8/10 | Task 8 Step 4 | 覆盖率与残余缺口判据对 R3 的 `X.0.Y` 系统性误判（`3.0.1` 实有 1 级祖先却按 2 级判）；新增 `_expected_ancestor_count` 并按 `0` 段剔除；否则会**错误地**让 Task 3 显得有必要（D6.2 正是用该指标决策） |
+| SC-4 | P1 | 9/10 | Task 9 Step 3 | 变异指令不可执行且引用了 Task 4 已改掉的代码形态；改为对 `_is_zero_segment_node` 施加**一行可复现变异**（精确复现 SC-1 的缺陷），并含还原与复验步骤 |
+| SC-6 | P3 | 6/10（需核实） | Task 5 | `_vote_title_mode` 平票回退 `members[0]`：2 条组 1:1 时若 members[0] 像标题，则两者都判标题型；若 members[1] 无自身正文，它会按内节点被丢弃（其 tail 文本消失）。建议平票**偏向「无标题」**（保内容）。此项随 R1 的选项一并裁定 |
+
+### R1: Task 5/6 的第二遍实现方式与 Task 3 的返工
+
+Finding: SC-5 — [P1] (confidence: 8/10) `docs/superpowers/plans/2026-09-27-batch1-parser-hierarchy.md` Task 5 Step 3 / Task 6 Step 3 — 计划只给出了第一遍的两个辅助函数与「第二遍生成条文（同一次改写中完成）」这句散文，**没有第二遍的代码**；Task 6 Step 3 仅一行片段（`"section_path": _build_section_path(ancestor_stack)`）。而 R7 的「次分组单元内容回流」决定 252,514 字符（占 content 总字符 56%）的归属，是本计划最要害的一段。且 Task 3 的生产代码（改 `parse_markdown` 的 `#` 路径与编号行路径）在 Task 5 会被整体替换。
+
+Plan baseline: 三处均为 Task 5 Step 3 的散文描述，无代码；Task 3 先于 Task 5 实现同一条代码路径。
+Runtime evidence: 计划文本本身；SC-1 实测确认 `X.0.Y` 归属是真实大规模问题；Task 2 的测试与 Task 5 的代码相互矛盾（已修正）。
+
+| Commitment | Current | A | B | C |
+|---|---|---|---|---|
+| Task 5 第二遍代码 | 无（散文） | **补齐完整代码** | 无（并入合并任务） | 补齐完整代码 |
+| Task 3 的生产代码 | 先写后删（被 Task 5 替换） | **改为在 Task 5 之后增量添加** | 与 Task 5/6 合并为一次写成 | 保留先写后删 |
+| Task 6 的内节点判据 | 一行片段 | **改为在 Task 5 之后增量添加** | 同上合并 | 保留片段 |
+| 任务划分 | 12 Task | **12 Task（顺序调整）** | 11 Task（3/5/6 合一） | 12 Task（不变） |
+| 平票规则（SC-6） | `members[0]` | **偏向「无标题」（保内容）** | 同 A | 维持 `members[0]` |
+| 可独立否决的粒度 | 每行为一个 Task | **保留** | 丧失（三行为不可分） | 保留 |
+
+### R1
+
+Question D1:
+
+D1 — 第二遍的代码与 Task 3 的返工怎么处理？
+
+Project/branch/task: `main` 分支，批一实施方案（解析器层级重建）的 Task 5/6 实现方式。
+
+ELI10：这份计划最要紧的一段是「重写解析主循环」——那 252,514 字符（占全部正文 56%）该挂到哪个条上，全靠它。但计划里这段只有一句散文「第二遍生成条文（同一次改写中完成）」，没有代码；而它前面那个 Task 3 已经把同一段代码改过一遍，等 Task 5 重写时又要被删掉重写。所以现在要么先把代码补出来并把顺序理顺，要么干脆把这几件事合成一件一次做成。
+
+Stakes if we pick wrong: 选 C 的话实现者要自己设计那 56% 字符的归属逻辑，而这正是整个批一的目的；选 B 则三个可独立评审的行为被塞进一个不可分否决的任务里，出错时无法只退回其中一处。
+
+Recommendation: A，因为它在消除返工与「要害机制无代码」的同时，保住了每个行为可独立提交、可独立否决的粒度——符合「显式优于聪明」与「最小清晰改动」。
+
+Completeness: A=10/10, B=8/10, C=6/10
+
+Pros / cons:
+A) 顺序调整 + 补齐第二遍代码（推荐）
+  ✅ Task 5 给出第二遍完整代码；Task 3（R7 次分组单元）与 Task 6（内节点判据）改为在 Task 5 之后**增量添加**到该代码上，不再先写后删
+  ✅ 每个行为仍是独立 Task 与独立提交，出错时能只退回其中一处；平票规则一并定为「偏向无标题」以保内容
+  ❌ 要改动三个 Task 的编号与依赖说明（文档返工）
+  ❌ Task 5 单步代码量变大，评审时要读更长的一段
+B) 合并为一个「重写 parse_markdown」任务
+  ✅ 最少返工：一次写成为止，没有「先写一遍再删」的浪费
+  ✅ 三段测试可同时先写（红）再一起转绿，是最纯粹的 TDD 形态
+  ❌ 三个行为（R7 回流 / 内节点判据 / section_path）塞进一个任务，无法只否决其中一处
+  ❌ 单任务跨度大，提交粒度粗，中途出错难回溯
+C) 维持现状，只补齐 Task 5 的代码
+  ✅ 改动最小，只动一个 Task，其余编号与依赖说明不变
+  ❌ 留下 Task 3 的返工（同一段代码写两遍、第一遍随后被删）
+  ❌ 平票规则维持回退 `members[0]`，2 条组 1:1 时可能丢掉无正文条文的 tail 文本
+
+Net: 真正权衡的是「改写文档换取顺直的实现路径与可独立否决的粒度」对「不写文档但留一处返工」。
+
+Header: 第二遍实现方式
+
+Options:
+A) 顺序调整 + 补齐第二遍代码
+补齐 Task 5 的第二遍完整代码；Task 3 与 Task 6 改为在 Task 5 之后增量添加到该代码上（不再先写后删）；平票规则一并定为**偏向「无标题」以保内容**（SC-6）。12 个 Task，每个行为可独立提交与独立否决。
+B) 合并为一个重写任务
+把 Task 3/5/6 合并成单个「重写 parse_markdown」任务，三段测试先写齐再一次实现到位；平票规则同样定为**偏向「无标题」**（SC-6）。返工最少，但三个行为不可分，提交粒度最粗。
+C) 维持现状，只补 Task 5 代码
+只给 Task 5 补上第二遍代码，Task 3 的返工保留；平票规则**维持回退 `members[0]`**（SC-6 不修）。改动最小，但同一段代码写两遍、且平票时可能丢掉无正文条文的 tail 文本。
+
+State: approved
+Actual answer: A) 顺序调整 + 补齐第二遍代码（用户于本会话选定，2026-09-27）
+Accepted scope: Task 5 补齐第二遍完整代码（`_parse_two_pass`）；`_vote_title_mode` 平票分支改为一律判「无标题」（SC-6 一并采纳）；新增「执行顺序」节，把 Task 4 提到 Task 5 之前、Task 3 与 Task 6 移到 Task 5 之后并改为增量添加；Task 3 与 Task 6 各加执行时点说明。**未包含**：Task 编号重排（保持 1–12 不变以缩小 diff）、Task 3/5/6 合并。
+History: 初稿为「Task 5 Step 3 散文 + Task 3 先写后删」；R1 于本会话提交并按决策程序记录、Read-back 验证后询问，用户选 A。
+
+### R2: 两遍重写是否保留，还是回到「单遍 + 收窄 + 预算投票」
+
+Finding: C1–C7（外部复核 codex 完成，逐行核对 + 在真实 CJJ2 夹具上复现）— 两遍重写引入 6 项缺陷，其中 C2 与 C3 **与本计划自己的测试**直接矛盾（`test_body_type_clause_is_emitted_even_without_following_lines` 期望正文型无后续行的条文产出，而 `flush()` 的 `own_body` 守卫会丢弃它；`test_section_path_includes_each_ancestor_with_number` 期望祖先链不含自身，而 flush 在弹栈前执行）。codex 在真实夹具上量化：C2 单独使 content 从 444,976 降到 409,612（−35,364 / −7.9%）、条文数 1012→368。
+
+Plan baseline: R1 已批准「Task 5 补齐第二遍代码 + 顺序调整」（本记录与之相容：只决定**实现路径**，不改 R1 的执行顺序与增量添加原则）。
+Runtime evidence: 旧代码 `app/parser/md_parser.py:199-211`（flush 仅在 `current_content_lines` 非空时执行 → `3.0.1` 这类「标题型且无后续内容」的行从未被结算）；`:241`（`_clean_title`）；`:267`（正文型用整栈、标题型用 `title_stack[:-1]`，两者都**不含自身**）；`:187-189/:225-226/:271`（`inherit_non_clause` / `discard_section`）。逐行走查确认：Task 1 收窄后 `#### 主控项目` 已非候选行，非候选行累积进缓冲、flush 时落到最后一条真条文 `14.3.1` → **56% 归属由 Task 1 + Task 4 即已修好**。
+
+| Commitment | Current（R1 后） | A | B | C |
+|---|---|---|---|---|
+| 实现结构 | 两遍重写（`_RawLine`/`_collect_candidates`/`_parse_two_pass`/`own_body`） | **单遍保留 + 预算投票** | 两遍重写 | 先调查再定 |
+| Task 1 尺子 + `_extract_clause_no` 收窄 | 保留 | **保留** | 保留 | 保留 |
+| Task 4 裸数字非候选 | 保留 | **保留** | 保留 | 保留 |
+| R14 实现方式 | 两遍内按 `(层级,父键)` 投票 | **候选行预算投票 + 无条件 flush** | 两遍内投票 | 待定 |
+| Task 3（R7 次分组单元） | 保留（增量添加） | **删除**（Task 1 后已无触发条件） | 保留 | 待定 |
+| 内节点判据 | `flush()` 内用 `own_body` 过滤 | **改为「标题型且无后续内容」判内节点** | 修 `own_body` 守卫 | 待定 |
+| 非条文块打标/过滤（C4） | **丢失** | **恢复** | 需补 | 待定 |
+| `_clean_title`（C5） | **丢失** | **恢复**（标题型时清洗 tail） | 需补 | 待定 |
+| `parent_path` 含自身（C3） | **是（错）** | **不含自身**（对齐旧行为，保 `classify_clause` 输入不变） | 需修 | 待定 |
+| 既有断言预算 | 声称 2 处 | **如实列出全部受影响项** | 需重算 | 待定 |
+
+### R2
+
+Question D2:
+
+D2 — 批一的核心实现走哪条路？
+
+Project/branch/task: `main` 分支，批一实施方案的解析器核心实现。
+
+ELI10：这份计划把解析主循环整个重写成「两遍扫描 + 兄弟投票」。外部复核逐行核对后确认，这个重写自身引入了六处缺陷，其中两处与计划自己的测试直接矛盾（一处会把正文型条文整条丢掉——在真实夹具上实测少 35,364 字符、条文从 1012 条掉到 368 条），另有一处让条文自己出现在自己的祖先链里。更关键的是：复核回到旧代码验证后发现，真正修好那 56% 正文归属的只需要两处收窄（无编号标题不再当条文、裸数字项不再当条文），而这两处收窄在**旧的单遍结构里就已经够用**——所以这个两遍重写带来的增量收益，远小于它引入的风险。真正还需要新增的只有「同层有无标题应一致」这条规则。
+
+Stakes if we pick wrong: 选 B 要把六处缺陷逐一补掉，而且补完仍比方案 A 多一整层抽象（`_RawLine`/两遍/`own_body`），任何一处漏补都会以「条文静默消失」的形式表现出来；选 A 则要改写已批准的 R1 决议里关于第二遍代码的部分（但保留其顺序与增量添加原则），并重新核对受影响断言清单。
+
+Recommendation: A，因为复核已在真实语料上量化出 B 的净损失（−35,364 字符 / 条文 1012→368），而 A 用更小的 diff 达成同一用户结果——符合「最小清晰改动」与「显式优于聪明」；且 56% 归属的修复经回读旧代码确认只需 Task 1 + Task 4。
+
+Completeness: A=10/10, B=7/10, C=3/10
+
+Pros / cons:
+A) 单遍保留 + 预算投票（推荐）
+  ✅ 用更小的 diff 达成同一用户结果：Task 1（新尺子 + 无编号标题非条文）+ Task 4（裸数字非候选）+ R14 预算投票 + 无条件 flush，四处即可
+  ✅ 无需 `_RawLine`/`_collect_candidates`/`_parse_two_pass`/`own_body` 一层新抽象，C1/C2/C3/C6 随之消失；Task 3 也可删除
+  ❌ 要改写已批准的 R1 决议中「第二遍完整代码」那一部分（顺序与增量添加原则保留）
+  ❌ R14 在单遍里要做一次预算扫描，须明确它只扫候选行、不改变其它行为
+B) 保留两遍重写并逐项修补
+  ✅ 已批准的 R1 决议与已写好的第二遍代码大体可留用，改动集中在补漏
+  ✅ 两遍结构对「先定判据、再产出」在概念上更整齐
+  ❌ 要补 C1（前向依赖）、C2（丢正文型条文）、C3（祖先含自身）、C4（非条文块打标与目次过滤丢失）、C5（`_clean_title` 丢失）、C6（任务检查点不成立）共六项，任一漏补都表现为静默丢条文
+  ❌ 补完后仍比 A 多一整层抽象，而这层抽象带来的增量收益经实测并不存在（56% 由 Task 1 + Task 4 即已修好）
+C) 先调查再定
+  ✅ 不急着改已批准的内容，可先就「56% 是否真的只需两处收窄」做一次独立复现
+  ❌ 复核已给出可复现的量化证据（旧代码逐行走查 + 真实夹具），再调查的边际收益低
+  ❌ 调查期间计划停留在已知有六处缺陷的状态，不可交付
+
+Net: 真正权衡的是「保住已批准的两遍结构与已写的代码」对「用四分之一的改动量达成同一结果，并消掉六项已知缺陷」。
+
+Header: 核心实现路径
+
+Options:
+A) 单遍保留 + 预算投票
+以 Task 1（新尺子 + `_extract_clause_no` 收窄）+ Task 4（裸数字非候选）为归属修复，R14 改为「对候选行做一次预算投票 + 无条件 flush」；删除 Task 3（Task 1 后已无触发条件）；恢复非条文块打标/目次过滤（C4）与 `_clean_title`（C5）；祖先链不含自身（C3）。
+B) 保留两遍重写并逐项修补
+保留 `_RawLine`/`_collect_candidates`/`_parse_two_pass`/`own_body`，逐项补 C1–C6：修前向依赖、修 `own_body` 守卫、祖先链排除自身、恢复非条文块机制与 `_clean_title`、重定 Task 检查点。
+C) 先调查再定
+先就「56% 是否只需 Task 1 + Task 4 两处收窄」做一次独立复现，再决定路径。
+
+State: approved
+Actual answer: A) 单遍保留 + 预算投票（用户于本会话选定，2026-09-27）
+Accepted scope: 保留旧的单遍解析循环结构，只做四处改动——(1) 层级改由编号点数推导（Task 1）；(2) `_extract_clause_no` 对无编号标题返回 `None`（Task 1）；(3) 裸阿拉伯数字行非候选（Task 4）；(4) R14 改为对候选行做一次预算投票 + 新候选行到达时**无条件 flush**。删除两遍重写层（`_RawLine` / `_collect_candidates` / `_parse_two_pass` / `own_body`）与 Task 3（R7 处置，Task 1 后已无触发条件）。恢复 C4（非条文块打标保留 + 目次段直接过滤）与 C5（标题型时 `_clean_title`）。修正 C3（`parent_path`/`section_path` **不含自身**，与旧行为一致以保 `classify_clause` 输入不变）。修正 C8（Task 10 的样例须让命中只来自祖先标题、不来自正文）。修正 C10（明确定义 `_match_clause_line` 的新返回形状）与 C11（如实列出受影响断言清单，不限于 2 处）。**未包含**：Task 2 的 `_is_zero_segment_node`（维持 SC-1 修正后的定义）、Task 7/8/9/11/12 的任务划分。
+History: R1（已批准）决定「补齐第二遍代码 + 顺序调整」；R2 由外部复核 C1–C7 触发重开**实现路径**，保留 R1 的执行顺序与增量添加原则，但替换其实现结构。
 
 ## Self-Review
 
