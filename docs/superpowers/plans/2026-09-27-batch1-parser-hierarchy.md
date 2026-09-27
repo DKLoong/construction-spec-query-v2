@@ -512,6 +512,16 @@ def test_group_heading_content_flows_to_enclosing_clause():
     assert "####" not in body                              # 井号标记必须剥掉
     assert clauses["14.3.2"]["content"].strip() == "正文乙。"
 
+# ⚠️ 实现后的两处断言与上面计划初稿不同（Task 3 实施者查出，理由如下；**以测试文件为准**）：
+#   (a) 组 3 原写 `clauses["14.3.2"]["content"].strip() == "正文乙。"`，预设 14.3.2 是
+#       **标题型**行；但 `_looks_like_title` 把「以句末标点（含全角「：」）结尾」判为非标题，
+#       该组两条 tail 均非标题 → 投票判「无标题」→ 编号后文本进 content。
+#       已改为更强的断言：`"正文乙。" in content` 且**不含** 14.3.1 的内容（互不串味）+
+#       `title == ""`。
+#   (b) `test_page_marker_isolates_pages` 原写 `clauses["1"]["content"].strip() == ""`，
+#       预设 `## 1 总则` 会被产出；但它在内节点判据下**无自身正文** → 只作祖先不入库 →
+#       `KeyError: '1'`。已改为断言 `1` 不作为条文存在 + 页标记条文承载前引文字。
+
 # ── 组 4：section_path / parent_path（**祖先链不含自身**） ──
 def test_section_path_includes_each_ancestor_with_number():
     md = "## 6 混凝土分项工程\n\n### 6.1 模板\n\n#### 6.1.1 一般规定\n\n正文甲。\n"
@@ -734,7 +744,15 @@ def parse_markdown(md_text: str) -> list[dict]:
         flush()                                  # 新候选行到达 → 先结算上一条
         level, clause_no, tail = cand
 
-        is_titled = title_mode[(level, _parent_key(stack, level))]
+        # 投票只用于「**确认**标题」：组内多数判为带标题，且该行自身也像标题，才算标题型。
+        # 这一「与」只会**减少**标题型判定，方向是**保内容** —— 否则长句会仅因组内多数
+        # 变成「标题」，而它又没有自身正文 → 按内节点不入库 → 文本丢失。
+        # 实测（真实语料 CJJ2）：不加此门时丢 627 字符 / 21 条（条文说明的
+        #   `13.5 顶推施工适用于…` 这类长句，与正文 `13.5` 同组被投票判成标题型）。
+        # `.get(..., False)` 是安全网：投票键缺失只可能出现在「目次行被主循环筛掉、
+        # 未入栈」之后，回退「无标题」与平票规则同向（文本进 content，不丢内容）。
+        is_titled = (title_mode.get((level, _parent_key(stack, level)), False)
+                     and _looks_like_title(tail))
         title = _clean_title(tail) if is_titled else ""
 
         if is_filter_non_clause_title(title or tail):
@@ -743,11 +761,15 @@ def parse_markdown(md_text: str) -> list[dict]:
             continue
         discard_section = False
 
-        is_non = (is_non_clause_title(title or tail)
-                  or bool(_PAGE_MARKER.match(title or tail))   # 页分隔标记：隐藏但保留（见 _candidate_of）
-                  or inherit_non_clause)
-        if is_non:
-            inherit_non_clause = True
+        # ⚠️ 继承语义必须是「**标题型行重置、正文型行继承**」（旧实现 `:283` 的语义）。
+        # 若写成 `is_non = (... or inherit_non_clause)`（把继承也套到标题型行上），
+        # 则 `前言` 之后**全部条文都会被隐藏** —— 受保护用例
+        # `test_parse_qianyan_retained_and_marked` 会以 `assert True is False` 打挂，
+        # 且现网表现为「前言之后什么都搜不到」。（Task 3 实施者以失败用例证伪了我计划里的这一行。）
+        own_non = (is_non_clause_title(title or tail)
+                   or bool(_PAGE_MARKER.match(title or tail)))  # 页分隔标记：隐藏但保留（见 _candidate_of）
+        is_non = own_non if title else (own_non or inherit_non_clause)
+        inherit_non_clause = is_non
 
         while stack and stack[-1]["level"] >= level:
             stack.pop()
