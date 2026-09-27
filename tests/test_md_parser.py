@@ -212,11 +212,17 @@ def test_is_non_clause_title_exact_hits():
 
 
 def test_is_non_clause_title_substring_prefix_hits():
-    """子串/前缀兜底：前言前缀、条文说明子串、用词说明前缀"""
+    """子串/前缀兜底：前言前缀、条文说明子串、用词说明后缀"""
     assert is_non_clause_title("前言部分")
     assert is_non_clause_title("3.0.2 条文说明…")
     assert is_non_clause_title("本规程用词说明")
-    assert is_non_clause_title("本规范用词用语说明的补充")
+    # 按设计变更（Task 7）：用词说明类改按**法定名称结尾**匹配，旧的
+    # `startswith(本规程用词说明/本规范用词用语说明)` 前缀兜底被替换。
+    # 带尾随限定语的写法（…的补充）不再命中；实测语料 0 例（见本次提交信息）。
+    assert not is_non_clause_title("本规范用词用语说明的补充")
+    # 尾随限定语不再命中，但法定名称与「前缀 + 名称」变体一律命中
+    assert is_non_clause_title("本规范用词用语说明")
+    assert is_non_clause_title("标准用词说明")
 
 
 def test_is_non_clause_title_normal_not_marked():
@@ -321,6 +327,80 @@ def test_parse_normal_clause_has_is_non_clause_false():
     assert len(results) >= 1
     for r in results:
         assert r["is_non_clause"] is False
+
+
+def test_announcement_and_reference_list_are_non_clause():
+    """R8/R8b：公告 / 引用标准名录 是 182 号第六、七条的法定名称
+
+    实测 spec20（CJJ2）有 2 条公告伪条文，引用标准名录的列表项被误吞成
+    clause_no='1'/'10'。
+
+    ⚠ 上段是 brief 原文，实测两处**已过期**（Task 1/4 之后不再成立，本 Task 订正）：
+      ① 「伪条文」出自旧 `_extract_clause_no` 的 `return title` 兜底，Task 1 已删；
+         现在这两条公告是**整段丢弃**（不是成伪条文），且标题不等于「公告」，
+         本 Task 的精确命中**覆盖不到**（已报控制器，属 routed observation 同类）。
+      ② 引用标准名录的列表项（`1 《…》GB 50010`）自 Task 4 起被裸数字判据排除，
+         不再是 clause_no='1'/'10'，而是作为**纯文本**并进上一条的 content。
+    本用例只断言谓词，不断言上述解析行为（解析侧证据见本次提交信息与 task-7-report）。
+    """
+    assert is_non_clause_title("公告") is True
+    assert is_non_clause_title("引用标准名录") is True
+
+def test_standard_wording_by_legal_name():
+    """按法定名称匹配：`标准用词说明` 及其变体 `本规范用词说明` 都要命中。
+
+    实测 CJJ2 写的是「本规范用词说明」，旧实现只覆盖 「本规程用词说明」与
+    「本规范用词用语说明」，差「用语」两字就漏判。
+    """
+    for t in ("标准用词说明", "本规范用词说明", "本规程用词说明", "本规范用词用语说明"):
+        assert is_non_clause_title(t) is True, t
+
+def test_legal_name_matching_does_not_over_match():
+    """不得误伤含「用词」的正常条文标题"""
+    assert is_non_clause_title("用词要求") is False
+    assert is_non_clause_title("公告发布要求") is False
+
+def test_non_clause_blocks_are_marked_not_dropped():
+    """三者一律打标保留（clause_is_non=1），不整段丢弃（R8/R8b）
+
+    注意与「目次」的区别：目次属**直接过滤**类（见下一条），不进库。
+
+    夹具两处偏离 brief（证据见本次提交信息与 task-7-report）：
+      ① `公告` 必须写成 `# 公告`：裸行不是候选行（`_match_clause_line` 要求编号模式），
+         谓词再对也无法产出 clause；语料里公告块本就带 `#`（fd4e78c5:23）。
+         裸行支持属「routed observation 2」，控制器保留裁定，本 Task 不动。
+      ② 末尾要有一条**标题型**行（`## 1 总则`）：正文型编号行会继承上一段
+         `inherit_non_clause`（Task 3 钉死的语义），缺它则 `1.0.1` 也被打标 → `len(r) == 2`。
+    """
+    md = "# 公告\n\n关于发布行业标准……\n\n## 1 总则\n\n1.0.1 正文甲。\n"
+    results = parse_markdown(md)
+    r = [c for c in results if c["is_non_clause"]]
+    assert len(r) == 1 and r[0]["clause_no"] == "公告"
+    assert "关于发布行业标准" in r[0]["content"]
+
+def test_toc_section_is_discarded_entirely():
+    """目次 / Contents 属「直接过滤」类：段内**一切丢弃**，不进库。
+
+    这是既有行为（`_NON_CLAUSE_FILTER_TITLES` + `discard_section`），本批必须原样保留
+    （工程评审 C4：重写若丢掉它，目录行会泄漏进条文正文，且批二 Task 13 的
+    tooltip 文案「不含目次」就成了假话）。
+
+    ⚠ brief 的裸 `目次` 夹具对这一机制**零保护**：裸行不是候选行，`discard_section`
+    根本不置位，目录行只是恰好被「空栈 flush」丢掉。变异探针（把
+    `is_filter_non_clause_title` 改成恒 False）下，裸夹具**仍然通过**。故补跑 `#` 形式。
+    """
+    md = "目次\n\n1 总则 ..... 1\n\n2 术语 ..... 3\n\n1.0.1 正文甲。\n"
+    results = parse_markdown(md)
+    assert all(c["clause_no"] != "目次" for c in results)
+    assert all("总则 ..... 1" not in c["content"] for c in results)
+    assert any(c["clause_no"] == "1.0.1" for c in results)
+
+    # `#` 形式才真正走到 `discard_section`：目录行夹在前后条文之间，不会被误并
+    md_hash = "1.0.1 正文甲。\n\n## 目次\n\n1 总则 ..... 1\n\n2 术语 ..... 3\n\n1.0.2 正文乙。\n"
+    results_hash = parse_markdown(md_hash)
+    assert all(c["clause_no"] != "目次" for c in results_hash)
+    assert all("总则 ..... 1" not in c["content"] for c in results_hash)
+    assert any(c["clause_no"] == "1.0.2" for c in results_hash)
 
 
 # ═══════════════════════════════════════════
