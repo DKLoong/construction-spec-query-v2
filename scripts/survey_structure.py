@@ -81,7 +81,14 @@ def _expected_ancestor_count(clause_no: str) -> int:
 
 
 def _duplicate_group_flags(clauses: list[dict]) -> dict[str, list[bool]]:
-    """重复号 → 组内各行的 `is_non_clause` 列表（指标 7~10 的唯一数据源）。"""
+    """重复号 → 组内各行的 `is_non_clause` 列表。
+
+    **指标 7~11 的唯一数据源**：`_survey` 的重复号相关指标全部由本函数的返回值派生
+    （键序 = 各号在文档里首次出现的顺序，与 `Counter` 的插入序一致）。
+    ⚠️ 不得在别处再写一份等价的分组循环——本批 Global Constraints 明令「公共逻辑抽离为
+    工具函数，禁止复制粘贴重复代码」；fix round 3 修的正是「两份相同分组逻辑并存、
+    其一静默未被调用」的实况（复核 Finding 1）。
+    """
     counts = Counter(c["clause_no"] for c in clauses)
     flags: dict[str, list[bool]] = {}
     for c in clauses:
@@ -158,16 +165,13 @@ def _survey(clauses: list[dict]) -> dict:
 
     # Task 11 重复条文号诊断：按 `clause_no` 计数，只留出现 >1 次的号。
     # ⚠️ 指标 8/9**不区分**「正文 / 条文说明」——同号重复的**合法性**恰恰要靠
-    # `is_non_clause` 拆分来判定，故一并输出指标 10 的**组级**分解（指标 9 是弱信号，
+    # `is_non_clause` 拆分来判定，故一并输出指标 10/11 的**组级**分解（指标 9 是弱信号，
     # 会把 `designed` 与 `commentary_only` 混成一个数字，见模块 docstring）。
-    counts = Counter(c["clause_no"] for c in clauses)
-    duplicate_clause_no = {k: v for k, v in counts.items() if v > 1}
-    dup_rows = [c for c in clauses if counts[c["clause_no"]] > 1]
-    dup_non = sum(1 for c in dup_rows if c["is_non_clause"])
-
-    flags: dict[str, list[bool]] = {}
-    for c in dup_rows:
-        flags.setdefault(c["clause_no"], []).append(bool(c["is_non_clause"]))
+    # ⚠️ fix round 3（复核 Finding 1）：指标 7~11 **全部**由 `_duplicate_group_flags` 派生。
+    #    此前这里是**内联重算**的一份逐字等价的 flags dict，而那个函数从未被调用
+    #    （死代码 + 两份相同分组逻辑并存）。按「消除重复、单一来源」修：删内联、走函数。
+    flags = _duplicate_group_flags(clauses)
+    duplicate_clause_no = {no: len(v) for no, v in flags.items()}
     kinds = ("designed", "body_only", "commentary_only")
     duplicate_group_kinds = {
         kind: sum(1 for v in flags.values() if _kind_of(v) == kind) for kind in kinds
@@ -191,8 +195,9 @@ def _survey(clauses: list[dict]) -> dict:
         "breadcrumb_coverage": round(coverage, 4),
         "missing_sections": sorted(missing),
         "duplicate_clause_no": duplicate_clause_no,
-        "duplicate_rows": len(dup_rows),
-        "duplicate_rows_is_non": dup_non,
+        # 指标 8/9 同样由 flags 派生（= 各组的行数之和 / 其中的 True 数），不再单独扫一遍 clauses
+        "duplicate_rows": sum(len(v) for v in flags.values()),
+        "duplicate_rows_is_non": sum(1 for v in flags.values() for f in v if f),
         "duplicate_group_kinds": duplicate_group_kinds,
         "duplicate_group_kinds_members": duplicate_group_kinds_members,
     }
