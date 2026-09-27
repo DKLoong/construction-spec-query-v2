@@ -5,7 +5,7 @@
   2. content_chars          全部 content 的字符总数（**含 PaddleOCR-VL 标记的原始口径**）
   3. content_chars_plain    同上，但经 `plain_text` 归一（**Task 9 守恒断言的基线口径**）
   4. fake_clause_no_count   不含数字的条文号个数（伪条文号）
-  5. breadcrumb_coverage    section_path 段数 == 应有祖先数（按 R3 剔除 0 段）的条文占比
+  5. breadcrumb_coverage    **条文行**的 section_path 段数 == 应有祖先数（按 R3 剔除 0 段）的占比
   6. missing_sections       被引用却找不到标题的节号（量目次对齐的残余缺口）
 
 用法：python scripts/survey_structure.py <md路径> [--json]
@@ -38,12 +38,19 @@ def survey_structure(md_text: str) -> dict:
     clauses = parse_markdown(md_text)
     fake = [c for c in clauses if not re.search(r'\d', c["clause_no"])]
 
+    # ⚠️ R-T13-4：覆盖率**只对条文行**统计。`_build_section_path` 的 docstring 明文写
+    # 「非条文块不进面包屑」，故**非条文行的面包屑按设计为空**，把它算作「不完整」
+    # 测不到任何东西（且会随非条文块规模的任何变动而漂移）。段级规则（Task 13）
+    # 一次新增 164 条非条文行后，若仍按全行统计，覆盖率会从 0.8541「跌」到 0.7951——
+    # 那是口径错，不是回归；改为只统计条文行后为 0.8589 → 0.9781，与 D6.2 已记录的
+    # 「缺口集中在条文说明段、正文侧 0.97~0.99」一致。
+    real = [c for c in clauses if not c["is_non_clause"]]
     complete = 0
-    for c in clauses:
+    for c in real:
         segs = [s for s in (c.get("section_path") or "").split(" > ") if s]
         if segs and len(segs) == _expected_ancestor_count(c["clause_no"]):
             complete += 1
-    coverage = complete / len(clauses) if clauses else 0.0
+    coverage = complete / len(real) if real else 0.0
 
     # 残余缺口：条文编号的上一级节点号（如 18.3.1 → 18.3）在祖先链里找不到。
     # ⚠ R3：`X.0.Y` 的上一级是 `X.0`，而它按设计**不存在**（0 段不构成节点）

@@ -90,6 +90,42 @@ _NON_CLAUSE_FILTER_TITLES = {"目次", "Contents"}
 _LEGAL_NAME_SUFFIXES = ("用词说明", "用词用语说明", "公告")
 
 
+# ═══════════════════════════════════════════
+# 条文说明段（文档级）——Task 13，182 号对文档顺序的规定
+# ═══════════════════════════════════════════
+
+# 182 号（第六、七条）规定条文说明位于文档**末尾**（在附录、用词说明、引用标准名录之后），
+# 故一旦出现该段的起始标记，其后至文末一律为非条文。
+# 实测（夹具 tests/fixtures/cjj2_source.md）：标记在行 6836，其后 164 条全部打标，
+# 段前 734 条仅 4 条被打标（两条公告 + 前言 + 本规范用词说明，均合法）→ **零假阳性**。
+# 真实语料（data/spec_query.db spec_id=20）：该段为 id 1362~1526 共 165 行，
+# 其中 138 行与正文**同号**（Task 11 那批重复条文号的主力），此前全部未打标。
+_COMMENTARY_MARKER = "条文说明"
+
+# 法定名称的**受控前缀**（与 `_LEGAL_NAME_SUFFIXES` 同一设计原则：法定名称在真实文档里
+# 几乎总带前缀或限定语，只认精确值会整块漏判）。182 号正文写作「附：条文说明」，
+# CJJ2 的 md 里则是无前缀的裸行 `条文说明`——两者都要认。
+# ⚠️ 小心目次行：`附：条文说明 ..... 247`（夹具行 231）剥掉前缀后仍带点引号与页码 → 不命中 ✓
+_COMMENTARY_PREFIXES = ("附：", "附:")
+
+
+def _is_commentary_marker(line: str) -> bool:
+    """该行（**整行**）是否为条文说明段的起始标记。
+
+    必须是整行精确匹配（剥掉受控前缀后），**不能**复用 `is_non_clause_title`：
+    后者另含三条非精确规则（以「前言」开头、含「条文说明」、以法定名称结尾），
+    用作**整行**判据会把正文行误判为段标记——实测夹具行 6843（含「条文说明」的
+    正文长句）会因此开启该段，把其后正文整段打标
+    （`content_chars` 445,893 → 445,871、覆盖率 0.8541 → 0.8532）。
+    """
+    t = line.strip()
+    for prefix in _COMMENTARY_PREFIXES:
+        if t.startswith(prefix):
+            t = t[len(prefix):].strip()
+            break
+    return t == _COMMENTARY_MARKER
+
+
 def is_non_clause_title(title) -> bool:
     """判断标题（或条文号）是否为非条文块
 
@@ -227,6 +263,11 @@ def _candidate_of(line: str) -> tuple[int, str, str] | None:
 
     **预扫投票（`_vote_title_mode`）与正式解析必须共用本函数**：两者判据若
     不一致，投票结果会对不上正式解析的那一行，兄弟表决就失去意义。
+
+    **无编号裸行不成候选行（既有设计，不是缺陷）**：候选行必须带编号或 `#`（R1 ⑦）。
+    T13 实测过「让裸行成候选」的写法：它让 `条文说明` 自成一格却又因「标题型且无自身
+    正文」被内节点判据丢弃（−5 字符），且对段内打标毫无帮助（两层根因见 `_is_commentary_marker`）。
+    故条文说明段的裸标记行由主循环的**文档级段规则**处理，不经本函数（裁定 R-T13-2）。
     """
     if not line.strip():
         return None
@@ -371,6 +412,8 @@ def parse_markdown(md_text: str) -> list[dict]:
     - 前言/条文说明/公告/引用标准名录/用词说明（含「标准用词说明」「本规范用词说明」
       等全部变体）→ 保留进库，is_non_clause=True（R8/R8b，182 号第六、七条）
     - 「条文说明」段的正文型编号行（如 3.0.1 条文内容）继承打标
+    - 条文说明段（整行 `条文说明` / `附：条文说明`）→ 自该行起**至文末**全部打标
+      （文档级段规则，依据 182 号：条文说明位于文档末尾；见 `_is_commentary_marker`）
     - `## 第X页` 页分隔标记 → 保留为隐藏条文（is_non_clause=True），使每页正文互不污染
     """
     if not md_text.strip():
@@ -384,6 +427,7 @@ def parse_markdown(md_text: str) -> list[dict]:
     pending: list[str] = []         # 当前条的待落内容
     discard_section = False         # 目次段：段内一切丢弃
     inherit_non_clause = False      # 条文说明段：正文型行继承打标
+    in_commentary = False           # 条文说明段（文档级）：单向、至文末，见裁定 R-T13-3
 
     def flush() -> None:
         """结算「当前条」= `stack[-1]`。
@@ -417,6 +461,10 @@ def parse_markdown(md_text: str) -> list[dict]:
         pending = []
 
     for line in lines:
+        # 段级规则的**触发点**：在 `_candidate_of` 之前——标记行本身不改其归属
+        # （它不成为候选行，见 `_candidate_of` docstring），只开启延伸至文末的非条文段。
+        if _is_commentary_marker(line):
+            in_commentary = True
         cand = _candidate_of(line)
         if cand is None:
             if not discard_section and line.strip():
@@ -454,7 +502,15 @@ def parse_markdown(md_text: str) -> list[dict]:
         # **正文型行**（title 为空）才继承本段基调：条文说明段内的编号行据此打标。
         own_non = (is_non_clause_title(title or tail)
                    or bool(_PAGE_MARKER.match(title or tail)))  # 页分隔标记：隐藏但保留（见 _candidate_of）
-        is_non = own_non if title else (own_non or inherit_non_clause)
+        # ⚠️ `in_commentary` 与 `inherit_non_clause` **必须分开**（裁定 R-T13-3）：
+        # 后者保持「标题型行以自身裁定为准并**重置基调**」的既有语义（否则 `## 1 总则`
+        # 会把前言段的基调外溢到其后全部条文，`test_parse_qianyan_retained_and_marked` 守之）；
+        # 而条文说明段恰恰需要**穿透同名章标题**——段内每个 `## N 章名` 与正文章标题
+        # 同形且同为 level 1，会把 level 1 的 `条文说明` 弹出栈，故没有任何局部规则
+        # 能区分二者（实测：连「非条文祖先」也无从判断）。依据是 182 号对文档顺序的规定：
+        # 条文说明在末尾，故「段内」≡「其后至文末」。
+        is_non = ((own_non if title else (own_non or inherit_non_clause))
+                  or in_commentary)
         inherit_non_clause = is_non
 
         while stack and stack[-1]["level"] >= level:

@@ -950,5 +950,109 @@ def test_survey_reports_breadcrumb_coverage(cjj2_md):
     #    只守「夹具完整 + 解析出全量规模条文」，不锁定精确值（精确基线由
     #    批一验收基线表与 Task 9 的守恒断言守）。
     assert stats["clause_count"] > 850
-    assert 0.0 <= stats["breadcrumb_coverage"] <= 1.0
+    # ⚠️ Task 13（裁定 R-T13-4）：覆盖率口径改为**只统计条文行**（非条文行的面包屑按
+    #    `_build_section_path` 的契约本应为空），阈值**直接**收到 0.95——实测 0.9781。
+    #    这里不走「先落 M14 的 0.85 再提高」：执行顺序表把 Task 13 排在 Task 12 之前，
+    #    本 Task 落地的就是终值；0.85 对 0.9781 会放走 −0.13 的退化，门禁形同虚设。
+    assert stats["breadcrumb_coverage"] >= 0.95
     assert isinstance(stats["missing_sections"], list)
+
+
+# ═══════════════════════════════════════════
+# 组 6：条文说明段级规则（Task 13）
+# ═══════════════════════════════════════════
+
+# 段级规则的合成用例：段内**另起一章**（`# 2 基本规定`）是关键——它证明段级标志
+# 穿透了与正文同形的章标题（靠继承做不到，见裁定 R-T13-1）。
+_COMMENTARY_DOC = """# 1 总则
+1.0.1 本条规定了适用范围与基本要求，并明确了与其他标准的衔接关系。
+
+条文说明
+# 1 总则
+1.0.1 本条规定了适用范围的说明，供使用者参考，具体执行时以正文为准。
+
+# 2 基本规定
+2.0.1 本条说明了基本规定的编制依据与执行尺度，供使用者参考。
+"""
+
+
+def test_commentary_marker_opens_non_clause_region():
+    """裸行 `条文说明` 开启延伸至文末的非条文段：段内**标题型**行同样打标。"""
+    rows = parse_markdown(_COMMENTARY_DOC)
+    assert [(r["clause_no"], r["is_non_clause"]) for r in rows] == [
+        ("1.0.1", False),      # 段前：正文条文
+        ("1.0.1", True),       # 段内：与正文同号同名的条文说明
+        ("2.0.1", True),       # 段内**另起一章之后**仍打标 ← 本 Task 的核心
+    ]
+
+
+def test_commentary_marker_requires_exact_whole_line():
+    """**整行精确匹配**是安全边界：非整行的行不得开启该段。
+
+    反例集合含夹具真实行 `附：条文说明 ..... 247`（目次行，夹具行 231）与
+    夹具行 6843（含「条文说明」的正文长句）——两者剥掉受控前缀后仍带点引号/页码
+    或整句正文，故不命中。若改用 `is_non_clause_title` 作整行判据，6843 行会开启
+    该段并吞掉其后正文（探针实测：`content_chars` 445,893 → 445,871）。
+    """
+    for line in ("条文说明如下", "附：条文说明 ..... 247", "见条文说明"):
+        doc = ("# 1 总则\n"
+               "1.0.1 本条规定了适用范围与基本要求。\n\n"
+               f"{line}\n\n"
+               "1.0.2 本条规定了检验方法与合格判定标准。\n")
+        rows = parse_markdown(doc)
+        tail = [r for r in rows if r["clause_no"] == "1.0.2"]
+        assert tail, f"{line} 之后的正条文不应消失"
+        assert tail[0]["is_non_clause"] is False, f"{line} 误开非条文段"
+
+
+def test_numbered_commentary_marker_does_not_open_region():
+    """⚠️ 偏离简报（fix round 1）：**编号**标记不开启段级规则。
+
+    简报此处的反例集合原含 `"3.0.2 条文说明…"`，并断言其后条文 `is_non_clause is False`。
+    实测该断言**与 Task 3 的既有、被钉住的语义冲突**，任何实现都过不了：
+      ① `_candidate_of("3.0.2 条文说明…")` → `(3, '3.0.2', '条文说明')`（**是**候选行，
+         `rstrip(' .…')` 把省略号剥掉）；
+      ② 它是正文型行且 tail 命中 `is_non_clause_title` → `own_non=True` → `inherit_non_clause=True`
+         → 其后**正文型**编号行继承打标（`test_parse_tiaowenshuoming_numbered_title_retained`
+         与 `test_parse_tiaowenshuoming_body_rows_inherit` 明文钉住这一行为，本 Task 不许改，
+         见裁定 R-T13-3）；
+      ③ 该行**不**是本 Task 的段标记：`_is_commentary_marker("3.0.2 条文说明…")` 为 **False**。
+    故把它的**正确形态**单列：编号标记只走「继承」，靠**标题型行重置基调**收口——
+    与裸行标记的段级穿透形成判别（下例若把 `3.0.2 条文说明` 换成裸行 `条文说明`，
+    `2.0.1` 会因段级规则打标；实测该判别有效）。
+    """
+    numbered = ("# 1 总则\n1.0.1 本条规定了适用范围与基本要求。\n\n"
+                "3.0.2 条文说明\n\n"
+                "# 2 基本规定\n\n2.0.1 本条规定了基本规定的编制依据。\n")
+    rows = [r for r in parse_markdown(numbered) if r["clause_no"] == "2.0.1"]
+    assert rows and rows[0]["is_non_clause"] is False, "编号标记不应开启段级规则"
+
+
+def test_commentary_region_does_not_leak_backwards():
+    """段级标志单向：不得回溯打标标记行**之前**的条文。"""
+    rows = parse_markdown(_COMMENTARY_DOC)
+    assert rows[0]["clause_no"] == "1.0.1" and rows[0]["is_non_clause"] is False
+
+
+def test_commentary_prefix_variant_opens_region():
+    """法定写法 `附：条文说明` 同样开段。
+
+    受控前缀，与 `_LEGAL_NAME_SUFFIXES` 同一条设计原则（法定名称在真实文档里几乎
+    总带前缀或限定语，只认精确值会整块漏判）。182 号正文即写作「附：条文说明」。
+    """
+    doc = ("# 1 总则\n1.0.1 本条规定了适用范围与基本要求。\n\n"
+           "附：条文说明\n\n"
+           "1.0.1 本条规定了适用范围的说明，供使用者参考。\n")
+    rows = parse_markdown(doc)
+    tail = [r for r in rows if r["clause_no"] == "1.0.1"]
+    assert len(tail) == 2
+    assert tail[0]["is_non_clause"] is False and tail[1]["is_non_clause"] is True
+
+
+def test_cjj2_commentary_section_is_marked(cjj2_md):
+    """端到端：CJJ2 的条文说明段必须被打标（本 Task 的立项目标）。
+
+    实测 **168** 条（段前 4 条法定非条文块 + 段内 164 条）；阈值取 100 留重构余量。
+    """
+    marked = [c for c in parse_markdown(cjj2_md) if c["is_non_clause"]]
+    assert len(marked) > 100, f"仅 {len(marked)} 条被打标——条文说明段仍未生效"
