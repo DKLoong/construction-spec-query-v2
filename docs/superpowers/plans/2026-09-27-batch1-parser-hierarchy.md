@@ -588,12 +588,24 @@ def _candidate_of(line: str) -> tuple[int, str, str] | None:
         if _BARE_YEAR.match(clause_no):
             return None
         title_txt = _clean_title(_extract_title(raw_title))
-        # ⚠️ 目次/Contents 必须**先于**「无中文」检查返回为候选：
-        # `Contents` 是英文、无中文，若先做中文检查会把它筛掉，于是主循环里的
-        # `is_filter_non_clause_title` 永远不触发、`discard_section` 从未置位，
-        # 目录行会泄漏进下一条条文的正文（Task 1 复核 Important #1，已探针复现）。
+        # ⚠️ 本分支的判据顺序是**承重**的，四处顺序都不可随意调换：
+        #   ① 目次/Contents（过滤类）必须先于「无中文」检查 —— `Contents` 是英文、
+        #      无中文，若先做中文检查会把它筛掉，于是主循环里的 `is_filter_non_clause_title`
+        #      永远不触发、`discard_section` 从未置位，目录行会泄漏进下一条正文
+        #      （Task 1 复核 Important #1，已探针复现）。
+        #   ② 非条文块（前言/条文说明/公告…）必须先于 0 段检查 —— 否则
+        #      `### 1.0 条文说明` 这种「占位号 + 非条文标题」会被整条丢掉，
+        #      而不是以 is_non_clause=1 保留（Task 2 复核 Minor #1）。
+        #   ③ 0 段检查必须在 `#` 分支**存在** —— 否则 Task 3 删掉 Task 2 的脚手架行后，
+        #      `### 3.0` 重新成为节点，`test_zero_segment_is_not_a_node` 在本 Task
+        #      的检查点上失败（Task 2 复核 Minor #2，前瞻性缺陷）。
+        #   ④ 无中文检查最后。
         if is_filter_non_clause_title(title_txt):
             return (_level_from_clause_no(clause_no), clause_no, title_txt)
+        if is_non_clause_title(title_txt):
+            return (_level_from_clause_no(clause_no), clause_no, title_txt)
+        if _is_zero_segment_node(clause_no):
+            return None
         if not re.search(r'[一-鿿]', raw_title):
             return None
         return (_level_from_clause_no(clause_no), clause_no, title_txt)
