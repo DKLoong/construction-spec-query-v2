@@ -326,8 +326,12 @@ def _is_zero_segment_node(clause_no: str) -> bool:
 **并让旧循环消费它**（约 1 行）——否则本 Task 的行为断言在其检查点上不可能通过：
 
 ```python
-                # 在 `#` 路径算出 clause_no 之后、进黑名单链路之前：
-                if _is_zero_segment_node(clause_no):
+                # 在 `#` 路径算出 clause_no 之后、进黑名单链路之前。
+                # ⚠️ **必须带 None 守卫**：Task 1 已把 `_extract_clause_no` 改为
+                # 匹配不到返回 `None`，而 `### 前言` 这类标题正是 None——
+                # 漏掉这半个守卫会 `AttributeError: 'NoneType' object has no attribute 'split'`，
+                # 直接打挂明令不得弱化的 `test_parse_qianyan_retained_and_marked`。
+                if clause_no is not None and _is_zero_segment_node(clause_no):
                     continue        # R3：节位为 0 的占位号不成节点
 ```
 
