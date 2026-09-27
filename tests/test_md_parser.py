@@ -337,14 +337,53 @@ def test_announcement_and_reference_list_are_non_clause():
 
     ⚠ 上段是 brief 原文，实测两处**已过期**（Task 1/4 之后不再成立，本 Task 订正）：
       ① 「伪条文」出自旧 `_extract_clause_no` 的 `return title` 兜底，Task 1 已删；
-         现在这两条公告是**整段丢弃**（不是成伪条文），且标题不等于「公告」，
-         本 Task 的精确命中**覆盖不到**（已报控制器，属 routed observation 同类）。
+         CJJ2 的两条公告现在是**整段丢弃**（不是成伪条文）。其标题不等于「公告」，
+         故本用例的**精确命中**覆盖不到——已由 `_LEGAL_NAME_SUFFIXES` 的后缀匹配修正，
+         解析侧钉在 test_announcement_variants_from_cjj2_are_non_clause。
       ② 引用标准名录的列表项（`1 《…》GB 50010`）自 Task 4 起被裸数字判据排除，
          不再是 clause_no='1'/'10'，而是作为**纯文本**并进上一条的 content。
     本用例只断言谓词，不断言上述解析行为（解析侧证据见本次提交信息与 task-7-report）。
     """
     assert is_non_clause_title("公告") is True
     assert is_non_clause_title("引用标准名录") is True
+
+def test_announcement_variants_from_cjj2_are_non_clause():
+    """R8：CJJ2 的两条**真实**公告标题按法定名称后缀命中，且打标保留、不整段丢弃。
+
+    标题逐字照抄 `data/outputs/f543577f/f543577f.md:58` 与 `:62`。二者都带前缀/限定语，
+    「精确命中 `公告`」两者全漏（实测修复前这两条公告块连同批准正文被整段丢弃）。
+    同组复验反过匹配：后缀匹配不得把「公告发布要求」判成非条文。
+    """
+    t1 = "中华人民共和国住房和城乡建设部 公告"
+    t2 = "关于发布行业标准《城市桥梁工程施工与质量验收规范》的公告"
+    assert is_non_clause_title(t1) is True
+    assert is_non_clause_title(t2) is True
+    assert is_non_clause_title("公告发布要求") is False
+
+    md = (
+        "# 中华人民共和国住房和城乡建设部 公告\n"
+        "\n"
+        "第140号\n"
+        "\n"
+        "## 关于发布行业标准《城市桥梁工程施工与质量验收规范》的公告\n"
+        "\n"
+        "现批准《城市桥梁工程施工与质量验收规范》为行业标准，编号为 CJJ2-2008。\n"
+        "\n"
+        "### 前言\n"
+        "\n"
+        "前言正文。\n"
+    )
+    results = parse_markdown(md)
+    got = {c["clause_no"]: c for c in results}
+    # 两条公告都成为 is_non_clause=1 的条（而非整段丢弃）
+    assert t1 in got and got[t1]["is_non_clause"] is True
+    assert t2 in got and got[t2]["is_non_clause"] is True
+    # 公告正文随块保留（证明「打标保留」而非「直接过滤」）
+    assert "第140号" in got[t1]["content"]
+    assert "现批准" in got[t2]["content"]
+    # 紧随的 `### 前言` 照旧打标（不改变既有语义）
+    assert got["前言"]["is_non_clause"] is True
+
 
 def test_standard_wording_by_legal_name():
     """按法定名称匹配：`标准用词说明` 及其变体 `本规范用词说明` 都要命中。
