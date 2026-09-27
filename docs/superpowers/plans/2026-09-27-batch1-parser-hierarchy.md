@@ -58,8 +58,8 @@
 
 ## 执行顺序（工程评审 R1 + R2 决议，2026-09-27）
 
-本计划共 12 个 Task 编号，其中 **Task 5 与 Task 6 已不再实施**（R2 决议删除/合并）。
-Task 编号**不按执行顺序**，**必须按本表执行**：
+本计划共 **13** 个 Task 编号，其中 **Task 5 与 Task 6 已不再实施**（R2 决议删除/合并），
+**Task 13 为工程评审追加**（2026-09-27）。Task 编号**不按执行顺序**，**必须按本表执行**：
 
 | 序 | Task | 状态 | 为何在此位置 |
 |---|---|---|---|
@@ -74,7 +74,8 @@ Task 编号**不按执行顺序**，**必须按本表执行**：
 | 9 | Task 9 守恒断言（含变异验证） | 实施 | 门禁 |
 | 10 | Task 10 分类标签分布回归基线 | 实施 | 门禁 |
 | 11 | Task 11 重复条文号诊断 | 实施 | 诊断 |
-| 12 | Task 12 批一验收 | 实施 | 收口 |
+| 12 | **Task 13** 条文说明段级规则 | 实施 | **代码改动，必须在验收之前**——它同时修正覆盖率口径 |
+| 13 | Task 12 批一验收 | 实施 | **收口，必须最后**（含 M1–M16 收尾清单与七项指标对照） |
 
 > **为何 Task 4 在 Task 3 之前**：Task 4 决定「哪些行算候选行」，Task 3 的投票与
 > 主循环都建立在这个集合上。先收窄集合、再改循环，可以少写一遍。
@@ -1304,7 +1305,7 @@ breadcrumb_coverage / missing_sections，作为批一验收门禁。"
 | `content_chars` | 444,976（**含 PaddleOCR-VL 标记的原始口径**） | **445,893**（参考值；不作断言） |
 | **`content_chars_plain`** | **144,300**（`plain_text` 归一口径） | **145,256（+956）** ✓ 守恒成立 → **Task 9 的 `BASELINE_PLAIN_CHARS` 取 144,300** |
 | `fake_clause_no_count` | 124 | **6** ✓ |
-| `breadcrumb_coverage` | —（该列当时不存在） | **0.8541** |
+| `breadcrumb_coverage` | —（该列当时不存在） | **0.8541**（全行口径）→ **0.9781**（**只统计条文行**，口径经裁定 R-T13-4 修正，见下） |
 | `missing_sections` | — | **47 个** |
 
 > **⚠️ 覆盖率的口径澄清（Task 8 复核 Concern 3 + Important 后续更正）**：
@@ -1319,6 +1320,15 @@ breadcrumb_coverage / missing_sections，作为批一验收门禁。"
 > **两种口径下 D6.2 的方向一致**：缺口集中在**条文说明段**（它重复条文号却不带节标题），
 > **正文侧已接近完备**（0.97~0.99）→ **目次对齐的边际价值低，建议不做**。
 > 指标口径**保持 0.8541**（与已记录的基线可比 ✓），不要为了好看换成严格口径。
+>
+> **⚠️ 追加（裁定 R-T13-4，2026-09-27，Task 13 实施后）**：上面这段的「缺口集中在条文说明段」
+> 正是**弃用全行口径**的理由。`_build_section_path` 明确剔除非条文祖先，故**非条文行的面包屑
+> 按设计为空**——把按设计为空的量算作「不完整」不是严格，是**测错了对象**。
+> Task 13 的段级规则一次标记 164 条该段条文后，全行口径从 0.8541「跌」到 **0.7951**（−0.059），
+> 而**只统计条文行**的口径从 0.8589 **升到 0.9781**（+0.119）——后者才是面包屑机制的真实质量。
+> 真正残余的缺口由「126 条」收敛到 **16 条**，**D6.2 的结论因此被加强**：
+> 目次对齐的边际价值更低。`missing_sections` 口径不变。
+> （本口径在 `scripts/survey_structure.py` 落地，是本批**唯一**一处指标定义变更，`breadcrumb_coverage` 键名不变。）
 
 > **⚠️ 基线口径（实施中查出的坑）**：必须取**批次开始前的 main**，不是批次内的中间 commit。
 > 实测同一命令在三个状态下的值：`2011760`→144,300、`c0b4278`（Task 1/2/4 后）→144,363、
@@ -1333,6 +1343,12 @@ breadcrumb_coverage / missing_sections，作为批一验收门禁。"
 
 > **本 Task 是 CEO 评审 CRITICAL-1 的唯一防线**：旧实现下 124 条伪条文号持有
 > 252,514 字符（占 56%）。若改造让伪条文号消失而内容一并丢失，本条断言必须失败。
+>
+> **两层判据**（裁定 R-T7-6，实施中修正）：① 常驻测试（Step 1）＝ CJJ2 归一口径的
+> `content` 总量**不减少**（批次前 144,300 → 实测 **145,256**）；② 一次性核对（Step 3）
+> ＝ **字段无关**的严格守恒——旧实现每条条文的正文必须能在新输出的
+> `content + title + section_path` 中找到。**不要**改成「逐文件 `content` 不减少」：
+> 本批**合法地**在字段间搬移文本，那种比较会误报（详见 Step 3）。
 
 **Files:**
 - Create: `tests/test_parse_conservation.py`
@@ -1408,7 +1424,69 @@ def test_no_fake_clause_no_carries_bulk_content(cjj2_md):
 Run: `D:/Python/python.exe -m pytest tests/test_parse_conservation.py -v`
 Expected: PASS（若 FAIL，说明 Task 3–6 丢了内容，**必须先修再继续**）
 
-- [ ] **Step 3: 变异验证（证明断言可失败——不得省略）**
+- [ ] **Step 3: 字段无关的严格守恒核对（一次性验证，R-T7-6）**
+
+> **为什么不是一个常驻测试**：本核对要加载**批次前的解析器**（`git show 2011760:app/parser/md_parser.py`），
+> 依赖 git 历史（浅克隆/无历史环境会失败）。故做成一次性核对，结论写进报告。
+>
+> **为什么需要它**（裁定 R-T7-6，实施中由 Task 7 实施者以证据驳回我的初版裁定）：
+> 我原先要求「逐文件 `content` 不减少」——**那不是稳健判据**。本批**合法地**在字段间搬移文本：
+> content↔title（`64409491.md` −17、CJJ2 首轮 −8）与内节点标题移入 `parent_path`/`section_path`
+> （`content+title` 在 CJJ2 −515、JGJ107 −169）。这些**都不是丢失**，任何单字段的逐文件比较都会误报。
+> 故改为**字段无关**的严格检查：旧实现每条条文的正文，必须能在新输出的
+> `content + title + section_path` 里找到。
+
+**做法**（⚠️ 必须把脚本**写成文件**再跑：本环境 heredoc 会把 `\\` 折叠成 `\`，
+脚本里的 `\d` 等正则会静默变形）：
+
+```python
+# 临时脚本（跑完即删）：比对批次前/后的逐条文本，字段无关
+import importlib.util
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path("D:/CC-Workspace/construction-spec-query-v2")
+sys.path.insert(0, str(ROOT))
+from app.ai.text_clean import plain_text          # noqa: E402
+from app.parser.md_parser import parse_markdown   # noqa: E402
+
+# 1) 取批次前解析器（commit 2011760 = 批次开始前的 main）
+src = subprocess.run(["git", "show", "2011760:app/parser/md_parser.py"],
+                     cwd=ROOT, capture_output=True, text=True, check=True).stdout
+tmp = ROOT / "old_md_parser_probe.py"
+tmp.write_text(src, encoding="utf-8")
+spec = importlib.util.spec_from_file_location("old_md_parser_probe", tmp)
+old = importlib.util.module_from_spec(spec)
+sys.modules["old_md_parser_probe"] = old
+spec.loader.exec_module(old)
+
+md = (ROOT / "tests/fixtures/cjj2_source.md").read_text(encoding="utf-8")
+old_rows, new_rows = old.parse_markdown(md), parse_markdown(md)
+
+# 2) 新输出的「全字段可搜索文本」（不含 0 段的 section_path 已在 _build_section_path 里处理）
+haystack = "\n".join(
+    plain_text(f"{c['content']}\n{c['title']}\n{c['section_path']}") for c in new_rows)
+
+missing = []
+for c in old_rows:
+    t = plain_text(c["content"]).strip()
+    if len(t) < 20:            # 过短串（章号、页码）无判别力，且易因归一化差异假阳性
+        continue
+    if t not in haystack:
+        missing.append((c["clause_no"], len(t), t[:60]))
+
+print(f"旧条文中未能在新输出中找到的: {len(missing)} 条")
+for m in missing:
+    print("  ", m)
+tmp.unlink()                    # 清理临时文件
+```
+
+**判据**：未找到的条数 **≤ 1**（Task 3 实施者用同一手法实测：13 → 1，那 1 条是**封面文字的设计性处置**）。
+若显著多于 1，说明有正文在新实现里**没有落到任何字段**——属真丢失，**必须修完再进下一个 Task**。
+
+- [ ] **Step 4: 变异验证（证明断言可失败——不得省略）**
 
 变异体取**工程评审 SC-1 实测过的真实缺陷**：把 Task 2 的 `_is_zero_segment_node`
 判据放宽回「任意段为 0」，于是所有 `X.0.Y` 条文被跳过（实测 JGJ107 丢 39 条 /
@@ -1444,7 +1522,7 @@ D:/Python/python.exe -m pytest tests/test_parse_conservation.py -v
 
 **判据**：第 3 步若仍然 PASS，说明守恒断言无效——**必须先修断言再继续，不得进入 Task 10**。
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
 git add tests/test_parse_conservation.py
@@ -1452,7 +1530,8 @@ git commit -m "test: 新增正文守恒断言（CRITICAL-1 的唯一防线）
 
 旧实现下 124 条伪条文号持有 252,514 字符（占 content 56%）。断言基于
 plain_text 归一后的字符总数（避免标记残留导致自然波动），并做了变异验证：
-模拟内容丢失时断言必须失败。"
+模拟内容丢失时断言必须失败。另做了字段无关的严格守恒核对（R-T7-6）：
+旧实现每条条文的正文必须能在新输出的 content+title+section_path 中找到。"
 ```
 
 ---
@@ -1734,10 +1813,10 @@ git commit -m "feat: 重复条文号诊断 + R14 分组键按需隔离
 | M6 | Task 2 Minor #4 | `parse_markdown` 的 docstring 规则清单未提 R3 与 R14 | **本批修**：补两条 |
 | M7 | Task 4 Minor #2 | 提交信息 `66f88bf` 未说明改了既有用例夹具的理由（计划 Global Constraints 要求） | **留给历史**：已在测试 docstring 与报告中留痕，不追改提交 |
 | M8 | Task 3 Minor #2 | 实施者报告曾过度描述 `test_parse_appendix_clauses` 的退化（复核者核实该用例**未被削弱**） | **不改**：报告层面的事实更正，代码无动作 |
-| M14 | Task 8 复核 Minor #2/#3（**门禁自身的测试偏弱**） | ① `tests/test_md_parser.py:953` 的 `0.0 <= coverage <= 1.0` **恒真**（`complete <= len(clauses)` 且 `round(...,4)` 保范围），加上 `isinstance(missing_sections, list)`（空表也过）→ 该用例**只有 1 条可证伪断言**；复核者用三种变异（`level-1`、去掉 `missing_sections` 的 R3、去掉 `if segs`）证明它**全都照过**。② `missing_sections` 里的 R3 剔除（`scripts/survey_structure.py:180`）**无回归护栏**：删掉它 47→51 而测试仍绿 | **本批修**（门禁是后续所有 Task 的判据，它的测试不能是摆设）：把断言改成**记录基线**型（`coverage >= 0.85`）并断言 0 段节不出现在 `missing_sections`（如 `"3.0" not in ...`）——这同时关掉 ① 与 ② |
+| M14 | Task 8 复核 Minor #2/#3（**门禁自身的测试偏弱**） | ① `tests/test_md_parser.py:953` 的 `0.0 <= coverage <= 1.0` **恒真**（`complete <= len(clauses)` 且 `round(...,4)` 保范围），加上 `isinstance(missing_sections, list)`（空表也过）→ 该用例**只有 1 条可证伪断言**；复核者用三种变异（`level-1`、去掉 `missing_sections` 的 R3、去掉 `if segs`）证明它**全都照过**。② `missing_sections` 里的 R3 剔除（`scripts/survey_structure.py:180`）**无回归护栏**：删掉它 47→51 而测试仍绿 | **本批修**（门禁是后续所有 Task 的判据，它的测试不能是摆设）：把断言改成**记录基线**型（`coverage >= 0.85`）并断言 0 段节不出现在 `missing_sections`（如 `"3.0" not in ...`）——这同时关掉 ① 与 ②。⚠️ **时序已变**：执行顺序表把 Task 13 排在 Task 12 之前，**Task 13 Step 4 会先把该断言直接换成 `>= 0.95`**（覆盖率口径同时修正为「只统计条文行」，实测 0.9781）。故本项落到 Task 12 时**只须确认阈值仍是 `>= 0.95`**，**不得降回 0.85**（会放走 −0.13 的退化）。M14 的另一半（`missing_sections` 的 R3 护栏）不受时序影响，照做 |
 | M15 | Task 8 复核 Minor #5/#6 | 脚本 docstring 写「产出五项指标」却列了六项（提交信息同）；`" > "` 面包屑分隔符**硬编码两处**（解析器 `md_parser.py:340` 是第三处无名字面量）；`4`（小数位）与 `20`（预览长度）为无名显示常量 → 违计划「常量集中、无内联魔法数字」 | **本批修**：docstring 改「六项」；抽模块级 `PATH_SEP` / `COVERAGE_DECIMALS` / `MISSING_PREVIEW` |
 | M16 | Task 8 复核 Minor #8 | `fake_clause_no_count` = 6 **不等于 6 个缺陷**：其中含 `附录A` —— 它是**合法附录编号**，只因不含阿拉伯数字而被该指标计数（判据 verbatim 来自 brief） | **本批修**（文档层面）：在该指标处加注释，避免后续 Task 把残余的 6 当作信号追 |
-| M12 | Task 8 复核 Important #1（**根因已更正**；既有状况但落在批次目标上） | ⚠️ **我原先写的根因是错的**（曾写「源文件里没有『条文说明』标题行」）。**实际：源里有，夹具行 6836 就是裸行 `条文说明`**（无 `#`、无编号）。`is_non_clause_title("条文说明")` **返回 True**（黑名单本可命中），但 `_candidate_of("条文说明")` **返回 None** —— **无编号的裸行从不成为候选行** → 整行被吞进上一条 `content`、`inherit_non_clause` 从未置位 → 该段条文**全部未打标**（898 条里只标了 5 条）。后果：条文说明段与正文**在库里无法区分** → 会进检索结果，批二 §4.5 那个「包含非条文内容」复选框**对 CJJ2 不起作用**。这与 Task 7 被我推迟的「routed 观察 2（裸 `目次` 行）」**同根**——那个观察被我**降权错判**了 | **本批修 → 立为 Task 13**（把非条文的识别从「仅 `#` 路径」扩到**无编号裸行的精确匹配**）。原任务 11 的处置不再需要（重复条文号诊断仍由 Task 11 做，但根因不在此）|
+| M12 | Task 8 复核 Important #1（**根因已更正**；既有状况但落在批次目标上） | ⚠️ **我原先写的根因是错的**（曾写「源文件里没有『条文说明』标题行」）。**实际：源里有，夹具行 6836 就是裸行 `条文说明`**（无 `#`、无编号）。`is_non_clause_title("条文说明")` **返回 True**（黑名单本可命中），但 `_candidate_of("条文说明")` **返回 None** —— **无编号的裸行从不成为候选行** → 整行被吞进上一条 `content`、`inherit_non_clause` 从未置位 → 该段条文**全部未打标**（898 条里只标了 5 条）。后果：条文说明段与正文**在库里无法区分** → 会进检索结果，批二 §4.5 那个「包含非条文内容」复选框**对 CJJ2 不起作用**。这与 Task 7 被我推迟的「routed 观察 2（裸 `目次` 行）」**同根**——那个观察被我**降权错判**了 | **本批修 → 立为 Task 13**。⚠️ **处置在我首版写完后又被推翻一次**：首版判为「让裸行成为候选行」（改 `_candidate_of` 的无编号路径），实施者照做实测**打标数 5→5 零增长**且丢 5 字符——真因两层都不在 `_candidate_of`（① 被内节点判据丢弃；② 段内同名章标题重置基调、无局部规则可辨）。**最终修法＝文档级段规则**（整行命中标记起至文末），见 Task 13 的裁定 R-T13-1~4。真实语料取证：spec20 该段 id 1362~1526（尾部 165 行），其中 138 行与正文同号——即 Task 11 那批重复号的主力。原任务 11 的处置不再需要（重复条文号诊断仍由 Task 11 做，但根因不在此）|
 | M13 | Task 8 复核 Concern 5（工具链，全仓影响） | **pyright 不分析 `scripts/*.py`**：`pyrightconfig.json` 的 `include` 是 `["app","tests"]`。实测往 `scripts/` 注入类型错误后根 CLI 仍报 **0 errors**；指定路径才报错。故**此前所有对脚本的「pyright 0 errors」均为空话** | **本批修**：把 `scripts` 加入 `include`（全仓变更，需评估既有脚本的存量错误量后再定；若存量错误多则先记为已知局限并在注释写明「脚本须用显式路径跑 pyright」）|
 | M10 | Task 7 复核 Minor #1（**潜在生产风险，语料影响 0**） | 主循环用 `is_non_clause_title(title or tail)` 做打标：对**正文型**行传入的是它自己的内容 `tail`，于是「内容以『公告』/『用词说明』结尾」的条文会被打成 `is_non_clause=1` → **被排除出检索与 AI 分类**，并经 `inherit_non_clause` 传染后续行（实测触发形态：`1.0.1 …并以住房和城乡建设部公告`、`5.2.1 …应按本规范用词说明` 均返回非空 tail 候选）。今日语料六份全量扫描 11 处命中**全为真公告/用词说明**，故影响 0 | **本批修**，但**不要用复核者建议的 `title` 非空门** —— 我实测证实那会**倒退立项目标**：CJJ2 的长公告（`关于发布行业标准《…》的公告`，25 字）`_looks_like_title` 判 False → `title == ""` → 加门后不再打标。**正确形状**：给候选行加「是否来自 `#` 路径」的来源标记（`_candidate_of` 已知道），把后缀匹配限定在**标题/`#` 路径**上；并要求一条「正文句以『公告』结尾不被误标」的钉住用例 |
 | M11 | Task 7 复核 Minor #2 | `引用标准名录` 只有谓词级断言，**无解析级用例**（它真正修的是「spec20 的该块不再并入上一条」）；行为已实测存在但无回归护栏 | **本批修**：补一条 spec20 形状的夹具 |
@@ -1788,90 +1867,290 @@ git commit -m "docs: 批一验收结论（六项指标实测对照）
 
 ---
 
-## Task 13: 非条文识别扩到「无编号裸行」（工程评审追加，2026-09-27）
+## Task 13: 条文说明段级规则（工程评审追加 + 实施后裁定重写，2026-09-27）
 
-> **来源**：Task 8 复核的 Important #1 —— 它更正了我的错误根因。CJJ2 源里**有** `条文说明`（夹具行 6836，**裸行、无 `#`、无编号**），
-> 而 `_candidate_of("条文说明")` 返回 `None`（无编号 → 不成候选行）→ 整行被吞进上一条 `content`、`inherit_non_clause` 从未置位
+> **来源**：Task 8 复核的 Important #1 —— 它更正了我的错误根因。CJJ2 源里**有** `条文说明`（夹具行 6836，**裸行、无 `#`、无编号**）
 > → **该段条文全部未打标**（898 条里只标了 5 条）→ 条文说明与正文在库里无法区分，批二 §4.5 的「包含非条文内容」复选框**对 CJJ2 失效**。
 > 这与 Task 7 被我**降权错判**的那条观察（裸 `目次` 行）同根。
 
+> **⚠️ 本节经实施后裁定重写（2026-09-27）**：首版把修法定为「让裸行成为候选行」（改 `_candidate_of`）。
+> 实施者照做并实测：**打标数 5 → 5（零增长）**，`content_chars_plain` 反而 **−5**。根因两层，**都不在 `_candidate_of`**：
+> ① 裸 `条文说明` 是标题型且无自身正文 → 被内节点判据（`has_own_body`）丢弃，字符凭空消失；
+> ② 条文说明段内每章都是 `## N 章名`，与**正文**章标题**同形且同为 level 1**，会把 level 1 的 `条文说明` 弹出栈；
+> 而现行语义「标题型行以自身裁定为准并**重置基调**」使段内基调在每个 `## N 章名` 处清零 → 段内条文一律 `is_non=False`。
+> **没有任何局部规则能区分**两处同名章标题（实测：连「非条文祖先」也无从判断，因为祖先已被弹出栈）。
+> 结论：修法必须是**文档级段规则**。首版改动因此**撤销**（见裁定 R-T13-2）。
+
 **Files:**
-- Modify: `app/parser/md_parser.py`（`_candidate_of` 的非 `#` 分支）
+- Modify: `app/parser/md_parser.py`（新增 `_COMMENTARY_MARKER`/`_COMMENTARY_PREFIXES`/`_is_commentary_marker` + 主循环两行；**不动** `_candidate_of`）
+- Modify: `scripts/survey_structure.py`（覆盖率口径修正，R-T13-4）
 - Test: `tests/test_md_parser.py`
 
 **Interfaces:**
-- Consumes: `is_non_clause_title`、`is_filter_non_clause_title`（Task 7 扩充后）
-- Produces: 无新接口
+- Consumes: 无（本 Task 不再依赖 `is_non_clause_title` 的变体兜底）
+- Produces: 模块级常量 `_COMMENTARY_MARKER`、谓词 `_is_commentary_marker(line) -> bool`
 
-- [ ] **Step 1: 写失败测试**
+### 裁定（控制器，均已实测取证）
+
+**R-T13-1 修法＝文档级段规则。** 整行命中条文说明标记时，开启一个**延伸到文末**的非条文段；段内**所有**行（含标题型行）一律 `is_non_clause=True`。
+依据：182 号（第六、七条）规定条文说明位于文档**末尾**（在附录、用词说明、引用标准名录之后）。
+实测：夹具标记行在 **6836**，其后至文末 497 行即该段；真实库 `spec_id=20` 的该段为 **id 1362~1526（尾部 165 行）**，
+其中 **138 行与正文同号**——正是 Task 11 那批重复条文号的主力，此前**全部未打标**。
+
+**R-T13-2 触发用「原始行」，撤销首版对 `_candidate_of` 的改动。** 判据写成主循环里的
+`if _is_commentary_marker(line):`，**不**让标记行成为候选行。同一探针实测的三方对照：
+
+| 实现 | 打标数 | `content_chars_plain` | 覆盖率（**只条文行**口径） | 伪条文号 |
+|---|---|---|---|---|
+| 首版：候选门（现行工作区） | 5 | 145,251（**−5**） | 0.8589 | 6 |
+| **裁定：撤候选门 + 段级规则** | **168** | **145,256（无损）** | **0.9781** | 6 |
+| 段级 + 标记行自成一格 | 169 | 145,251（−5） | 0.9781 | **7 ❌** |
+
+裁定取第二行：**零字符损失**（满足 Global Constraints 的守恒口径）、改动面最小、伪条文号不变。
+候选门的唯一可测效果是把标记行的 5 字符「搬」没了；其泛化收益（让裸 `目次`/`前言` 行成候选）
+在夹具上**零触发**（已核：夹具无裸 `目次`/`Contents` 行），故不采纳**未取证**的加宽
+——这与我在 Task 7 推迟该观察的理由同源，只是这次连「裸行不成候选」这个前提也不再承重。
+
+**R-T13-3 段级标志必须与 `inherit_non_clause` 分开。** 后者保持「标题型行重置基调」语义
+（`test_parse_qianyan_retained_and_marked` 守之，且它是 Task 3 的既有行为）；新的段级标志是**单向、到文末、独立**的变量。
+两者若合成一个，`## 1 总则` 会把前言段的基调外溢到其后全部条文（旧实现的已知缺陷）。
+
+**R-T13-4 覆盖率口径修正（`scripts/survey_structure.py`）＝只统计条文行。**
+段级规则会让**全行口径**的覆盖率 0.8541 → **0.7951**（−0.059），但这是**指标口径错**、不是回归：
+`_build_section_path` 的 docstring 明文写「非条文块不进面包屑」，故**非条文行的面包屑按设计为空**，
+把它算作「不完整」测不到任何东西。改为只对 `is_non_clause=False` 的行统计后：**0.8589 → 0.9781（+0.119）**。
+这不是「换个口径让数字变好看」——**本计划第 1319 行早已记录**：缺口集中在**条文说明段**（它重复条文号却不带节标题），
+**正文侧已接近完备（0.97~0.99）**。段级规则标记掉的正是这批行，故真正残余的缺口从「126 条」收敛到 **16 条**，
+**D6.2「目次对齐边际价值低」的结论因此被加强，而非被推翻**。`missing_sections` 口径不变（预期仍 47）。
+
+- [ ] **Step 0: 先撤销首版改动（候选门）**
+
+首版（未提交）在 `_candidate_of` 的非 `#` 分支加了裸行候选门。按 R-T13-2 **撤销**它，
+但保留其**知识**：把「无编号裸行不成候选」写成 `_candidate_of` docstring 里的一行既有行为说明
+（不是缺陷，是设计：候选行必须带编号或 `#`；条文说明段改由主循环的段级规则处理）。
+
+```bash
+git checkout -- app/parser/md_parser.py tests/test_md_parser.py
+```
+
+- [ ] **Step 1: 写失败测试（5 条）**
 
 ```python
-def test_bare_non_clause_line_is_a_candidate():
-    """无编号裸行的非条文标题（如源里的 `条文说明`）必须成为候选行。
+# 段级规则的合成用例：段内**另起一章**（`# 2 基本规定`）是关键——它证明段级标志
+# 穿透了与正文同形的章标题（靠继承做不到，见裁定 R-T13-1）。
+_COMMENTARY_DOC = """# 1 总则
+1.0.1 本条规定了适用范围与基本要求，并明确了与其他标准的衔接关系。
 
-    实测背景：CJJ2 夹具行 6836 是裸行 `条文说明`（无 `#`、无编号）。
-    `is_non_clause_title("条文说明")` 本就返回 True，但 `_candidate_of` 因「无编号」
-    返回 None → 整行被吞进上一条 content、打标与继承都不发生 → 该段 800+ 条
-    全部未被标 `is_non_clause`（898 条里只标了 5 条）。
+条文说明
+# 1 总则
+1.0.1 本条规定了适用范围的说明，供使用者参考，具体执行时以正文为准。
+
+# 2 基本规定
+2.0.1 本条说明了基本规定的编制依据与执行尺度，供使用者参考。
+"""
+
+
+def test_commentary_marker_opens_non_clause_region():
+    """裸行 `条文说明` 开启延伸至文末的非条文段：段内**标题型**行同样打标。"""
+    rows = parse_markdown(_COMMENTARY_DOC)
+    assert [(r["clause_no"], r["is_non_clause"]) for r in rows] == [
+        ("1.0.1", False),      # 段前：正文条文
+        ("1.0.1", True),       # 段内：与正文同号同名的条文说明
+        ("2.0.1", True),       # 段内**另起一章之后**仍打标 ← 本 Task 的核心
+    ]
+
+
+def test_commentary_marker_requires_exact_whole_line():
+    """**整行精确匹配**是安全边界：非整行的行不得开启该段。
+
+    反例集合含夹具真实行 `附：条文说明 ..... 247`（目次行，夹具行 231）与
+    夹具行 6843（含「条文说明」的正文长句）——两者剥掉受控前缀后仍带点引号/页码
+    或整句正文，故不命中。若改用 `is_non_clause_title` 作整行判据，6843 行会开启
+    该段并吞掉其后正文（探针实测：`content_chars` 445,893 → 445,871）。
     """
-    from app.parser.md_parser import _candidate_of
-    assert _candidate_of("条文说明") is not None
-    assert _candidate_of("前言") is not None
+    for line in ("3.0.2 条文说明…", "条文说明如下", "附：条文说明 ..... 247", "见条文说明"):
+        doc = ("# 1 总则\n"
+               "1.0.1 本条规定了适用范围与基本要求。\n\n"
+               f"{line}\n\n"
+               "1.0.2 本条规定了检验方法与合格判定标准。\n")
+        rows = parse_markdown(doc)
+        tail = [r for r in rows if r["clause_no"] == "1.0.2"]
+        assert tail, f"{line} 之后的正条文不应消失"
+        assert tail[0]["is_non_clause"] is False, f"{line} 误开非条文段"
 
-def test_bare_text_that_is_not_a_non_clause_title_stays_content():
-    """**精确匹配**是安全边界：只有整行恰好等于非条文名称才算候选行。
 
-    正文行里出现这些词（如「见目次」「按本规范用词说明执行」）**不得**成为候选，
-    否则会把其后正文整段吞掉（Task 7 复核曾指出的回归风险，用精确匹配规避）。
+def test_commentary_region_does_not_leak_backwards():
+    """段级标志单向：不得回溯打标标记行**之前**的条文。"""
+    rows = parse_markdown(_COMMENTARY_DOC)
+    assert rows[0]["clause_no"] == "1.0.1" and rows[0]["is_non_clause"] is False
+
+
+def test_commentary_prefix_variant_opens_region():
+    """法定写法 `附：条文说明` 同样开段。
+
+    受控前缀，与 `_LEGAL_NAME_SUFFIXES` 同一条设计原则（法定名称在真实文档里几乎
+    总带前缀或限定语，只认精确值会整块漏判）。182 号正文即写作「附：条文说明」。
     """
-    from app.parser.md_parser import _candidate_of
-    for s in ("见目次", "应按本规范用词说明执行", "条文说明如下", "本规范用词说明（补充）"):
-        assert _candidate_of(s) is None, s
+    doc = ("# 1 总则\n1.0.1 本条规定了适用范围与基本要求。\n\n"
+           "附：条文说明\n\n"
+           "1.0.1 本条规定了适用范围的说明，供使用者参考。\n")
+    rows = parse_markdown(doc)
+    tail = [r for r in rows if r["clause_no"] == "1.0.1"]
+    assert len(tail) == 2
+    assert tail[0]["is_non_clause"] is False and tail[1]["is_non_clause"] is True
 
-def test_tiaowenshuoming_section_is_marked(cjj2_md):
-    """端到端：CJJ2 的条文说明段条文必须被打标（本 Task 的立项目标）。"""
+
+def test_cjj2_commentary_section_is_marked(cjj2_md):
+    """端到端：CJJ2 的条文说明段必须被打标（本 Task 的立项目标）。
+
+    实测 **168** 条（段前 4 条法定非条文块 + 段内 164 条）；阈值取 100 留重构余量。
+    """
     marked = [c for c in parse_markdown(cjj2_md) if c["is_non_clause"]]
     assert len(marked) > 100, f"仅 {len(marked)} 条被打标——条文说明段仍未生效"
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -k "bare_non_clause or tiaowenshuoming_section" -v`
-Expected: FAIL — `_candidate_of("条文说明")` 为 `None`；打标数仅 5
+Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -k "commentary or cjj2_commentary_section" -v`
+Expected: 前 4 条中除 `test_commentary_region_does_not_leak_backwards` 外均应 FAIL（该条在实现前后都过，是「必须保持」的边界用例）；
+`test_cjj2_commentary_section_is_marked` FAIL 且报「仅 5 条被打标」
 
-- [ ] **Step 3: 实现**
+- [ ] **Step 3: 实现（主循环四处，`_candidate_of` 不动）**
 
-在 `_candidate_of` 的非 `#` 分支、**要求编号模式之前**加一段；顺序关键（必须在 `_match_clause_line` 之前）：
+**3a.** 常量与谓词（放在 `_LEGAL_NAME_SUFFIXES` 之后）：
 
 ```python
-    s = line.strip()
-    # 无编号裸行的**非条文标题**（源里常见：`条文说明`、`前言` 独占一行、无 `#` 也无编号）：
-    # 必须成为候选行，否则整行被吞进上一条 content，且黑名单与 inherit_non_clause 都不生效
-    # （实测 CJJ2 的条文说明段因此 898 条只标了 5 条）。
-    # ⚠️ 判据必须是**整行精确匹配**：正文里出现这些词（「见目次」）不得成候选，
-    #    否则会把其后正文整段吞掉（目次类还会触发 discard_section，风险更大）。
-    if s and (is_non_clause_title(s) or is_filter_non_clause_title(s)):
-        return (1, s, s)
+# ── 条文说明段（文档级）─────────────────────────────
+# 182 号（第六、七条）规定条文说明位于文档**末尾**（在附录、用词说明、引用标准名录之后），
+# 故一旦出现该段的起始标记，其后至文末一律为非条文。
+# 实测（夹具 tests/fixtures/cjj2_source.md）：标记在行 6836，其后 164 条全部打标，
+# 段前 734 条仅 4 条被打标（两条公告 + 前言 + 本规范用词说明，均合法）→ **零假阳性**。
+# 真实语料（data/spec_query.db spec_id=20）：该段为 id 1362~1526 共 165 行，
+# 其中 138 行与正文**同号**（Task 11 那批重复条文号的主力），此前全部未打标。
+_COMMENTARY_MARKER = "条文说明"
+
+# 法定名称的**受控前缀**（与 `_LEGAL_NAME_SUFFIXES` 同一设计原则：法定名称在真实文档里
+# 几乎总带前缀或限定语，只认精确值会整块漏判）。182 号正文写作「附：条文说明」，
+# CJJ2 的 md 里则是无前缀的裸行 `条文说明`——两者都要认。
+# ⚠️ 小心目次行：`附：条文说明 ..... 247`（夹具行 231）剥掉前缀后仍带点引号与页码 → 不命中 ✓
+_COMMENTARY_PREFIXES = ("附：", "附:")
+
+
+def _is_commentary_marker(line: str) -> bool:
+    """该行（**整行**）是否为条文说明段的起始标记。
+
+    必须是整行精确匹配（剥掉受控前缀后），**不能**复用 `is_non_clause_title`：
+    后者另含三条非精确规则（以「前言」开头、含「条文说明」、以法定名称结尾），
+    用作**整行**判据会把正文行误判为段标记——实测夹具行 6843（含「条文说明」的
+    正文长句）会因此开启该段，把其后正文整段打标。
+    """
+    t = line.strip()
+    for prefix in _COMMENTARY_PREFIXES:
+        if t.startswith(prefix):
+            t = t[len(prefix):].strip()
+            break
+    return t == _COMMENTARY_MARKER
 ```
 
-- [ ] **Step 4: 跑测试确认通过 + 重测六项指标与守恒**
+**3b.** 主循环状态（紧邻 `inherit_non_clause`）：
+
+```python
+    inherit_non_clause = False      # 条文说明段：正文型行继承打标
+    in_commentary = False           # 条文说明段（文档级）：单向、至文末，见裁定 R-T13-3
+```
+
+**3c.** 触发（循环体**第一行**，在 `_candidate_of` 之前——标记行本身不改其归属，只开段）：
+
+```python
+    for line in lines:
+        if _is_commentary_marker(line):
+            in_commentary = True
+        cand = _candidate_of(line)
+```
+
+**3d.** 合入打标（替换 `is_non = own_non if title else (own_non or inherit_non_clause)` 那一行）：
+
+```python
+        # ⚠️ `in_commentary` 与 `inherit_non_clause` **必须分开**（裁定 R-T13-3）：
+        # 后者保持「标题型行以自身裁定为准并**重置基调**」的既有语义（否则 `## 1 总则`
+        # 会把前言段的基调外溢到其后全部条文，`test_parse_qianyan_retained_and_marked` 守之）；
+        # 而条文说明段恰恰需要**穿透同名章标题**——段内每个 `## N 章名` 与正文章标题
+        # 同形且同为 level 1，会把 level 1 的 `条文说明` 弹出栈，故没有任何局部规则
+        # 能区分二者（实测）。依据是 182 号对文档顺序的规定：条文说明在末尾，
+        # 故「段内」≡「其后至文末」。
+        is_non = ((own_non if title else (own_non or inherit_non_clause))
+                  or in_commentary)
+        inherit_non_clause = is_non
+```
+
+**3e.** `parse_markdown` 的 docstring 补一条（紧邻「黑名单行为」清单）：
+
+```markdown
+    - 条文说明段（整行 `条文说明` / `附：条文说明`）→ 自该行起**至文末**全部打标
+      （文档级段规则，依据 182 号：条文说明位于文档末尾；见 `_is_commentary_marker`）
+```
+
+- [ ] **Step 4: 修正覆盖率口径（`scripts/survey_structure.py`，裁定 R-T13-4）**
+
+把覆盖率改为**只统计条文行**（`is_non_clause=False`），键名 `breadcrumb_coverage` 不变：
+
+```python
+    # ⚠️ R-T13-4：覆盖率**只对条文行**统计。`_build_section_path` 的 docstring 明文写
+    # 「非条文块不进面包屑」，故**非条文行的面包屑按设计为空**，把它算作「不完整」
+    # 测不到任何东西。段级规则（Task 13）一次新增 164 条非条文行后，若仍按全行统计，
+    # 覆盖率会从 0.8541「跌」到 0.7951——那是口径错，不是回归；改为只统计条文行后
+    # 为 0.8589 → 0.9781（真实面包屑质量提高，与 D6.2 记录的正文侧 0.97~0.99 一致）。
+    real = [c for c in clauses if not c["is_non_clause"]]
+    complete = 0
+    for c in real:
+        segs = [s for s in (c.get("section_path") or "").split(" > ") if s]
+        if segs and len(segs) == _expected_ancestor_count(c["clause_no"]):
+            complete += 1
+    coverage = complete / len(real) if real else 0.0
+```
+
+同时把脚本 docstring 的第 5 项描述改为「**条文行**的 section_path 段数 == 应有祖先数的占比」。
+`missing_sections` 口径**不变**（预期仍 47，若变化须在报告里列出）。
+
+**同步修门禁阈值（注意时序）**：执行顺序表把 **Task 13 排在 Task 12（验收）之前**，
+故 M14 此刻**尚未落地**——覆盖率断言仍是恒真的 `0.0 <= coverage <= 1.0`（`tests/test_md_parser.py` 内）。
+本步**直接**把它换成 `>= 0.95`（新口径实测 0.9781）：**不要**先落 M14 的 `0.85` 再提高，
+也**不要**让 Task 12 把它降回 `0.85`（0.85 对 0.9781 会放走 −0.13 的退化，门禁形同虚设）。
+
+- [ ] **Step 5: 跑测试确认通过 + 七项指标对照**
 
 Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -v`
-Expected: PASS。并重跑 `scripts/survey_structure.py tests/fixtures/cjj2_source.md`：
-`is_non_clause` 打标数应显著上升；`clause_count` 与 `content_chars_plain` **不得减少**
-（本改动的效果是「吞进 content 的那一行改为独立打标条文」，属字段搬移）。
+Expected: PASS（5 条新用例全绿）。再跑 `D:/Python/python.exe scripts/survey_structure.py tests/fixtures/cjj2_source.md`，
+逐项对照（**实测值**来自探针，实施后须复现）：
 
-- [ ] **Step 5: pyright + 提交**
+| 指标 | 期望 | 判定 |
+|---|---|---|
+| `clause_count` | 898 | 不得减少 |
+| `content_chars` | 445,893 | **不得减少** |
+| `content_chars_plain` | **145,256** | **不得减少**（撤候选门后恢复无损） |
+| `fake_clause_no_count` | 6 | 不得增加（**7 即失败**，说明标记行成了条文） |
+| `breadcrumb_coverage`（新口径） | **0.9781** | 不得低于 0.8589 的旧口径值 |
+| `missing_sections` | 47 | 变化须列出 |
+| `is_non_clause` 打标数 | **168** | **> 100**，且段前不得被误标（应恰为 4 条 + 段内 164 条） |
+
+另须核：全文 `is_non_clause=True` 的行里**没有** `clause_no` 含「条文说明」的（标记行本身不该成条文）。
+
+- [ ] **Step 6: pyright + 提交**
 
 ```bash
-/d/nodejs/npm-global/pyright app/parser/md_parser.py   # 注意：根 CLI 不分析 scripts/
-git add app/parser/md_parser.py tests/test_md_parser.py
-git commit -m "fix: 无编号裸行的非条文标题成为候选行，修 CJJ2 条文说明段未打标
+/d/nodejs/npm-global/pyright app/parser/md_parser.py tests/test_md_parser.py
+# scripts/ 不在 pyrightconfig 的 include 内（M13）→ 显式给路径才能查到
+/d/nodejs/npm-global/pyright scripts/survey_structure.py
+git add app/parser/md_parser.py scripts/survey_structure.py tests/test_md_parser.py
+git commit -m "fix: 条文说明段级规则，修 CJJ2 条文说明段全部未打标
 
-源里的 条文说明 是裸行（无 #、无编号）。旧判据要求编号模式 → 它不是候选行 →
-整行被吞进上一条 content、inherit_non_clause 从未置位 → 898 条只标了 5 条，
-条文说明与正文在库里无法区分（批二「包含非条文内容」复选框对 CJJ2 失效）。
-判据用整行精确匹配，避免「见目次」这类正文行成候选。"
+源里的 条文说明 是裸行（无 #、无编号）。原判据要求编号模式 → 不成候选行；
+即便让它成候选行（首版做法）也无用：段内每章 ## N 章名 与正文章标题同形且同为
+level 1，会把 条文说明 弹出栈，靠继承打标的基调在每个章标题处被重置。
+故改为文档级段规则：整行命中标记（含受控前缀 附：）起至文末一律打标 —— 依据
+182 号对文档顺序的规定（条文说明位于末尾）。实测 5 -> 168 条，零假阳性
+（段前 4 条为两条公告/前言/用词说明），content_chars_plain 无损失。
+覆盖率口径同时修正为「只统计条文行」（非条文行面包屑按设计为空）。"
 ```
 
 ---
