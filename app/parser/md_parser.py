@@ -28,6 +28,21 @@ def _level_from_clause_no(clause_no: str) -> int:
     return min(1 + clause_no.count('.'), _MAX_LEVEL)
 
 
+def _is_zero_segment_node(clause_no: str) -> bool:
+    """R3（182 号第三十五条）：章内不分节时，条编号中**对应节的编号**用 "0" 表示。
+
+    因此 `X.0.Y` 里的 `0` 段表示「本章不分节」：它不构成一个层级节点，
+    所以不存在 `3.0` 这个「节」，`3.0.1` 的父链直接是 [`3 章名`]。
+
+    ⚠️ 判据只能看**末段**：末段为 `'0'`（如 `3.0`）才是节位占位、不当节点；
+    `3.0.1` / `1.0.2` 的末段是条号，它们**本身是条，必须照常入库**。
+    若写成「任意段为 0」，会把所有 `X.0.Y` 条文一起丢掉——实测 JGJ107
+    39 条 / 44,353 字符（占其 content 80%）、CJJ2 44 条 / 12,796 字符。
+    """
+    parts = clause_no.split('.')
+    return len(parts) > 1 and parts[-1] == '0'
+
+
 # 裸露的 4 位年份（如封面页的 "2008"）不是条文号
 _BARE_YEAR = re.compile(r'^(19|20)\d{2}$')
 
@@ -230,6 +245,10 @@ def parse_markdown(md_text: str) -> list[dict]:
                 raw_title = m_hash.group(2).strip()
                 clause_no = _extract_clause_no(raw_title)
                 title = _clean_title(_extract_title(raw_title))
+                # R3：节位为 0 的占位号不成节点（`3.0` 不入库、不进 title_stack；
+                # `3.0.1` 末段非 0，照常入库）
+                if clause_no is not None and _is_zero_segment_node(clause_no):
+                    continue
                 # 黑名单：目次/Contents 直接过滤（不生成条文，丢弃段内内容）。
                 # 必须**先于**下文的中文检查——`Contents` 无中文，若被中文检查提前
                 # continue，`discard_section` 永不置位，目录行会漏进后一条正文。

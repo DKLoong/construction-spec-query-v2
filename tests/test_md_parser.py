@@ -1,5 +1,6 @@
 from app.parser.md_parser import (
     parse_markdown, is_non_clause_title, is_cover_clause, _should_emit_clause,
+    _is_zero_segment_node,
 )
 
 SAMPLE_MD = """# GB 50204-2015 混凝土结构工程施工质量验收规范
@@ -503,3 +504,34 @@ def test_all_num_patterns_loops_use_single_unpack():
     assert "for pattern, level_base in _NUM_PATTERNS" not in src
     assert "for pattern, _ in _NUM_PATTERNS" not in src
     assert src.count("for pattern in _NUM_PATTERNS") == 3
+
+
+# ═══════════════════════════════════════════
+# R3：章内不分节时条编号的节位为 0（Task 2）
+# ═══════════════════════════════════════════
+
+def test_zero_segment_is_not_a_node():
+    """R3：章内不分节时条编号的节位用 0 表示（3.0.1）。该 0 段不构成节点。
+
+    关键：`3.0.1` **本身是合法的条**，必须照常入库；只有末段为 0 的 `3.0`
+    （节位占位，真实文档里通常不出现）才不是节点。
+    """
+    md = ("### 3 章名\n\n### 3.0 不应存在的节\n\n"
+          "3.0.1 接头设计应满足强度要求。\n")
+    results = parse_markdown(md)
+    r = [c for c in results if c["clause_no"] == "3.0.1"]
+    assert len(r) == 1                            # ← 3.0.1 必须被产出（不是被跳过）
+    assert r[0]["parent_path"] == ["章名"]         # 父链里没有 `3.0` 那一级
+    assert all(c["clause_no"] != "3.0" for c in results)  # 3.0 本身不入库
+
+def test_zero_segment_predicate_is_last_segment_only():
+    """判据只看**末段**：`3.0` 是节位占位；`3.0.1` 是条，不得被误伤。
+
+    实测：若按「任意段为 0」判定，JGJ107 会丢掉 39 条 / 44,353 字符（占其 80%）。
+    """
+    assert _is_zero_segment_node("3.0") is True
+    assert _is_zero_segment_node("1.0") is True
+    assert _is_zero_segment_node("3.0.1") is False      # ← 条，不是节点
+    assert _is_zero_segment_node("1.0.2") is False
+    assert _is_zero_segment_node("10.1") is False       # 10 不是 0
+    assert _is_zero_segment_node("3") is False
