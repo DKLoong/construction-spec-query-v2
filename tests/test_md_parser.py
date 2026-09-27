@@ -250,6 +250,11 @@ def test_parse_contents_filtered_not_generated():
     results = parse_markdown(md)
     assert not any(r.get("title") == "Contents" for r in results)
     assert any(r["clause_no"] == "1.0.1" for r in results)
+    # 目次段内的一切内容一律丢弃（`discard_section`）。`Contents` 无中文：若中文检查
+    # 排在目次过滤之前，它会被提前 continue 掉、`discard_section` 永不置位，
+    # 目录行便漏进后一条正文（此处是「1 总则」的 content）。
+    for r in results:
+        assert "General Provisions" not in r["content"]
 
 
 def test_parse_qianyan_retained_and_marked():
@@ -476,9 +481,16 @@ def test_hash_heading_without_clause_no_is_not_clause():
     assert parse_markdown(md) == []
 
 def test_bare_year_is_not_clause_no():
-    """裸露 4 位年份不得成为条文号"""
-    md = "2008\n\n正文内容。\n"
-    assert all(r["clause_no"] != "2008" for r in parse_markdown(md))
+    """裸露 4 位年份不得成为条文号（`## 2008 年发布公告` 不产出条文）
+
+    夹具必须走 `#` 路径——`_BARE_YEAR` 守卫只在 `#` 路径上：裸行 `2008` 会先被
+    `_match_clause_line` 的「无中文」规则排除，`parse_markdown` 返回 `[]`，
+    断言便遍历空列表、恒真（空断言）。末行 `1.0.1` 保证 results 非空。
+    """
+    md = "## 2008 年发布公告\n\n正文内容。\n\n1.0.1 正文。\n"
+    results = parse_markdown(md)
+    assert results  # 夹具须产出条文，否则下面的断言是空断言
+    assert all(r["clause_no"] != "2008" for r in results)
 
 def test_all_num_patterns_loops_use_single_unpack():
     """`_NUM_PATTERNS` 已是纯字符串列表；三处循环都不得再解包成两个名字。

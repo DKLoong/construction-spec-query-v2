@@ -230,6 +230,14 @@ def parse_markdown(md_text: str) -> list[dict]:
                 raw_title = m_hash.group(2).strip()
                 clause_no = _extract_clause_no(raw_title)
                 title = _clean_title(_extract_title(raw_title))
+                # 黑名单：目次/Contents 直接过滤（不生成条文，丢弃段内内容）。
+                # 必须**先于**下文的中文检查——`Contents` 无中文，若被中文检查提前
+                # continue，`discard_section` 永不置位，目录行会漏进后一条正文。
+                if is_filter_non_clause_title(title):
+                    current_content_lines = []
+                    inherit_non_clause = False
+                    discard_section = True
+                    continue
                 if clause_no is None:
                     # 无编号标题：只有「非条文块」（前言/条文说明等，R8/R8b 打标保留）
                     # 继续以标题本身作编号走黑名单链路（旧行为）；
@@ -243,12 +251,6 @@ def parse_markdown(md_text: str) -> list[dict]:
                 if not re.search(r'[一-鿿]', raw_title):
                     continue
                 level = _level_from_clause_no(clause_no)
-                # 黑名单：目次/Contents 直接过滤（不生成条文，丢弃段内内容）
-                if is_filter_non_clause_title(title):
-                    current_content_lines = []
-                    inherit_non_clause = False
-                    discard_section = True
-                    continue
                 discard_section = False
                 is_non = is_non_clause_title(title)
                 inherit_non_clause = is_non
