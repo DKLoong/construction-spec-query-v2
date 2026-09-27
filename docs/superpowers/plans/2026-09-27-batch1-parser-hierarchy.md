@@ -2059,11 +2059,20 @@ netstat -ano | grep :8000 | grep LISTENING        # 应恰好 1 个
 > 「涉及数据删除、覆盖写入、环境变更的操作，必须先向用户确认再执行」，且属 SDD 的四停之一）。
 > 确认前只做只读的台账核对（下表左列），**不得**触发重导。
 >
-> **重导路径已核实**（控制器读码）：导入/重导按 `specifications.source_path` 取**指定文件**
-> （spec20 = `data/uploads/f543577f.pdf`），**不存在目录扫描式导入**（唯一的 `glob` 是
-> `import_routes.py:798` 的「清理本次任务的上传文件」，且有 `ref_uploads` 守卫不删被引用者）。
-> 因此 `data/uploads/` 里的 156 个 pytest 遗留 `.md` **不会被重导扫到**，
-> 无需为它们做任何排除动作（此前我在消息与 ledger 里写的「重导前必须排除该目录」是**误读**，已更正）。
+> **重导路径已核实**（控制器读码）：导入/重导走 `POST /import/upload` → `/import/review/{task_id}` →
+> `/import/review/{task_id}/confirm`；**不存在目录扫描式导入**（唯一的 `glob` 是 `import_routes.py:798`
+> 的「清理本次任务的上传文件」，且有 `ref_uploads` 守卫不删被引用者）。因此 `data/uploads/` 里那 156 个
+> pytest 遗留 `.md` **不会被重导扫到**，无需为它们做任何排除动作
+> （此前我在消息与 ledger 里写的「重导前必须排除该目录」是**误读**，已更正）。
+>
+> 🎯 **重导必须喂 `tests/fixtures/cjj2_source.md`（`.md`），不得重新 OCR 那个 PDF。**
+> 依据：`import_routes.py:289` 起 `if ext == ".md":` → **走非 OCR 路径**（`force_ocr` 默认 `False`）；
+> 而 `data/uploads/f543577f.pdf` 要经 OCR 才能成 md，**OCR 不确定** → 若走 PDF，
+> 「夹具指标 vs 重导后库指标」就成了**跨变量比较**，任何差异都无法归因。
+> 夹具与库内那份 md 是**同一文件**（sha256 `56c436a7…`、709,110 B，已核）→ 喂 md 才是**同输入对比** ✓。
+> 另：确认页把 markdown 当 **raw body** 提交（不是表单字段）—— 这正是修过 1MB 表单上限那个堵点
+> （见 `confirm_review` 的 docstring 与 `tests/test_confirm_transport.py`），故**内容须逐字为夹具内容**。
+> 同码导入（`CJJ 2-2008`）即「重导」语义，会命中 `import_routes.py:64` 那条「排除自引用」逻辑 ✓。
 
 **真实库前后对照**（左列已由控制器实测，右列按夹具解析预期）：
 
@@ -2074,7 +2083,11 @@ netstat -ano | grep :8000 | grep LISTENING        # 应恰好 1 个
 | spec20 `clause_is_non=1` | **2** | **≈168** |
 | spec20 重复条文号组 | **129** | **≈123** |
 
-在维护页重导 `CJJ 2-2008`（spec_id=20），随后核对：
+⚠️ **本步是交互式的，且依赖一个已启动的服务**：需要 (1) 按 §三 重启 uvicorn（**启动后台服务属用户明确要求才做的事**）、
+(2) 用管理员会话在导入页上传上面指定的 `.md`、在审查页确认（raw body 逐字为夹具内容）。
+**故本步与 Step 4 必须由用户确认后执行**，不得由子代理自行启动服务或触发覆盖写入。
+
+在维护页重导 `CJJ 2-2008`（spec_id=20；**喂 `tests/fixtures/cjj2_source.md`**），随后核对：
 1. 条文数、`content_chars` 与勘察脚本一致
 2. `fake_clause_no_count` 明显下降
 3. 详情弹窗能打开 `14.3.1` 且其正文**包含**主控项目/一般项目下的项与检查数量
