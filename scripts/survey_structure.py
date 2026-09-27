@@ -1,12 +1,23 @@
 """结构勘察：批次验收的回归门禁。
 
-产出五项指标（批一验收用，见 spec §6 与 CEO 评审记录 Section 6）：
+产出指标（批一验收用，见 spec §6 与 CEO 评审记录 Section 6）：
   1. clause_count           条文数
   2. content_chars          全部 content 的字符总数（**含 PaddleOCR-VL 标记的原始口径**）
   3. content_chars_plain    同上，但经 `plain_text` 归一（**Task 9 守恒断言的基线口径**）
   4. fake_clause_no_count   不含数字的条文号个数（伪条文号）
   5. breadcrumb_coverage    **条文行**的 section_path 段数 == 应有祖先数（按 R3 剔除 0 段）的占比
   6. missing_sections       **条文行**被引用却找不到标题的节号（量目次对齐的残余缺口）
+  7. duplicate_clause_no    出现 >1 次的条号 → 次数（Task 11 重复诊断）
+  8. duplicate_rows         落在重复号上的行数（= 指标 7 的次数之和）
+  9. duplicate_rows_is_non  指标 8 里 `is_non_clause=1` 的行数（拆分「合法/缺陷」用）
+
+⚠️ 指标 7~9（Task 11）：CJJ2 实测 123 组 / 258 行，其中打标 135 行。分解（探针实测，无余项）：
+**119 组**是**设计性**的「正文 + 条文说明同号」（1 条正文 + N 条逐款解释，注释侧已由 Task 13
+打标；样例 `16.8.3` = L4177 正文 + L7120/7122/7124/7126/7128 五条逐款说明）；
+**2 组**是**真重复**（`10.7.3`、`17.5.1`）——两者都是**被 PDF 断行劈开的交叉引用**，其下半行
+以「条文号形状的 token」起头而被认成候选行（源行 L3077 / L4802，见 TODOS.md T22）；
+**2 组**在条文说明段内自重复（`前言`、`2`）。指标 7 的值只对**重复号集合**有意义，
+故 `main()` 里不逐项打印（123 项），只打印按打标情况拆分的汇总。
 
 ⚠️ 指标 5/6 均**只统计条文行**（R-T13-4/R-T13-5）：非条文行的面包屑按 `_build_section_path`
 的契约本应为空，把它们算进来会系统性虚增缺口——Task 8 记录的 47 个「缺失节」里
@@ -19,6 +30,7 @@
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -41,7 +53,12 @@ def _expected_ancestor_count(clause_no: str) -> int:
 
 
 def survey_structure(md_text: str) -> dict:
-    clauses = parse_markdown(md_text)
+    """唯一公开入口：解析 md 文本并产出全部指标（见模块 docstring）。"""
+    return _survey(parse_markdown(md_text))
+
+
+def _survey(clauses: list[dict]) -> dict:
+    """指标计算（与解析解耦）。拆出它是为了让 `main()` 只解析一次仍能拿到重复号明细。"""
     fake = [c for c in clauses if not re.search(r'\d', c["clause_no"])]
 
     # ⚠️ R-T13-4：覆盖率**只对条文行**统计。`_build_section_path` 的 docstring 明文写
@@ -92,6 +109,15 @@ def survey_structure(md_text: str) -> dict:
         if not any(f"{parent_no} " in s for s in (c.get("section_path") or "").split(" > ")):
             missing.add(parent_no)
 
+    # Task 11 重复条文号诊断：按 `clause_no` 计数，只留出现 >1 次的号。
+    # ⚠️ 本指标**不区分**「正文 / 条文说明」——同号重复的**合法性**恰恰要靠
+    # `is_non_clause` 拆分来判定（见模块 docstring 指标 7~9 的分解），故一并输出
+    # `duplicate_rows` 与其中打标的行数。
+    counts = Counter(c["clause_no"] for c in clauses)
+    duplicate_clause_no = {k: v for k, v in counts.items() if v > 1}
+    dup_rows = [c for c in clauses if counts[c["clause_no"]] > 1]
+    dup_non = sum(1 for c in dup_rows if c["is_non_clause"])
+
     return {
         "clause_count": len(clauses),
         "content_chars": sum(len(c["content"]) for c in clauses),
@@ -103,6 +129,9 @@ def survey_structure(md_text: str) -> dict:
         "fake_clause_no_count": len(fake),
         "breadcrumb_coverage": round(coverage, 4),
         "missing_sections": sorted(missing),
+        "duplicate_clause_no": duplicate_clause_no,
+        "duplicate_rows": len(dup_rows),
+        "duplicate_rows_is_non": dup_non,
     }
 
 
@@ -112,15 +141,35 @@ def main() -> int:
         print(__doc__)
         return 2
     md = Path(args[0]).read_text(encoding="utf-8")
-    stats = survey_structure(md)
+    clauses = parse_markdown(md)          # 只解析一次
+    stats = _survey(clauses)
     if "--json" in sys.argv:
         print(json.dumps(stats, ensure_ascii=False, indent=2))
-    else:
-        for k, v in stats.items():
-            if k == "missing_sections":
-                print(f"{k}: {len(v)} 个 -> {v[:20]}")
-            else:
-                print(f"{k}: {v}")
+        return 0
+
+    for k, v in stats.items():
+        if k == "missing_sections":
+            print(f"{k}: {len(v)} 个 -> {v[:20]}")
+        elif k == "duplicate_clause_no":
+            print(f"{k}: {len(v)} 个（明细见下）")
+        else:
+            print(f"{k}: {v}")
+
+    # 重复号按**打标情况**拆分（Task 11 的交付物就是这张分解，而不是三个数字）：
+    #   全打标   = 条文说明段内自重复（`前言`、`2`）——段内子标题/块重名
+    #   混合     = 正文 1 条 + 条文说明 N 条 —— **设计性**（逐款解释同号），合法
+    #   全未打标 = **真重复**（两次都在正文）—— 缺陷，须定位源行
+    flags: dict[str, list[bool]] = {}
+    for c in clauses:
+        if stats["duplicate_clause_no"].get(c["clause_no"], 0) > 1:
+            flags.setdefault(c["clause_no"], []).append(bool(c["is_non_clause"]))
+    all_non = sorted(k for k, v in flags.items() if all(v))
+    mixed = sorted(k for k, v in flags.items() if any(v) and not all(v))
+    all_real = sorted(k for k, v in flags.items() if not any(v))
+    print("  [重复成因拆分]")
+    print(f"    设计性（正文 + 条文说明同号）: {len(mixed)} 组（样例 {mixed[:5]}）")
+    print(f"    条文说明段内自重复          : {len(all_non)} 组 -> {all_non[:20]}")
+    print(f"    真重复（两次都在正文）      : {len(all_real)} 组 -> {all_real[:20]} —— 批一验收必答项")
     return 0
 
 
