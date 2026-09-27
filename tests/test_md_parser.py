@@ -621,6 +621,33 @@ def test_tie_prefers_untitled():
     assert clauses["3.0.2"]["title"] == ""
     assert "接头安装应符合本规程的规定" in clauses["3.0.2"]["content"]
 
+def test_vote_only_confirms_title_never_promotes_long_tail():
+    """R14 投票只用于**确认**标题：组内多数判「带标题」时，仍要求该行自身也像标题。
+
+    ⚠ 可证伪点（本用例即为守卫的钉）：把主循环的 `is_titled` 换成
+    `title_mode.get(...)`（去掉 `and _looks_like_title(tail)`）后，下面这条
+    `14.4 <整句>` 会因组内多数（3 条短标题 vs 1 条长句）被判「带标题」→ 长句成为
+    title 且无自身正文 → 按内节点判据**整条不入库**、文本消失
+    （RED 实测：`assert "14.4" in clauses` 失败，`clauses` 只有 14.1~14.3）。
+    实测规模（CJJ2）：此机制吃掉**688 字符 plain / 12 条**消失——条文说明章的
+    `13.5 <整句>` 与正文的 `13.5 悬臂拼装` 同组（组内 n=9、yes=7）。
+    方向恒为**保内容**：这一「与」只会**减少**标题型判定。
+    """
+    md = ("14.1 制造\n\n钢梁应在工厂内焊接制造。\n\n"
+          "14.2 现场安装\n\n现场安装应符合下列规定。\n\n"
+          "14.3 检验标准\n\n检验标准应符合本规范规定。\n\n"
+          "14.4 顶推施工适用于跨径 40～60m 预应力混凝土等截面（等高）连续梁架设。\n")
+    results = parse_markdown(md)
+    clauses = {c["clause_no"]: c for c in results}
+    # 组内多数确实判「带标题」——否则本用例不构成对守卫的覆盖（判无标题时 title 为 ""）
+    assert clauses["14.1"]["title"] == "制造"
+    assert clauses["14.3"]["title"] == "检验标准"
+    # 长句行不得被「确认」为标题：必须产出，且文本留在 content 里
+    assert "14.4" in clauses
+    assert clauses["14.4"]["title"] == ""
+    assert "顶推施工适用于跨径 40～60m" in clauses["14.4"]["content"]
+    assert not any("顶推施工适用于跨径" in c["title"] for c in results)
+
 # ── 组 2：无条件 flush（救回「标题型且无后续内容」的行） ──
 def test_body_type_clause_emitted_without_following_lines():
     """正文型编号行即使后面没有任何内容行也必须产出。

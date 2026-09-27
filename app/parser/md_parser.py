@@ -404,7 +404,15 @@ def parse_markdown(md_text: str) -> list[dict]:
 
         # 投票键缺失只可能出现在「目次/Contents 行被主循环筛掉、未入栈」之后；
         # 回退 False（判「无标题」）与平票规则同向：文本进 content，不丢内容。
-        is_titled = title_mode.get((level, _parent_key(stack, level)), False)
+        # 投票只用于「确认标题」：组内多数判带标题 **且** 该行自身也像标题才算标题。
+        # 这一「与」只会**减少**标题型判定，方向恒为**保内容**：长句不会仅因组内多数
+        # 变成标题、进而因无自身正文被判为内节点而整条丢弃（实测修掉 CJJ2 的
+        # 627 字符 / 21 条丢失——条文说明章的 `13.5 <整句>` 与正文 `13.5 悬臂拼装`
+        # 同组，组内多数把长句推成 title）。
+        is_titled = (
+            title_mode.get((level, _parent_key(stack, level)), False)
+            and _looks_like_title(tail)
+        )
         title = _clean_title(tail) if is_titled else ""
 
         if is_filter_non_clause_title(title or tail):
