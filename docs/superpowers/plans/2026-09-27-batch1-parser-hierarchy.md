@@ -30,7 +30,7 @@
   | `test_fullwidth_dot_level_inference` | 同上 |
   | `test_parse_non_hash_numbered_clauses` | 正文型行现在**总是**产出（无条件 flush） |
   | `test_fullwidth_dot_body_clause_parsed` | 同上 |
-  | `test_multi_space_title_cleanup` | 标题型行恢复 `_clean_title`（C5） |
+  | `test_multi_space_title_cleanup` | **真实触发点是 Task 4**（裸编号项不再是候选行 → 原夹具的裸编号父级 `1  总    则` 消失，父链语义变化）。Task 4 已把夹具改为 `1.1  总    则`（保留「非 `#` 标题型行的 `_clean_title`」覆盖点）。C5/`_clean_title` 是**叠加**原因，非触发点——Task 4 复核 Concern 更正了此处旧归因。 |
 
   **不得放宽**的是：`test_parse_markdown_parent_inheritance`、`test_parse_appendix_clauses`、
   `test_parse_qianyan_retained_and_marked`、`test_parse_tiaowenshuoming_body_rows_inherit`、
@@ -2100,7 +2100,10 @@ Synthesized from this review's findings. 每条都源自上面的具体发现；
   - Files: `app/parser/md_parser.py`、`tests/test_md_parser.py`
   - Verify: `pytest tests/test_md_parser.py -k "non_clause_blocks or toc_section or qianyan or tiaowenshuoming" -v`
 - [ ] **T8 (P2, human: ~30min / CC: ~3min)** — `app/parser/md_parser.py` — 标题型行恢复 `_clean_title(tail)`
-  - Surfaced by: 外部复核 C5 — 旧实现 `:241` 会清洗，新代码丢弃后 `test_multi_space_title_cleanup` 失败
+  - Surfaced by: 外部复核 C5 — 旧实现 `:241` 会清洗，新代码丢弃后 `test_multi_space_title_cleanup` 失败。
+    **⚠️ 归因更正（Task 4 复核）**：该用例的真实触发点是 **Task 4**（裸编号父级 `1  总    则` 不再是候选行，
+    父链语义变化），Task 4 已改其夹具为 `1.1  总    则`；本 Task（Task 8）的 `_clean_title` 恢复是**叠加**原因。
+    复核本 Task 时若见该用例失败，先确认是不是夹具/归因问题，勿按错误前提读。
   - Files: `app/parser/md_parser.py`
   - Verify: `pytest tests/test_md_parser.py -k multi_space -v`
 - [ ] **T9 (P2, human: ~1h / CC: ~5min)** — `tests/test_classify_baseline.py` — 样例改为只由祖先标题命中 + 补反向断言
