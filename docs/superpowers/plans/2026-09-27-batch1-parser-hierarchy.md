@@ -704,8 +704,13 @@ def parse_markdown(md_text: str) -> list[dict]:
     def flush() -> None:
         """结算「当前条」= `stack[-1]`。
 
-        改动② **无条件结算**：旧实现只在 `current_content_lines` 非空时才结算，
-        于是「标题型且无后续内容」的行从未被结算——实测 3.0.1 就是这样消失的。
+        改动② **无条件结算**：旧实现只在 `current_content_lines` 非空时才结算。
+        ⚠️ **归因更正（Task 3 复核）**：`3.0.1` 获救**不是**这一改动的作用 —— 它是被
+        改动①（R14 投票判它**正文型**）救的：正文型把 tail 推进 `pending`，于是无论
+        条件还是无条件结算都会产出它。本改动的**唯一真实行为效果**是「`stack` 为空时
+        （即首个候选行之前）丢弃 `pending`」＝封面/前引文字不再并入首条真条文
+        （设计性的泄漏修复，旧实现把它们并进了伪条文号）。
+        （曾误写为「3.0.1 就是这样消失的」，已按复核结论更正。）
 
         改动③ **内节点判据**：无自身正文者只作祖先、不入库。
           - 标题型且有后续内容 → 有自身正文 → 叶条文
@@ -1675,6 +1680,23 @@ git commit -m "feat: 重复条文号诊断 + R14 分组键按需隔离
 **Interfaces:**
 - Consumes: 全部 Task 1–11 的产物
 - Produces: 验收结论（写入本计划文件）
+
+- [ ] **Step 0: 收拢各 Task 复核累积的 deferred minors（验收前逐条判定「必须修 or 记入 T10 同类作业」）**
+
+> 来源：Task 1/2/3/4 的复核各自把 Minor 记入 SDD ledger（未进 fix 轮，按技能规定 Minor 不延长 loop）。
+> 这些条目**没有专属 Task**，故集中在此收口——避免「无人看的 roll-up 即静默丢弃」。
+> 每条都要给出判定：**本批修** / **留给终审与后续**，并把理由写进 Step 6 的验收结论。
+
+| # | 来源 | 条目 | 建议 |
+|---|---|---|---|
+| M1 | Task 3 Minor #1 | `tests/test_md_parser.py::test_parse_letter_numbered_clauses` 的 `if r["clause_no"] == "D.4":` body **已死**（`D.4` 是内节点，只产出 `D.4.1`），标题提取断言从未执行 | **本批修**：改为对 `D.4.1` 断言，或删除死分支 |
+| M2 | Task 3 Minor #3 | `.get(..., False)` 回退路径**无回归用例**（既有两条目次用例都在其后跟 `## 1 总则`，两栈重新对齐，走不到分叉路径） | **本批修**：一行用例 `"## 目次\n\n1.0.1 正文。"` 钉住 |
+| M3 | Task 3 Minor #5 / Task 4 Minor #4 | `_candidate_of` 的 `m_num` 分支 0 段守卫无直接用例；`tests/test_md_parser.py:193-198` 的 `for…break` 无守卫（`1.0.1` 不产出则唯一父链断言被静默跳过） | **本批修**：各补 1 行守卫/用例 |
+| M4 | Task 4 Minor #6 | 新用例未断言裸编号项的文本**留在所属条 `content`**（需求「归属其所在的条」的另一半） | **本批修**：补 `assert "钢筋" in results[0]["content"]` |
+| M5 | Task 2 Minor #3 | `_is_zero_segment_node` 静默假设 `clause_no` 已归一化（只 split 半角 `.`） | **本批修**：docstring 加一行前提说明 |
+| M6 | Task 2 Minor #4 | `parse_markdown` 的 docstring 规则清单未提 R3 与 R14 | **本批修**：补两条 |
+| M7 | Task 4 Minor #2 | 提交信息 `66f88bf` 未说明改了既有用例夹具的理由（计划 Global Constraints 要求） | **留给历史**：已在测试 docstring 与报告中留痕，不追改提交 |
+| M8 | Task 3 Minor #2 | 实施者报告曾过度描述 `test_parse_appendix_clauses` 的退化（复核者核实该用例**未被削弱**） | **不改**：报告层面的事实更正，代码无动作 |
 
 - [ ] **Step 1: 全量测试（本批属大范围改动，跑全量）**
 
