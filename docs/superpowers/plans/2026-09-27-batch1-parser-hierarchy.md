@@ -965,8 +965,16 @@ def test_announcement_and_reference_list_are_non_clause():
 
     实测 spec20（CJJ2）有 2 条公告伪条文，引用标准名录的列表项被误吞成
     clause_no='1'/'10'。
+
+    ⚠️ **必须用 CJJ2 的真实标题**（逐字照抄），否则该用例证明不了立项理由：
+      `# 中华人民共和国住房和城乡建设部 公告`
+      `## 关于发布行业标准《城市桥梁工程施工与质量验收规范》的公告`
+    两者既**不等于**「公告」也不以它开头，而是以它**结尾** —— 只做精确命中时
+    「覆盖 spec20 的 2 条公告」这个目标不会达成（Task 7 复核 Concern 3 实测暴露）。
     """
     assert is_non_clause_title("公告") is True
+    assert is_non_clause_title("中华人民共和国住房和城乡建设部 公告") is True
+    assert is_non_clause_title("关于发布行业标准《城市桥梁工程施工与质量验收规范》的公告") is True
     assert is_non_clause_title("引用标准名录") is True
 
 def test_standard_wording_by_legal_name():
@@ -987,8 +995,12 @@ def test_non_clause_blocks_are_marked_not_dropped():
     """三者一律打标保留（clause_is_non=1），不整段丢弃（R8/R8b）
 
     注意与「目次」的区别：目次属**直接过滤**类（见下一条），不进库。
+
+    ⚠️ 夹具必须带 `#`：裸 `公告` 行**不是候选行**（`_match_clause_line` 要求编号模式），
+    故裸行版本不可实现（Task 7 实施者以证据证伪了计划初稿）；另补 `## 1 总则`
+    使公告段有终止边界。三条断言与初稿一字未改。
     """
-    md = "公告\n\n关于发布行业标准……\n\n1.0.1 正文甲。\n"
+    md = "# 公告\n\n关于发布行业标准……\n\n## 1 总则\n\n1.0.1 正文甲。\n"
     results = parse_markdown(md)
     r = [c for c in results if c["is_non_clause"]]
     assert len(r) == 1 and r[0]["clause_no"] == "公告"
@@ -1028,7 +1040,17 @@ _NON_CLAUSE_EXACT_TITLES = {
 }
 
 # 用词说明类：按「法定名称」匹配，再兼容前后缀变体
-_WORDING_DOC_SUFFIX = "用词说明"
+# ⚠️ 后缀表必须是**元组**：单个 `endswith("用词说明")` **覆盖不到**计划自己用例要求的
+#    「本规范用词用语说明」（该串以「用词用语说明」结尾、不以「用词说明」结尾）。
+#    Task 7 实施者以「brief Step 4 的 Expected: PASS 不可能达成」证伪了我的初稿。
+_WORDING_DOC_SUFFIXES = ("用词说明", "用词用语说明")
+
+# 同类处置：`公告` 在 CJJ2 里的**实际标题**既不等于「公告」也不是以它开头，而是以它**结尾**：
+#   行 58 `# 中华人民共和国住房和城乡建设部 公告`
+#   行 62 `## 关于发布行业标准《城市桥梁工程施工与质量验收规范》的公告`
+# 故必须与用词说明同法 —— 按法定名称的**后缀**匹配（Task 7 复核 Concern 3：只做精确命中时
+# 「覆盖 spec20 的 2 条公告」这个立项目标并未达成）。
+_ANNOUNCEMENT_SUFFIX = "公告"
 
 
 def is_non_clause_title(title) -> bool:
@@ -1051,7 +1073,9 @@ def is_non_clause_title(title) -> bool:
         return True
     if "条文说明" in t:
         return True
-    if t.endswith(_WORDING_DOC_SUFFIX):
+    if t.endswith(_WORDING_DOC_SUFFIXES):      # 元组：覆盖「用词说明」与「用词用语说明」
+        return True
+    if t.endswith(_ANNOUNCEMENT_SUFFIX):       # CJJ2 的两条公告标题都是以「公告」结尾
         return True
     return False
 ```
@@ -1697,6 +1721,7 @@ git commit -m "feat: 重复条文号诊断 + R14 分组键按需隔离
 | M6 | Task 2 Minor #4 | `parse_markdown` 的 docstring 规则清单未提 R3 与 R14 | **本批修**：补两条 |
 | M7 | Task 4 Minor #2 | 提交信息 `66f88bf` 未说明改了既有用例夹具的理由（计划 Global Constraints 要求） | **留给历史**：已在测试 docstring 与报告中留痕，不追改提交 |
 | M8 | Task 3 Minor #2 | 实施者报告曾过度描述 `test_parse_appendix_clauses` 的退化（复核者核实该用例**未被削弱**） | **不改**：报告层面的事实更正，代码无动作 |
+| M9 | Task 7 守恒实测（控制器） | 守恒门禁目前**只查 CJJ2 夹具、只量 `content`**。实测 6 份语料里 `64409491.md` 的 content 口径 **−17**（标题/正文切分变化，非丢失），而 `content+title` 口径在多份文件下降（内节点判据把章/节标题移到 `parent_path`/`section_path`，同样非丢失） | **本批修**：把门禁扩为**逐文件 content 不减少**；并在注释里写明「`content+title` 下降属设计（内节点标题移入祖先链），不作为失败判据」 |
 
 - [ ] **Step 1: 全量测试（本批属大范围改动，跑全量）**
 
