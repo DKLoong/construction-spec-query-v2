@@ -323,6 +323,19 @@ def _is_zero_segment_node(clause_no: str) -> bool:
     return len(parts) > 1 and parts[-1] == '0'
 ```
 
+**并让旧循环消费它**（约 1 行）——否则本 Task 的行为断言在其检查点上不可能通过：
+
+```python
+                # 在 `#` 路径算出 clause_no 之后、进黑名单链路之前：
+                if _is_zero_segment_node(clause_no):
+                    continue        # R3：节位为 0 的占位号不成节点
+```
+
+> **⚠️ SDD 实施裁定 R-T2**：`_is_zero_segment_node` 的**最终消费者是 Task 3 的 `_candidate_of`**，
+> 但本 Task 的行为断言（`3.0` 不入库、`3.0.1` 父链为 `["章名"]`）要求该规则**在本 Task 就生效**。
+> 若只在旧循环里加这一行，Task 3 实施时它会被 `_candidate_of` 取代（**预期取代**，见 F1 先例）。
+> 这约 2 行一次性代码是「每个 Task 的检查点必须绿色」的代价，可接受。
+
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py -k "zero_segment" -v`
