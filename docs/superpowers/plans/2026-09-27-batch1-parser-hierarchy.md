@@ -1721,7 +1721,7 @@ git commit -m "feat: 重复条文号诊断 + R14 分组键按需隔离
 | M6 | Task 2 Minor #4 | `parse_markdown` 的 docstring 规则清单未提 R3 与 R14 | **本批修**：补两条 |
 | M7 | Task 4 Minor #2 | 提交信息 `66f88bf` 未说明改了既有用例夹具的理由（计划 Global Constraints 要求） | **留给历史**：已在测试 docstring 与报告中留痕，不追改提交 |
 | M8 | Task 3 Minor #2 | 实施者报告曾过度描述 `test_parse_appendix_clauses` 的退化（复核者核实该用例**未被削弱**） | **不改**：报告层面的事实更正，代码无动作 |
-| M9 | Task 7 守恒实测（控制器） | 守恒门禁目前**只查 CJJ2 夹具、只量 `content`**。实测 6 份语料里 `64409491.md` 的 content 口径 **−17**（标题/正文切分变化，非丢失），而 `content+title` 口径在多份文件下降（内节点判据把章/节标题移到 `parent_path`/`section_path`，同样非丢失） | **本批修**：把门禁扩为**逐文件 content 不减少**；并在注释里写明「`content+title` 下降属设计（内节点标题移入祖先链），不作为失败判据」 |
+| M9 | Task 7 复核（实施者反驳 + 控制器复核） | 守恒门禁目前只查 CJJ2 夹具、只量 `content`。**⚠️「逐文件 content 不减少」不是口径稳健的判据**（我先前如此裁定，被实施者以证据驳回并证实）：本批**合法地**在字段间搬移文本 —— content↔title（`64409491.md` −17、CJJ2 首轮 −8）与内节点标题移入 `parent_path`/`section_path`（`content+title` 在 CJJ2 −515、JGJ107 −169）。这些都**不是丢失**，任何单字段的逐文件比较都会误报 | **本批修**：门禁改为 (a) 保留 CJJ2 的 `content` 总量不减少（批次前 144,300 → 实测 **145,256**）；(b) 增加**字段无关**的严格守恒检查 —— 旧实现每条条文 `plain_text` 归一后的文本，必须能在新输出的 `content + title + section_path` 文本中找到（Task 3 实施者已用该手法实测：13 条找不到 → 1 条，那条是封面文字的设计性处置）。注释须写明「`content+title` 下降属设计，不作失败判据」 |
 
 - [ ] **Step 1: 全量测试（本批属大范围改动，跑全量）**
 
