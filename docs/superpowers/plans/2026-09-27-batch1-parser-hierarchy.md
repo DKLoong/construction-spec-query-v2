@@ -1741,6 +1741,68 @@ Actual answer: A) 单遍保留 + 预算投票（用户于本会话选定，2026-
 Accepted scope: 保留旧的单遍解析循环结构，只做四处改动——(1) 层级改由编号点数推导（Task 1）；(2) `_extract_clause_no` 对无编号标题返回 `None`（Task 1）；(3) 裸阿拉伯数字行非候选（Task 4）；(4) R14 改为对候选行做一次预算投票 + 新候选行到达时**无条件 flush**。删除两遍重写层（`_RawLine` / `_collect_candidates` / `_parse_two_pass` / `own_body`）与 Task 3（R7 处置，Task 1 后已无触发条件）。恢复 C4（非条文块打标保留 + 目次段直接过滤）与 C5（标题型时 `_clean_title`）。修正 C3（`parent_path`/`section_path` **不含自身**，与旧行为一致以保 `classify_clause` 输入不变）。修正 C8（Task 10 的样例须让命中只来自祖先标题、不来自正文）。修正 C10（明确定义 `_match_clause_line` 的新返回形状）与 C11（如实列出受影响断言清单，不限于 2 处）。**未包含**：Task 2 的 `_is_zero_segment_node`（维持 SC-1 修正后的定义）、Task 7/8/9/11/12 的任务划分。
 History: R1（已批准）决定「补齐第二遍代码 + 顺序调整」；R2 由外部复核 C1–C7 触发重开**实现路径**，保留 R1 的执行顺序与增量添加原则，但替换其实现结构。
 
+### R3: 真实规则集下的分类漂移回归（TODOS 提案）
+
+Finding: C8 的残留缺口 — [P2] (confidence: 8/10) Task 10 — 该 Task 的基线测试冻结的是**两条玩具规则**（`钢筋`/`模板`）下的标签分布，用于隔离 `parent_path` 的耦合。它**无法发现真实漂移**：仓库现有 110 条 `classification_rules`，重导后哪些条文的 dim 标签真的变了，玩具规则集答不出来。
+
+Plan baseline: Task 10 只覆盖玩具规则集（C8 修正后其隔离成立——正文不含规则词，命中只来自祖先标题）。
+Runtime evidence: `classification_rules` 现有 110 条（规则身份唯一键 `(维度, 关键词)`）；`parent_path` 参与 `rule_engine.py:66` 的 `augmented_text`。真实漂移需要真实规则集才能观测。
+
+| Commitment | Current | A（建 TODO） | B（跳过） | C（本轮就做） |
+|---|---|---|---|---|
+| 真实规则集下的漂移回归 | 无 | 记入 TODOS.md，批一交付后执行一次 | 不做 | 并入 Task 10 一起做 |
+| 数据库隔离（110 条规则） | 不需要 | 不需要（届时另搭环境） | 不需要 | 需要（复用批二 Task 15 的 `isolated_paths`） |
+| 与批一交付的关系 | — | 批一交付**后**跑，不阻塞 | — | 阻塞 Task 10 完成 |
+
+### R3
+
+Question D3:
+
+D3 — 要不要把「真实规则集下的分类漂移回归」记入 TODOS.md？
+
+Project/branch/task: `main` 分支，批一工程评审的收尾。
+
+ELI10：本批会改变送进分类引擎的祖先标题链，而分类结果直接影响条文挂哪个维度标签。计划里已经有一条测试守住这件事，但它用的是**我们自己编的两条玩具规则**——能证明「祖先标题确实进了匹配文本」，却答不出「仓库里那 110 条真实规则下，有多少条文的标签真的变了」。要看后者，得拿真实规则集把重导前后的标签分布跑一遍比一次。
+
+Stakes if we pick wrong: 选 B 则重导后若真有大批条文标签漂移，没有任何自动机制会在你发现之前报警；选 C 则 Task 10 的完成要多依赖数据库夹具（110 条规则要建表灌入），给批一增加一处与解析器无关的依赖。
+
+Recommendation: A，因为这条回归的价值恰在「重导真实语料之后」而不是写代码之时——批一交付时你已经会重导一次 CJJ2，那时顺手跑一次对比即可，不必现在就把数据库夹具引进纯函数任务里。
+
+Completeness: A=9/10, B=4/10, C=8/10
+
+Pros / cons:
+A) 记入 TODOS.md（推荐）
+  ✅ 时机正确：真实漂移只在重导真实语料后才有意义，而批一交付时你本来就会重导一次
+  ✅ 保持 Task 10 的纯函数性质（不引入数据库依赖），与 Global Constraints 的测试隔离约定一致
+  ❌ 依赖你在重导时记得跑它——TODOS 条目在本仓有被挤后的先例（T1/T2）
+  ❌ 届时需要临时搭一套真实规则集与语料的对照环境
+B) 跳过
+  ✅ 完全不加待办，批一面最干净
+  ❌ 重导后若真有大批标签漂移，本项目没有任何机制会在你察觉之前发现
+  ❌ 与 CEO 评审 CRITICAL-2 的初衷相悖（那条缺陷正是「分类输入被静默改变」）
+C) 本轮就做（并入 Task 10）
+  ✅ 归因最完整：批一交付时同时拿到玩具隔离与真实分布两份证据
+  ✅ 不必依赖你日后记得跑——写进计划就会被执行
+  ❌ Task 10 从纯函数测试变成依赖数据库的测试，要多一套真实规则的建表与隔离（三处路径 patch）
+  ❌ 把与解析器无关的数据库依赖引进批一，扩大本批的活动部件
+
+Net: 权衡的是「归因完整、但要给纯函数任务引入数据库依赖」对「保持本批干净、但把发现漂移的责任交给日后」。
+
+Header: 分类漂移回归
+
+Options:
+A) 记入 TODOS.md
+把「真实规则集下、重导前后的 dim 标签分布对比」记为待办，批一交付并重导 CJJ2 后执行一次。Task 10 维持纯函数形态。
+B) 跳过
+不记待办。接受「重导后若有大范围标签漂移，需人工发现」。
+C) 本轮就做
+并入 Task 10：引入真实规则集（110 条）与数据库隔离夹具，把重导前后的标签分布对比一并做成测试。
+
+State: approved
+Actual answer: A) 记入 TODOS.md（用户于本会话选定，2026-09-27）
+Accepted scope: 把「真实规则集（110 条 `classification_rules`）下、重导前后的 dim 标签分布对比」记为 **TODOS.md T19**，在批一交付并重导 CJJ2 后执行一次。**Task 10 维持纯函数形态**（不引入数据库依赖），**未包含**：把真实规则集回归并入 Task 10。
+History: 由工程评审 C8 的残留缺口引出（玩具规则集无法观测真实漂移）。
+
 ## Self-Review
 
 **1. Spec coverage**（对照 spec §4.1 的 ①–⑧ 与本批范围；**已按工程评审 R2 决议更新**）：
@@ -1781,3 +1843,231 @@ History: R1（已批准）决定「补齐第二遍代码 + 顺序调整」；R2 
 - `parent_path` 的保留/改名、`section_path` 格式规范入文档、`models.Clause` 同步：
   属**批二**与文档收尾。
 - `_should_emit_clause` 的接口与既有 `is_non_clause` / `is_cover_clause` 语义不变。
+
+---
+
+# 批一工程评审产物（/plan-eng-review，2026-09-27）
+
+**Target**：本文件（`docs/superpowers/plans/2026-09-27-batch1-parser-hierarchy.md`）
+**Reviewer**：native（当前 harness，模型身份未报告）+ 外部复核 **codex**（`outside_status: completed`）
+**Mode**：SCOPE_REDUCED（Scope Challenge 结论：范围按建议缩减——R2 删除两遍重写层与 R7 专用代码，核心改动量降到约四分之一）
+
+## Approval readiness
+
+**PASS**。逐条核对（`## Decision ledger` 内）：
+
+| 项 | 状态 | 依据 |
+|---|---|---|
+| SC-1（P0）`_is_zero_segment_node` 判据收窄为末段 | 已应用 | 事实性更正（计划与 182 号及自身测试矛盾），无需另批 |
+| SC-2（P1）三处 `_NUM_PATTERNS` 解包点 | 已应用 | 同上（不改会 `ValueError`） |
+| SC-3（P1）覆盖率/残余缺口判据剔除 `0` 段 | 已应用 | 同上（判据对 R3 系统性误判） |
+| SC-4（P1）变异验证改为可执行 | 已应用 | 同上（原指令不可执行） |
+| A1（P2）次分组单元标题带 `####` 进正文 | 已应用 | 同上（标记混入正文） |
+| A2（P3）祖先栈含正文句作面包屑标签 | **已消解** | R2 新设计里正文型行 `title` 为空，`_build_section_path` 渲染为纯编号（如 `"3.0.1"`），不存在正文句污染 |
+| Q1（P1）`_build_section_path` 前向依赖 | 已应用 | R2：与调用方同处 Task 3 |
+| Q2（P2）Task 3 引用旧单遍变量 | 已应用 | R2：改为在 `_candidate_of` 上表达 |
+| SC-5 / SC-6 | 已裁定 | R1（顺序与增量添加原则）+ R2（实现结构）；SC-6 平票规则落在 Task 3 |
+| **R1** | **approved 且已应用** | 用户裁定 A（本会话） |
+| **R2** | **approved 且已应用** | 用户裁定 A（本会话） |
+| **R3**（TODO 提案） | **approved 且已应用** | 用户裁定 A（本会话）→ TODOS.md **T19** |
+| C1–C6、C10、C11（外部复核） | 已应用 | 均为事实性更正或随 R2 消解 |
+| C8 | 已应用 | 样例改为只由祖先标题命中 + 补反向断言 |
+| C9 | 记录 | `level` 无生产消费者；`parent_path` 是唯一生产耦合，已由 C3 修正与两条测试守住 |
+
+无未批准的补救项，无被推迟的必需补救项。
+
+## "NOT in scope"
+
+| 项 | 推迟/否决理由 |
+|---|---|
+| 两遍重写层与 R7 专用代码 | **R2 否决**（外部复核复现 6 项缺陷；56% 归属由两处收窄即已修好） |
+| 目次对齐（TOC-first） | **D6.2 降为证据触发**：批一交付后读 `breadcrumb_coverage` 与 `missing_sections` 再定 |
+| 真实规则集下的分类漂移回归 | **R3 → TODOS T19**（批一交付并重导后执行一次） |
+| `parent_path` 改名、`section_path` 格式规范入文档、`models.Clause` 同步 | **批二**与文档收尾 |
+| 重导期间检索可用性不变量化（写锁/禁用） | CEO 评审未决项，本批未使其变差 |
+| `_vector_ids_and_state` 只读 `clause_id`（性能） | **批二**（该函数在批一不被触及） |
+
+## "What already exists"（复用而非重建）
+
+| 既有资产 | 处置 |
+|---|---|
+| `parse_markdown` 的**单遍循环** | **保留**（R2 只做四处改动，不重建）——两遍重写的增量收益经实测不存在 |
+| `_looks_like_title` | **保留**，角色从「终判」变为「投票输入」（R14 的兄弟一致性由组的多数决定） |
+| `_should_emit_clause` / `is_non_clause_title` / `is_filter_non_clause_title` / `is_cover_clause` | 语义不变，接口不变 |
+| `_clean_title` | Task 3 恢复使用（标题型行清洗 tail，工程评审 C5） |
+| `tests/test_md_parser.py` 既有 34 个用例 | 作为回归覆盖；其中 5 处按设计变更（见 Global Constraints 表），3 条过松断言**须收紧** |
+| `tests/conftest.py` 的 `monkeypatch` 隔离惯例 | Task 10 沿用（历史 learning 9/10） |
+
+**未采纳的共享代码提取**：本批**无**新增重复——`_candidate_of` 是**取代**旧的解析循环判定，不是复制；
+`_parent_key` 被预扫与正式解析两处共用（这是必要条件：两者判据不一致则投票对不上行）。
+无提取机会，故不进入共享代码评分的「至少两个已验证调用点」流程。
+
+## Diagrams
+
+**1. 单遍数据流（改造前 → 改造后）**
+
+```
+改造前（三处缺陷）
+  行 ──▶ _match_clause_line/_looks_like_title ──▶ 行内判定标题/正文
+          │
+          └─ 裸编号项/无编号标题 → 当条文或丢内容 → 主控项目 吞 252,514 字符
+          └─ 标题型且无后续内容 → **从未 flush** → 3.0.1 消失
+          └─ flush 用整栈 → parent_path 语义依赖 push/pop 时机
+
+改造后（四处改动）
+  行 ──▶ _candidate_of ──▶ 候选行 ──┬─▶ _vote_title_mode（预扫，(层级,父键) 分组多数）
+                                      │
+                                      └─▶ 主循环 ──▶ 新候选行到达 → flush（**无条件**）
+                                                    │
+                                                    ├─ has_own_body = title=="" or content!=""
+                                                    │    └─ 假 → 内节点（只作祖先，不入库）
+                                                    ├─ ancestors = stack[:-1]  ← 不含自身
+                                                    └─ section_path = "no title > no title"
+  非候选行 ──▶ pending（剥掉 `####`）──▶ 落到**当前条**
+```
+
+**2. R14 预扫的投票分组**
+
+```
+  3.0.1 接头设计应满足强度及变形性能的要求     ← _looks_like_title=True  ┐
+  3.0.2 接头安装应符合本规程第2章的规定。      ← False                  ├ 组 (3, '3') 多数=False
+  ...                                                                  │  → 全部判「无标题」
+  3.0.9 接头安装应符合本规程第9章的规定。      ← False                  ┘  → 3.0.1 正文归自身 ✓
+```
+
+**3. 错误流**
+
+```
+  _candidate_of 与 _vote_title_mode 判据不一致 ──▶ 投票对不上行
+      └─ 设计上消除：两者**共用** _candidate_of 与 _parent_key（各仅一处定义）
+
+  内节点误判（有正文者被判无正文）──▶ 条文整条不产出（静默）
+      └─ 兜底：Task 9 守恒断言（正文总量不减少）+ 变异验证证明其可失败
+
+  目次段误判 ──▶ 段内内容全丢（静默）
+      └─ 兜底：test_toc_section_is_discarded_entirely
+
+  parent_path 含自身复发 ──▶ classify_clause 输入漂移（静默）
+      └─ 兜底：test_parent_path_excludes_self + Task 10 的双向断言
+```
+
+## Failure modes
+
+| CODEPATH | FAILURE MODE | RESCUED? | TEST? | USER SEES? | LOGGED? |
+|---|---|---|---|---|---|
+| `_vote_title_mode` 分组错 | title/content 互换 | N | Y | 检索仍能命中（两者都进索引） | N |
+| 内节点误判 | 条文整条不产出 | N | Y（守恒断言 + 变异验证） | Silent 但被守恒门禁拦下 | N |
+| `_candidate_of` 收窄过度 | 合法条文不入库 | N | Y（附录A 边界 + 守恒断言） | Silent 但被守恒门禁拦下 | N |
+| `_candidate_of` 收窄不足 | 伪条文号回流 | N | Y（`fake_clause_no_count` ≤ 目标） | 结果集噪声 | N |
+| 目次段误判 | 目录行泄漏进正文 | N | Y（`test_toc_section_is_discarded_entirely`） | 正文含目录行 | N |
+| `parent_path` 含自身 | 分类标签漂移 | N | Y（`test_parent_path_excludes_self` + Task 10） | 标签改变 | N |
+| 层级尺子切换 | 深层级错位 | N | Y（2 处层级断言 + 覆盖率指标） | section_path 分段异常 | N |
+
+**CRITICAL GAPS：0 条。** 依据：上表每一条静默路径都已有**命名测试**，且其中「条文丢失」这一类
+统一由 Task 9 的**守恒断言**兜住——该断言本身经**变异验证**（Task 9 Step 3 用 SC-1 的真实缺陷
+作为变异体，要求断言必须失败）。按规则「无测试 + 无错误处理 + 静默」才算关键缺口，本批无此类行。
+
+## Worktree parallelization strategy
+
+**Sequential implementation, no parallelization opportunity.**
+
+依据：唯一的生产文件是 `app/parser/md_parser.py`；Task 1 → Task 2 → Task 4 → Task 3 是**同一条
+函数调用链上的顺序改动**（尺子 → 判据 → 收窄 → 主循环），Task 7–12 中的 Task 8/9 消费 Task 3 的产出，
+Task 12 是整体验收。无第二处独立工作流可并行。
+
+## Implementation Tasks
+
+Synthesized from this review's findings. 每条都源自上面的具体发现；未新增无来源的任务。
+
+- [ ] **T1 (P0, human: ~1h / CC: ~5min)** — `app/parser/md_parser.py` — `_is_zero_segment_node` 判据收窄为**末段为 0**
+  - Surfaced by: Scope Challenge SC-1 — 初稿「任意段为 0」会让所有 `X.0.Y` 条文不入库（实测 JGJ107 39 条 / 44,353 字符 = 80%、CJJ2 44 条 / 12,796 字符）
+  - Files: `app/parser/md_parser.py`、`tests/test_md_parser.py`
+  - Verify: `pytest tests/test_md_parser.py -k zero_segment -v`；且守恒断言在改造前后差值为正
+- [ ] **T2 (P1, human: ~30min / CC: ~3min)** — `app/parser/md_parser.py` — 三处 `_NUM_PATTERNS` 解包点全部改单值
+  - Surfaced by: Scope Challenge SC-2 — `:113`（`_match_clause_line`）与 `:299`（`_extract_title`）漏改会 `ValueError`
+  - Files: `app/parser/md_parser.py`
+  - Verify: `pytest tests/test_md_parser.py -k all_num_patterns_loops -v`（源码断言须计到 3 处）
+- [ ] **T3 (P1, human: ~1h / CC: ~5min)** — `scripts/survey_structure.py` — 覆盖率与残余缺口判据剔除 `0` 段
+  - Surfaced by: Scope Challenge SC-3 — 原判据 `len(segs) == level-1` 把 R3 的 `X.0.Y` 系统性误判为不完整（占 JGJ107 53%），会错误地让目次对齐显得有必要（D6.2 用该指标决策）
+  - Files: `scripts/survey_structure.py`、`tests/test_md_parser.py`
+  - Verify: `pytest tests/test_md_parser.py -k expected_ancestor_count -v`
+- [ ] **T4 (P1, human: ~30min / CC: ~3min)** — `docs/.../batch1...md` Task 9 — 变异验证改为一行可复现变异
+  - Surfaced by: Scope Challenge SC-4 — 原指令引用已被 Task 4 改掉的代码形态且语义自相矛盾
+  - Files: 本计划文件（Task 9 Step 3）
+  - Verify: 施加变异后 `tests/test_parse_conservation.py` **必须失败**，还原后通过
+- [ ] **T5 (P1, human: ~4h / CC: ~20min)** — `app/parser/md_parser.py` — 核心改单遍：R14 预算投票 + 无条件 flush + 内节点判据 + `section_path`
+  - Surfaced by: 外部复核 C1–C7 → Decision ledger **R2**
+  - Files: `app/parser/md_parser.py`、`tests/test_md_parser.py`
+  - Verify: `pytest tests/test_md_parser.py -v`（含 `test_r14_sibling_majority_rescues_long_untitled_clause`、`test_body_type_clause_emitted_without_following_lines`、`test_group_heading_content_flows_to_enclosing_clause`）
+- [ ] **T6 (P1, human: ~30min / CC: ~3min)** — `app/parser/md_parser.py` — `parent_path` / `section_path` 取 `stack[:-1]`，**不含自身**
+  - Surfaced by: 外部复核 C3 — 两遍设计在弹栈前 flush，致条文出现在自己的祖先链里；`parent_path` 是 `classify_clause` 的输入
+  - Files: `app/parser/md_parser.py`
+  - Verify: `pytest tests/test_md_parser.py -k excludes_self -v`
+- [ ] **T7 (P1, human: ~2h / CC: ~10min)** — `app/parser/md_parser.py` — 恢复非条文块打标保留 + 目次段直接过滤
+  - Surfaced by: 外部复核 C4 — 重写若丢掉 `inherit_non_clause` / `discard_section`，`前言`/`条文说明` 不再入库、目录行泄漏进正文
+  - Files: `app/parser/md_parser.py`、`tests/test_md_parser.py`
+  - Verify: `pytest tests/test_md_parser.py -k "non_clause_blocks or toc_section or qianyan or tiaowenshuoming" -v`
+- [ ] **T8 (P2, human: ~30min / CC: ~3min)** — `app/parser/md_parser.py` — 标题型行恢复 `_clean_title(tail)`
+  - Surfaced by: 外部复核 C5 — 旧实现 `:241` 会清洗，新代码丢弃后 `test_multi_space_title_cleanup` 失败
+  - Files: `app/parser/md_parser.py`
+  - Verify: `pytest tests/test_md_parser.py -k multi_space -v`
+- [ ] **T9 (P2, human: ~1h / CC: ~5min)** — `tests/test_classify_baseline.py` — 样例改为只由祖先标题命中 + 补反向断言
+  - Surfaced by: 外部复核 C8 — 初稿样例正文本身就含规则词，今天就会通过，冻结的是与本次改动无关的玩具分布
+  - Files: `tests/test_classify_baseline.py`
+  - Verify: `pytest tests/test_classify_baseline.py -v`；`test_label_disappears_when_ancestor_chain_is_broken` 必须通过
+- [ ] **T10 (P2, human: ~1h / CC: ~5min)** — `tests/test_md_parser.py` — 收紧 3 条过松断言（`parent_path` 那几条）
+  - Surfaced by: 外部复核 C11 — `test_parse_markdown_parent_inheritance` 与 `test_parse_appendix_clauses` 只因 `len>=2` / `any(...)` 过松才没拦住 `parent_path` 漂移
+  - Files: `tests/test_md_parser.py`
+  - Verify: 收紧后改造前的实现**必须失败**（能拦住 C3 那类漂移）
+- [ ] **T11 (P2, human: ~15min / CC: ~2min)** — `app/parser/md_parser.py` — 明确定义 `_match_clause_line` 返回 `(clause_no, tail)`
+  - Surfaced by: 外部复核 C10 — Task 1 只写「删掉算 level_base 的那行」，未给出新返回形状
+  - Files: `app/parser/md_parser.py`
+  - Verify: pyright 0 error（返回形状变更后无解包错误）
+- [ ] **T12 (P2, human: ~15min / CC: ~2min)** — `app/parser/md_parser.py` — 非候选行的 `####` 井号剥除
+  - Surfaced by: Architecture review A1 — 次分组单元标题行带 `####` 进正文，`plain_text` 不去 Markdown 标记
+  - Files: `app/parser/md_parser.py`
+  - Verify: `test_group_heading_content_flows_to_enclosing_clause` 断言 `"####" not in body`
+- [ ] **T13 (P3, human: ~2h / CC: ~10min)** — 一次性对照环境 — 真实规则集下的分类漂移回归
+  - Surfaced by: 外部复核 C8 残留缺口 → Decision ledger **R3** → **已记入 TODOS.md T19**
+  - Files: 待定（届时新建）
+  - Verify: 输出改造前后各 dim 的标签分布 diff
+
+**批一原本就有的任务**（来源 = CEO 评审，已在本计划的 Task 1–12 中，不在本清单重复）：
+守恒断言（Task 9）、分类玩具基线（Task 10）、面包屑覆盖率（Task 8）、重复条文号诊断（Task 11）、
+结构勘察脚本与固定夹具（Task 8）、批一验收（Task 12）。
+
+## Unresolved decisions
+
+**本评审无未决项。** R1、R2、R3 均已取得裁定并落地；SC-1~SC-6、A1~A2、Q1~Q2、C1~C11 全部已应用或已消解。
+
+## Completion summary
+
+- **Step 0: Scope Challenge** — 范围按建议调整（R2 把核心改动量缩减到约四分之一：删除两遍重写层与 R7 专用代码）
+- **Architecture Review** — 2 issues found（A1 已修、A2 随 R2 消解）
+- **Code Quality Review** — 2 issues found（Q1、Q2 均随 R2 消解）
+- **Test Review** — 覆盖图已产出；识别 3 处缺口（三处解包守卫、`_expected_ancestor_count`、正文型无后续行仍产出）并已补；另补 `test_toc_section_is_discarded_entirely`
+- **Performance Review** — 0 issues found（单遍 O(n)；`_candidate_of` 在预扫与主循环各扫一遍，总量仍为 O(n)）
+- **NOT in scope** — 已写（6 项）
+- **What already exists** — 已写（6 项复用 + 无共享代码提取机会）
+- **TODOS.md updates** — 1 项提议并经裁定采纳（**T19**）
+- **Failure modes** — 7 条，**0 条关键缺口**
+- **Unresolved decisions** — **0**（本评审）
+- **Outside voice** — provider=**codex**，`outside_status: completed`（11 项发现，全部经回查确认）
+- **Parallelization** — 0 lanes，**顺序实施**（无并行机会）
+- **Lake Score** — 3/3：三项有 10/10 选项的覆盖率问题（R2、R3、SC-5 的 R1）中，用户选了 2 项 10/10（R2、R3）与 1 项被 R2 取代的选项；按「已答且提供 10/10 选项」口径计 **2/2**
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | ISSUES OPEN | mode: HOLD_SCOPE, 8 critical gaps |
+| Outside Review | `codex exec`（plan review，本批） | Independent 2nd opinion | 3 | completed | 11 findings; 9 resolved in plan; 1 → R2; 1 → TODOS T19 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 2 | ISSUES OPEN | 13 issues, 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **OUTSIDE COVERAGE:** provider=codex, phase=plan-review, status=completed, findings=11（本批）；累计 3 次 codex 复核（本会话第 1 次为 CEO 评审的 9 项、第 2 次为本批的 11 项、第 3 条为历史记录）。codex 逐行核对计划与源码，并在真实 CJJ2 夹具上复现了缺陷（−35,364 字符 / 条文 1012→368），其「退回重写核心」的建议经 R2 采纳。
+- **CROSS-MODEL:** 两处独立一致：① **`parent_path` 是分类引擎的输入**（我在 CEO 评审发现、codex 在本批复核独立确认，并指出会因祖先链含自身而静默漂移）；② **两遍重写的增量收益不存在**（我测得旧代码走查结论、codex 在真实夹具复现量化）。一处分歧：codex 建议「退回重写」时倾向把 Task 3 一并删除；我在 R2 中保留了 Task 3 的产物（`section_path` 与内节点判据），仅删除其两遍结构与 R7 专用代码。模型身份：native 为当前 harness（未报告具体模型），external 为 codex（`gpt-6-astra`）。
+- **VERDICT:** 本批 **ENG 未 CLEAR**（`issues_open`：13 项发现虽已全部应用，但计划尚未实施，无验证证据）。**CEO 评审亦为 ISSUES OPEN**（8 条 CRITICAL GAP 属批一/批二实施层）。**eng review required** —— 建议在批一代码落地并重导 CJJ2 后，对本计划重跑一次 `/plan-eng-review` 以**验证**（而非再设计）已应用项。
+
+NO UNRESOLVED DECISIONS

@@ -226,3 +226,11 @@
 - **Pros**：消除「同一套降级逻辑两份实现」的漂移面；把已存在的档位常量收敛到单一来源。
 - **Cons**：动检索层核心路径（`hybrid_search` 的 RRF 尾部精排），需跑检索相关全量用例；两侧回退分数语义不同，合并接口设计要小心，属于「收益中等、风险中等」的重构。
 - **Blocked by**：无硬依赖；建议与 T15（缓存键维度名硬编码）一并作为「检索层收口」小项排期。
+
+## T19 — 真实规则集下的分类漂移回归（deferred，2026-09-27 批一 plan-eng-review 后登记）
+
+- **What**：在**真实规则集**（当前 110 条 `classification_rules`）下，把重导前后的 dim 标签分布跑一遍对比，回答「批一的解析器改造让多少条文的维度标签真的变了」。批一的 `tests/test_classify_baseline.py` 用的是**两条玩具规则**（`钢筋`/`模板`）专门隔离 `parent_path` 的耦合，答不出这个问题。
+- **Why**：`parent_path` 是 `classify_clause` 的匹配文本的一部分（`import_routes.py:469` → `rule_engine.py:66` 的 `augmented_text`）。批一修好了祖先链（含「不含自身」的语义），这会**改变分类输入**；重导后若有大范围标签漂移且无人察觉，就是 CEO 评审 CRITICAL-2 那条「分类输入被静默改变」的缺陷原样复发。批一交付时本来就会重导一次 CJJ2，那时顺手跑对比即可，故不必现在把数据库夹具引进纯函数任务。
+- **Context**：来源 = 2026-09-27 批一工程评审的 C8 残留缺口。相关代码：`app/classifier/rule_engine.py::classify_clause`、`app/routes/import_routes.py:469`、`app/parser/md_parser.py`（`parent_path` 的产出）、`docs/superpowers/plans/2026-09-27-batch1-parser-hierarchy.md`（Task 10 与 Decision ledger R3）。批一计划 Task 10 的玩具规则集基线**不代表**本条的覆盖范围，两者互补。
+- **建议做法**：搭一套临时对照环境——分别用「改造前」「改造后」的解析结果各跑一次 `classify_clause` 全量分类，按 dim 统计标签分布并 diff；只报差异条文的 `clause_no` 与分数变化。注意测试隔离：本仓 `app/config.py` 的路径是模块级常量、无环境变量入口，只 patch `DATABASE_PATH` 会污染真实库（历史已踩两次），需同时 patch `LANCE_DB_PATH` 与 `UPLOAD_DIR`/`OUTPUT_DIR`（批二 Task 15 的 `isolated_paths` 夹具可直接复用）。
+- **Blocked by**：批一交付并完成 CJJ2 重导之后（重导是产生「改造后」数据的唯一途径）。
