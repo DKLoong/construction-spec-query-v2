@@ -436,6 +436,28 @@ def test_appendix_with_own_body_is_a_leaf_clause():
     assert len(r) == 1
     assert "序号" in r[0]["content"]
 
+def test_page_marker_isolates_pages():
+    """`## 第X页` 必须自成一格，使封面/前引文字**不并入首条真条文**。
+
+    契约出处：`app/parser/ocr_clean.py:11-12`（明文承诺保留该标记）。
+    失败形态（Task 1 复核 Important #2 探针复现）：页标记被筛掉后，前引文字
+    并入 `1 总则`，使 `is_cover_clause()` 对其返回 True（特征词 ≥2）→
+    `_filter_cover_clauses`（`import_routes.py:381`）把首条真条文**连同其正文**丢弃。
+    """
+    md = ("## 第1页\n\nICS 77.140.60\n\n中华人民共和国国家标准\n\n代替 GB/T 1499.1-2008\n\n"
+          "## 1 总则\n\n1.0.1 正文内容。\n")
+    clauses = {c["clause_no"]: c for c in parse_markdown(md)}
+    # 页标记自身保留但隐藏（is_non=1），前引文字归它，不污染 `1`
+    page = [c for c in clauses.values() if c["clause_no"] == "第1页"]
+    assert len(page) == 1 and page[0]["is_non_clause"] is True
+    assert "ICS" in page[0]["content"]
+    # 首条真条文不得带上封面特征词（否则会被 _filter_cover_clauses 误删）
+    assert clauses["1"]["content"].strip() == ""
+    from app.parser.md_parser import is_cover_clause
+    assert is_cover_clause(clauses["1"]["content"]) is False
+    assert clauses["1.0.1"]["content"].strip() == "正文内容。"
+
+
 def test_group_heading_content_flows_to_enclosing_clause():
     """R7 次分组单元的内容回流到所属条（实测规模：252,514 字符 / 占全部正文 56%）
 
@@ -511,6 +533,11 @@ Expected: FAIL — `KeyError: 'section_path'`；`3.0.1` 缺失
 - [ ] **Step 3: 实现**
 
 ```python
+# OCR 管线的页分隔标记（`## 第X页`）。它必须被 parse_markdown 保留为独立候选，
+# 否则每页不再隔离——见 `_candidate_of` 里 (a) 的说明与 `ocr_clean.py:11-12` 的契约。
+_PAGE_MARKER = re.compile(r'^第\s*\d+\s*页$')
+
+
 def _candidate_of(line: str) -> tuple[int, str, str] | None:
     """识别候选行 → `(level, clause_no, tail)`；不是候选行返回 `None`。
 
@@ -524,14 +551,35 @@ def _candidate_of(line: str) -> tuple[int, str, str] | None:
         raw_title = m_hash.group(2).strip()
         clause_no = _extract_clause_no(raw_title)
         if clause_no is None:
-            # 无编号标题：只有「非条文块」保留为候选（R8/R8b 打标保留）；
-            # 其余（如英文标题）不当条文（R1 ⑦）。
+            # 无编号标题：以下三类保留为候选，其余（如英文标题）不当条文（R1 ⑦）。
             t = _clean_title(_extract_title(raw_title))
+            # (a) 页分隔标记（`## 第X页`）：**必须保留为候选**，以维持「每页独立隔离」的契约
+            # ——`app/parser/ocr_clean.py:11-12` 明文承诺「保留它才能让 parse_markdown
+            # 为封面页生成独立条文，再由 import 侧的 is_cover_clause 丢弃」。
+            # 若它被筛掉：封面/前引文字会并入**首条真条文**，而 `is_cover_clause()`
+            # 可能对该首条返回 True（实测特征词 ≥2 即 True）→ `_filter_cover_clauses`
+            # （`import_routes.py:381`）把首条真条文连同其正文一并丢弃。
+            # （Task 1 复核 Important #2，探针复现；旧实现靠该标记自成一格来隔离。）
+            # 注意它必须走**本分支**：Task 1 已删掉 `第…[节章条]` 兜底，故
+            # `_extract_clause_no("第1页")` 返回 None。处置：保留为候选，并在主循环里
+            # 标 is_non_clause=1（隐藏不检索），等价于旧行为「自成一格 → 被封面过滤丢弃」，
+            # 但不再依赖封面特征词。
+            if _PAGE_MARKER.match(t):
+                return (1, t, t)
+            # (b) 法定非条文块（前言/条文说明/公告/引用标准名录/用词说明…）
             return (1, t, t) if is_non_clause_title(t) else None
-        if _BARE_YEAR.match(clause_no) or not re.search(r'[一-鿿]', raw_title):
+        if _BARE_YEAR.match(clause_no):
             return None
-        return (_level_from_clause_no(clause_no), clause_no,
-                _clean_title(_extract_title(raw_title)))
+        title_txt = _clean_title(_extract_title(raw_title))
+        # ⚠️ 目次/Contents 必须**先于**「无中文」检查返回为候选：
+        # `Contents` 是英文、无中文，若先做中文检查会把它筛掉，于是主循环里的
+        # `is_filter_non_clause_title` 永远不触发、`discard_section` 从未置位，
+        # 目录行会泄漏进下一条条文的正文（Task 1 复核 Important #1，已探针复现）。
+        if is_filter_non_clause_title(title_txt):
+            return (_level_from_clause_no(clause_no), clause_no, title_txt)
+        if not re.search(r'[一-鿿]', raw_title):
+            return None
+        return (_level_from_clause_no(clause_no), clause_no, title_txt)
     m_num = _match_clause_line(line.strip())
     if not m_num:
         return None
@@ -666,7 +714,9 @@ def parse_markdown(md_text: str) -> list[dict]:
             continue
         discard_section = False
 
-        is_non = is_non_clause_title(title or tail) or inherit_non_clause
+        is_non = (is_non_clause_title(title or tail)
+                  or bool(_PAGE_MARKER.match(title or tail))   # 页分隔标记：隐藏但保留（见 _candidate_of）
+                  or inherit_non_clause)
         if is_non:
             inherit_non_clause = True
 
