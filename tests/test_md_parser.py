@@ -73,8 +73,9 @@ def test_parse_markdown_handles_empty():
 def test_parse_markdown_levels():
     results = parse_markdown(SAMPLE_MD)
     levels = {r["clause_no"]: r["level"] for r in results}
-    assert levels["5.1.1"] == 4
-    assert levels.get("5.1") is None  # 中间标题不生成条文
+    # 层级 = 1 + 编号点数（唯一尺子）；5.1.1 两个点 → 3
+    assert levels["5.1.1"] == 3
+    assert levels.get("5.1") is None  # 中间标题不生成条文（无自身正文 → 内节点）
 
 
 # ═══════════════════════════════════════════
@@ -340,7 +341,7 @@ def test_fullwidth_dot_body_clause_parsed():
 
 
 def test_fullwidth_dot_level_inference():
-    """全角点号应计入层级推断（2 个点 → 纯数字模式 level 3）"""
+    """全角点号归一化为半角后按点数计层级（唯一尺子：1 + 点数）；1.0.1 → 3"""
     md = """1．0．1  正文内容。
 
 1．0．2  更多内容。
@@ -450,3 +451,43 @@ def test_is_cover_clause_single_keyword_not_cover():
     """单个特征词命中（如只出现「印刷」）不判定为封面（需命中 ≥2 个）"""
     content = "本规范采用胶版印刷工艺装订。"
     assert is_cover_clause(content) is False
+
+
+# ═══════════════════════════════════════════
+# 层级单一尺子 + 编号识别三个小修复（Task 1）
+# ═══════════════════════════════════════════
+
+def test_level_comes_from_number_not_hash_count():
+    """层级只由编号点数推导，与井号数量无关
+
+    井号数取 3 与 4：两者都构成 Markdown 标题（`#{1,6}`），旧尺子下层级为 3/4、
+    新尺子下同为 3。**井号超过 6 的行不是标题**（`#{1,6}` 匹配不到），不能用来
+    表达「井号数不同而层级相同」。
+    """
+    md = "### 5.1.1 一般规定\n\n内容甲。\n\n#### 5.1.2 模板安装\n\n内容乙。\n"
+    levels = {r["clause_no"]: r["level"] for r in parse_markdown(md)}
+    assert levels["5.1.1"] == 3
+    assert levels["5.1.2"] == 3   # 井号数不同，层级相同
+
+
+def test_hash_heading_without_clause_no_is_not_clause():
+    """# 路径匹配不到编号即不当条文（旧实现兜底 return title 会造出伪条文号）"""
+    md = "# Code for construction and quality acceptance of bridge works\n\n正文。\n"
+    assert parse_markdown(md) == []
+
+def test_bare_year_is_not_clause_no():
+    """裸露 4 位年份不得成为条文号"""
+    md = "2008\n\n正文内容。\n"
+    assert all(r["clause_no"] != "2008" for r in parse_markdown(md))
+
+def test_all_num_patterns_loops_use_single_unpack():
+    """`_NUM_PATTERNS` 已是纯字符串列表；三处循环都不得再解包成两个名字。
+
+    初稿只改了 _extract_clause_no，漏掉的 :113 与 :299 会抛 ValueError。
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "app/parser/md_parser.py").read_text(encoding="utf-8")
+    assert "for pattern, level_base in _NUM_PATTERNS" not in src
+    assert "for pattern, _ in _NUM_PATTERNS" not in src
+    assert src.count("for pattern in _NUM_PATTERNS") == 3

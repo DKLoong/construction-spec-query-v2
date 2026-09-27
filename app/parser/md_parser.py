@@ -1,17 +1,35 @@
 import re
 
 
-# 编号行前缀正则（按匹配优先级排列），每个元素为 (pattern, level_base)
-# level_base 用于编号深度推断层级（点数量 + level_base）
+# 编号行前缀正则（按匹配优先级排列）
 # 点号兼容半角 `.` 与全角 `．`（U+FF0E，OCR 高频把条文号点误识别为全角）
 _NUM_PATTERNS = [
     # 中文附录: 附录A, 附录B.1
-    (r'^(附录[A-Z]+(?:[\.．][\d]+)*)\s+(.+)', 1),
+    r'^(附录[A-Z]+(?:[\.．][\d]+)*)\s+(.+)',
     # 字母+数字编号: D.4, D.4.1, A.1, TB.10423 (字母后跟数字，可选点分隔)
-    (r'^([A-Z]+(?:[\.．]?\d+)+)\s+(.+)', 1),
+    r'^([A-Z]+(?:[\.．]?\d+)+)\s+(.+)',
     # 纯数字编号: 1, 3.1, 1.0.1, 5.0.3
-    (r'^(\d+(?:[\.．]\d+)*)\s+(.+)', 1),
+    r'^(\d+(?:[\.．]\d+)*)\s+(.+)',
 ]
+
+# 层级上限（与旧实现一致的封顶，避免异常输入产生超深层级）
+_MAX_LEVEL = 6
+
+
+def _level_from_clause_no(clause_no: str) -> int:
+    """层级唯一来源：编号的点数。整份文档只有这一把尺子。
+
+    R1（182 号第三十二~四十一条）/ GB/T 1.1：层级由编号的段数唯一决定，
+    与 Markdown 的 `#` 数量无关——PaddleOCR-VL 的 `#` 数量不稳定，双尺子会
+    让 `### 18.3`（旧=3）与 `18.3.1`（旧=3）撞层，导致栈被提前 pop。
+
+    例：'5'→1, '5.1'→2, '5.1.1'→3, '附录A'→1, 'A.1.3'→3, '16.0.2'→3
+    """
+    return min(1 + clause_no.count('.'), _MAX_LEVEL)
+
+
+# 裸露的 4 位年份（如封面页的 "2008"）不是条文号
+_BARE_YEAR = re.compile(r'^(19|20)\d{2}$')
 
 # 标题式编号行特征：编号后的文本较短且无句末标点，视为标题而非正文
 _TITLE_END_PUNCT = ('。', '；', '：', '.', '！', '？')
@@ -92,9 +110,10 @@ def is_cover_clause(content) -> bool:
 
 
 def _match_clause_line(line: str):
-    """检测非 # 前缀的编号行。返回 (level, clause_no, tail) 或 None
+    """检测非 # 前缀的编号行。返回 (clause_no, tail) 或 None
 
     tail 为编号后的文本。是否作为标题由调用方按 _looks_like_title 判断。
+    **层级不由本函数推断**，调用方统一用 `_level_from_clause_no`（唯一尺子）。
 
     排除：目录行（含 5 个以上连续点）、纯日期行、无中文行。
     """
@@ -110,7 +129,7 @@ def _match_clause_line(line: str):
     # 排除无中文字符的行（如纯英文标题）
     if not re.search(r'[一-鿿]', s):
         return None
-    for pattern, level_base in _NUM_PATTERNS:
+    for pattern in _NUM_PATTERNS:
         m = re.match(pattern, s)
         if m:
             # 统一归一化全角点号（U+FF0E）为半角，保证后续层级推断/查询一致
@@ -125,10 +144,7 @@ def _match_clause_line(line: str):
             # 否则视为正文列表项（作为当前条文的内容，不切分）
             if '.' not in clause_no and not _looks_like_title(tail):
                 return None
-            # 编号深度推断层级：点数量 + level_base
-            depth = clause_no.count('.')
-            level = min(level_base + depth, 6)
-            return (level, clause_no, tail)
+            return (clause_no, tail)
     return None
 
 
@@ -211,10 +227,22 @@ def parse_markdown(md_text: str) -> list[dict]:
                 current_content_lines = []
 
             if m_hash:
-                level = len(m_hash.group(1))
                 raw_title = m_hash.group(2).strip()
                 clause_no = _extract_clause_no(raw_title)
                 title = _clean_title(_extract_title(raw_title))
+                if clause_no is None:
+                    # 无编号标题：只有「非条文块」（前言/条文说明等，R8/R8b 打标保留）
+                    # 继续以标题本身作编号走黑名单链路（旧行为）；
+                    # 其余（如 `### 某英文标题`）不当条文（R1 ⑦）。
+                    if not is_non_clause_title(title):
+                        continue
+                    clause_no = title
+                # 编号是裸露年份，或标题无中文 → 不当条文（与 _match_clause_line 判据一致）
+                if _BARE_YEAR.match(clause_no):
+                    continue
+                if not re.search(r'[一-鿿]', raw_title):
+                    continue
+                level = _level_from_clause_no(clause_no)
                 # 黑名单：目次/Contents 直接过滤（不生成条文，丢弃段内内容）
                 if is_filter_non_clause_title(title):
                     current_content_lines = []
@@ -235,7 +263,8 @@ def parse_markdown(md_text: str) -> list[dict]:
             else:
                 # m_num 在此分支必定非 None（满足 if m_hash or m_num）
                 assert m_num is not None
-                level, clause_no, tail = m_num
+                clause_no, tail = m_num
+                level = _level_from_clause_no(clause_no)
                 if _looks_like_title(tail):
                     # 标题型编号行：与 # 标题行为一致
                     title = _clean_title(tail)
@@ -296,7 +325,7 @@ def _extract_title(raw_title: str) -> str:
     """从完整标题中提取纯标题文本，去掉条文编号前缀。
     如 '5.1.1 一般规定' -> '一般规定'；'D.4 疏浚、吹填工程' -> '疏浚、吹填工程'
     """
-    for pattern, _ in _NUM_PATTERNS:
+    for pattern in _NUM_PATTERNS:
         m = re.match(pattern, raw_title)
         if m:
             return m.group(2).rstrip(' .…')
@@ -306,19 +335,19 @@ def _extract_title(raw_title: str) -> str:
     return raw_title
 
 
-def _extract_clause_no(title: str) -> str:
-    """从标题中提取条文号，如 '5.1.1 一般规定' -> '5.1.1'；'D.4 疏浚' -> 'D.4'
+def _extract_clause_no(raw_title: str) -> str | None:
+    """从标题中提取条文号；**匹配不到编号返回 None**（不再兜底返回整串标题）。
+
+    R1 ⑦：旧实现兜底 `return title` 会把 `### 某英文标题` 变成 clause_no，
+    导致英文标题成条文、以及 `Ⅰ 主控项目` 这类非条文号入库（实测 124 条伪条文号）。
 
     兼容全角点号（U+FF0E），提取后统一归一化为半角点号。
     """
-    for pattern, _ in _NUM_PATTERNS:
-        m = re.match(pattern, title)
+    for pattern in _NUM_PATTERNS:
+        m = re.match(pattern, raw_title)
         if m:
             return m.group(1).replace('．', '.')
-    m = re.match(r"^第[一二三四五六七八九十百千万\d]+[节章条]", title)
-    if m:
-        return title
-    return title
+    return None
 
 
 def _clean_title(title: str) -> str:
