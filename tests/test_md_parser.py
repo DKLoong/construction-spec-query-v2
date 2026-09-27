@@ -1506,6 +1506,33 @@ def test_toc_dot_leader_lines_kept_out_of_content():
     assert "为适应混凝土结构工程发展的需要而编制" in qy[0]["content"], "前言正文不得被误删"
 
 
+def test_numeric_filter_title_seen_advances_identically():
+    """fix round 2（Finding 3）：数字命名的过滤标题不得让预扫与主循环的 seen 集合分叉。
+
+    `## 1.1 目次` 是**数字命名的过滤标题**：`_vote_title_mode` 把它当普通候选行、推进
+    `seen_clause_nos`（加 "1.1"）；主循环在 `is_filter_non_clause_title` 处 continue
+    （在 `seen_clause_nos.add` 之前）→ 主循环的 seen 没有 "1.1"。于是其后 `## 1.1 总则`
+    在预扫被 `_reject_cross_chapter` 判「同号重复」而拒、主循环却照常接受并产出条文——
+    两个 pass 的候选行集合分叉，违背「两遍用同一判据」的不变量（两语料的过滤标题都是
+    非数字，故该洞是潜伏的、语料上不触发）。
+    修法：两遍都在 `_reject_cross_chapter` 之后、任何后续分支之前推进 seen。
+    修后 `## 1.1 总则` 在两边都被判重复 → 不再产出条文；其子条 1.1.1 的面包屑不再含 `1.1 总则`。
+    """
+    md = (
+        "## 1.1 目次\n\n"
+        "1.1 总则 ..... 1\n\n"
+        "## 1.1 总则\n\n"
+        "1.1.1 正文甲。\n"
+    )
+    rows = parse_markdown(md)
+    assert not any(r["clause_no"] == "1.1" for r in rows), \
+        f"数字目次标题后主循环仍产出 `## 1.1 总则`（seen 分叉）：{[r['clause_no'] for r in rows]}"
+    hit = [r for r in rows if r["clause_no"] == "1.1.1"]
+    assert hit, "1.1.1 应产出"
+    assert hit[0]["section_path"] == "", \
+        f"分叉后 1.1.1 的面包屑错误带上 `1.1 总则`：{hit[0]['section_path']!r}"
+
+
 # ═══════════════════════════════════════════
 # 组 8：次分组标签空壳节点打标隐藏（feature ②，round 2）
 # ═══════════════════════════════════════════

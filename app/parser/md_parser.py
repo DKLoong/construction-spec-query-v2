@@ -484,11 +484,14 @@ def _vote_title_mode(lines: list[str]) -> dict[tuple[int, str], bool]:
         level, clause_no, tail = cand
         if _reject_cross_chapter(cand, state):
             continue
+        # fix ③ 不变量：seen 在 `_reject_cross_chapter` 之后、**任何后续分支之前**推进，
+        # 与主循环同点（主循环会因目次/Contents 等过滤标题在 seen.add 之前 continue——
+        # 见 round 2 Finding 3，已把两遍的推进点对齐到此处）。
+        state.seen_clause_nos.add(clause_no)
         rows.append((level, _parent_key(stack, level), tail))
         while stack and stack[-1]["level"] >= level:
             stack.pop()
         stack.append({"level": level, "clause_no": clause_no})
-        state.seen_clause_nos.add(clause_no)
 
     groups: dict[tuple[int, str], list[str]] = {}
     for level, parent_key, tail in rows:
@@ -626,8 +629,14 @@ def parse_markdown(md_text: str) -> list[dict]:
                     pending.append(re.sub(r'^#{1,6}\s*', '', line))
             continue
 
-        flush()                                  # 新候选行到达 → 先结算上一条
         level, clause_no, tail = cand
+        # fix ③ 不变量：seen 在 `_reject_cross_chapter` 之后、**任何后续分支之前**推进，
+        # 与预扫 `_vote_title_mode` 同点。此前本 add 落在 `is_filter_non_clause_title`
+        # 的 continue 之后，数字命名的过滤标题（如 `## 1.1 目次`）会让主循环漏记、
+        # 与预扫的 seen 分叉（round 2 Finding 3）。
+        state.seen_clause_nos.add(clause_no)
+
+        flush()                                  # 新候选行到达 → 先结算上一条
 
         # 投票键缺失只可能出现在「目次/Contents 行被主循环筛掉、未入栈」之后；
         # 回退 False（判「无标题」）与平票规则同向：文本进 content，不丢内容。
@@ -681,7 +690,6 @@ def parse_markdown(md_text: str) -> list[dict]:
             "level": level, "clause_no": clause_no, "title": title,
             "is_non_clause": is_non,
         })
-        state.seen_clause_nos.add(clause_no)     # fix ③：与预扫同步记录已见条号
         if not title:
             pending.append(tail)                 # 正文型：编号后文本即正文首行
 
