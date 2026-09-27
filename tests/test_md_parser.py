@@ -1448,6 +1448,31 @@ def test_hash_bare_digit_chapter_number_must_strictly_increase():
     assert "变形测量标距" in a11[0]["content"], "被拒行的文本应折入所属条 content"
 
 
+def test_hash_bare_digit_chapter_number_must_not_decrease():
+    """fix ① 唯一可证伪的回跳形态：`## 3` 之后出现**从未见过的**裸 `## 2`。
+
+    现有用例 test_hash_bare_digit_chapter_number_must_strictly_increase 用的是「重复的 2」
+    （`## 2 术语和符号` 后再 `## 2 变形测量标距`），而 `2` 已进 seen_clause_nos → 即便
+    revert 掉 fix ①，fix ③ 的同号重复判据仍会拒掉它 → 该用例照常绿（round 2 Finding 2）。
+    本用例的 `2` **从未作为条号出现**（章号直接 1→3），fix ③ 拦不住（`2` 不在 seen），
+    只有 fix ① 的 `n <= max_bare_chapter` 能拒。revert fix ①（保留 ③）时本用例必红。
+    """
+    md = (
+        "## 1 总则\n\n1.0.1 正文甲。\n\n"
+        "## 3 施工准备\n\n3.0.1 正文丙。\n\n"
+        "### A.1 型式检验\n\n"
+        "A.1.1 试件型式检验应符合下列规定：\n\n"
+        "1 单向拉伸试验。\n\n"
+        "## 2 变形测量标距\n\n"
+        "1）单向拉伸残余变形测量应按下式计算。\n"
+    )
+    rows = parse_markdown(md)
+    assert not any(r["clause_no"] == "2" for r in rows), "回跳的裸章号 2 仍是节点（fix ① 失效）"
+    a11 = [r for r in rows if r["clause_no"] == "A.1.1"]
+    assert a11, "A.1.1 应产出"
+    assert "变形测量标距" in a11[0]["content"], "被拒行的文本应折入所属条 content"
+
+
 def test_cross_reference_fragment_is_not_a_node():
     """fix ③ (T22)：PDF 断行把交叉引用劈开，下半行以条号形状 token 起头，
     被误认成候选行。判据：body 内同号**已出现过** → 不是节点，文本折入当前条。
