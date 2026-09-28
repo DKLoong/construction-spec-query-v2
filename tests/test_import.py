@@ -217,6 +217,18 @@ def test_upload_markdown(auth_client, monkeypatch, tmp_path):
     """测试上传 MD 文件导入流程"""
     db_path = tmp_path / "test_import.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    # ⚠ 只 patch DATABASE_PATH 会让本用例把夹具规范真写进**真实**存储：导入流程
+    #   还会写向量（LANCE_DB_PATH）与上传文件/输出目录（UPLOAD_DIR/OUTPUT_DIR）。
+    #   这三处常量都绑定在**消费方模块**的命名空间里（C-4：`from app.config import X`
+    #   在导入时即绑定），故必须按消费方模块名 patch，patch `app.config.*` 无效。
+    monkeypatch.setattr(
+        "app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance_db"))
+    monkeypatch.setattr(
+        "app.routes.import_routes.UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setattr(
+        "app.routes.import_routes.OUTPUT_DIR", str(tmp_path / "outputs"))
+    for d in ("lance_db", "uploads", "outputs"):   # 真实目录由 app.config 导入时创建
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
     from app.database import init_db
     init_db()
 

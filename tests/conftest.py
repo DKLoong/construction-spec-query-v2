@@ -1,6 +1,8 @@
 import sys
-import pytest
+import warnings
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -16,6 +18,62 @@ def _mock_search_rerank(monkeypatch):
         hs, "rerank_candidates",
         lambda question, candidates: ([(d, 1.0) for d in candidates], "none"),
     )
+
+
+def real_store_snapshot() -> dict[str, tuple[str, int]]:
+    """真实存储快照：`{口径: (路径, 计数)}`，供会话级守卫使用。
+
+    - 取的是**真实路径**（`app.config` 的模块常量：测试期间未被 patch 的那一份）。
+    - ⚠ 必须先 import `app.config` 再测量：该模块导入时会 mkdir 这几个目录
+      （`app/config.py:23-26`），否则「目录不存在(-1) → 被导入创建」会被误判成污染。
+    - 库/目录不存在或不可读用 `-1` 表示（与「存在但为 0」区分）。
+    """
+    from app.config import LANCE_DB_PATH, OUTPUT_DIR, UPLOAD_DIR
+
+    rows = -1
+    try:
+        import lancedb
+
+        db = lancedb.connect(str(LANCE_DB_PATH))
+        if "clause_embeddings" in db.table_names():
+            rows = db.open_table("clause_embeddings").count_rows()
+    except Exception as e:  # 库不存在/不可读 → 用 -1 表示「无表」
+        # 不得静默：吞掉异常会让守卫在「库不可读」时退化成恒真断言（GC §4）。
+        warnings.warn(f"真实 lance_db 不可读，快照以 -1 表示：{e}")
+        rows = -1
+
+    def _count(root: str, pattern: str | None = None) -> int:
+        p = Path(root)
+        if not p.is_dir():
+            return -1
+        return len(list(p.glob(pattern))) if pattern else len(list(p.iterdir()))
+
+    return {
+        "lance_db": (str(LANCE_DB_PATH), rows),
+        "uploads": (str(UPLOAD_DIR), _count(UPLOAD_DIR, "*.md")),
+        "outputs": (str(OUTPUT_DIR), _count(OUTPUT_DIR)),
+    }
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _guard_real_stores():
+    """会话级隔离守卫：整套测试跑完，真实 lance_db / uploads / outputs 必须零增长。
+
+    ⚠ 为什么必须是**跨套件（session 级）**口径：用例内自比（同一用例前后各取一次
+    快照、两次之间没有任何写操作）对「跨用例污染」恒真。实测过这一形态的失效——
+    每跑一次全量套件真实 lance_db 多 2 行、`data/uploads/` 多 1 个 md，而用例内
+    自比照样 PASS，什么也没守住。
+
+    失败即说明**某个用例漏 patch 了消费方模块名**（C-4，例如只 patch 了
+    `app.database.DATABASE_PATH`，而导入流程还会写 `LANCE_DB_PATH` 与
+    `UPLOAD_DIR`/`OUTPUT_DIR`）。修法是给该用例补 patch，**不是放宽本守卫**。
+    """
+    before = real_store_snapshot()
+    yield
+    after = real_store_snapshot()
+    changed = {k: (before[k], after[k]) for k in before if before[k] != after[k]}
+    assert not changed, "测试会话改动了真实存储（应零增长）：" + "；".join(
+        f"{k}（{b[0]}）{b[1]} → {a[1]}" for k, (b, a) in changed.items())
 
 
 @pytest.fixture

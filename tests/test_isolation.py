@@ -3,36 +3,18 @@
 守住两件事：
 1. 统一 fixture `isolated_paths` 真的把**消费方模块**里的路径常量改掉了
    —— C-4：`from app.config import X` 在导入时已绑定，patch `app.config.*` 不生效；
-2. 跑测试不改变真实 lance_db 的行数与 uploads 的 md 数（C-6：不得写成恒真断言）。
+2. 真实存储的**跨套件零增长**由 `conftest.py` 的 session 级 autouse 守卫
+   `_guard_real_stores` 负责；本文件只保留一条「本用例自身不写库」的窄自检。
 
-⚠ Step 3（跑全量测试前后核对真实库）不属于本单元范围。
+⚠ 为什么不再把「用例内自比」当隔离守卫：两次快照之间没有任何写操作，对
+   「跨用例污染」恒真——实测过这一失效（每跑一次全量套件真实 lance_db 多 2 行、
+   `data/uploads/` 多 1 个 md，而用例内自比照样 PASS）。真正的守卫必须是
+   会话首尾口径，即 `conftest.real_store_snapshot` + `_guard_real_stores`。
+
+⚠ Task 15 Step 3（跑全量测试后人工核对真实库）由 S5 执行，不在本单元范围。
 """
 
-import warnings
-
-
-def _real_store_snapshot() -> tuple[int, int]:
-    """真实（未被 patch 的）向量库行数 + uploads 的 md 数。
-
-    只读快照：`app.config` 的模块常量就是真实路径，此处**故意**不 patch。
-    库不存在/不可读用 -1 表示（与「存在但 0 行」区分）。
-    """
-    from pathlib import Path
-
-    from app.config import LANCE_DB_PATH, UPLOAD_DIR
-
-    rows = -1
-    try:
-        import lancedb
-
-        db = lancedb.connect(str(LANCE_DB_PATH))
-        if "clause_embeddings" in db.table_names():
-            rows = db.open_table("clause_embeddings").count_rows()
-    except Exception as e:  # 库不存在/不可读 → 用 -1 表示「无表」
-        # 不得静默：吞掉异常会让本用例在「库不可读」时变成恒真断言（GC §4）。
-        warnings.warn(f"真实 lance_db 不可读，快照以 -1 表示：{e}")
-        rows = -1
-    return rows, len(list(Path(UPLOAD_DIR).glob("*.md")))
+from tests.conftest import real_store_snapshot
 
 
 def test_isolated_paths_patches_consumer_modules(isolated_paths):
@@ -52,13 +34,13 @@ def test_isolated_paths_patches_consumer_modules(isolated_paths):
     assert import_routes.OUTPUT_DIR == str(isolated_paths / "outputs")
 
 
-def test_tests_do_not_write_real_lance_db():
-    """跑完测试后真实 lance_db 的行数与 uploads 的 md 数都不得变化。
+def test_this_test_itself_leaves_real_stores_untouched():
+    """**窄**自检：本用例自身不写真实存储（不含期间被 patch 的 tmp 路径）。
 
-    ⚠ **C-6：不得写成恒真断言**（原稿是 `assert before in (True, False)`，
-    永远为真，什么都没守住）。真正的守护是 fixture 的普遍应用 + 这条对比断言。
+    它**不是**隔离守卫（跨用例污染它看不见，见模块 docstring）；真正的守卫是
+    `conftest.py` 的 session 级 `_guard_real_stores`。保留它的意义只有一个：
+    本文件自己没有意外写真实库。
     """
-    before = _real_store_snapshot()
-    # 触发器：本用例自身必须不写真实库；跑完后重比一次即可抓到回归。
-    after = _real_store_snapshot()
-    assert after == before, f"测试过程改动了真实库/上传目录：{before} → {after}"
+    before = real_store_snapshot()
+    after = real_store_snapshot()
+    assert after == before, f"本用例自身改动了真实库/上传目录：{before} → {after}"

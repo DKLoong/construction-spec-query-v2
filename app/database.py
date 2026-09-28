@@ -3,6 +3,8 @@ import sqlite3
 from contextlib import contextmanager
 from app.config import DATABASE_PATH
 
+logger = logging.getLogger(__name__)
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS specifications (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -252,8 +254,10 @@ def _migrate_search_text(conn):
     for col in ("search_text", "breadcrumb", "section_path"):
         try:
             conn.execute(f"ALTER TABLE clauses ADD COLUMN {col} TEXT")
-        except Exception:
-            pass  # 列已存在
+        except sqlite3.OperationalError as e:
+            # 「列已存在」是**预期**条件，用精确异常类型接住并留痕：
+            # 宽异常会把「表被锁/库损坏」一并吞掉（GC §4）。
+            logger.debug("clauses.%s 列已存在，跳过 ALTER: %s", col, e)
 
     for t in ("clauses_ai", "clauses_ad", "clauses_au"):
         conn.execute(f"DROP TRIGGER IF EXISTS {t}")

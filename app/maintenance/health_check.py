@@ -307,9 +307,9 @@ def fix_issue(key: str, username: str = "system") -> dict:
         return {"key": key, "fixed": added > 0, "detail": f"已补齐 {added} 条向量"}
     if key == "fts_mismatch":
         with get_db() as conn:
-            # FTS 是两列：只写 search_text 会让该行的 breadcrumb 落 NULL ——
-            # 该行面包屑权重取不到值，且 init_db 的 backfill 门槛判定「值相等」
-            # 不会自愈（clauses.breadcrumb 有值、FTS 里是 NULL，比不出差异的相等）。
+            # FTS 是两列：只写 search_text 会让该行 breadcrumb 恒 NULL 且不自愈
+            # （clauses.breadcrumb 有值、FTS 里是 NULL，init_db 的「值相等即跳过」
+            # 判不出差异）⇒ 静默召回缺口，故补插必须同时带上 breadcrumb。
             n = conn.execute(
                 """INSERT INTO clauses_fts(rowid, search_text, breadcrumb)
                    SELECT c.id, COALESCE(c.search_text, ''), COALESCE(c.breadcrumb, '')
