@@ -572,7 +572,7 @@ def test_build_embed_text_includes_section_path_after_clause_no():
     """面包屑插在条文号之后、正文之前（保留位置信号）"""
     got = build_embed_text("GB 50010", "混凝土规范", "5.1.1", "模板", "内容",
                            "5 混凝土分项工程 > 5.1 模板")
-    assert got == "[GB 50010 混凝土规范] [5.1.1] 5 混凝土分项工程 > 5.1 模板 模板 内容"
+    assert got == "GB 50010 混凝土规范 [5.1.1] 5 混凝土分项工程 > 5.1 模板 模板 内容"
 
 
 def test_build_embed_text_without_section_path_unchanged():

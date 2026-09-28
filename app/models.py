@@ -60,6 +60,9 @@ class ClauseCreate(BaseModel):
     clause_no: str
     title: Optional[str] = None
     content: str
+    # 面包屑快照（祖先链，`" > "` 连接；无祖先为**空串**，不是 None）。
+    # 格式规范见 docs/standards/parser-判定规则与依据.md §七。
+    section_path: Optional[str] = None
     parent_clause: Optional[int] = None
     dim4_specialty: Optional[str] = None
     dim5_location: Optional[str] = None
@@ -73,6 +76,9 @@ class ClauseResponse(BaseModel):
     clause_no: str
     title: Optional[str] = None
     content: str
+    # 面包屑快照（祖先链，`" > "` 连接；无祖先为**空串**，不是 None）。
+    # 格式规范见 docs/standards/parser-判定规则与依据.md §七。
+    section_path: Optional[str] = None
     parent_clause: Optional[int] = None
     dim4_specialty: Optional[str] = None
     dim5_location: Optional[str] = None
@@ -87,6 +93,9 @@ class ClauseUpdate(BaseModel):
     clause_no: Optional[str] = None
     title: Optional[str] = None
     content: Optional[str] = None
+    # 面包屑快照（祖先链，`" > "` 连接；无祖先为**空串**，不是 None）。
+    # 格式规范见 docs/standards/parser-判定规则与依据.md §七。
+    section_path: Optional[str] = None
     dim4_specialty: Optional[str] = None
     dim5_location: Optional[str] = None
     dim6_material: Optional[str] = None

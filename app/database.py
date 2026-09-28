@@ -39,6 +39,16 @@ CREATE TABLE IF NOT EXISTS clauses (
     clause_no       TEXT NOT NULL,
     title           TEXT,
     content         TEXT NOT NULL,
+    -- **最近「现存」祖先**的 clause id（批二起**已填充**，不再是恒 NULL 的死列）。
+    -- 「现存」是关键字：批一删掉了「只有标题、无自身正文」的章节行，故父级常是编号
+    -- 更短的那一行（`21.4.1` → `21.4`；`21.4` 不在库时退到 `21`），写入见
+    -- app/routes/import_routes._nearest_ancestor_id。
+    -- 后果：app/maintenance/health_check._count_orphan_parent 已由**死代码变成活检查**
+    -- （判据 `parent_clause IS NOT NULL AND 无对应父行`），**不要删除该检查**。
+    -- 但只验外键存在性是不够的——写入方只要填一个库里存在的 id 就恒绿，哪怕它指向
+    -- 一条与编号无关的更早条文。故另有断言钉住「**父级编号是子级编号的段前缀**」这条
+    -- 不变量（`21.4.1` 的父级编号 ∈ {`21.4`, `21`}）。两套层级表示（本列 vs
+    -- section_path 字符串）由该断言拉齐，改上游时不要打破。
     parent_clause   INTEGER REFERENCES clauses(id),
     dim4_specialty  TEXT,
     dim5_location   TEXT,

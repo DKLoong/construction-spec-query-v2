@@ -6,7 +6,8 @@
 - bad_classification   ai_classified=1 但 dim4/5/6 全空 → 重置 ai_classified=0, needs_review=1
 - vector_orphan        向量有而 SQLite 无 → 调 VectorStore.sync_with_db 删孤儿
 - vector_missing       SQLite 有而向量无 → 调 VectorStore.index_missing 补索引
-- fts_mismatch         clauses_fts 缺 rowid → 增量补插 search_text + breadcrumb 两列
+- fts_mismatch         clauses_fts 缺 rowid → 增量补插（**条件式**：两列 FTS 写
+                       search_text + breadcrumb；旧版单列 FTS 退化为只写 search_text）
 """
 import logging
 
