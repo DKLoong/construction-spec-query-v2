@@ -130,7 +130,9 @@ def test_nearest_ancestor_id_walks_dot_segment_prefixes():
 
     批一删掉了「只有标题、无自身正文」的章节行 ⇒ `21.4` 可能整行不存在，
     `21.4.1` 的最近现存祖先退到 `21`（用户实测：`21.3.x` 直跳 `21.4.1`）。
-    父级编号必是子级编号的**段前缀** —— U10 的断言正依赖这一不变量。
+    父级编号必是子级编号的**段前缀** —— 导入级断言
+    `test_imported_parent_links_are_segment_prefixes` 正依赖这一不变量
+    （本用例只验 helper 的返回值，那条验库里已落地的行）。
     """
     from app.routes.import_routes import _nearest_ancestor_id
     no_to_id = {"6": 10, "6.3": 11, "6.3.1": 12}
@@ -143,6 +145,111 @@ def test_nearest_ancestor_id_walks_dot_segment_prefixes():
     # 异常场景：无任何现存祖先
     assert _nearest_ancestor_id(no_to_id, "8.1.1") is None
     assert _nearest_ancestor_id(no_to_id, "") is None
+
+
+# ═══════════════════════════════════════════
+# 导入级：父子链不变量（① 无悬空父引用 ② 父级编号是子级编号的段前缀）
+# ═══════════════════════════════════════════
+
+# 夹具刻意同时含两种条文：
+#   - `5`/`5.1`/`5.2` 各有自身正文 ⇒ 会作为条文入库，于是 `5.1.1` 有**现存**祖先链；
+#   - `9.1.1` 的段前缀祖先（`9`、`9.1`）在本规范里**不存在**（批一不存「只有标题、
+#     无自身正文」的章节行）⇒ parent_clause 必须是 NULL，而不是「随便指一个现存行」。
+# 两半边缺任一，下面的断言都会退化成恒真（孤儿计数只查外键存在性）。
+_ANCESTOR_MD = """# 测试规范
+
+### 9.1.1 孤立条文
+
+本条无任何现存祖先。
+
+## 5 混凝土分项工程
+
+本章适用于混凝土分项工程的施工。
+
+### 5.1 模板
+
+本节规定模板工程的要求。
+
+#### 5.1.1 模板设计
+
+模板及其支架应根据工程结构形式进行设计。
+
+### 5.2 钢筋
+
+本节规定钢筋工程的要求。
+
+#### 5.2.1 原材料
+
+钢筋进场时应抽取试件作屈服强度检验。
+"""
+
+
+def _drive_real_import(isolated_paths, monkeypatch, md_text: str,
+                       task_id: str = "anc00001") -> dict[str, dict]:
+    """走**真实导入路径**（`_process_import` → phase2 写库），返回 `{clause_no: 行}`"""
+    from app.database import get_db, init_db
+    from app.routes import import_routes as ir
+
+    init_db()
+    md_path = isolated_paths / "uploads" / "ancestor_chain.md"
+    md_path.write_text(md_text, encoding="utf-8")
+    # 不加载真实 BGE 模型：无模型机器上 `get_model()` 返回 None ⇒ 向量阶段整体落空
+    monkeypatch.setattr("app.ai.embedding.get_model", lambda: object())
+    monkeypatch.setattr("app.ai.embedding.embed_texts",
+                        lambda texts: [[0.0] * 8 for _ in texts])
+    ir.progress_store[task_id] = {"status": "processing", "progress": 0, "owner": "t"}
+    try:
+        ir._process_import(task_id, str(md_path), "祖先链测试规范", "GB/T 11111-2020")
+        state = dict(ir.progress_store[task_id])
+        assert state["status"] == "done", f"导入未完成：{state}"
+    finally:
+        ir.progress_store.pop(task_id, None)
+
+    with get_db() as conn:
+        return {r["clause_no"]: dict(r) for r in conn.execute(
+            "SELECT id, clause_no, parent_clause, section_path FROM clauses")}
+
+
+def test_imported_parent_links_are_segment_prefixes(isolated_paths, monkeypatch):
+    """导入后父子链的两条不变量：① 悬空父引用为 0 ② 父级编号是子级编号的段前缀。
+
+    为什么必须是**导入级**：`test_nearest_ancestor_id_walks_dot_segment_prefixes`
+    只把一个手搭的 dict 交给 helper 并断言它返回哪个 id，**从不读表** —— 写入侧
+    （`import_routes` 的 `no_to_id` 预载/回填、INSERT 的 `parent_clause` 参数）改了
+    也没人发现。而孤儿计数（`_count_orphan_parent`）**只验外键存在性**：写入方填一个
+    库里存在的 id 就恒绿，哪怕它与编号毫无关系（更早的无关条文）。两条合起来才咬得住。
+    """
+    from app.database import get_db
+    from app.maintenance.health_check import _count_orphan_parent
+
+    rows = _drive_real_import(isolated_paths, monkeypatch, _ANCESTOR_MD)
+
+    # 夹具前提：条文集合与祖先链都得真的产生出来（否则下面两条断言形同虚设）
+    assert set(rows) == {"9.1.1", "5", "5.1", "5.1.1", "5.2", "5.2.1"}, \
+        f"夹具条文集合不符：{sorted(rows)}"
+    assert rows["5.1.1"]["parent_clause"] == rows["5.1"]["id"], \
+        "有现存祖先的条文必须挂到该祖先（最近现存祖先）"
+    assert rows["9.1.1"]["parent_clause"] is None, \
+        "段前缀祖先都不存在的条文，parent_clause 必须为 NULL"
+
+    # ① 悬空父引用（复用生产判据：parent_clause 非空但无对应父行）
+    assert _count_orphan_parent() == 0, "导入后出现悬空 parent_clause"
+
+    # ② 段前缀不变量：读**库里已落地的行**（JOIN clauses 自身），不读 helper 返回值
+    with get_db() as conn:
+        pairs = conn.execute(
+            """SELECT c.clause_no AS child_no, p.clause_no AS parent_no
+               FROM clauses c JOIN clauses p ON p.id = c.parent_clause"""
+        ).fetchall()
+    # 夹具前提：四条链都真的挂上了（不按「父级是谁」断言——父级身份由下面的段前缀
+    # 不变量逐对判定，否则本条会把该不变量的判别力整个吃掉）
+    assert sorted(c for c, _ in pairs) == ["5.1", "5.1.1", "5.2", "5.2.1"], \
+        f"夹具父子链与预期不符：{[tuple(p) for p in pairs]}"
+    for child_no, parent_no in pairs:
+        segs = [s for s in child_no.split(".") if s]
+        prefixes = {".".join(segs[:k]) for k in range(1, len(segs))}
+        assert parent_no in prefixes, \
+            f"父级编号 {parent_no!r} 不是子级编号 {child_no!r} 的段前缀（候选：{sorted(prefixes)}）"
 
 
 def test_upload_no_file_authenticated(auth_client):

@@ -5,9 +5,13 @@
 2. 结果列表每行看不出条文属于哪一节 → 每行显示**该行自身**的 `section_path`
 
 设计约束（控制器裁定，见 task-13）：列表落点必须**无状态** —— 每行自带完整路径，
-不得与上一行比较、不得插入独立「节分隔行」。故除「两行各带自己的路径」外，另加一条
-**分页切片**用例：翻到第 2 页（page_size=1）时该行仍带自己的路径——若有人改成
-「与前一行比较后决定是否显示」，切片后的首行会拿不到上下文，本用例即失败。
+不得与上一行比较、不得插入独立「节分隔行」。故除「两行各带自己的路径」外，另加：
+- 一条**分页切片**用例：翻到第 2 页（page_size=1）时该行仍带自己的路径——若有人
+  改成「与前一行比较后决定是否显示」，切片后的首行会拿不到上下文，本用例即失败；
+- 一条**相邻两行路径相同**用例：原夹具两条路径互不相同，「与前一行相同则隐藏」这类
+  相邻行依赖退化照样通过（R38②）；
+- 一条**容器结构**用例 + `_rows()` 内的同类断言：`_rows()` 只按开标签切分，插在两行
+  之间的独立分隔元素察觉不到，故按顶层子元素核对（同上）。
 
 另两条为用户实测第 5 项（勾选框说明文案）与静态资源版本号：
 - `title` 属性对键盘 focus 与触屏均不显示，屏幕阅读器支持也不一致 → 改可见文字 + aria
@@ -62,9 +66,69 @@ def _seed(db_name: str, monkeypatch, tmp_path, rows: list[tuple]) -> dict:
     return id_to_path
 
 
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*?(/?)>")
+
+# void 元素：没有闭合标签，不得计入深度（否则标签配平会被整段带偏）
+_VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "source", "track", "wbr",
+})
+
+# 结果列表容器（result_content.html 里的 wrapper，内含「共找到 N 条结果」与各结果行）
+_LIST_OPEN_RE = re.compile(r'<div class="result-list"[^>]*>')
+
+
+def _list_top_level_children(html: str) -> list[str]:
+    """返回 `.result-list` 容器**顶层**子元素（各自完整的 HTML 片段）。
+
+    为什么需要它：`_rows()` 只是按 `class="result-item"` 的开标签切分，**插在两行
+    之间的独立分隔元素**会落进前一行的尾巴里，切分结果看不出任何异常。而用户
+    决策（R7）要求列表落点**无状态**——每行自带完整路径、不得插入独立「节分隔行」。
+    故必须另做一次结构遍历，「插了分隔元素」才看得见。
+
+    只做标签配平（不引入 HTML 解析依赖）：void 元素与自闭合标签不计深度。
+    """
+    m0 = _LIST_OPEN_RE.search(html)
+    assert m0, "响应中找不到结果列表容器（.result-list）"
+    depth = 1                      # 已进入容器
+    child_start = m0.end()
+    children: list[str] = []
+    for m in _TAG_RE.finditer(html, m0.end()):
+        name = m.group(2).lower()
+        if m.group(1):             # 闭合标签
+            if name in _VOID_TAGS:
+                continue
+            depth -= 1
+            if depth == 0:
+                break              # 容器闭合
+            if depth == 1:         # 刚闭合一个顶层子元素
+                children.append(html[child_start:m.end()])
+                child_start = m.end()
+        elif name in _VOID_TAGS or m.group(3):
+            if depth == 1:         # 顶层的 void/自闭合元素本身就是「多出来的东西」
+                children.append(m.group(0))
+                child_start = m.end()
+        else:
+            depth += 1
+    return [c for c in children if "<" in c]
+
+
 def _rows(html: str) -> list[str]:
-    """按结果项切分页面（每项以 class="result-item" 的开标签起算）"""
-    return html.split('<div class="result-item"')[1:]
+    """按结果项切分页面，返回各结果行的 HTML 片段。
+
+    ⚠ 先核对容器的**顶层子元素**（见 `_list_top_level_children`）：切分本身察觉不到
+    插在两行之间的独立分隔元素（它只会落进前一行的尾巴）。这一步让**本文件所有
+    用例**对「插入节分隔行」当场失败——R7 的无状态约束要的正是这个。
+    """
+    kids = _list_top_level_children(html)
+    assert kids, "结果列表容器内没有任何顶层元素"
+    header, rows = kids[0], kids[1:]
+    assert header.lstrip().startswith("<p>") and "共找到" in header, \
+        f"结果列表首个顶层元素应为「共找到 N 条结果」：{header[:60]!r}"
+    for k in rows:
+        assert k.lstrip().startswith('<div class="result-item"'), \
+            f"结果列表出现非结果行的顶层元素（R7 禁止插入独立「节分隔行」）：{k[:80]!r}"
+    return rows
 
 
 def _clause_id(frag: str) -> int:
@@ -149,12 +213,56 @@ def test_result_row_section_path_survives_pagination_slice(auth_client, monkeypa
     assert _esc(id_to_path[cid]) in frags[0], "分页切片后的行仍须自带面包屑"
 
 
+def test_adjacent_rows_with_same_section_path_both_render_it(auth_client, monkeypatch, tmp_path):
+    """相邻两行路径**相同**时，两行都必须各自渲染自己的路径。
+
+    原夹具两条路径互不相同 ⇒「与前一行相同则隐藏」这类**相邻行依赖**退化照样通过
+    （R38②）。本用例把两行设成同一路径：第 2 行一旦去比较上一行，它就会被隐藏、本条
+    失败。用户决策（R7）要的就是无状态落点。
+    """
+    id_to_path = _seed("bd_rows_same.db", monkeypatch, tmp_path,
+                       [("3.2.1", "钢筋", _SECTION_A), ("3.2.2", "钢筋接头", _SECTION_A)])
+    resp = auth_client.get("/search?all=1")
+    frags = _rows(resp.text)
+    assert len(frags) == len(id_to_path) == 2, "应恰好渲染 2 行结果"
+    for frag in frags:
+        assert _esc(_SECTION_A) in frag, "相邻两行路径相同，也必须各带自己的面包屑"
+    assert resp.text.count('class="clause-path"') == 2, \
+        "两行路径相同 ⇒ 仍应有 2 个 clause-path 元素（不得省略第 2 个）"
+
+
+def test_result_list_renders_no_separator_element(auth_client, monkeypatch, tmp_path):
+    """列表容器的顶层子元素只允许「共找到 N 条结果」一行 + 各结果行。
+
+    无状态约束（R7）的**结构面**：不得插入独立「节分隔行」。`_rows()` 按开标签切分，
+    插进去的分隔元素会落进前一行的尾巴、切分结果毫无异常 ⇒ 这里直接核对容器结构。
+    """
+    _seed("bd_rows_struct.db", monkeypatch, tmp_path,
+          [("3.2.1", "钢筋", _SECTION_A), ("4.3.1", "模板安装", _SECTION_B)])
+    resp = auth_client.get("/search?all=1")
+    kids = _list_top_level_children(resp.text)
+    assert len(kids) == 3, \
+        f"顶层应为「共找到」一行 + 2 行结果，实得 {len(kids)} 个：{[k[:60] for k in kids]}"
+    assert "共找到" in kids[0], f"首个顶层元素应为「共找到 N 条结果」：{kids[0][:60]!r}"
+    for k in kids[1:]:
+        assert k.lstrip().startswith('<div class="result-item"'), \
+            f"结果列表出现非结果行的顶层元素：{k[:80]!r}"
+
+
 def test_result_row_without_section_path_renders_nothing(auth_client, monkeypatch, tmp_path):
-    """空面包屑的行不渲染任何占位（不留空 div）"""
+    """空面包屑的行不渲染任何占位（不留空 div，也不留分隔符）
+
+    ⚠ 原断言 `assert " > " not in resp.text` 是**恒真**的：结果行本就不渲染任何分隔符
+    （` · ` 分隔符只在详情模板里），模板怎么写都成立（R38①）。判据改为**行内没有
+    clause-path 元素**——模板若退化成无条件渲染（空串也出 div），本条即失败。
+    """
     _seed("bd_rows_empty.db", monkeypatch, tmp_path, [("1.0.1", "总则", "")])
     resp = auth_client.get("/search?all=1")
-    assert 'class="clause-path"' not in resp.text, "空面包屑不得渲染空 div"
-    assert " > " not in resp.text, "空面包屑不得留分隔符"
+    assert 'class="clause-path"' not in resp.text, "空面包屑不得渲染空 div（整页口径）"
+    frags = _rows(resp.text)
+    assert len(frags) == 1, "应恰好渲染 1 行结果"
+    assert "1.0.1" in frags[0], "取到的应正是该结果行（含其条文号）"
+    assert "clause-path" not in frags[0], "空面包屑的行渲染了 clause-path 占位"
 
 
 # ── 帮助文案（tooltip → 可见文字 + aria） ───────────────────

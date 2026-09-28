@@ -250,6 +250,10 @@ def test_update_clause_reindexes_long_clause_as_chunks(auth_client, monkeypatch,
     批二 U5 已把导入/重建/补齐统一到 build_embed_chunks，唯独编辑路径仍是单行
     build_embed_text + index_clause——编辑长条文会把 N 块塌回 1 行、尾部再次不可召回，
     只能等下一次全量重建才恢复。本用例锁死编辑路径也走切块。
+
+    ⚠ 同时锁**面包屑**：编辑路径离开「实参级」守卫（`PRODUCTION_EMBED_CALLERS`）后，
+    它只被裸子串检查（`"build_embed_chunks" in src`）覆盖，漏传 `section_path=` 会
+    **静默**——这里直接断言写出的向量文本含 fixture 的 section_path（R28）。
     """
     db_path = tmp_path / "test_edit_chunk.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
@@ -287,6 +291,62 @@ def test_update_clause_reindexes_long_clause_as_chunks(auth_client, monkeypatch,
         list(range(len(mine))), "chunk_index 应从 0 连续递增"
     assert any("尾部独有标记" in r["text"] for r in mine), \
         "尾部文本不可召回（被塌回单行后被模型截断）"
+    # 面包屑必须由编辑路径传给切块入口（section_path 从库内读回，不由本表单提供）。
+    # 漏传时向量文本只是少了一段前缀，块数/尾部召回都照常 ⇒ 没有本条断言就是静默的。
+    assert all("5 混凝土分项工程 > 5.1 模板" in r["text"] for r in mine), \
+        f"编辑路径未把面包屑传进向量文本：{[r['text'][:60] for r in mine]}"
+
+
+def test_update_clause_to_empty_content_removes_vectors(auth_client, monkeypatch, tmp_path):
+    """正文被清空时，该条文已索引的向量必须删掉（不留旧块）。
+
+    空正文不再写「只有前缀」的行（`build_embed_chunks` 返回 []），但仍须删旧向量：
+    残留的旧块会被当成当前（已空）条文的命中。该分支由 U7 新引入，此前无任何覆盖
+    （R29）。
+    """
+    db_path = tmp_path / "test_edit_empty.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    # 假嵌入：避免加载真实模型（8 维即可满足建表）
+    monkeypatch.setattr(
+        "app.search.vector_search.embed_texts",
+        lambda texts: [[0.0] * 8 for _ in texts],
+    )
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO specifications (code, title) VALUES ('GB 50010', '混凝土规范')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """INSERT INTO clauses (spec_id, clause_no, title, content, section_path)
+               VALUES (?, ?, ?, ?, ?)""",
+            (spec_id, "5.2.1", "原材料", "钢筋进场时应抽取试件作检验。",
+             "5 混凝土分项工程 > 5.2 钢筋"),
+        )
+        clause_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    # 前置事实：先做一次正常编辑，让该条文确有向量行（否则「删干净」是恒真的）
+    resp = auth_client.put(
+        f"/specs/{spec_id}/clauses/{clause_id}",
+        data={"clause_no": "5.2.1", "title": "原材料", "content": "钢筋进场时应抽取试件作检验。"},
+    )
+    assert resp.status_code == 200, resp.text
+    from app.search.vector_search import VectorStore
+    before = [r for r in VectorStore()._get_table().to_arrow().to_pylist()
+              if r["clause_id"] == clause_id]
+    assert before, "前置条件不成立：编辑后该条文应已有向量行"
+
+    # 清空正文
+    resp = auth_client.put(
+        f"/specs/{spec_id}/clauses/{clause_id}",
+        data={"clause_no": "5.2.1", "title": "原材料", "content": ""},
+    )
+    assert resp.status_code == 200, resp.text
+
+    left = [r for r in VectorStore()._get_table().to_arrow().to_pylist()
+            if r["clause_id"] == clause_id]
+    assert left == [], f"正文清空后旧向量未删除，残留 {len(left)} 行：{[r['text'][:40] for r in left]}"
 
 
 # ═══════════════════════════════════════════

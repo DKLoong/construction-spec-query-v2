@@ -2,8 +2,13 @@
 
 超长条文要按 512 **字符**切子块写多行（口径是字符，不是 token：实测算的是
 `len()`；见 `app/search/chunking.py` 的说明），故向量表新增 `chunk_index` 列；
-现存表没有该列，`needs_rebuild()` 供维护页提前提示重建，
-而不是等写入时才发现列不存在（列缺失的写入会静默落 NULL，见 C-8 说明）。
+现存表没有该列，`needs_rebuild()` 是**为探测这种旧表**而写的原语（列缺失的写入会
+静默落 NULL，见 C-8 说明）。
+
+⚠ 定位要说准：`needs_rebuild()` **当前零消费方**（实测 `grep -rn needs_rebuild app/`
+只有定义）——计划里「维护页据此提示重建」**未实现**，收口裁定见
+`app/search/vector_search.py::needs_rebuild` 的 docstring（U7/R23/R26）。
+本批真正的重建门禁是**全量重建 + 验收跑**，不是这个探测。
 """
 
 from pathlib import Path
@@ -209,6 +214,10 @@ def _run_import_records(isolated_paths, monkeypatch, md_text: str) -> list[dict]
     init_db()
     records: list[dict] = []
     monkeypatch.setattr(ir, "VectorStore", lambda: _RecordVS(records))
+    # get_model() 也要替身：导入链路会 `if get_model() is None: raise`，只替 embed_texts
+    # 的话这里仍会真实加载 SentenceTransformer（约 29 秒），且在**无模型的机器**上
+    # 返回 None ⇒ 抛错被向量阶段的 except 吞掉 ⇒ 空 sink ⇒ 下面的断言全部失效（R21）。
+    monkeypatch.setattr("app.ai.embedding.get_model", lambda: object())
     monkeypatch.setattr("app.ai.embedding.embed_texts",
                         lambda texts: [[0.0] * 8 for _ in texts])
     ir.progress_store["chunk001"] = {"status": "processing", "progress": 0, "owner": "t"}

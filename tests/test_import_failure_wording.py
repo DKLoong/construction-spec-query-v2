@@ -57,3 +57,20 @@ def test_failure_message_says_incomplete_and_must_rerun(monkeypatch, tmp_path):
     # `import_progress.html` 的 error 分支渲染「导入失败: {{ message }}」，
     # 文案自带同一前缀会显示成「导入失败: 导入失败，…」
     assert "导入失败" not in msg, f"文案与模板的「导入失败:」前缀重复: {msg!r}"
+
+
+def test_rendered_error_paragraph_keeps_the_failure_prefix(auth_client, monkeypatch):
+    """模板必须补上「导入失败:」前缀——上一条用例要求文案**不带**这四个字，
+    故「导入失败」这四个字只存在于 `import_progress.html` 的 error 分支里。
+    模板一旦删掉它，UI 就退化成一句光秃秃的「本次未完成，请重跑：…」（用户无从
+    判断这是失败还是提示），而没有别的用例会报警（R36）。
+    """
+    msg = "本次未完成，请重跑：database is locked"
+    monkeypatch.setattr(ir, "progress_store",
+                        {"fw000002": {"status": "error", "progress": 0, "message": msg}})
+
+    resp = auth_client.get("/import/progress/fw000002")
+
+    assert resp.status_code == 200
+    assert f"导入失败: {msg}" in resp.text, \
+        f"渲染后的错误段落未带「导入失败:」前缀：{resp.text}"

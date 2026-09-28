@@ -387,7 +387,11 @@ def _nearest_ancestor_id(no_to_id: dict[str, int], clause_no: str) -> int | None
     `21.4.1` → 依次试 `21.4`、`21`。为什么不能简单取「编号去掉最后一段」：
     批一删掉了「只有标题、无自身正文」的章节行（`clauses` 里没有该行），
     故最近**现存**祖先常常是编号更短的那一级（用户实测：`21.3.x` 直跳 `21.4.1`）。
-    本函数返回的父级编号必是子级编号的段前缀 —— 这一不变量由 U10 的断言复核。
+    本函数返回的父级编号必是子级编号的段前缀 —— 不变量由两条用例分别复核（改本函数
+    或改 INSERT 的 `parent_clause` 实参时都要跟着跑）：
+    `tests/test_import.py::test_imported_parent_links_are_segment_prefixes`（导入级，
+    读库里已落地的行：孤儿计数为 0 且每对父子的编号满足段前缀）与
+    `tests/test_import.py::test_nearest_ancestor_id_walks_dot_segment_prefixes`（helper 级）。
 
     `no_to_id` 由调用方在**循环外**一次性预载（GC §5：循环内禁逐行 DB IO）。
     """

@@ -48,7 +48,11 @@ CREATE TABLE IF NOT EXISTS clauses (
     -- 但只验外键存在性是不够的——写入方只要填一个库里存在的 id 就恒绿，哪怕它指向
     -- 一条与编号无关的更早条文。故另有断言钉住「**父级编号是子级编号的段前缀**」这条
     -- 不变量（`21.4.1` 的父级编号 ∈ {`21.4`, `21`}）。两套层级表示（本列 vs
-    -- section_path 字符串）由该断言拉齐，改上游时不要打破。
+    -- section_path 字符串）的拉齐由这两条用例核对（改上游时不要打破）：
+    -- `tests/test_import.py::test_imported_parent_links_are_segment_prefixes`
+    -- （导入级：读库里已落地的行）与
+    -- `tests/test_import.py::test_nearest_ancestor_id_walks_dot_segment_prefixes`
+    -- （helper 级：只验 `_nearest_ancestor_id` 的返回值）。
     parent_clause   INTEGER REFERENCES clauses(id),
     dim4_specialty  TEXT,
     dim5_location   TEXT,

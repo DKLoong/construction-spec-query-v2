@@ -228,7 +228,12 @@ GB/T 1.1 那份 PDF 的**文本层整层损坏**（字母与中文均被映射�
 
 **唯一产出点**：`app/parser/md_parser.py::_build_section_path`（祖先链的拼接）。
 `clauses.section_path` 存原始快照（供展示），`clauses.breadcrumb` 存同一串的 jieba 预分词
-结果（供 FTS 的独立列）——**两者逐字同源**，只是后者以空格连接词元。
+结果（供 FTS 的独立列）——两者**同源但不同形**：后者是分词后以空格连接的词元串，
+**分隔符 ` > ` 本身是纯标点、被 `app/search/tokenize.py::tokenize` 过滤掉了**，
+故它**不出现**在 `breadcrumb` 里（实测同一条文：`section_path` = `"5 混凝土分项工程 > 5.1 模板"`，
+`breadcrumb` = `"5 混凝土 分项 工程 5.1 模板"`，串里没有 `>`）。
+⇒ **不要在 FTS 的 `breadcrumb` 列里 grep 分隔符**，那是查不到的；要还原层级请读
+`section_path`（展示用），要分词命中请查 `breadcrumb`（检索用）。
 
 **逐条回答五个必问点**：
 
