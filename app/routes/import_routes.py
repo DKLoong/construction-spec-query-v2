@@ -546,15 +546,9 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 # 表不存在时先按显式 schema 建表，确保 embedding 列是固定大小向量类型
                 if not vs._table_exists():
                     first_emb = np.array(embeddings[0], dtype=np.float32)
-                    import pyarrow as pa
-                    schema = pa.schema([
-                        pa.field("clause_id", pa.int64()),
-                        pa.field("spec_id", pa.int64()),
-                        pa.field("text", pa.string()),
-                        pa.field("embedding", pa.list_(pa.float32(), len(first_emb))),
-                        pa.field("dim_scores", pa.string()),
-                    ])
-                    vs.db.create_table("clause_embeddings", schema=schema)
+                    from app.search.vector_search import embedding_schema
+                    vs.db.create_table("clause_embeddings",
+                                       schema=embedding_schema(len(first_emb)))
 
                 # 分批写入。两条约束同时成立：
                 # 1) 不得退回逐条 add——实测逐条（且每行重开表）比批量慢 40 倍，

@@ -9,6 +9,22 @@ from app.search.embed_text import build_embed_text
 logger = logging.getLogger(__name__)
 
 
+def embedding_schema(dim: int) -> pa.Schema:
+    """`clause_embeddings` 的**唯一** schema 定义处。
+
+    半精度向量列必须显式声明固定长度（`pa.list_(pa.float32(), dim)`），
+    否则 LanceDB 推断出的列类型无法做向量检索。三处建表路径
+    （index_clause / batch_index / 导入首建）全部走本函数。
+    """
+    return pa.schema([
+        pa.field("clause_id", pa.int64()),
+        pa.field("spec_id", pa.int64()),
+        pa.field("text", pa.string()),
+        pa.field("embedding", pa.list_(pa.float32(), dim)),
+        pa.field("dim_scores", pa.string()),
+    ])
+
+
 class VectorStore:
     def __init__(self):
         self.db = lancedb.connect(LANCE_DB_PATH)
@@ -37,13 +53,7 @@ class VectorStore:
 
         if not self._table_exists():
             # 显式指定 schema，确保 embedding 列是固定大小向量类型
-            schema = pa.schema([
-                pa.field("clause_id", pa.int64()),
-                pa.field("spec_id", pa.int64()),
-                pa.field("text", pa.string()),
-                pa.field("embedding", pa.list_(pa.float32(), len(emb))),
-                pa.field("dim_scores", pa.string()),
-            ])
+            schema = embedding_schema(len(emb))
             tbl = self.db.create_table("clause_embeddings", schema=schema)
             tbl.add([{
                 "clause_id": clause_id,
@@ -201,13 +211,7 @@ class VectorStore:
         vec_dim = len(first_embs[0])
 
         # 建表
-        schema = pa.schema([
-            pa.field("clause_id", pa.int64()),
-            pa.field("spec_id", pa.int64()),
-            pa.field("text", pa.string()),
-            pa.field("embedding", pa.list_(pa.float32(), vec_dim)),
-            pa.field("dim_scores", pa.string()),
-        ])
+        schema = embedding_schema(vec_dim)
         tbl = self.db.create_table("clause_embeddings", schema=schema)
 
         # 写入第一批
