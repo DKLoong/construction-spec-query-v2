@@ -1,4 +1,5 @@
 import re
+from typing import NamedTuple
 
 
 # 编号行前缀正则（按匹配优先级排列）
@@ -181,6 +182,24 @@ def is_filter_non_clause_title(title) -> bool:
     return (title or "").strip() in _NON_CLAUSE_FILTER_TITLES
 
 
+def _is_filter_title_line(tail: str) -> bool:
+    """候选行的**编号后文本**是否属「直接过滤」类（目次/Contents）。
+
+    **预扫与主循环共用本函数**（T25 的修法）：主循环在命中处 `continue`（丢弃、**不入栈**），
+    预扫必须在同一点跳过同一行（不投票、**不入栈**），否则两趟的栈与 R14 分组键分叉。
+
+    判据一律取 `_clean_title(tail)`（折叠 2+ 连续空白后 strip）。主循环原式是
+    `is_filter_non_clause_title(title or tail)`，其中 `title` 恒为 `_clean_title(tail)`
+    （标题型）或空串（正文型）——两式只在「tail 含 2+ 连续空白、折叠后恰为 目次/Contents」
+    （如 `目  次`）且该行被 R14 判为**正文型**时不同。
+    **实测两语料（U14）：两式逐行同值、0 例差异** —— `_clean_title(tail) != tail` 的候选共
+    10 行（CJJ2 7 / JGJ107 3，全部是含 `$…$` 的长正文，空白来自 OCR 的公式间距），其中没有
+    一行是过滤标题的空白变体；真正的过滤标题 2 行（JGJ107 `#### 目次` / `## Contents`）都来自
+    `#` 分支，tail 早已归一。故此处统一为**判据唯一处**，行为不变。
+    """
+    return is_filter_non_clause_title(_clean_title(tail))
+
+
 # ═══════════════════════════════════════════
 # 封面/出版信息页脏数据判定（导入时直接丢弃）
 # ═══════════════════════════════════════════
@@ -304,6 +323,43 @@ class _ParseState:
         self.max_bare_chapter = -1           # fix ①: body 内已见的最高裸数字章号
         self.in_commentary = False           # 条文说明段标记（fix ①③ 的豁免边界，单向）
         self.seen_clause_nos: set[str] = set()  # fix ③: body 内已出现的纯数字条号
+
+
+class _Decision(NamedTuple):
+    """一行在**某一趟**里的决策记录（对照断言用，见 `parse_markdown(..., _decisions=)`）。
+
+    两趟（预扫 `_vote_title_mode` / 主循环 `parse_markdown`）各记一条**逐行**序列，
+    序列相等即「两趟判定一致」——对候选判据、对 `seen_clause_nos`（由 `kind` 与
+    `clause_no` 体现）、**以及对 `stack`**（`stack` 字段）。判据：见
+    `tests/test_md_parser.py::test_two_pass_decision_streams_are_identical`。
+
+    - `kind`：`"none"` 非候选行／`"rej"` 成候选形状但被 fix ③ 判同号重复而拒／
+      `"filter"` 直接过滤类（目次/Contents，主循环丢弃）／`"cand"` 成为节点
+    - `level` / `clause_no` / `parent_key`：只对 `"rej"`/`"filter"`/`"cand"` 有值
+    - `stack`：**取样时点 = 本行处理完毕**（`"cand"` 即压栈之后；其余三种未动栈）；
+      只取 `(level, clause_no)` —— 主循环的栈项另带 `title`/`is_non_clause`（解析产物，
+      预扫无从产生），故不参与对照
+    """
+
+    line: int
+    kind: str
+    level: int | None
+    clause_no: str | None
+    parent_key: str | None
+    in_commentary: bool
+    stack: tuple[tuple[int, str], ...]
+
+
+def _note(decisions: list[_Decision] | None, line: int, kind: str, stack: list[dict],
+          *, level: int | None = None, clause_no: str | None = None,
+          parent_key: str | None = None, in_commentary: bool = False) -> None:
+    """把一行的决策记入 `decisions`（未传列表时零开销，不做任何事）。"""
+    if decisions is None:
+        return
+    decisions.append(_Decision(
+        line, kind, level, clause_no, parent_key, in_commentary,
+        tuple((e["level"], e["clause_no"]) for e in stack),
+    ))
 
 
 def _candidate_of(line: str, state: _ParseState | None = None) -> tuple[int, str, str] | None:
@@ -430,6 +486,25 @@ def _parent_key(stack: list[dict], level: int) -> str:
     return ""
 
 
+def _vote_key(state: _ParseState, stack: list[dict], level: int) -> tuple[int, str, bool]:
+    """R14 表决的分组键：`(层级, 父键, 是否属条文说明段)`。
+
+    预扫与主循环**共用本函数**（T23 的隔离，批二 U14）：两趟各持一份 `_ParseState` 与栈、
+    按文档顺序同步推进，故同一行两趟取到的键必然相同。
+
+    第三项隔离的成因：条文说明段会**合法地**复用正文的章号（每条正文对应一条同号、
+    逐款解释的注释行），而 R14 是「同层同父则一起表决」。不隔离时两类行落进同一个组
+    （批一实测：151 组中 21 组含重复号、89 行注释侧行落进正文组键），段内行会参与正文组的
+    多数表决 —— 批一在 CJJ2 上实测「剔除注释侧行后重算 **0 组翻转**」（潜在风险而非当前
+    缺陷），但那只是该语料的巧合；合成样本可复现被带偏（见
+    `tests/test_md_parser.py::test_vote_groups_isolated_between_body_and_commentary`）。
+
+    ⚠️ 用 `state.in_commentary` 而**不是** `is_non_clause`：后者是**解析产物**、预扫阶段
+    不存在（批一 R-T11-1 撤回的正是那个处方）；段标记是**行级可判定**的，两边同步推进。
+    """
+    return (level, _parent_key(stack, level), state.in_commentary)
+
+
 def _reject_cross_chapter(cand: tuple[int, str, str], state: _ParseState) -> bool:
     """fix ③ (TODOS T22): 交叉引用被 PDF 断行后，下半行以「条号形状 token」起头，
     被 `_candidate_of` 误认成候选行、自成一条条文。
@@ -458,51 +533,95 @@ def _reject_cross_chapter(cand: tuple[int, str, str], state: _ParseState) -> boo
     return clause_no in state.seen_clause_nos
 
 
-def _vote_title_mode(lines: list[str]) -> dict[tuple[int, str], bool]:
+def _vote_title_mode(lines: list[str], *,
+                     _decisions: list[_Decision] | None = None) -> dict[tuple[int, str, bool], bool]:
     """R14 兄弟多数表决（预扫，只读，不改任何状态）。
 
-    按 `(层级, 父键)` 分组；父键只用「编号 + 层级」推导，与标题/正文判定无关，
-    因此可在正式解析之前算准。组内多数决定该组是「带标题条」还是「无标题条」。
+    按 `(层级, 父键, 是否属条文说明段)` 分组（键由 `_vote_key` 唯一产出）；父键只用
+    「编号 + 层级」推导，与标题/正文判定无关，因此可在正式解析之前算准。组内多数决定该组
+    是「带标题条」还是「无标题条」。
 
     平票（偶数条且恰好半数）**一律判「无标题」**：判「无标题」时该行文本进入
     自身 content，不会丢；若回退首元素且它像标题，则整组判标题型，组内无自身
     正文的那条会按内节点被丢弃（工程评审 SC-6）。
 
     ⚠️ 本函数自带一份 `_ParseState`，按文档顺序推进与主循环**同一套**判据
-    （fix ① 的章号单调在 `_candidate_of` 内、fix ③ 的跨章/重复在本函数内），
-    保证预扫投票的行集合与主循环的行集合**逐行一致**（批一设计不变量）。
+    （fix ① 的章号单调在 `_candidate_of` 内、fix ③ 的跨章/重复在本函数内、
+    T25 的过滤标题跳过在两处同点），保证预扫投票的行集合与主循环的行集合
+    **逐行一致**——含**栈**（批二 Task 18 / U14 的不变量，对照断言见
+    `tests/test_md_parser.py::test_two_pass_decision_streams_are_identical`）。
+
+    `_decisions`：诊断钩子（默认 None = 零开销）。传入 list 时逐行记录 `_Decision`，
+    供两趟流的逐字节对照使用。
     """
     state = _ParseState()
-    rows: list[tuple[int, str, str]] = []
+    rows: list[tuple[tuple[int, str, bool], str]] = []
     stack: list[dict] = []
-    for line in lines:
+    for idx, line in enumerate(lines):
         if _is_commentary_marker(line):
             state.in_commentary = True
         cand = _candidate_of(line, state)
         if cand is None:
+            _note(_decisions, idx, "none", stack, in_commentary=state.in_commentary)
             continue
         level, clause_no, tail = cand
         if _reject_cross_chapter(cand, state):
+            _note(_decisions, idx, "rej", stack, level=level, clause_no=clause_no,
+                  in_commentary=state.in_commentary)
             continue
         # fix ③ 不变量：seen 在 `_reject_cross_chapter` 之后、**任何后续分支之前**推进，
         # 与主循环同点（主循环会因目次/Contents 等过滤标题在 seen.add 之前 continue——
         # 见 round 2 Finding 3，已把两遍的推进点对齐到此处）。
         state.seen_clause_nos.add(clause_no)
-        rows.append((level, _parent_key(stack, level), tail))
+        key = _vote_key(state, stack, level)
+        parent_key = key[1]
+        # T25：**过滤标题（目次/Contents）不投票、不入栈** —— 与主循环同点跳过。
+        # 主循环在 `_is_filter_title_line` 处 `continue`（丢弃，且**不动栈**：既不 pop 也不 push）；
+        # 修前预扫把它当普通候选行压栈，于是「数字命名的过滤标题」（如 `## 1.1 目次`）之后，
+        # 两趟的 `_parent_key` 分叉 ⇒ R14 投票键不同 ⇒ 同一条标题型行可能一处判 title、
+        # 一处判 content（批二 T25）。也不参与表决：它本就不是条文（主循环那一行整条丢弃），
+        # 让它的 tail 留在某个兄弟组里投票会把该组的多数推向错误一侧 ——
+        # 实测两语料剔除后表决字典逐项不变（CJJ2 151 组 / JGJ107 16 组）。
+        if _is_filter_title_line(tail):
+            _note(_decisions, idx, "filter", stack, level=level, clause_no=clause_no,
+                  parent_key=parent_key, in_commentary=state.in_commentary)
+            continue
+        rows.append((key, tail))
         while stack and stack[-1]["level"] >= level:
             stack.pop()
         stack.append({"level": level, "clause_no": clause_no})
+        _note(_decisions, idx, "cand", stack, level=level, clause_no=clause_no,
+              parent_key=parent_key, in_commentary=state.in_commentary)
 
-    groups: dict[tuple[int, str], list[str]] = {}
-    for level, parent_key, tail in rows:
-        groups.setdefault((level, parent_key), []).append(tail)
+    groups: dict[tuple[int, str, bool], list[str]] = {}
+    for key, tail in rows:
+        groups.setdefault(key, []).append(tail)
 
-    verdict: dict[tuple[int, str], bool] = {}
+    verdict: dict[tuple[int, str, bool], bool] = {}
     for key, tails in groups.items():
         yes = sum(1 for t in tails if _looks_like_title(t))
         # 平票 → False（无标题，保内容）；否则严格的多数
         verdict[key] = (yes * 2 > len(tails)) if yes * 2 != len(tails) else False
     return verdict
+
+
+def _orphan_block_identity(head: str) -> str:
+    """孤儿块的**条号身份**：取自块首行；但裸条号形状（游离的 OCR 数字）必须加 `~` 前缀。
+
+    加固 B（批二 U14）。成因：导入侧 `_nearest_ancestor_id`（`app/routes/import_routes.py`）
+    按**点段前缀由长到短**回溯父级，判据就是 `clause_no` 这个字符串。文档首行是游离数字
+    （如封面页上孤零零的 `1`）时，块身份 `'1'` 会成为其后 `1.1` / `1.0.1` 的点段前缀 ⇒
+    这些真条文的 `parent_clause` 指向这个**隐藏块**（此前是 `NULL`）。无悬空引用、也不破坏
+    点段前缀不变式，但属未测、非预期的父子关系 —— 故按「同一形态给同一身份规则」堵掉：
+    加 `~` 前缀后块身份**永不可能**成为任何真条号的点段前缀（真条号只由数字/字母/点构成）。
+
+    ⚠️ 残留（已知、未处理）：字母命名空间的块首行（块首恰为 `附录A` / `A`）理论上仍是
+    `附录A.1` / `A.1` 的点段前缀。彻底堵它要给**所有**块身份加前缀，那会改动
+    `test_orphan_block_at_document_head_is_hidden_and_has_no_children` 已钉住的
+    「身份 = 块首行」契约（CJJ2 的块首行 `UDC` 即非数字）与两语料指标，故本 Task 只堵
+    **实际会发生**的数字形态（`_NUMERIC_CLAUSE_NO`：`1` / `1.1` / `1.0.1`）。
+    """
+    return f"~{head}" if _NUMERIC_CLAUSE_NO.match(head) else head
 
 
 def _build_section_path(ancestors: list[dict]) -> str:
@@ -518,7 +637,8 @@ def _build_section_path(ancestors: list[dict]) -> str:
     )
 
 
-def parse_markdown(md_text: str) -> list[dict]:
+def parse_markdown(md_text: str, *,
+                   _decisions: list[_Decision] | None = None) -> list[dict]:
     """解析 Markdown，按**编号层级**切割条文。
 
     规则：
@@ -534,6 +654,12 @@ def parse_markdown(md_text: str) -> list[dict]:
     - **孤儿文本**（首个候选行之前的非候选行）无条可归属，但**不丢**：自成一块
       `is_non_clause=True` 的隐藏块（改动⑤，Task 17；见 `flush()` docstring）
     - 祖先链取栈中**不含自身**的部分：`parent_path`（标签路径）与 `section_path`（面包屑）
+
+    `_decisions`：**诊断钩子**（keyword-only，默认 None = 零开销、不影响任何判定）。
+    传入 list 时按文档顺序逐行记录 `_Decision`（`kind`/`level`/`clause_no`/`parent_key`/
+    栈快照），与 `_vote_title_mode(..., _decisions=)` 同形 —— 两趟各记一份即可逐字节对照
+    「预扫与主循环判定一致」这条不变量（U14；用例见
+    `tests/test_md_parser.py::test_two_pass_decision_streams_are_identical`）。
 
     返回: [{
         "clause_no": "5.2.1",
@@ -600,7 +726,9 @@ def parse_markdown(md_text: str) -> list[dict]:
         故取**不改道**的形态：真条文的正文/面包屑**逐字不变**，孤儿文本只多出一条隐藏行
         （`clause_is_non=1` ⇒ 检索侧被过滤、`_survey` 的覆盖率分母不含它）。
         身份（`clause_no`/`title`）取自块首行，与 `_candidate_of` 的页标记分支
-        `(1, t, t)` 同一约定。
+        `(1, t, t)` 同一约定；唯**裸条号形状**的块首行（`1` / `1.1`）例外：`clause_no`
+        加 `~` 前缀而 `title` 仍是原文 —— 否则该身份会被导入侧 `_nearest_ancestor_id`
+        当成其后真条文的点段祖先（见 `_orphan_block_identity`，加固 B）。
         ⚠️ 设计意图不变：封面/前引文字**仍然不并入首个真条文**（这正是旧实现的泄漏点），
         消失的只是「文本无处安放」这一步。
         """
@@ -629,13 +757,20 @@ def parse_markdown(md_text: str) -> list[dict]:
             #    （`# Code for …` 这类无编号英文标题**不得**变成伪条文号，R1 ⑦；
             #    `test_hash_heading_without_clause_no_is_not_clause` 守之）。孤儿文本
             #    「值得留」的前提是它属于一份真规范 —— 没有节点就没有规范。
-            # ② 直接过滤类（目次/Contents）：与 `# 目次` 候选行的 `discard_section`
-            #    **同一条规则的另一落点**（`_NON_CLAUSE_FILTER_TITLES`：导入时不生成条文）。
+            # ② 直接过滤类（目次/Contents，`_NON_CLAUSE_FILTER_TITLES`：导入时不生成条文）。
             #    裸 `目次` 行不是候选行，旧实现靠「空栈 flush」这个副作用把它丢掉；
             #    改动⑤ 把这个副作用补成显式规则，否则它会以隐藏块身份进库。
+            #    ⚠️ **边界口径（U14 复核订正，此前写作「同一条规则的另一落点」= 把范围说大了）**：
+            #    本判据的**唯一开关是「块首行」**，据此决定**整个头部区域**的去留 —— 与
+            #    `# 目次` 候选行的 `discard_section` 相比，**目标相同（目次不进库）而落点与范围不同**：
+            #      - `# 目次`：**有界段** —— 自该候选行起、到**下一个候选行**止，段内一切丢弃；
+            #      - 本处：开关式整块 —— 首个非空行**是**过滤标题 ⇒ 从文档首到首个候选行
+            #        整段不产出；**不是** ⇒ 整块保留，即便区域中**另有**裸 `目次` 行也一并保留
+            #        （该行进的是隐藏块 content：不进检索、也不进覆盖率分母，故无害）。
+            #    两个方向都钉在 `test_orphan_head_region_filter_title_boundary` 上。
             if head and saw_candidate_row and not is_filter_non_clause_title(head):
                 clauses.append({
-                    "clause_no": head,
+                    "clause_no": _orphan_block_identity(head),
                     "title": head,
                     "content": "\n".join(pending).strip(),
                     "level": 1,
@@ -645,7 +780,7 @@ def parse_markdown(md_text: str) -> list[dict]:
                 })
         pending = []
 
-    for line in lines:
+    for idx, line in enumerate(lines):
         # 段级规则的**触发点**：在 `_candidate_of` 之前——标记行本身不改其归属
         # （它不成为候选行，见 `_candidate_of` docstring），只开启延伸至文末的非条文段。
         if _is_commentary_marker(line):
@@ -653,6 +788,7 @@ def parse_markdown(md_text: str) -> list[dict]:
             state.in_commentary = True           # fix ①②③：与预扫同步推进豁免边界
         cand = _candidate_of(line, state)
         if cand is None:
+            _note(_decisions, idx, "none", stack, in_commentary=state.in_commentary)
             if not discard_section and line.strip():
                 # 非候选行 → 当前条的内容。次分组单元的标题行也走这里，
                 # 需剥掉 Markdown 井号前缀，避免标记混进正文。
@@ -664,6 +800,8 @@ def parse_markdown(md_text: str) -> list[dict]:
             continue
 
         if _reject_cross_chapter(cand, state):   # fix ③：同号重复一致性
+            _note(_decisions, idx, "rej", stack, level=cand[0], clause_no=cand[1],
+                  in_commentary=state.in_commentary)
             # 拒绝的候选行当作普通内容行：其文本折入当前条 content（与上分支同一条路径）。
             if not discard_section and line.strip():
                 if not _DOT_LEADER.search(line):
@@ -682,8 +820,11 @@ def parse_markdown(md_text: str) -> list[dict]:
 
         flush()                                  # 新候选行到达 → 先结算上一条
 
-        # 投票键缺失只可能出现在「目次/Contents 行被主循环筛掉、未入栈」之后；
-        # 回退 False（判「无标题」）与平票规则同向：文本进 content，不丢内容。
+        # 投票键缺失的旧成因（round 2 Finding 3～T25：目次/Contents 行被主循环筛掉、未入栈，
+        # 而预扫压了栈）已由 U14 修掉 ⇒ 两趟的键逐行一致、**任何候选行的键必然存在**
+        # （对照断言：tests/test_md_parser.py::test_two_pass_decision_streams_are_identical）。
+        # `.get(..., False)` 因此是**防御性**写法：生产路径不可达，但回退方向恒为「判无标题」
+        # ＝保内容，与平票规则同向。
         # 投票只用于「确认标题」：组内多数判带标题 **且** 该行自身也像标题才算标题。
         # 这一「与」只会**减少**标题型判定，方向恒为**保内容**：长句不会仅因组内多数
         # 变成标题、进而因无自身正文被判为内节点而整条丢弃（实测修掉 CJJ2 的
@@ -698,13 +839,19 @@ def parse_markdown(md_text: str) -> list[dict]:
         # section_path 丢失节名（实测 22 条 `#` 标题被降级，其中 `21.4` 的 4 条子条文
         # parent_path 含空串、section_path 只剩编号）。
         # 此处只对 `#` 行放宽；非 `#` 行维持既有「投票 + `_looks_like_title`」逻辑不变。
+        # 表决键由 `_vote_key` 唯一产出（取样点在压栈之前，与预扫同点）：
+        # 分组键含「是否属条文说明段」，正文行不被注释侧行带偏（T23）。
+        vote_key = _vote_key(state, stack, level)
+        parent_key = vote_key[1]
         is_titled = _is_hash_line(line) or (
-            title_mode.get((level, _parent_key(stack, level)), False)
+            title_mode.get(vote_key, False)
             and _looks_like_title(tail)
         )
         title = _clean_title(tail) if is_titled else ""
 
-        if is_filter_non_clause_title(title or tail):
+        if _is_filter_title_line(tail):
+            _note(_decisions, idx, "filter", stack, level=level, clause_no=clause_no,
+                  parent_key=parent_key, in_commentary=state.in_commentary)
             discard_section = True               # 目次 / Contents：段内一切丢弃
             inherit_non_clause = False
             continue
@@ -734,6 +881,8 @@ def parse_markdown(md_text: str) -> list[dict]:
             "level": level, "clause_no": clause_no, "title": title,
             "is_non_clause": is_non,
         })
+        _note(_decisions, idx, "cand", stack, level=level, clause_no=clause_no,
+              parent_key=parent_key, in_commentary=state.in_commentary)
         if not title:
             pending.append(tail)                 # 正文型：编号后文本即正文首行
 

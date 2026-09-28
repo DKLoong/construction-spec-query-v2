@@ -1,8 +1,10 @@
 import re
+from collections import Counter
 
 from app.parser.md_parser import (
     parse_markdown, is_non_clause_title, is_cover_clause, _should_emit_clause,
     _is_zero_segment_node, _extract_title, _candidate_of, _DOT_LEADER,
+    _vote_title_mode,
 )
 
 SAMPLE_MD = """# GB 50204-2015 混凝土结构工程施工质量验收规范
@@ -497,23 +499,22 @@ def test_toc_section_is_discarded_entirely():
     assert any(c["clause_no"] == "1.0.2" for c in results_hash)
 
 
-def test_vote_key_falls_back_after_toc_candidate_is_skipped():
-    """M2（Task 3 复核 Minor #3）：`title_mode.get(..., False)` 的回退路径要有一条回归用例。
+def test_vote_key_falls_back_when_verdict_dict_lacks_the_key(monkeypatch):
+    """M2（Task 3 复核 Minor #3）＋ U14 改写：`title_mode.get(..., False)` 的回退路径回归用例。
 
-    为什么既有两条目次用例覆盖不到：它们都在目次之后跟一条 `## 1 总则`，把**预扫栈**与
-    **主循环栈**重新对齐，于是后续条文的分组键在两个栈里相同 → 取得到值、走不到回退。
+    ⚠️ **本用例在 U14（Batch2 Task 18）被改写，属可预期变更、不是回归**：原形态靠
+    「`## 目次` 在预扫压栈、主循环不压栈」造成的**键缺失**来走回退 —— 那个分叉正是本 Task
+    修的 T25。修后两趟的栈与键逐行一致（见 `test_two_pass_decision_streams_are_identical`），
+    任何候选行的键都必然存在 ⇒ 回退在生产路径上**不可达**。但回退本身仍须有护栏
+    （不得 `KeyError` 崩掉整篇解析，且方向恒为「判无标题」＝保内容），故改为**直接注入
+    空表决表**复现同一条件。
 
-    分叉是这样产生的：`## 目次` 在预扫里**是**候选行（`_candidate_of` 认它）→ 被压入预扫栈
-    → 其后 `1.0.1` 的分组键带上父键 `目次`；而主循环里目次行在 `is_filter_non_clause_title`
-    处 `continue`（**在压栈之前**）→ 主循环栈为空 → `1.0.1` 的分组键父键是 `""` →
-    **键缺失**。若这里改成 `title_mode[key]` 会直接 `KeyError` 崩掉整篇解析。
-
-    夹具**刻意取标题形态的尾文本**（`1.0.1 正文甲`，短、无句末标点 → `_looks_like_title` 为真）：
-    简报给的那条（`1.0.1 正文。`）只能证伪「键缺失 → 崩」，证伪不了**回退值的方向** —— 因为
-    `is_titled = <回退值> and _looks_like_title(tail)` 的右半在 `正文。` 上恒为 False，
-    回退写 True 也看不出来。换成 `正文甲` 后，回退若写 True 就会把它判成标题型 →
-    该行无自身正文 → 被内节点判据丢弃（`title` 与 `content` 两条断言同时变红）。
+    可失败性（两条方向）：把 `title_mode.get(key, False)` 改成 `title_mode[key]` → 本用例
+    直接 `KeyError`；把回退值改成 `True` → 该行判标题型、无自身正文 → 被内节点判据丢弃
+    （`clause_no` 与 `title` 两条断言同时变红）。
     """
+    from app.parser import md_parser
+    monkeypatch.setattr(md_parser, "_vote_title_mode", lambda lines, **_kw: {})
     md = "## 目次\n\n1.0.1 正文甲\n\n随后正文。\n"
     results = parse_markdown(md)
     assert [r["clause_no"] for r in results] == ["1.0.1"], \
@@ -521,6 +522,27 @@ def test_vote_key_falls_back_after_toc_candidate_is_skipped():
     r = results[0]
     assert r["title"] == "", "回退值必须与平票规则同向（判「无标题」），文本须进 content"
     assert r["content"] == "正文甲\n随后正文。"
+    assert r["is_non_clause"] is False
+
+
+def test_toc_candidate_no_longer_changes_the_next_row_verdict():
+    """U14（T25 的行为面）：`## 目次` **不再影响**其后候选行的判定 —— 前后两个输入同解。
+
+    修前：预扫压栈 `目次` ⇒ 该行分组键 `(3, '目次')`，主循环键 `(3, '')` → **键缺失** →
+    回退判「无标题」。修后：两趟都不压栈 ⇒ 键 `(3, '', False)` 命中，组内只有这一行且
+    像标题 ⇒ 判「带标题」。
+
+    ⚠️ 这是**可预期的行为变更**（不是回归）：它的方向是「**去掉位置依赖**」——
+    同一行候选，前面有没有 `## 目次` 现在**结果相同**（实测两式均为
+    `('1.0.1', '正文甲', '随后正文。')`）；修前两式不同（有 `## 目次` 时 title=''）。
+    R14 的语义本就是「同层同父的兄弟一起表决」：孤身一行且像标题 ⇒ 判带标题。
+    """
+    with_toc = parse_markdown("## 目次\n\n1.0.1 正文甲\n\n随后正文。\n")
+    without_toc = parse_markdown("1.0.1 正文甲\n\n随后正文。\n")
+    assert with_toc == without_toc, \
+        f"`## 目次` 仍在改变其后候选行的判定：{with_toc} vs {without_toc}"
+    r = with_toc[0]
+    assert (r["clause_no"], r["title"], r["content"]) == ("1.0.1", "正文甲", "随后正文。")
     assert r["is_non_clause"] is False
 
 
@@ -1786,3 +1808,235 @@ def test_library_level_plain_chars_do_not_decrease(cjj2_md):
     total = sum(len(plain_text(c["content"])) for c in clauses)
     assert len(clauses) >= 887, f"库级条文数 {len(clauses)} 跌破 887（有真条文被过滤掉）"
     assert total >= 141_548, f"库级 content_chars_plain {total} 跌破 141,548（T20 判据）"
+
+
+# ═══════════════════════════════════════════
+# 组 10：两趟判据一致（U14 / Task 18 = T23 + T25）
+#   「`_vote_title_mode`（预扫）与主循环对同一份输入的判定完全一致」——
+#   对候选判据、对 `seen_clause_nos`、**以及对 `stack`**（本 Task 新增的部分）。
+# ═══════════════════════════════════════════
+
+def _decision_streams(md_text: str) -> tuple[list, list]:
+    """把同一份输入喂给**两趟**（预扫 / 主循环），各记一份逐行决策流并返回。
+
+    两侧的钩子都是生产代码里的同一个 `_note`（`app/parser/md_parser.py::_Decision`），
+    故比对的是**真实的两趟**，而不是测试里复刻的第三份实现 —— 复刻会随代码漂移而静默
+    失守，那正是本 Task 立项要消灭的「不可失败的对照」。
+    """
+    lines = md_text.split("\n")
+    pre: list = []
+    main: list = []
+    _vote_title_mode(lines, _decisions=pre)
+    parse_markdown(md_text, _decisions=main)
+    return pre, main
+
+
+def _kind_counts(stream: list) -> Counter:
+    return Counter(d.kind for d in stream)
+
+
+def _first_stream_diff(pre: list, main: list) -> str:
+    """给出两趟流的**首个**差异（诊断用；相等时返回空串）。"""
+    for a, b in zip(pre, main):
+        if a != b:
+            return (f"首个差异：行 {a.line}\n"
+                    f"  预扫  : kind={a.kind} level={a.level} no={a.clause_no!r} "
+                    f"parent={a.parent_key!r} stack={a.stack}\n"
+                    f"  主循环: kind={b.kind} level={b.level} no={b.clause_no!r} "
+                    f"parent={b.parent_key!r} stack={b.stack}")
+    if len(pre) != len(main):
+        return f"长度不同：预扫 {len(pre)} vs 主循环 {len(main)}"
+    return ""
+
+
+def _assert_streams_identical(md_text: str, *, lines: int, nodes: int, filters: int,
+                              rejects: int) -> None:
+    """判据本体：逐行流**逐字节相同**，且两侧的分类计数复现基线。"""
+    pre, main = _decision_streams(md_text)
+    assert pre is not main, "两侧必须是两份独立记录（否则「相等」是恒真）"
+    assert len(pre) == len(main) == lines, \
+        f"逐行记录 ⇒ 长度应等于行数 {lines}（实测 {len(pre)} / {len(main)}）"
+    k = _kind_counts(pre)
+    assert (k["cand"], k["filter"], k["rej"]) == (nodes, filters, rejects), \
+        f"预扫分类计数变了：{dict(k)}（期望 节点 {nodes} / 过滤 {filters} / 拒 {rejects}）"
+    assert pre == main, f"两趟判定分叉：\n{_first_stream_diff(pre, main)}"
+
+
+# 语料基线（U14 实测）。口径：「候选形状」= `_candidate_of` 认出的行
+# = 节点 + 过滤标题 + 被 fix ③ 拒的行：
+#   CJJ2     1,030 = 1,027 + 0 + 3    ← 批一记录「7,334 行 / 1,030 候选 / 3 拒绝」
+#   JGJ107      88 =    86 + 2 + 0    ← 批一记录「626 / 88 / 0」
+_CJJ2_STREAM = dict(lines=7334, nodes=1027, filters=0, rejects=3)
+_JGJ107_STREAM = dict(lines=626, nodes=86, filters=2, rejects=0)
+_JGJ107_MD = (Path(__file__).resolve().parent.parent
+              / "data" / "outputs" / "aa96b73a" / "aa96b73a.md")
+
+
+def test_two_pass_decision_streams_are_identical(cjj2_md):
+    """**U14 判据**：两趟的候选/拒绝流逐字节相同（CJJ2 夹具）。
+
+    批一的复核手法（两侧各记 stream 后比序列）在这里落成生产代码里的一个钩子
+    （`parse_markdown(..., _decisions=)` / `_vote_title_mode(..., _decisions=)`），
+    故本断言比的是**真实的两趟**。
+
+    基线（U14 实测，与批一记录一致）：7,334 行 / 1,030 候选形状 / 3 拒绝；
+    其中真正成为节点的是 1,027 行（口径见 `_CJJ2_STREAM` 上方的注释）。
+    """
+    _assert_streams_identical(cjj2_md, **_CJJ2_STREAM)
+
+
+def test_two_pass_decision_streams_are_identical_jgj107():
+    """同一判据的**第二份语料**（JGJ107）：626 行 / 88 候选形状 / 0 拒绝。
+
+    ⚠️ 该语料在 `data/outputs/`（运行目录、未入库：`.gitignore:11` 忽略整个 `data/`），
+    缺失时**跳过**而非报红 —— 跳过会被 pytest 如实计入，不会冒充「已复现」。
+    JGJ107 是唯一含过滤标题候选行的语料（`#### 目次` L82 / `## Contents` L100），
+    故它是「两趟的栈分叉」这条不变量的第二道照看。
+    """
+    if not _JGJ107_MD.exists():
+        pytest.skip(f"JGJ107 语料不在本机（data/ 未入库）：{_JGJ107_MD}")
+    _assert_streams_identical(_JGJ107_MD.read_text(encoding="utf-8"), **_JGJ107_STREAM)
+
+
+# T25 的最小可证伪夹具：数字命名的过滤标题。层级刻意做成 1 → 2 → 3 ——
+# 只有**更深**的行才会让分叉的栈产生不同的父键（level 2 的行在两种栈里父键都是 `1`）。
+# 末两行是**第三个维度**（`seen_clause_nos`）的照看：`## 1.1 总则` 与过滤标题同号，
+# 必须两趟都判「同号重复」而拒（round 2 Finding 3 的那半 —— 若哪一趟把 `seen.add`
+# 挪到过滤标题的 `continue` 之后，该行就会在一侧成候选、另一侧成拒绝）。
+_NUMERIC_FILTER_MD = ("## 1 总则\n\n## 1.1 目次\n\n1.1.1 正文甲\n\n1.1.2 正文乙。\n\n"
+                      "## 1.1 总则\n\n1.1.3 正文丙。\n")
+
+
+def test_two_pass_streams_identical_on_numeric_filter_title():
+    """T25：**数字命名的过滤标题**不得让两趟的栈分叉（本 Task 的核心可证伪用例）。
+
+    `## 1.1 目次` 是候选行（`_candidate_of` 认它），但主循环在 `is_filter_non_clause_title`
+    处 `continue`（**不压栈**）；修前预扫会把它压栈 ⇒ 其后 `1.1.1` 的分组键在预扫是 `1.1`、
+    在主循环是 `1` ⇒ 两趟的 R14 投票键不同 ⇒ 同一条标题型行可能一处判 title、一处判 content。
+
+    可失败性**已实测**（U14，RED 原文见 task-18-report）：把修法注掉（预扫重新压过滤标题）后
+    本用例变红，报出 `过滤标题之后的父键仍分叉：预扫 '1.1' vs 主循环 '1'`；`## 1.1 总则` 那一行
+    则同时照看 `seen_clause_nos` 维度。夹具自检（防恒真）：必须真有 1 条过滤标题行、其**后**
+    有更深的候选行、且**带**一处同号重复行 —— 否则「两趟相同」在这份输入上不构成证据。
+    """
+    pre, main = _decision_streams(_NUMERIC_FILTER_MD)
+    kinds = [d.kind for d in pre]
+    assert kinds[2] == "filter", f"夹具未包含过滤标题候选行：{kinds}"
+    assert kinds[4] == "cand" and pre[4].level == 3, \
+        f"过滤标题之后必须有更深的候选行（否则测不到栈分叉）：{kinds}"
+    assert kinds[8] == "rej", \
+        f"`## 1.1 总则` 必须因「同号重复」被拒（seen_clause_nos 维度）：{kinds}"
+    assert pre[4].parent_key == main[4].parent_key == "1", \
+        (f"过滤标题之后的父键仍分叉：预扫 {pre[4].parent_key!r} vs "
+         f"主循环 {main[4].parent_key!r}")
+    assert pre == main, f"两趟判定分叉：\n{_first_stream_diff(pre, main)}"
+
+
+def test_two_pass_streams_identical_on_jgj107_toc_shape():
+    """同一条判据在**真实语料形状**上的最小复刻（JGJ107 的 `#### 目次` / `## Contents`）。
+
+    JGJ107 的两个过滤标题都是 level 1、且其后直到下一个 level 1 候选行**没有**别的候选行，
+    故它在真语料上是良性的（TODOS T25 已记「两语料不触发」）。本用例把「其后紧跟更深候选行」
+    这一条补上，使它成为能失败的形状；层号与非 `#` 形态按 JGJ107 实测抄。
+    """
+    md = ("#### 目次\n\n"
+          "1 总则 ..... 1\n\n"
+          "## Contents\n\n"
+          "1 General Provisions ..... 1\n\n"
+          "## 1 总则\n\n"
+          "1.1 术语\n\n"
+          "1.1.1 正文甲。\n")
+    pre, main = _decision_streams(md)
+    assert [d.kind for d in pre].count("filter") == 2, "夹具应含 2 条过滤标题"
+    assert pre == main, f"两趟判定分叉：\n{_first_stream_diff(pre, main)}"
+
+
+def test_vote_groups_isolated_between_body_and_commentary():
+    """T23：R14 的分组键含「是否属条文说明段」，正文行不再被注释侧行带偏。
+
+    条文说明段会**合法地**复用正文的章号（同号、逐款解释），而 R14 是「同层同父则一起表决」；
+    两类行同组时，段内行会参与正文组的多数表决（批一实测：151 组中 21 组含重复号、89 行
+    注释侧行落进正文组键；剔除后重算 **0 组翻转** ⇒ 潜在风险而非当前缺陷）。
+
+    ⚠️ 「批一 0 组翻转」是**该语料的巧合**，不能证伪本判据 —— 故本用例构造一个**真会被带偏**
+    的最小样本：正文侧同组只有 1 行且像标题（yes=1），注释侧同组 1 行长句（yes=0）。
+    混组 ⇒ `1*2 > 2` 为假 ⇒ 正文行被判「无标题」（title 空、编号后文本进 content）；
+    隔离 ⇒ `1*2 > 1` 为真 ⇒ 判「带标题」。两侧的差就落在 title 上。
+    """
+    md = ("1.1 总则\n\n"
+          "正文甲的内容。\n\n"
+          "条文说明\n\n"
+          "1.2 本条说明了总则的编制依据与适用范围并逐款解释\n")
+    rows = {c["clause_no"]: c for c in parse_markdown(md)}
+    assert rows["1.1"]["title"] == "总则", (
+        "正文侧的 R14 表决被注释侧行带偏（分组键未隔离条文说明段）："
+        f"title={rows['1.1']['title']!r} content={rows['1.1']['content']!r}"
+    )
+    assert "总则" not in rows["1.1"]["content"], \
+        "编号后文本既然进了 title，就不得同时留在正文（被带偏时它正在正文里）"
+    assert "正文甲的内容。" in rows["1.1"]["content"], "正文内容不受表决隔离影响"
+
+
+def _dot_segment_prefixes(clause_no: str) -> list[str]:
+    """`21.4.1` → `['21.4.1', '21.4', '21']`（由长到短 —— 与导入侧 `_nearest_ancestor_id` 同序）。"""
+    parts = clause_no.split(".")
+    return [".".join(parts[:i]) for i in range(len(parts), 0, -1)]
+
+
+def test_orphan_block_identity_never_collides_with_clause_number_prefixes():
+    """加固 B：块首行是**裸条号形状**（游离的 OCR 数字）时，块身份带 `~` 前缀。
+
+    不加固的后果：文首是游离 `1` 的文档，孤儿块的 `clause_no` 就是 `'1'`；而导入侧
+    `_nearest_ancestor_id` 按**点段前缀由长到短**回溯父级（用的就是这个字符串），于是该文档里
+    真正的 `1.1` / `1.0.1` 会把 `parent_clause` 指向这个**隐藏块**（此前是 NULL）—— 无悬空引用、
+    也不破坏点段前缀不变式，但属未测、非预期的父子关系。加前缀后块身份**永不可能**成为任何
+    真条号的点段前缀（真条号只由数字/字母/点构成，不含 `~`）。
+    """
+    md = "1\n\n封面甲\n\n1.1 正文甲。\n\n1.0.1 正文乙。\n"
+    rows = parse_markdown(md)
+    block = rows[0]
+    assert block["is_non_clause"] is True, "首行是裸数字的孤儿文本仍须保留为隐藏块（T20 不改道）"
+    assert block["clause_no"] == "~1" and block["title"] == "1", \
+        f"裸数字首行的块身份应带 `~` 前缀：{block['clause_no']!r}"
+    assert "封面甲" in block["content"], "加固不得丢文本"
+    for other in rows[1:]:
+        assert other["clause_no"] != "1", "夹具自检：真条号不可能是裸数字"
+        for prefix in _dot_segment_prefixes(other["clause_no"]):
+            assert prefix != block["clause_no"], (
+                f"{other['clause_no']} 的祖先链会把父级指到隐藏块 {block['clause_no']!r}"
+                f"（这正是 `_nearest_ancestor_id` 的判据）"
+            )
+
+
+def test_orphan_block_identity_keeps_real_head_text_when_not_numeric(cjj2_md):
+    """加固 B 的**边界**：非裸条号形状的块首行身份不变（CJJ2 的块首行是 `UDC`）。
+
+    「给身份加前缀」只对**实际会撞点段前缀**的形态生效，故既有契约
+    （`test_orphan_block_at_document_head_is_hidden_and_has_no_children` 钉的「身份 = 块首行」）
+    与两语料指标都不动。
+    """
+    rows = parse_markdown("UDC\n\n封面甲\n\n1.0.1 正文甲。\n")
+    assert rows[0]["clause_no"] == rows[0]["title"] == "UDC"
+    block = parse_markdown(cjj2_md)[0]
+    assert block["clause_no"] == "UDC" and block["is_non_clause"] is True
+
+
+def test_orphan_head_region_filter_title_boundary():
+    """加固 A：孤儿头部区域的过滤标题判据**以「块首行」为唯一开关**，并据此决定**整块**去留。
+
+    U14 订正的是**口径表述**：`flush()` 的 docstring 曾写作「与 `# 目次` 同一条规则的另一落点」，
+    会把范围说大。两者的**目标相同**（目次不进库），但**落点与范围不同** ——
+    `# 目次` 是**有界段**（自该候选行起、到下一个候选行为止，段内一切丢弃）；
+    本处是**开关式**的整块判据（只看首个非空行）。本用例把两侧边界都钉住。
+    """
+    # ① 过滤标题**是**首行 ⇒ 整个头部区域（到首个候选行为止）都不产出隐藏块
+    rows_head = parse_markdown("目次\n\n目录甲\n\n1.0.1 正文甲。\n")
+    assert [c["clause_no"] for c in rows_head] == ["1.0.1"], \
+        f"首行为过滤标题时整块不得进库：{[c['clause_no'] for c in rows_head]}"
+    assert not any("目录甲" in c["content"] for c in rows_head)
+    # ② 过滤标题**不在**首行 ⇒ 整块保留（那行 `目次` 的文本随之进隐藏块）
+    rows_mid = parse_markdown("封面甲\n\n目次\n\n1.0.1 正文甲。\n")
+    assert rows_mid[0]["clause_no"] == "封面甲" and rows_mid[0]["is_non_clause"] is True
+    assert "目次" in rows_mid[0]["content"], \
+        "块内（非首行）出现的过滤标题行按既有口径保留：隐藏块不进检索、不进覆盖率分母"
+    assert [c["clause_no"] for c in rows_mid[1:]] == ["1.0.1"]
