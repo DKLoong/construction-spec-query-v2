@@ -482,8 +482,18 @@ def test_toc_section_is_discarded_entirely():
 
     ✅ **T20 后（Task 17 / 改动⑤）裸夹具不再是「零保护」**：那个「空栈 flush 的副作用」
     已被显式规则取代——`flush()` 里的孤儿块若以直接过滤类标题（目次/Contents）开头则
-    **不保留**（同一条规则的另一落点）。故现在把 `is_filter_non_clause_title` 改成恒 False
-    时，裸夹具也会变红（`目次` 会以隐藏块身份出现）。两条既有断言均未改。
+    **不保留**。
+    ⚠️ **口径（U15 订正）**：这一处与 `# 目次` 的 `discard_section` **目标相同（目次不进库）
+    而落点与范围不同** —— `# 目次` 是**有界段**（自该候选行起、到下一个候选行止，段内一切
+    丢弃），本处是**开关式**（唯一开关 = 块首行，见 `flush()` 的注释）。早先写作
+    「同一条规则的另一落点」= **把范围说大了**（同一措辞已由 U14 在 `md_parser.py`、`TODOS.md`
+    与本文件的另一用例订正，此处是漏网的一处）。故现在把**共享的过滤判据**
+    `is_filter_non_clause_title`（= `_is_filter_title_line` 的**内层**，`flush()` 的孤儿块规则
+    也**直接**调它）改成恒 False 时，裸夹具也会变红（`目次` 会以隐藏块身份出现）。
+    ⚠️ 变异必须打在**这个底部判据**上 —— U15 三向实测：M1（`is_filter_non_clause_title`
+    恒 False）⇒ 裸夹具**红**（`['目次', '1.0.1']`）；M2（只把 `_is_filter_title_line` 恒 False）
+    ⇒ 仍**绿**；M3（`_clean_title` 恒等 = 退回旧式 `tail.strip()`）⇒ 仍**绿**。
+    两条既有断言均未改。
     """
     md = "目次\n\n1 总则 ..... 1\n\n2 术语 ..... 3\n\n1.0.1 正文甲。\n"
     results = parse_markdown(md)
@@ -1564,7 +1574,7 @@ def test_numeric_filter_title_seen_advances_identically():
     """fix round 2（Finding 3）：数字命名的过滤标题不得让预扫与主循环的 seen 集合分叉。
 
     `## 1.1 目次` 是**数字命名的过滤标题**：`_vote_title_mode` 把它当普通候选行、推进
-    `seen_clause_nos`（加 "1.1"）；主循环在 `is_filter_non_clause_title` 处 continue
+    `seen_clause_nos`（加 "1.1"）；主循环在 `_is_filter_title_line` 处 continue
     （在 `seen_clause_nos.add` 之前）→ 主循环的 seen 没有 "1.1"。于是其后 `## 1.1 总则`
     在预扫被 `_reject_cross_chapter` 判「同号重复」而拒、主循环却照常接受并产出条文——
     两个 pass 的候选行集合分叉，违背「两遍用同一判据」的不变量（两语料的过滤标题都是
@@ -1910,7 +1920,7 @@ _NUMERIC_FILTER_MD = ("## 1 总则\n\n## 1.1 目次\n\n1.1.1 正文甲\n\n1.1.2 
 def test_two_pass_streams_identical_on_numeric_filter_title():
     """T25：**数字命名的过滤标题**不得让两趟的栈分叉（本 Task 的核心可证伪用例）。
 
-    `## 1.1 目次` 是候选行（`_candidate_of` 认它），但主循环在 `is_filter_non_clause_title`
+    `## 1.1 目次` 是候选行（`_candidate_of` 认它），但主循环在 `_is_filter_title_line`
     处 `continue`（**不压栈**）；修前预扫会把它压栈 ⇒ 其后 `1.1.1` 的分组键在预扫是 `1.1`、
     在主循环是 `1` ⇒ 两趟的 R14 投票键不同 ⇒ 同一条标题型行可能一处判 title、一处判 content。
 

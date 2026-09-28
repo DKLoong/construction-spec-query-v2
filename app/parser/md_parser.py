@@ -188,14 +188,33 @@ def _is_filter_title_line(tail: str) -> bool:
     **预扫与主循环共用本函数**（T25 的修法）：主循环在命中处 `continue`（丢弃、**不入栈**），
     预扫必须在同一点跳过同一行（不投票、**不入栈**），否则两趟的栈与 R14 分组键分叉。
 
-    判据一律取 `_clean_title(tail)`（折叠 2+ 连续空白后 strip）。主循环原式是
+    判据一律取 `_clean_title(tail)`（**删除** 2+ 连续空白后 strip）。主循环原式是
     `is_filter_non_clause_title(title or tail)`，其中 `title` 恒为 `_clean_title(tail)`
-    （标题型）或空串（正文型）——两式只在「tail 含 2+ 连续空白、折叠后恰为 目次/Contents」
-    （如 `目  次`）且该行被 R14 判为**正文型**时不同。
+    （标题型）或空串（正文型）——两式只在「tail 含 2+ 连续空白、删除后恰为 目次/Contents」
+    （如 `目  次`、`Con  tents`）且该行被 R14 判为**正文型**时不同。
     **实测两语料（U14）：两式逐行同值、0 例差异** —— `_clean_title(tail) != tail` 的候选共
     10 行（CJJ2 7 / JGJ107 3，全部是含 `$…$` 的长正文，空白来自 OCR 的公式间距），其中没有
     一行是过滤标题的空白变体；真正的过滤标题 2 行（JGJ107 `#### 目次` / `## Contents`）都来自
-    `#` 分支，tail 早已归一。故此处统一为**判据唯一处**，行为不变。
+    `#` 分支，tail 早已归一。U15 独立复量（**逐行**口径，剥掉行首 `#` 与空白后）：
+    `_clean_title(x) ∈ {目次, Contents}` 而 `x.strip()` 不属其中的行 = **0**
+    （CJJ2 7,334 行 / JGJ107 626 行）。
+    故此处统一为**候选行路径上的唯一处**（两侧共用：预扫与主循环各调一次），行为不变。
+
+    ⚠️ **「唯一」只对候选行路径成立**（U15 订正；此前写作「判据唯一处」——**把范围说大了**）：
+    同一族判据还有两个**合法**落点，各有其目的，且**两趟都同样走到**，故不破坏上面那条
+    「预扫与主循环共用同一判据」的不变量：
+      - `_candidate_of` 的 `#` 分支：用 `is_filter_non_clause_title(title_txt)` **故意把
+        `Contents` 留作候选行** —— 不留它就没有候选行可触发 `discard_section`，目录行会
+        泄漏进下一条正文（理由见该处注释）；
+      - `flush()` 的孤儿块规则：块首行是过滤标题则整块不保留（改动⑤ / T20）。
+
+    ⚠️ **新式是旧式的严格超集，且这一侧的差集不是「多过滤一行」那么无害**（U15 补记后果）：
+    主循环命中过滤标题时置 `discard_section = True`，其效果是**自该行起、到下一个候选行止的
+    非候选行文本一律丢弃**——旧式不认这类行，那段文本会照常落进当前条的 content。
+    实测（合成最小例：`## 1.1 目  次` 与下一条之间夹一行裸文本）：`目  次` ⇒ 该裸行丢弃、
+    `1.1` 也因无自身正文而不产出（plain 27 → 8）；单空格 `目 次` ⇒ 两式同值、文本保留。
+    触发条件很窄：需「≥2 连续空白删除后**恰好**等于 `目次`/`Contents`」，且**实测两语料 0 例**
+    （即上面那条独立复量）——本批两语料上**无文本丢失**，两遍不变量亦不受影响。
     """
     return is_filter_non_clause_title(_clean_title(tail))
 
@@ -447,7 +466,7 @@ def _candidate_of(line: str, state: _ParseState | None = None) -> tuple[int, str
         title_txt = _clean_title(_extract_title(raw_title))
         # ⚠️ 本分支的判据顺序是**承重**的，四处顺序都不可随意调换：
         #   ① 目次/Contents（过滤类）必须先于「无中文」检查 —— `Contents` 是英文、
-        #      无中文，若先做中文检查会把它筛掉，于是主循环里的 `is_filter_non_clause_title`
+        #      无中文，若先做中文检查会把它筛掉，于是主循环里的 `_is_filter_title_line`
         #      永远不触发、`discard_section` 从未置位，目录行会泄漏进下一条正文
         #      （Task 1 复核 Important #1，已探针复现）。
         #   ② 非条文块（前言/条文说明/公告…）必须先于 0 段检查 —— 否则
@@ -581,7 +600,10 @@ def _vote_title_mode(lines: list[str], *,
         # 两趟的 `_parent_key` 分叉 ⇒ R14 投票键不同 ⇒ 同一条标题型行可能一处判 title、
         # 一处判 content（批二 T25）。也不参与表决：它本就不是条文（主循环那一行整条丢弃），
         # 让它的 tail 留在某个兄弟组里投票会把该组的多数推向错误一侧 ——
-        # 实测两语料剔除后表决字典逐项不变（CJJ2 151 组 / JGJ107 16 组）。
+        # 实测两语料剔除后表决字典**逐项不变**（键数 **CJJ2 169 组 / JGJ107 16 组**；U15 现场复量：
+        # `len(_vote_title_mode(md.split("\n")))`）。⚠️ 早先记的「CJJ2 151 组」是**二维键**
+        # （层级, 父键）时代的计数：U14/T23 给键加了「是否属条文说明段」这一维后键数变为 169，
+        # 键的**判定值**不变 —— 引用请用现行 169，别再抄 151。
         if _is_filter_title_line(tail):
             _note(_decisions, idx, "filter", stack, level=level, clause_no=clause_no,
                   parent_key=parent_key, in_commentary=state.in_commentary)
