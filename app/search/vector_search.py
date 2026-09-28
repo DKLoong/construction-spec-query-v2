@@ -1,4 +1,6 @@
 import logging
+from datetime import timedelta
+
 import lancedb
 import pyarrow as pa
 from app.config import LANCE_DB_PATH
@@ -107,6 +109,14 @@ class VectorStore:
         都产生一个新版本，版本数增长随之加快（真实表曾落到 `rows=73 / version=173`，
         读放大与启动开销一起变差）。导入与全量重建收尾各压实一次。
 
+        **为什么必须传 `cleanup_older_than=timedelta(0)`**：lancedb 0.17 的 `optimize()`
+        默认 `cleanup_older_than=None` ⇒ 保留期 **7 天**：数据文件会合并，但**近期版本文件
+        照旧留存、留存版本数不会下降**。而本批要治的版本膨胀是**一次会话内**发生的
+        （真实表 rows=73 / version=173），7 天保留期对它完全无效。传 `0` = 只保留最新版本。
+        本机 lancedb 0.17.0 实测（同表同一串写入）：不传参 → 留存 9 个版本清单、压实后
+        反增至 11；传 0 → 留存 1 个（数据文件同时 5 → 1）。
+        `delete_unverified` 保持默认 `False`：不动「未验证」文件，避免清掉中断写入的残留。
+
         **绝不抛异常**：压实是收尾优化，**不是**导入/重建的交付物——压实失败不得让
         「条文已入库」的导入变成失败（也正因为它同时记了 WARNING，吞掉异常才可接受）。
 
@@ -117,7 +127,7 @@ class VectorStore:
         if not self._table_exists():
             return False
         try:
-            self._get_table().optimize()
+            self._get_table().optimize(cleanup_older_than=timedelta(0))
         except Exception as e:
             logger.warning("向量表压实失败（不影响本次导入/重建结果）: %s", e)
             return False

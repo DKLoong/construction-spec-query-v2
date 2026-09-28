@@ -12,11 +12,22 @@
 4. 两个调用点都在**全部向量写入之后**压实（写入前压实等于白做）。
 """
 import logging
+from pathlib import Path
 
 from app.database import get_db, init_db
 from tests.conftest import setup_search_data
 
 _LOGGER_NAME = "app.search.vector_search"
+
+
+def _retained_versions(vs) -> int:
+    """向量表目录下留存的版本清单数（= 尚未被 cleanup 掉的版本数）。
+
+    LanceDB 每个版本一个 `_versions/<n>.manifest`；`table.version` 只增不减，
+    故「版本是否真的被清理」只能数留存文件，不能读 version。
+    """
+    vdir = Path(vs.db.uri) / "clause_embeddings.lance" / "_versions"
+    return len(list(vdir.glob("*.manifest")))
 
 
 def _setup_db(monkeypatch, tmp_path, name="opt"):
@@ -53,13 +64,47 @@ def test_optimize_on_real_table_returns_true_and_keeps_rows(monkeypatch, tmp_pat
     assert vs._get_table().count_rows() == 2, "压实不得丢行"
 
 
+def test_optimize_bounds_retained_versions(monkeypatch, tmp_path):
+    """压实必须**真的约束版本数**，而不是「调用成功」而已。
+
+    lancedb 0.17 的 `optimize()` 默认 `cleanup_older_than=None` ⇒ 保留期 **7 天**：
+    数据文件会合并，但近期版本文件照旧留存、版本数不下降。而本批要治的版本膨胀是
+    **一次会话内**发生的（真实表 rows=73 / version=173），7 天保留期对它完全无效。
+    故 wrapper 传 `cleanup_older_than=timedelta(0)`（只保留最新版本）。
+
+    本机 lancedb 0.17.0 实测（同表、同一串操作）：不传参 → 留存版本清单 9 个；
+    传 0 → 1 个（数据文件 5 → 1）。本用例把这条实测钉在真实表上：先制造多版本，
+    压实后要求留存版本收缩到 1（回归成不传参时本断言必红）。
+    """
+    _setup_db(monkeypatch, tmp_path, "ver")
+    # 走真实写入原语（每条约 delete+add，各产生一个版本），不加载真实模型
+    monkeypatch.setattr("app.search.vector_search.embed_texts",
+                        lambda texts: [[0.0] * 8 for _ in texts])
+    from app.search.vector_search import VectorStore
+
+    vs = VectorStore()
+    for cid in range(1, 5):
+        vs.index_clause(cid, 1, f"条文文本 {cid}")
+
+    before = _retained_versions(vs)
+    assert before > 1, f"夹具没制造出多版本，本用例判定力为零: {before}"
+    assert vs._get_table().count_rows() == 4, "夹具应有 4 条向量行"
+
+    assert vs.optimize() is True
+    after = _retained_versions(vs)
+    assert after == 1, (
+        f"压实未清理过期版本（默认 7 天保留期下不会下降）: 留存版本 {before} → {after}；"
+        f"wrapper 必须传 cleanup_older_than=timedelta(0)")
+    assert vs._get_table().count_rows() == 4, "清理旧版本不得丢行"
+
+
 def test_optimize_failure_logs_warning_and_never_raises(monkeypatch, tmp_path, caplog):
     """压实失败：不抛异常、返回 False，且 WARNING 必须含原因（不得静默）"""
     _setup_db(monkeypatch, tmp_path, "boom")
     from app.search.vector_search import VectorStore
 
     class _BoomTable:
-        def optimize(self):
+        def optimize(self, **kwargs):
             raise RuntimeError("compaction boom")
 
     monkeypatch.setattr(VectorStore, "_table_exists", lambda self: True)
