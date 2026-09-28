@@ -51,8 +51,12 @@
                 本规范已废止，请查阅新版规范{% if new_code %}：{{ new_code }}{% if new_title %} {{ new_title }}{% endif %}{% endif %}
             </div>
             {% endif %}
+            {# 「来源：」行追加该条的**所属节**（面包屑 section_path 快照）。
+               纯文本、不做层级链接——spec §7 明确「节不作为独立可返回实体」，
+               做成链接会引出未计划的交互；空值整个 span 不渲染，避免尾随分隔符。
+               section_path 源自规范原文，只能走 Jinja 自动转义（**不得** |safe）。 #}
             <small style="color:var(--pico-muted-color)">
-                来源：{{ clause.spec_title or clause.spec_code }}
+                来源：{{ clause.spec_title or clause.spec_code }}{% if clause.section_path %} · <span class="clause-path">{{ clause.section_path }}</span>{% endif %}
             </small>
         </footer>
     </article>

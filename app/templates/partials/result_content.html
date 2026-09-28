@@ -16,6 +16,11 @@
     {% for r in results %}
     <div class="result-item" data-clause-id="{{ r.id }}">
         <div class="clause-no">{{ r.spec_code }}{% if r.spec_title %} {{ r.spec_title }}{% endif %} — {{ r.clause_no }}</div>
+        {# 所属节（面包屑）：**无状态**——每行自带完整路径，不与上一行比较、
+           不插独立「节分隔行」，故分页/筛选/排序变化下都不会错；
+           空值不渲染（不留空行/空 span）。长路径由 .clause-path 纯 CSS 截断。
+           section_path 源自规范原文，只能走 Jinja 自动转义（**不得** |safe）。 #}
+        {% if r.section_path %}<div class="clause-path">{{ r.section_path }}</div>{% endif %}
         {% if r.title %}<div class="clause-title">{{ r.title }}</div>{% endif %}
         <!-- 摘要以原始 md 存入 data-md（Jinja 自动 HTML 转义，浏览器解析后 dataset 还原），前端统一渲染（含 KaTeX 公式） -->
         <div class="clause-content" data-md="{{ r.summary }}"></div>

@@ -144,6 +144,20 @@
     background: rgba(138, 158, 139, 0.18); color: #5d7a60;
 }
 
+/* 所属节面包屑（详情弹窗「来源：」行 + 结果列表行共用）。
+   详情弹窗允许换行（路径必须完整可读，它是用户查看面包屑的主入口）；
+   列表行限单行并纯 CSS 省略号截断——行内不做任何逻辑（无状态：每行自带完整路径）。 */
+.clause-path {
+    font-size: 0.75rem;
+    color: var(--pico-muted-color);
+}
+.result-item .clause-path {
+    margin-top: 0.15rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 /* ── 分页 ── */
 .pagination {
     display: flex; justify-content: center; align-items: center;
@@ -289,6 +303,10 @@
 [x-cloak] { display: none !important; }
 .search-box { margin-bottom: 0.5rem; }
 .search-box input { width: 100%; }
+/* 静态字段说明文字（<small class="field-hint">）：观感与 rules_list.html 内联定义的
+   同名类一致，收敛为全局类供多处复用（如检索页勾选框的可见帮助文字）。
+   注意与 .field-hint-pop（输入框聚焦悬浮提示）不是一回事。 */
+.field-hint { font-size: 0.72rem; color: var(--pico-muted-color); }
 .dim-tag {
     display: inline-block; font-size: 0.72rem; padding: 2px 8px;
     margin-right: 5px; border-radius: 12px;
