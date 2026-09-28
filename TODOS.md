@@ -355,3 +355,19 @@
 - **Pros**：把「守恒」从「总量 + 6 条抽样」提升为「覆盖主要正文的逐条保护」。
 - **Cons**：冻结表越长越难维护（夹具变更时要同步）；绑定断言会让任何合法变更都需有意重设常量（属**有意摩擦**，可接受）。
 - **Blocked by**：批二（与 T20/T22/T25 同属解析器/门禁加固面）。
+
+## T27 — 向量表加列改用 `add_columns`，不再全量重建（deferred，2026-09-28 批二 plan-eng-review 后登记）
+
+- **What**：记录「LanceDB 0.17 已具备 `add_columns` / `alter_columns` / `drop_columns`，加列不必全量重建」这条事实与**适用边界**。
+- **Why**：批二原计划把「LanceDB 不能 ALTER TABLE」当作前提写进 Task 7 的提交信息与 `needs_rebuild()` 的 docstring；
+  本次评审实测证伪（`inspect.signature` 实读三个 API 均存在），已在批二计划的「事实性更正 C-8」中纠正，
+  但纠正只留了「未来加列不必重建」一句话，操作性细节无处可查。
+- **Context**：本批的重建**不是**因为加列，而是因为面包屑改了 `text`/`embedding` 两个既有列的内容 ⇒ 必须重嵌，
+  `add_columns` 救不了；故本批不做，仅登记。真正适用场景 = 将来**纯增元数据列**（如 `ingested_at`、`section_key`）。
+  入手点：`app/search/vector_search.py` 的 `embedding_schema()` 与 `needs_rebuild()`；验证脚本可仿
+  `tests/test_vector_chunk.py` 的建表方式，先验证 0.17 的 `add_columns(transforms: Dict[str, str])` 能否加常量列、
+  旧行是否报 schema 不匹配（外部检索显示 2026 年已有实际项目因 `Append with different schema` 被拒写）。
+- **Pros**：下次纯加列可走零拷贝元数据路径，省一次全量重嵌（当前语料 959 条，spec 预估规模 2.4 万条时是小时级操作）。
+- **Cons**：需先验证常量列与旧行兼容性；`add_columns` 与并发写有冲突（须在无写入窗口执行）。
+- **Blocked by**：无（纯登记，与批二无关）。
+  —— 来源：批二 `/plan-eng-review`（2026-09-28）的 C-8 与外部评审（Codex）。
