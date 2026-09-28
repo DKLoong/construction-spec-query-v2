@@ -44,7 +44,9 @@ Task 19 / T26 加固 ①「夹具-常量绑定」、加固 ②「逐条覆盖 6 
   - 所以以下两类丢失**三层护栏都抓不到**，只能靠人工抽查 / 库级比对发现：
     (a) **只在「小条文」之间发生的重分配**（被搬的两条都 < 1,000 plain、都不在冻结表内）：
         例如把 `6.3.4`（940，现行最大的**未冻结**条文）整条搬到 `22.4.2`（938）——总量不变
-        → 三层皆绿。（一次搬掉的总量 > 5,000 时被总量层截住，故本类单次量级受 5,000 窗口约束。）
+        → 三层皆绿。**本类不含量级上限**：搬移按构造**保持总量**，而总量层对分配型丢失
+        全盲 ⇒ 在 ≥6 条小条文之间累计搬 > 5,000 也照样三层全逃（单次「单条」量级只受
+        「被搬条文本身 < 1,000」所限，不受 5,000 所限）。5,000 窗口约束的是**丢失**，见 (b)。
     (b) **缓慢渗漏**：总丢失 ≤ 5,000，且任一冻结条文的丢失 ≤ 其自身余量
         （12 条余量按实测降序为 225 / 242 / 246 / 255 / 186 / 190 / 162 / 155 / 152 / 152 / 140 / 108，
         合计 **2,213**，全部落在总量 5,000 窗口之内）→ 三层皆绿。
@@ -156,7 +158,8 @@ def _parse_total(md_text: str) -> int:
 def _assert_fixture_frozen(md_text: str) -> None:
     """夹具指纹（加固 ①）：夹具**一个字符都不能变**。"""
     assert len(md_text) == FIXTURE_RAW_CHARS, (
-        f"夹具已变：{len(md_text)} 字符 ≠ 冻结的 {FIXTURE_RAW_CHARS}——"
+        f"夹具已变：{len(md_text)} 字符（{len(md_text) - FIXTURE_RAW_CHARS:+d}）"
+        f"≠ 冻结的 {FIXTURE_RAW_CHARS}——"
         f"本文件的 `_CURRENT_PLAIN_CHARS` / `PER_CLAUSE_MIN_PLAIN` / docstring 覆盖率数字"
         f"全部由该夹具推导，必须逐项重算（**变大的方向尤其危险**：总量下限会偏低、"
         f"守卫静默变弱）"
@@ -172,7 +175,8 @@ def _assert_baseline_bound(md_text: str) -> None:
     """
     total = _parse_total(md_text)
     assert total == _CURRENT_PLAIN_CHARS, (
-        f"实测总量 {total} ≠ `_CURRENT_PLAIN_CHARS` {_CURRENT_PLAIN_CHARS}——"
+        f"实测总量 {total}（{total - _CURRENT_PLAIN_CHARS:+d}）"
+        f"≠ `_CURRENT_PLAIN_CHARS` {_CURRENT_PLAIN_CHARS}——"
         f"夹具或解析器已变，总量下限（= 常量 − {_TOTAL_HEADROOM}）与 docstring 的"
         f"覆盖率数字随之失真；**变大方向**意味着下限偏低、守卫静默变弱。"
         f"请重算常量、`PER_CLAUSE_MIN_PLAIN` 与本文件 docstring 的覆盖率数字"
