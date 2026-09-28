@@ -17,7 +17,7 @@ from app.config import (
     RULE_AUTO_DISABLE_RATIO, RULE_AUTO_DISABLE_MIN_HIT,
     NEW_RULE_THRESHOLD, LABEL_CANDIDATE_LIMIT,
     SEARCH_RERANK_TOP_N, SEARCH_VECTOR_TOP_K, SEARCH_VECTOR_L2_THRESHOLD, SEARCH_RRF_K,
-    SEARCH_LEXICON_EXPAND,
+    SEARCH_LEXICON_EXPAND, SEARCH_BREADCRUMB_WEIGHT,
     QA_CONFIG_DEFAULTS,
 )
 
@@ -108,6 +108,11 @@ def _build_meta():
         "search.lexicon_expand", "search", "词库检索扩展", float(SEARCH_LEXICON_EXPAND),
         0, 1, "0~1",
         "1=检索把词库同义/别名等价词纳入 FTS（扩召回）；0=退回纯原词。规则归一化与易混淆提示不受影响。", dtype="int"))
+    meta.append(_num(
+        "search.breadcrumb_weight", "search", "面包屑权重", float(SEARCH_BREADCRUMB_WEIGHT),
+        0.0, 2.0, "0~2",
+        "面包屑（章/节路径）在 BM25 排序里的列权重；0=完全不参与（检索限定在正文列），"
+        "越大越偏向命中节名的条文。改此项无需重建索引。"))
     # ---- qa（键与 app/qa/config.py 一致：全键 = qa.<子键>）----
     meta.append(_num(
         "qa.retrieve.candidate_pool", "qa", "候选池大小",

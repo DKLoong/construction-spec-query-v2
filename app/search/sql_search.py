@@ -2,6 +2,21 @@ from app.database import get_db
 from app.models import SearchQuery
 
 
+def _scope_match_to_search_text(expr: str) -> str:
+    """把 MATCH 表达式限定到 search_text 单列。
+
+    用途：`breadcrumb_weight == 0` 时表达「面包屑完全退出检索」。
+
+    ⚠ 为什么不能靠「把权重置 0」实现：实测 bm25(f, 1.0, 0.0) 下，仅在
+    breadcrumb 列命中的行**仍会被 MATCH 返回**（FTS5 的 MATCH 与列无关，
+    权重只缩放评分、不改变召回）。故必须用列限定把匹配范围收窄。
+
+    ⚠ 必须整体加括号：`build_expanded_match` 会产出 `"a" AND ("b" OR "c")`
+    这类含嵌套括号的表达式，不加括号时列作用域只覆盖紧邻的短语。
+    """
+    return f"search_text : ({expr})"
+
+
 def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
     """多维筛选 + FTS5（jieba 预分词）关键词搜索，返回 (结果列表, 总数)。
 
@@ -19,6 +34,11 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
         groups = store.load_equivalent_groups() if get_param_int("search.lexicon_expand") else []
         return expand.build_expanded_match(keyword, groups, join)
 
+    # 面包屑列权重：查询期读取一次（**不得进内层循环**，既有约定）；
+    # 查询期生效 → 改参数无需重建 FTS 索引。0 = 面包屑完全退出检索（列限定 MATCH）。
+    from app.params.registry import get_param_float
+    breadcrumb_weight = get_param_float("search.breadcrumb_weight")
+
     with get_db() as conn:
         def _build(match_expr: str) -> tuple[list, list, str]:
             """按指定 MATCH 表达式构建检索条件（keyword 为空时 match_expr=''）"""
@@ -29,6 +49,9 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
             if not query.include_non_clause:
                 conditions.append("c.clause_is_non = 0")
             if match_expr:
+                if breadcrumb_weight == 0:
+                    # 权重 0 = 面包屑不参与：靠列限定收窄匹配范围（见 helper 注释）
+                    match_expr = _scope_match_to_search_text(match_expr)
                 conditions.append("f.clauses_fts MATCH ?")
                 params.append(match_expr)
                 joins = " JOIN clauses_fts f ON c.id = f.rowid"
@@ -85,6 +108,8 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
 
         # 排序：bm25 相关度（FTS5 分数越小越相关）+ 字段信号提权
         # （clause_no 精确 > 包含 > title 命中 > 其他）；无关键词维持导入序
+        # bm25 第二列权重（breadcrumb）走**绑定参数**：实测 bm25(f,1.0,?) 可用，
+        # 插字面量是伪风险且是本次改动唯一的注入面。
         order_by = "c.id"
         order_params: list = []
         if query.keyword and match:
@@ -93,9 +118,9 @@ def search_clauses(query: SearchQuery) -> tuple[list[dict], int]:
                 "CASE WHEN c.clause_no = ? THEN 0 "
                 "WHEN c.clause_no LIKE ? THEN 1 "
                 "WHEN c.title LIKE ? THEN 2 "
-                "ELSE 3 END, bm25(clauses_fts)"
+                "ELSE 3 END, bm25(clauses_fts, 1.0, ?)"
             )
-            order_params = [kw, f"%{kw}%", f"%{kw}%"]
+            order_params = [kw, f"%{kw}%", f"%{kw}%", breadcrumb_weight]
 
         offset = (query.page - 1) * query.per_page
         data_sql = f"""
