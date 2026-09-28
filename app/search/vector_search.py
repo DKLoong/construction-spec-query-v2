@@ -183,18 +183,56 @@ class VectorStore:
             return rows
         return _dedupe_by_clause(rows, max_per_clause=_MAX_CHUNKS_PER_CLAUSE, top_k=top_k)
 
+    def iter_clause_ids(self) -> set[int]:
+        """只读 `clause_id` 列（lance 数据集**列投影**），返回集合。
+
+        集合天然去重 ⇒ 天然适配「一条超长条文多行子块」的形态。
+        表不存在或读取失败时降级为空集（`read_clause_ids()` 已记日志）；
+        需要区分「空表」与「读失败」的调用方直接用 `read_clause_ids()`。
+
+        ⚠ **R1：必须走列投影**，不能用 `Table.to_arrow()`——本机 `lancedb 0.17.0`
+        的 `Table.to_arrow(self) -> pa.Table` **没有** columns 参数，而
+        `to_arrow().select([...])` 只是 pyarrow 视图：数据已全量物化
+        （2026-09-28 在真实库实测 971 行：全量 2.55 MB vs 仅 `clause_id`
+        0.0078 MB，约 330×；按 spec 预估的 2.4 万条约 62 MB/次，
+        而维护页每次打开都调用）。
+        """
+        if not self._table_exists():
+            return set()
+        return self.read_clause_ids() or set()
+
+    def read_clause_ids(self) -> set[int] | None:
+        """只读 `clause_id` 列；**读失败返回 None**（已记日志），不静默降级。
+
+        返回 None 而非空集是刻意的：**「空表」与「读失败」必须可区分**。
+        前者是正常态（新库尚无条文），后者若被当成空集，
+        `index_missing()` 会误判「全部条文都缺向量」而重嵌整个语料，
+        健康检查也会把「读失败」误报成「正常 0 条缺失」。
+
+        实现走 `lance.dataset(<表目录>)` 的列投影（R1，理由见 `iter_clause_ids`）；
+        表目录由本实例实际连接的库拼出（`self.db.uri`），不重读 `LANCE_DB_PATH`。
+        """
+        try:
+            import lance
+            from pathlib import Path
+            table_dir = Path(self.db.uri) / "clause_embeddings.lance"
+            tbl = lance.dataset(str(table_dir)).to_table(columns=["clause_id"])
+            return {int(v) for v in tbl.column("clause_id").to_pylist()}
+        except Exception as e:
+            logger.warning("只读 clause_id 失败（表目录 %s）: %s", self.db.uri, e)
+            return None
+
     def get_orphans(self) -> list[int]:
-        """返回向量表有而 SQLite 无的孤儿 clause_id（只读，不删除）"""
+        """返回向量表有而 SQLite 无的孤儿 clause_id（只读，不删除）
+
+        读失败时返回 []：孤儿清理是「有则清」的可选自愈，读不出内容就没有
+        可清理的对象（既有语义，见 `iter_clause_ids` 的降级）。
+        """
         if not self._table_exists():
             return []
-        try:
-            rows = self._get_table().to_arrow()
-        except Exception as e:
-            logger.warning("读取向量表 clause_id 失败: %s", e)
+        vector_ids = self.iter_clause_ids()
+        if not vector_ids:
             return []
-        if rows.num_rows == 0:
-            return []
-        vector_ids = {int(v) for v in rows.column("clause_id").to_pylist()}
         with get_db() as conn:
             db_ids = {r[0] for r in conn.execute("SELECT id FROM clauses").fetchall()}
         return sorted(vector_ids - db_ids)
@@ -226,14 +264,14 @@ class VectorStore:
 
         缺失集在 Python 侧做差集：先全量查 SQLite 条文，再过滤不在 vector_ids
         中的记录，避免 NOT IN 动态占位符数量超过 SQLite 变量上限（32766）。
+
+        ⚠ 读失败必须返回 -1（而不是当成空集）：空集会把**全部**条文判成缺失，
+        维护页点一次「修复」就会白跑一遍全语料嵌入（写完仍是坏的）。
         """
         if not self._table_exists():
             return -1
-        try:
-            rows = self._get_table().to_arrow()
-            vector_ids = {int(v) for v in rows.column("clause_id").to_pylist()} if rows.num_rows else set()
-        except Exception as e:
-            logger.warning("读取向量表失败: %s", e)
+        vector_ids = self.read_clause_ids()
+        if vector_ids is None:
             return -1
         with get_db() as conn:
             all_rows = conn.execute(

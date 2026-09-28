@@ -38,7 +38,7 @@ def test_vector_read_failure_shows_error_hint(monkeypatch, tmp_path):
         def _table_exists(self):
             return True
 
-        def _get_table(self):
+        def read_clause_ids(self):
             raise RuntimeError("lance read broken")
 
     monkeypatch.setattr(vsmod, "VectorStore", _Broken)
@@ -49,21 +49,38 @@ def test_vector_read_failure_shows_error_hint(monkeypatch, tmp_path):
     assert "服务端日志" in vm["hint"]
 
 
+def test_vector_read_returns_none_shows_error_hint(monkeypatch, tmp_path):
+    """读入口以 None 表示读失败（真实实现里 lance 数据集打不开即此）→ 同样归 error。
+
+    与「空表」必须分开：空表是正常态（新库无条文），读失败是异常态。
+    """
+    _setup(monkeypatch, tmp_path)
+    import app.search.vector_search as vsmod
+
+    class _NoneStore:
+        def _table_exists(self):
+            return True
+
+        def read_clause_ids(self):
+            return None
+
+    monkeypatch.setattr(vsmod, "VectorStore", _NoneStore)
+    vm = _vm(run_health_check())
+    assert vm["severity"] == "error"
+    assert "读取失败" in vm["status_text"]
+
+
 def test_vector_empty_table_ok(monkeypatch, tmp_path):
     """表存在且空（空库无条文）→ 正常，不误入缺表/读失败分支"""
     _setup(monkeypatch, tmp_path)
-    import pyarrow as pa
     import app.search.vector_search as vsmod
 
     class _EmptyStore:
         def _table_exists(self):
             return True
 
-        def _get_table(self):
-            return type("T", (), {
-                "to_arrow": lambda self: pa.table(
-                    {"clause_id": pa.array([], type=pa.int64())})
-            })()
+        def read_clause_ids(self):
+            return set()
 
     monkeypatch.setattr(vsmod, "VectorStore", _EmptyStore)
     vm = _vm(run_health_check())

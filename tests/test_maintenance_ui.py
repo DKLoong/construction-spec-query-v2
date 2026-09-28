@@ -37,3 +37,18 @@ def test_maintenance_page_has_rebuild_overlay(auth_client, monkeypatch, tmp_path
     assert "rebuild-finished" in resp.text  # 完成事件监听（刷新健康结果）
     # health-result 自动加载健康检查（切回维护页不空白）
     assert 'hx-post="/maintenance/health-check" hx-trigger="load"' in resp.text
+
+
+def test_health_result_states_one_time_rebuild_notice(auth_client, monkeypatch, tmp_path):
+    """R6：本批改了写入向量的**内容**（text/embedding 加面包屑），而
+    `needs_rebuild()` 只看列是否存在 ⇒ 察觉不到内容变更。
+
+    本批的一次性全量重建门禁在后续单元，此处不得把「全部 ✅」当「索引健康」——
+    维护页必须明说「升级后需重建一次」，否则用户会把列结构就绪误读成索引已重建。
+    """
+    _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    resp = auth_client.post("/maintenance/health-check", data={})
+    assert resp.status_code == 200
+    assert "重建一次" in resp.text
+    assert "面包屑" in resp.text

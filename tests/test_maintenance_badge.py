@@ -165,7 +165,7 @@ def test_pending_flag_vector_read_failure_is_red(monkeypatch, tmp_path):
         def _table_exists(self):
             return True
 
-        def _get_table(self):
+        def read_clause_ids(self):
             raise RuntimeError("lance read broken")
 
     monkeypatch.setattr(vsmod, "VectorStore", _Broken)

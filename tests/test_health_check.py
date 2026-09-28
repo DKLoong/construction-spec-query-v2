@@ -4,6 +4,18 @@ from app.database import init_db, get_db
 from app.search.tokenize import build_search_text
 
 
+def test_clause_id_read_is_column_scoped():
+    """收集 clause_id 不得整表物化（含 embedding 列）。
+
+    C-9：断言口径与实现一致——实现走 `lance.dataset(...).to_table(columns=[...])`，
+    源码里不再出现 `to_arrow()`，故本断言原样成立。
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "app/maintenance/health_check.py").read_text(encoding="utf-8")
+    assert "to_arrow()" not in src, "改为 iter_clause_ids()（只读 clause_id 列）"
+
+
 def _setup_db(monkeypatch, tmp_path):
     db_path = tmp_path / "hc.db"
     monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
@@ -136,3 +148,46 @@ def test_vector_missing_table_missing_not_fixable(monkeypatch, tmp_path):
     r = fix_issue("vector_missing")
     assert r["fixed"] is False
     assert "重建" in r["detail"]  # 提示走「重建向量索引」而非「已补齐」
+
+
+def _downgrade_fts_to_single_column(conn):
+    """把两列 FTS 换回旧版单列形态，模拟「未迁移的库」（R18 的崩溃场景）。
+
+    不可用 `init_db()` 构造：迁移里的 `_migrate_search_text` 会把单列形态
+    自动重建成两列（这正是生产生命周期内不可达的原因），故只能就地降级。
+    """
+    conn.execute("DROP TABLE clauses_fts")
+    conn.execute("CREATE VIRTUAL TABLE clauses_fts USING fts5(search_text)")
+    conn.execute(
+        "INSERT INTO clauses_fts(rowid, search_text)"
+        " SELECT id, COALESCE(search_text, '') FROM clauses"
+    )
+
+
+def test_fix_issue_fts_mismatch_on_single_column_fts(monkeypatch, tmp_path):
+    """R18：未迁移库的 FTS 是单列形态，补插 SQL 若写 breadcrumb 会抛
+    `OperationalError: table clauses_fts has no column named breadcrumb`，
+    整条修复路径（以及「一键修复全部」）就此中断。
+
+    应用启动即迁移 ⇒ 正常生命周期不可达，但单列库（手工/旧快照）可达，
+    故补插必须按列是否存在走两列/单列两种写法。
+    """
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance_sc"))
+    _setup_db(monkeypatch, tmp_path)
+    from app.maintenance.health_check import fix_issue
+    with get_db() as conn:
+        _downgrade_fts_to_single_column(conn)
+        cid = conn.execute("SELECT id FROM clauses WHERE clause_no = '5.1.1'").fetchone()[0]
+        conn.execute("DELETE FROM clauses_fts WHERE rowid = ?", (cid,))  # 制造缺失行
+        row = conn.execute("SELECT COUNT(*) FROM clauses_fts").fetchone()[0]
+        assert row == 3, "降级后应只剩 3 行（4 条条文删掉 1 行）"
+
+    result = fix_issue("fts_mismatch")  # 修复前：此处抛 OperationalError
+
+    assert result["fixed"] is True
+    with get_db() as conn:
+        back = conn.execute(
+            "SELECT search_text FROM clauses_fts WHERE rowid = ?", (cid,)
+        ).fetchone()
+    assert back is not None, "单列 FTS 上缺失行同样应被补插"
+    assert back["search_text"] == build_search_text("5.1.1", "正常", "正常内容")[0]

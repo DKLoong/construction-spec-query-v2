@@ -40,6 +40,15 @@
 {% endif %}
 <button type="button" onclick="startRebuild()"
         class="outline" style="margin-top:0.5rem">🔄 重建向量索引</button>
+{# R6：本批（面包屑/子块）改的是写入向量的**内容**（text/embedding），而
+   needs_rebuild() 只看「列是否存在」⇒ 察觉不到内容变更。本批的一次性全量重建
+   门禁在后续单元，此处不能把「全部 ✅」留给用户当「索引健康」读——故明说
+   「升级后须重建一次」。定时态措辞（「从旧版本升级后」）保证重建跑过之后仍成立。 #}
+<small style="display:block;margin-top:0.5rem;color:var(--pico-muted-color);font-size:0.75rem">
+    ⚠️ 从旧版本升级后（新增面包屑/子块信号）须<b>重建一次</b>向量索引：面包屑改变的是
+    写入向量的文本内容，健康检查无法察觉内容变更——「全部 ✅」只代表<b>列结构</b>就绪，
+    不代表索引已按新公式重建。
+</small>
 {% if notify_badge %}
 {# 修复动作改变了维护状态，但本结果是 htmx 局部替换、不重载左侧宫格，
    故显式通知宫格徽标立即刷新（否则要等 5 分钟兜底才更新） #}

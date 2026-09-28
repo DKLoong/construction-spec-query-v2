@@ -8,8 +8,12 @@
 - vector_missing       SQLite 有而向量无 → 调 VectorStore.index_missing 补索引
 - fts_mismatch         clauses_fts 缺 rowid → 增量补插 search_text + breadcrumb 两列
 """
+import logging
+
 from app.database import get_db
 from app.logging_util import log_action
+
+logger = logging.getLogger(__name__)
 
 LABELS = {
     "orphan_parent": "孤立无父级条文",
@@ -56,16 +60,29 @@ def _vector_ids_and_state() -> tuple[set[int], str]:
       - ok      正常，ids=向量表现存 clause_id
       - missing 向量表不存在（空集，语义为「待重建」而非异常）
       - error   表存在但读取失败（空集，需人工查服务端日志）
+
+    ⚠ **R1：只读 `clause_id` 一列**（`VectorStore.read_clause_ids` 走 lance
+    数据集列投影），不再整表取 Arrow（含 embedding 列）——本函数在维护页每次
+    打开都跑，按 spec 预估的 2.4 万条，整表读约 62 MB/次。
+    ⚠ 源码断言禁止本文件出现该整表读调用的字面量（tests/test_health_check.py::
+    test_clause_id_read_is_column_scoped），故注释里也不写它。
     """
     try:
         from app.search.vector_search import VectorStore
         vs = VectorStore()
         if not vs._table_exists():
             return set(), "missing"
-        tbl = vs._get_table()
-        return {int(v) for v in tbl.to_arrow().column("clause_id").to_pylist()}, "ok"
-    except Exception:
+        ids = vs.read_clause_ids()
+    except Exception as e:
+        # 原为裸 `except Exception:`——读失败会静默降级成「0 条缺失 ⇒ 正常」，
+        # 操作者既看不到异常也没日志可查，故必须记一行
+        logger.warning("向量索引读取失败（健康检查记为 error 态）: %s", e)
         return set(), "error"
+    if ids is None:
+        # None = 表在但读不出来（lance 数据集打不开）；与「空表」区分，同样记 error
+        logger.warning("向量索引读取失败（read_clause_ids 返回 None）")
+        return set(), "error"
+    return ids, "ok"
 
 
 def _vector_ids() -> set[int] | None:
@@ -265,6 +282,19 @@ def run_health_check(username: str = "system") -> dict:
     return result
 
 
+def _fts_has_breadcrumb_column(conn) -> bool:
+    """`clauses_fts` 是否为两列形态（含 breadcrumb 列）。
+
+    R18：未迁移的旧库 FTS 仍是单列 `fts5(search_text)`——补插时写 breadcrumb
+    会抛 `OperationalError: table clauses_fts has no column named breadcrumb`，
+    把整条修复路径（以及「一键修复全部」）打断。应用启动即跑 `init_db()` 迁移，
+    故正常生命周期内不可达，但手工/旧快照的库可达。
+    """
+    return any(
+        r[1] == "breadcrumb" for r in conn.execute("PRAGMA table_info(clauses_fts)")
+    )
+
+
 def fix_issue(key: str, username: str = "system") -> dict:
     """单项修复，返回 {key, fixed, detail}"""
     if key == "orphan_parent":
@@ -307,15 +337,26 @@ def fix_issue(key: str, username: str = "system") -> dict:
         return {"key": key, "fixed": added > 0, "detail": f"已补齐 {added} 条向量"}
     if key == "fts_mismatch":
         with get_db() as conn:
-            # FTS 是两列：只写 search_text 会让该行 breadcrumb 恒 NULL 且不自愈
-            # （clauses.breadcrumb 有值、FTS 里是 NULL，init_db 的「值相等即跳过」
-            # 判不出差异）⇒ 静默召回缺口，故补插必须同时带上 breadcrumb。
-            n = conn.execute(
-                """INSERT INTO clauses_fts(rowid, search_text, breadcrumb)
-                   SELECT c.id, COALESCE(c.search_text, ''), COALESCE(c.breadcrumb, '')
-                   FROM clauses c
-                   WHERE NOT EXISTS (SELECT 1 FROM clauses_fts f WHERE f.rowid = c.id)"""
-            ).rowcount
+            if _fts_has_breadcrumb_column(conn):
+                # FTS 是两列：只写 search_text 会让该行 breadcrumb 恒 NULL 且不自愈
+                # （clauses.breadcrumb 有值、FTS 里是 NULL，init_db 的「值相等即跳过」
+                # 判不出差异）⇒ 静默召回缺口，故补插必须同时带上 breadcrumb。
+                n = conn.execute(
+                    """INSERT INTO clauses_fts(rowid, search_text, breadcrumb)
+                       SELECT c.id, COALESCE(c.search_text, ''), COALESCE(c.breadcrumb, '')
+                       FROM clauses c
+                       WHERE NOT EXISTS (SELECT 1 FROM clauses_fts f WHERE f.rowid = c.id)"""
+                ).rowcount
+            else:
+                # 未迁移库：单列 FTS 写 breadcrumb 会抛 OperationalError（R18）。
+                # 退回单列插入——单列表里本就没有面包屑可写，补齐 search_text
+                # 仍是「该行能被召回」的正确修复。
+                n = conn.execute(
+                    """INSERT INTO clauses_fts(rowid, search_text)
+                       SELECT c.id, COALESCE(c.search_text, '')
+                       FROM clauses c
+                       WHERE NOT EXISTS (SELECT 1 FROM clauses_fts f WHERE f.rowid = c.id)"""
+                ).rowcount
         log_action("maintenance", "INFO", "补齐 FTS 索引", detail=str(n), username=username)
         return {"key": key, "fixed": n > 0, "detail": f"已补齐 {n} 条 FTS 索引"}
     return {"key": key, "fixed": False, "detail": f"未知检查项: {key}"}

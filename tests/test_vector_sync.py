@@ -1,4 +1,5 @@
 """向量索引自愈（sync_with_db）测试"""
+import logging
 import lancedb
 import numpy as np
 import pyarrow as pa
@@ -144,3 +145,104 @@ def test_batch_index_progress_cb(monkeypatch, tmp_path):
     assert calls[-1] == (70, 70)
     assert VectorStore()._table_exists()
     assert VectorStore()._get_table().to_arrow().num_rows == 70
+
+
+# ---------- clause_id 只读该列（R1：lance 数据集列投影） ----------
+
+def _setup_lance(monkeypatch, tmp_path) -> str:
+    """patch 消费方模块名 + 建库，返回 lance 目录"""
+    db_path = tmp_path / "test.db"
+    lance_path = tmp_path / "lance"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(lance_path))
+    init_db()
+    return str(lance_path)
+
+
+def test_iter_clause_ids_matches_table_column(monkeypatch, tmp_path):
+    """行为等价：返回集合与直接读该列一致，且同 clause_id 多块（子块）天然去重"""
+    lance_path = _setup_lance(monkeypatch, tmp_path)
+    # (1,1) 出现两次 = 一条超长条文切出的两个子块
+    tbl = _make_table(lance_path, [(1, 1, "a"), (1, 1, "a-块2"), (2, 1, "b"), (5, 1, "c")])
+    expected = {int(v) for v in tbl.to_arrow().column("clause_id").to_pylist()}
+    assert expected == {1, 2, 5}, "夹具本身应有重复行"
+
+    assert VectorStore().iter_clause_ids() == expected
+
+
+def test_iter_clause_ids_projects_only_clause_id_column(monkeypatch, tmp_path):
+    """R1：必须走 lance 数据集的**列投影**，只请求 clause_id 一列。
+
+    `Table.to_arrow()` 在本机 lancedb 0.17.0 无 columns 参数，而
+    `to_arrow().select([...])` 只是 pyarrow 视图（数据已全量物化）——
+    实测真实库 971 行：全量 2.55 MB vs 仅 clause_id 0.0078 MB（约 330×）。
+    故用探针直接钉住「真正向 lance 请求的列」，而非只看源码里有没有某个字符串。
+    """
+    import lance
+    lance_path = _setup_lance(monkeypatch, tmp_path)
+    _make_table(lance_path, [(1, 1, "a"), (2, 1, "b"), (5, 1, "c")])
+
+    requested: list = []
+    real_dataset = lance.dataset
+
+    def spy_dataset(path, *a, **kw):
+        ds = real_dataset(path, *a, **kw)
+        real_to_table = ds.to_table
+
+        class _Wrapped:
+            def to_table(self, *ta, **tkw):
+                requested.append(tkw.get("columns"))
+                return real_to_table(*ta, **tkw)
+
+        return _Wrapped()
+
+    monkeypatch.setattr(lance, "dataset", spy_dataset)
+
+    assert VectorStore().iter_clause_ids() == {1, 2, 5}
+    assert requested == [["clause_id"]], f"必须按列投影只读 clause_id，实际={requested}"
+
+
+def test_iter_clause_ids_missing_table_returns_empty(monkeypatch, tmp_path):
+    """表不存在 → 空集（不抛异常）"""
+    _setup_lance(monkeypatch, tmp_path)
+    assert VectorStore().iter_clause_ids() == set()
+
+
+def test_read_clause_ids_returns_none_on_read_failure(monkeypatch, tmp_path, caplog):
+    """「空表」与「读失败」必须可区分：前者是正常态（新库无条文），
+    后者若被当成空集，`index_missing()` 会误判「全部条文都缺向量」而重嵌整个语料、
+    健康检查会把「读失败」误报成「正常」。
+
+    ⇒ `read_clause_ids()` 返回 None 表读失败（并记日志），`iter_clause_ids()` 在其上
+    降级为空集。
+    """
+    _setup_lance(monkeypatch, tmp_path)
+    vs = VectorStore()
+    # 表「存在」（绕过 lancedb 探测）但 lance 数据集打不开 —— 读失败
+    monkeypatch.setattr(vs, "_table_exists", lambda: True)
+
+    with caplog.at_level(logging.WARNING, logger="app.search.vector_search"):
+        assert vs.read_clause_ids() is None
+        assert vs.iter_clause_ids() == set()
+
+    assert any("clause_id" in r.getMessage() for r in caplog.records), \
+        "读失败必须留下日志（禁止无日志的静默降级）"
+
+
+def test_index_missing_read_failure_returns_minus_one(monkeypatch, tmp_path):
+    """既有契约不退化：读失败时 index_missing 仍返回 -1（「需全量重建」）。
+
+    若把读失败降级成空集，这里会把**全部**条文当成缺失，从维护页点一次
+    「修复」就会白跑一遍全语料嵌入（而且写完仍是坏的）。
+    """
+    _setup_lance(monkeypatch, tmp_path)
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB T', 't')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, content) VALUES (?,?,?)",
+            (spec_id, "1", "x"),
+        )
+    vs = VectorStore()
+    monkeypatch.setattr(vs, "_table_exists", lambda: True)
+    assert vs.index_missing() == -1
