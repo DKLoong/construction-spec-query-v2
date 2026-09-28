@@ -20,5 +20,7 @@ def test_only_one_embedding_schema_definition():
 def test_factory_produces_expected_fields():
     from app.search.vector_search import embedding_schema
     s = embedding_schema(8)
-    assert [f.name for f in s] == ["clause_id", "spec_id", "text", "embedding", "dim_scores"]
+    assert [f.name for f in s] == [
+        "clause_id", "spec_id", "text", "embedding", "dim_scores", "chunk_index",
+    ]
     assert s.field("embedding").type.list_size == 8

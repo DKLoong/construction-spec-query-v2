@@ -539,6 +539,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                         "text": r["text"],
                         "embedding": np.array(embeddings[i], dtype=np.float32),
                         "dim_scores": r["dim_scores"],
+                        "chunk_index": 0,
                     }
                     for i, r in enumerate(embedding_records)
                 ]

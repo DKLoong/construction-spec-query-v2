@@ -9,19 +9,24 @@ from app.search.embed_text import build_embed_text
 logger = logging.getLogger(__name__)
 
 
-def embedding_schema(dim: int) -> pa.Schema:
+def embedding_schema(dim: int, with_chunk_index: bool = True) -> pa.Schema:
     """`clause_embeddings` 的**唯一** schema 定义处。
 
     半精度向量列必须显式声明固定长度（`pa.list_(pa.float32(), dim)`），
     否则 LanceDB 推断出的列类型无法做向量检索。三处建表路径
     （index_clause / batch_index / 导入首建）全部走本函数。
+
+    `with_chunk_index=False` 产出加列前的旧形态（5 列），供构造历史夹具；
+    生产建表路径一律用默认值（含 `chunk_index`）。
     """
+    chunk_index_field = [pa.field("chunk_index", pa.int64())] if with_chunk_index else []
     return pa.schema([
         pa.field("clause_id", pa.int64()),
         pa.field("spec_id", pa.int64()),
         pa.field("text", pa.string()),
         pa.field("embedding", pa.list_(pa.float32(), dim)),
         pa.field("dim_scores", pa.string()),
+        *chunk_index_field,
     ])
 
 
@@ -38,9 +43,28 @@ class VectorStore:
     def _get_table(self):
         return self.db.open_table("clause_embeddings")
 
+    def needs_rebuild(self) -> bool:
+        """现存表是否缺少 chunk_index 列。
+
+        ⚠ **C-8**：不要写「LanceDB 不支持 ALTER」——实测本机 `lancedb 0.17.0`
+        提供 `add_columns` / `alter_columns` / `drop_columns`，加一个全空列是
+        零拷贝的元数据操作。**本批之所以重建**，是因为面包屑改了既有两列
+        （`text` / `embedding`）的**内容**，必须重嵌——`add_columns` 救不了内容变更。
+        将来若只是纯加元数据列，应优先试 `add_columns` 而非全量重建（见 TODOS T27）。
+
+        维护页据此显示「向量索引需重建」，而不是等写入时才发现列不存在。
+        """
+        if not self._table_exists():
+            return False
+        try:
+            names = {f.name for f in self._get_table().schema}
+        except Exception as e:
+            logger.warning("读取向量表 schema 失败: %s", e)
+            return True
+        return "chunk_index" not in names
+
     def index_clause(self, clause_id: int, spec_id: int, text: str, dim_scores: str = ""):
         import numpy as np
-        import pyarrow as pa
         vectors = embed_texts([text])
         emb = np.array(vectors[0], dtype=np.float32)
 
@@ -61,6 +85,7 @@ class VectorStore:
                 "text": text,
                 "embedding": emb,
                 "dim_scores": dim_scores,
+                "chunk_index": 0,
             }])
         else:
             self._get_table().add([{
@@ -69,6 +94,7 @@ class VectorStore:
                 "text": text,
                 "embedding": emb,
                 "dim_scores": dim_scores,
+                "chunk_index": 0,
             }])
 
     def search(self, query_text: str, top_k: int = 10,
@@ -223,6 +249,7 @@ class VectorStore:
                 "text": c["text"],
                 "embedding": np.array(first_embs[i], dtype=np.float32),
                 "dim_scores": c.get("dim_scores", ""),
+                "chunk_index": 0,
             })
         tbl.add(records)
         if progress_cb:
@@ -240,6 +267,7 @@ class VectorStore:
                     "text": c["text"],
                     "embedding": np.array(embs[i], dtype=np.float32),
                     "dim_scores": c.get("dim_scores", ""),
+                    "chunk_index": 0,
                 })
             tbl.add(records)
             if progress_cb:
