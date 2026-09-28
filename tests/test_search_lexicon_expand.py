@@ -98,7 +98,7 @@ def test_jieba_probe_slang_is_independent_token():
     """
     from app.search.tokenize import build_search_text, tokenize
     assert "砼" in tokenize("混凝土强度砼")
-    st = build_search_text("4.1", "强度", "混凝土强度砼不应低于设计值")
+    st = build_search_text("4.1", "强度", "混凝土强度砼不应低于设计值")[0]
     assert "砼" in st.split(), "search_text 中俗词「砼」须为独立 token"
 
 

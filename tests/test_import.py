@@ -125,6 +125,26 @@ def test_filter_cover_clauses_drops_cover_content():
     assert result[0]["clause_no"] == "1.0.1"
 
 
+def test_nearest_ancestor_id_walks_dot_segment_prefixes():
+    """parent_clause 取「最近**现存**祖先」：按点段前缀由长到短回溯，首个存在者胜。
+
+    批一删掉了「只有标题、无自身正文」的章节行 ⇒ `21.4` 可能整行不存在，
+    `21.4.1` 的最近现存祖先退到 `21`（用户实测：`21.3.x` 直跳 `21.4.1`）。
+    父级编号必是子级编号的**段前缀** —— U10 的断言正依赖这一不变量。
+    """
+    from app.routes.import_routes import _nearest_ancestor_id
+    no_to_id = {"6": 10, "6.3": 11, "6.3.1": 12}
+    # 正常场景：直接父级存在
+    assert _nearest_ancestor_id(no_to_id, "6.3.2") == 11
+    # 边界场景：中间层缺失 → 跨级回溯到更短的现存祖先
+    assert _nearest_ancestor_id(no_to_id, "6.9.1") == 10
+    # 边界场景：顶层条文（只一段，无前缀可试）→ NULL
+    assert _nearest_ancestor_id(no_to_id, "6") is None
+    # 异常场景：无任何现存祖先
+    assert _nearest_ancestor_id(no_to_id, "8.1.1") is None
+    assert _nearest_ancestor_id(no_to_id, "") is None
+
+
 def test_upload_no_file_authenticated(auth_client):
     resp = auth_client.post("/import/upload")
     assert resp.status_code in (400, 422)

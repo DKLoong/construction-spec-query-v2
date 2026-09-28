@@ -45,15 +45,20 @@ CREATE TABLE IF NOT EXISTS clauses (
     needs_review    INTEGER DEFAULT 0,
     clause_is_non   INTEGER DEFAULT 0,
     search_text     TEXT,
+    section_path    TEXT,           -- 面包屑快照（原始，供展示）："6 混凝土分项工程 > 6.1 模板"
+    breadcrumb      TEXT,           -- 面包屑的 jieba 预分词结果（触发器不能调 Python，故应用层写入）
     created_at      TEXT DEFAULT (datetime('now','localtime'))
 );
 
--- FTS5 独立表：索引 jieba 预分词后的 search_text（rowid 即 clause id）。
+-- FTS5 独立表：索引 jieba 预分词后的 search_text 与 breadcrumb 两列（rowid 即 clause id）。
 -- 不再是 external content 表——外部内容表只能索引 clauses 原列（存的必须是
 -- 原始文本供渲染），无法索引「分词后文本」，而 SQLite 触发器又不能调 Python，
--- 故 jieba 分词结果由应用层写入 search_text 列，FTS 表只索引该列。
+-- 故 jieba 分词结果由应用层写入 clauses 的两列，FTS 表只索引这两列。
+-- breadcrumb 单列的意义：检索时按独立列权重（bm25 的第二权重）计分，
+-- 不混进 search_text 的正文权重里（见 app/search/tokenize.build_search_text）。
 CREATE VIRTUAL TABLE IF NOT EXISTS clauses_fts USING fts5(
-    search_text
+    search_text,
+    breadcrumb
 );
 
 CREATE TABLE IF NOT EXISTS classification_rules (
@@ -187,8 +192,8 @@ TRIGGERS_SQL = """
 -- FTS 表 rowid 有唯一约束；FTS5 的 'delete' 命令在本环境报 SQL logic error，
 -- 故同步删除用标准 DELETE FROM fts WHERE rowid（对不存在的 rowid 是 no-op）。
 CREATE TRIGGER IF NOT EXISTS clauses_ai AFTER INSERT ON clauses BEGIN
-    INSERT INTO clauses_fts(rowid, search_text)
-    VALUES (new.id, COALESCE(new.search_text, ''));
+    INSERT INTO clauses_fts(rowid, search_text, breadcrumb)
+    VALUES (new.id, COALESCE(new.search_text, ''), COALESCE(new.breadcrumb, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS clauses_ad AFTER DELETE ON clauses BEGIN
@@ -197,8 +202,8 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS clauses_au AFTER UPDATE ON clauses BEGIN
     DELETE FROM clauses_fts WHERE rowid = old.id;
-    INSERT INTO clauses_fts(rowid, search_text)
-    VALUES (new.id, COALESCE(new.search_text, ''));
+    INSERT INTO clauses_fts(rowid, search_text, breadcrumb)
+    VALUES (new.id, COALESCE(new.search_text, ''), COALESCE(new.breadcrumb, ''));
 END;
 """
 
@@ -226,48 +231,74 @@ def get_db():
 
 
 def _migrate_search_text(conn):
-    """FTS5 + jieba 预分词迁移：加 search_text 列、旧 external FTS 表重建为独立表、backfill。
+    """FTS5 + jieba 预分词迁移（两列版）。
 
-    顺序敏感：
-    1. 先加 search_text 列（旧库无此列时，触发器引用 new.search_text 会失败）；
-    2. drop 旧触发器 + 旧 external content FTS 表；
-    3. 建独立 fts5(search_text) 表；
-    4. backfill 存量条文（生成 search_text 并回填 FTS，此时无触发器干扰）。
-    幂等：已迁移库再次 init_db，FTS 表已是独立表、存量 search_text 非空则跳过。
+    顺序敏感（**不得调换**）：
+    1. 先加 clauses 的三列（`search_text`/`breadcrumb`/`section_path`）——旧库
+       无这些列时，TRIGGERS_SQL 里 `new.breadcrumb` 会让触发器创建失败（与
+       search_text 同样的先例），且 backfill 的 SELECT 会 `no such column`；
+    2. drop 旧触发器；
+    3. 判定并 drop 需重建的 FTS 表（旧的 external content 形态，**或**
+       只有 search_text 一列的形态）；
+    4. 建 fts5(search_text, breadcrumb)；
+    5. backfill 两列。
+
+    ⚠ **C-1：FTS 被 DROP（或本就不存在）时，backfill 必须无条件全量重插**。
+    「值不同才写」的门槛在重建场景下恒假——旧库的 `search_text` 由同一公式
+    算过 ⇒ 与新值相等；新列 `breadcrumb` 刚 ALTER 为 NULL ⇒ 算得空串。
+    后果是新 FTS 一行都没有、关键词检索全空，且下次 init_db 因新表 SQL 已含
+    `breadcrumb` 不再 DROP ⇒ **永不自愈**。故用 `fts_rebuilt` 显式分流。
     """
-    try:
-        conn.execute("ALTER TABLE clauses ADD COLUMN search_text TEXT")
-    except Exception:
-        pass  # 列已存在
+    for col in ("search_text", "breadcrumb", "section_path"):
+        try:
+            conn.execute(f"ALTER TABLE clauses ADD COLUMN {col} TEXT")
+        except Exception:
+            pass  # 列已存在
 
-    # drop 旧触发器（无论新旧先删，避免旧定义残留；重建在 TRIGGERS_SQL 中）
     for t in ("clauses_ai", "clauses_ad", "clauses_au"):
         conn.execute(f"DROP TRIGGER IF EXISTS {t}")
 
-    # 旧库 external content FTS 表 → drop 重建为独立表
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='clauses_fts'"
     ).fetchone()
-    if row and "content=clauses" in (row["sql"] or ""):
-        conn.execute("DROP TABLE clauses_fts")
-    conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS clauses_fts USING fts5(search_text)")
+    fts_rebuilt = False
+    if row:
+        sql = row["sql"] or ""
+        # 旧的 external content 形态，或单列形态 → 都要重建为两列。
+        # `CREATE VIRTUAL TABLE IF NOT EXISTS` 不会改造已存在的表，故此处必须显式 DROP。
+        if "content=clauses" in sql or "breadcrumb" not in sql:
+            conn.execute("DROP TABLE clauses_fts")
+            fts_rebuilt = True
+    else:
+        fts_rebuilt = True       # 表不存在 → 下面新建，同样需要全量灌入
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS clauses_fts USING fts5(search_text, breadcrumb)"
+    )
 
-    # backfill：search_text 为空的行生成分词并回填 FTS（无触发器，手动同步）。
-    # 先 DELETE 再 INSERT：若该行已通过触发器写入 FTS（如 INSERT 不带 search_text
-    # 存了空串行），直接 INSERT 同 rowid 会触发 FTS rowid 唯一约束冲突。
     from app.search.tokenize import build_search_text
     rows = conn.execute(
-        "SELECT id, clause_no, title, content, search_text FROM clauses"
+        "SELECT id, clause_no, title, content, search_text, breadcrumb, section_path"
+        " FROM clauses"
     ).fetchall()
     for r in rows:
-        st = build_search_text(r["clause_no"], r["title"], r["content"])
-        if (r["search_text"] or "") != st:
-            conn.execute("UPDATE clauses SET search_text = ? WHERE id = ?", (st, r["id"]))
-            conn.execute("DELETE FROM clauses_fts WHERE rowid = ?", (r["id"],))
-            conn.execute(
-                "INSERT INTO clauses_fts(rowid, search_text) VALUES (?, ?)",
-                (r["id"], st),
-            )
+        st, bc = build_search_text(
+            r["clause_no"], r["title"], r["content"], r["section_path"] or "")
+        # ⚠ C-1：门槛只在 FTS **未**被重建时有效。重建/新建时必须全量重插——
+        # 否则「值恰好相等」的行（旧库常态：search_text 由同一公式算过、
+        # breadcrumb 刚 ALTER 为 NULL 而算得空串）不会被写进新表 ⇒ 索引整体为空。
+        if (not fts_rebuilt
+                and (r["search_text"] or "") == st
+                and (r["breadcrumb"] or "") == bc):
+            continue
+        conn.execute(
+            "UPDATE clauses SET search_text = ?, breadcrumb = ? WHERE id = ?",
+            (st, bc, r["id"]),
+        )
+        conn.execute("DELETE FROM clauses_fts WHERE rowid = ?", (r["id"],))
+        conn.execute(
+            "INSERT INTO clauses_fts(rowid, search_text, breadcrumb) VALUES (?, ?, ?)",
+            (r["id"], st, bc),
+        )
 
 
 # 词库：confusable「箍筋 × 钢筋」的防歧义说明（预置种子与旧 synonym_map 迁移共用同一文案）

@@ -53,12 +53,18 @@ def tokenize(tk, text):
     return out
 
 
-def build_search_text(tk, clause_no, title, content):
-    """复刻 app/search/tokenize.build_search_text。"""
+def build_search_text(tk, clause_no, title, content, section_path=""):
+    """复刻 app/search/tokenize.build_search_text（两列版）。
+
+    返回 (search_text, breadcrumb)。本探针的三组索引只用第 0 列——
+    实验问的是「术语词典对 search_text 切分与召回的影响」，面包屑不在其内。
+    """
     parts = tokenize(tk, f"{title or ''} {content or ''}")
     if clause_no and clause_no.strip():
         parts.append(clause_no.strip())
-    return " ".join(parts) or " "
+    search_text = " ".join(parts) or " "
+    breadcrumb = " ".join(tokenize(tk, section_path or ""))
+    return search_text, breadcrumb
 
 
 def build_match_query(tk, keyword, join_with="AND"):
@@ -143,8 +149,8 @@ def main():
     tok_delta = []
     changed = 0
     for cid, cno, title, content in clauses:
-        st_b = build_search_text(base_tk, cno, title, content)
-        st_t = build_search_text(treat_tk, cno, title, content)
+        st_b = build_search_text(base_tk, cno, title, content)[0]
+        st_t = build_search_text(treat_tk, cno, title, content)[0]
         st_d = f"{st_t} {st_b}"  # 双写 = treatment ∪ baseline 全量并集
         base_pairs.append((cid, st_b))
         treat_pairs.append((cid, st_t))
@@ -283,9 +289,9 @@ def main():
     print("取 1.0.1（本文档最典型条文），看切分与查询的实际差异：\n")
     cid, cno, title, content = clauses[1]
     print(f"原文（clause_no={cno}）: {content[:80]}")
-    print(f"\nbaseline  : {build_search_text(base_tk, cno, title, content)[:150]}")
-    print(f"\ntreatment : {build_search_text(treat_tk, cno, title, content)[:150]}")
-    print(f"\ndual      : {build_search_text(treat_tk, cno, title, content)[:100]} + [baseline 全量]")
+    print(f"\nbaseline  : {build_search_text(base_tk, cno, title, content)[0][:150]}")
+    print(f"\ntreatment : {build_search_text(treat_tk, cno, title, content)[0][:150]}")
+    print(f"\ndual      : {build_search_text(treat_tk, cno, title, content)[0][:100]} + [baseline 全量]")
     for s in ["钢筋", "机械连接", "钢筋机械连接"]:
         qb = build_match_query(base_tk, s)
         qt = build_match_query(treat_tk, s)

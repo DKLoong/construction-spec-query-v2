@@ -1,7 +1,7 @@
-"""jieba 预分词工具：FTS5 检索的 search_text 构建与查询切词
+"""jieba 预分词工具：FTS5 检索的 search_text / breadcrumb 两列构建与查询切词
 
-索引侧（导入/编辑写 search_text）与查询侧（sql_search 切 keyword）都走本模块，
-固定精确模式（cut_all=False）+ 固定词典，保证分词一致性，无需人工介入。
+索引侧（导入/编辑写 search_text + breadcrumb）与查询侧（sql_search 切 keyword）
+都走本模块，固定精确模式（cut_all=False）+ 固定词典，保证分词一致性，无需人工介入。
 """
 
 import re
@@ -25,20 +25,26 @@ def tokenize(text: str) -> list[str]:
     return words
 
 
-def build_search_text(clause_no: str, title: str, content: str) -> str:
-    """构建 FTS5 索引文本：jieba(标题+正文) 空格连接 + 追加 clause_no 原文。
+def build_search_text(clause_no: str, title: str, content: str,
+                      section_path: str = "") -> tuple[str, str]:
+    """构建 FTS5 索引的**两列**文本：`(search_text, breadcrumb)`。
 
-    - **先过 `plain_text` 去标记**：content 是渲染载荷（含 PaddleOCR-VL 的
-      HTML 表格与 LaTeX），直接分词会把 td/style/word 等标记灌进索引
-      （实测约占索引 20-25%，严重稀释 BM25）。详见 `app/ai/text_clean.plain_text`
-    - clause_no 不走 jieba（点号会被拆成独立 token），直接追加原文，
-      由 FTS5 的 unicode61 分词器统一切分（"5.1.1" → 5/1/1 三个 token）
-    - 空文本返回占位空格，避免 FTS5 索引 NULL 值报 datatype mismatch
+    - `search_text`：`jieba(标题+正文)` 空格连接 + 追加 `clause_no` 原文。
+      **不含面包屑**——面包屑只通过 `breadcrumb` 列参与，否则会以权重 1.0
+      （埋在正文里）与 `breadcrumb_weight` 各计一次，权重语义失真。
+    - `breadcrumb`：`jieba(section_path)`。**必须预分词**：FTS5 默认
+      unicode61 分词器把连续中文折叠为单个 token，未分词的整段中文列只能
+      整段精确命中（实测查「接头安装」命中、查「接头」「安装」0 命中）。
+    - `content` **先过 `plain_text` 去标记**（渲染载荷含 PaddleOCR-VL 的
+      HTML/LaTeX，直接分词会把标记灌进索引，实测约占索引 20-25%）。
+    - `search_text` 空时返回占位空格，避免 FTS5 索引 NULL 报 datatype mismatch。
     """
     parts = tokenize(plain_text(f"{title or ''} {content or ''}"))
     if clause_no and clause_no.strip():
         parts.append(clause_no.strip())
-    return " ".join(parts) or " "
+    search_text = " ".join(parts) or " "
+    breadcrumb = " ".join(tokenize(section_path or ""))
+    return search_text, breadcrumb
 
 
 def build_match_query(keyword: str, join_with: str = "AND") -> str:

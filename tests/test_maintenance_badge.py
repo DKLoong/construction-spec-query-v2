@@ -34,7 +34,7 @@ def _setup_db(monkeypatch, tmp_path):
             """INSERT INTO clauses (spec_id, clause_no, title, content, dim4_specialty,
                dim5_location, dim6_material, ai_classified, search_text) VALUES (?,?,?,?,?,?,?,?,?)""",
             (spec_id, "5.1.1", "正常", "正常内容", "结构专业", "主体结构", "钢筋", 1,
-             build_search_text("5.1.1", "正常", "正常内容")),
+             build_search_text("5.1.1", "正常", "正常内容")[0]),
         )
     return spec_id
 
@@ -45,7 +45,7 @@ def _add_orphan_parent(spec_id):
         conn.execute(
             """INSERT INTO clauses (spec_id, clause_no, content, parent_clause, search_text)
                VALUES (?,?,?,?,?)""",
-            (spec_id, "5.1.2", "孤立内容", 99999, build_search_text("5.1.2", "", "孤立内容")),
+            (spec_id, "5.1.2", "孤立内容", 99999, build_search_text("5.1.2", "", "孤立内容")[0]),
         )
 
 
@@ -54,7 +54,7 @@ def _add_empty_content(spec_id):
         conn.execute(
             """INSERT INTO clauses (spec_id, clause_no, content, search_text)
                VALUES (?,?,?,?)""",
-            (spec_id, "5.1.3", "   ", build_search_text("5.1.3", "", "")),
+            (spec_id, "5.1.3", "   ", build_search_text("5.1.3", "", "")[0]),
         )
 
 
@@ -63,7 +63,7 @@ def _add_bad_classification(spec_id):
         conn.execute(
             """INSERT INTO clauses (spec_id, clause_no, content, ai_classified, search_text)
                VALUES (?,?,?,?,?)""",
-            (spec_id, "5.1.4", "异常内容", 1, build_search_text("5.1.4", "", "异常内容")),
+            (spec_id, "5.1.4", "异常内容", 1, build_search_text("5.1.4", "", "异常内容")[0]),
         )
 
 

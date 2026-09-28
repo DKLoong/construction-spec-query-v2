@@ -381,6 +381,24 @@ def _filter_cover_clauses(clauses: list[dict]) -> list[dict]:
     return [c for c in clauses if not is_cover_clause(c.get("content", ""))]
 
 
+def _nearest_ancestor_id(no_to_id: dict[str, int], clause_no: str) -> int | None:
+    """按**点段前缀**由长到短回溯，取首个在 `no_to_id` 中存在的祖先 id，否则 None。
+
+    `21.4.1` → 依次试 `21.4`、`21`。为什么不能简单取「编号去掉最后一段」：
+    批一删掉了「只有标题、无自身正文」的章节行（`clauses` 里没有该行），
+    故最近**现存**祖先常常是编号更短的那一级（用户实测：`21.3.x` 直跳 `21.4.1`）。
+    本函数返回的父级编号必是子级编号的段前缀 —— 这一不变量由 U10 的断言复核。
+
+    `no_to_id` 由调用方在**循环外**一次性预载（GC §5：循环内禁逐行 DB IO）。
+    """
+    segs = [s for s in (clause_no or "").split(".") if s]
+    for k in range(len(segs) - 1, 0, -1):
+        prefix = ".".join(segs[:k])
+        if prefix in no_to_id:
+            return no_to_id[prefix]
+    return None
+
+
 def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                             file_path: str, file_hash: str = "",
                             status: str = "现行", replaced_by_code: str = ""):
@@ -463,7 +481,16 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         # 第一步：先插入所有条文到 SQLite，收集需要 embedding 的记录
         # 整批只取一次 AI 介入阈值（DB 覆盖热生效），避免条文循环内反复查
         from app.params.registry import get_adaptive_thresholds
+        from app.search.tokenize import build_search_text
         adaptive_thresholds = get_adaptive_thresholds()
+        # parent_clause 的祖先查表：本规范已有条文的 clause_no → id，**循环外一次查询**
+        # （GC §5 禁循环内逐行 DB IO）；新插入的条文随即并入，供后续兄弟/子级找到。
+        no_to_id = {
+            r["clause_no"]: r["id"]
+            for r in conn.execute(
+                "SELECT id, clause_no FROM clauses WHERE spec_id = ?", (spec_id,)
+            )
+        }
         embedding_records = []
         for cd in clauses_data:
             scores, best_labels, best_rule_ids = classify_clause(cd["content"], cd.get("parent_path", []), rules)
@@ -471,17 +498,25 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
             dim5_val = best_labels.get("dim5", "")
             dim6_val = best_labels.get("dim6", "")
 
-            from app.search.tokenize import build_search_text
+            # 最近**现存**祖先的 id（批一不存「只有标题的章节行」，故可能跨级）
+            parent_id = _nearest_ancestor_id(no_to_id, cd["clause_no"])
+            # section_path 是解析器产出的面包屑快照（原始，供展示）；
+            # breadcrumb 是它的 jieba 预分词结果（供 FTS 的独立列）。
+            st, bc = build_search_text(
+                cd["clause_no"], cd["title"], cd["content"], cd.get("section_path", ""))
             conn.execute(
                 """INSERT INTO clauses (spec_id, clause_no, title, content, parent_clause,
-                   dim4_specialty, dim5_location, dim6_material, clause_is_non, search_text)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (spec_id, cd["clause_no"], cd["title"], cd["content"], None,
+                   dim4_specialty, dim5_location, dim6_material, clause_is_non,
+                   search_text, breadcrumb, section_path)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (spec_id, cd["clause_no"], cd["title"], cd["content"], parent_id,
                  dim4_val, dim5_val, dim6_val,
                  1 if cd.get("is_non_clause") else 0,
-                 build_search_text(cd["clause_no"], cd["title"], cd["content"])),
+                 st, bc, cd.get("section_path", "")),
             )
             clause_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            # 并入查表：后续兄弟/子级条文按段前缀回溯时能找到本行
+            no_to_id.setdefault(cd["clause_no"], clause_id)
 
             for dim in ["dim4", "dim5", "dim6"]:
                 rule_id = best_rule_ids.get(dim)

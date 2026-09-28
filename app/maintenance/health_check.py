@@ -6,7 +6,7 @@
 - bad_classification   ai_classified=1 但 dim4/5/6 全空 → 重置 ai_classified=0, needs_review=1
 - vector_orphan        向量有而 SQLite 无 → 调 VectorStore.sync_with_db 删孤儿
 - vector_missing       SQLite 有而向量无 → 调 VectorStore.index_missing 补索引
-- fts_mismatch         clauses_fts 缺 rowid → 增量补插 search_text
+- fts_mismatch         clauses_fts 缺 rowid → 增量补插 search_text + breadcrumb 两列
 """
 from app.database import get_db
 from app.logging_util import log_action
@@ -307,9 +307,13 @@ def fix_issue(key: str, username: str = "system") -> dict:
         return {"key": key, "fixed": added > 0, "detail": f"已补齐 {added} 条向量"}
     if key == "fts_mismatch":
         with get_db() as conn:
+            # FTS 是两列：只写 search_text 会让该行的 breadcrumb 落 NULL ——
+            # 该行面包屑权重取不到值，且 init_db 的 backfill 门槛判定「值相等」
+            # 不会自愈（clauses.breadcrumb 有值、FTS 里是 NULL，比不出差异的相等）。
             n = conn.execute(
-                """INSERT INTO clauses_fts(rowid, search_text)
-                   SELECT c.id, COALESCE(c.search_text, '') FROM clauses c
+                """INSERT INTO clauses_fts(rowid, search_text, breadcrumb)
+                   SELECT c.id, COALESCE(c.search_text, ''), COALESCE(c.breadcrumb, '')
+                   FROM clauses c
                    WHERE NOT EXISTS (SELECT 1 FROM clauses_fts f WHERE f.rowid = c.id)"""
             ).rowcount
         log_action("maintenance", "INFO", "补齐 FTS 索引", detail=str(n), username=username)

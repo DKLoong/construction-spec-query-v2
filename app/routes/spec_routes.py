@@ -218,16 +218,20 @@ async def update_clause(
         if not existing:
             return JSONResponse({"detail": "条文不存在"}, status_code=404)
 
-        # 内容/编号/分类变更 → 同步更新 jieba 预分词 search_text（FTS5 检索一致性）
+        # 内容/编号/分类变更 → 同步更新 jieba 预分词 search_text + breadcrumb（FTS5 检索一致性）。
+        # section_path 是解析期的祖先快照（编辑正文不改祖先链），故原样读回再写——
+        # 既避免 UPDATE 把它清空，也保证 breadcrumb 与库内面包屑一致。
         from app.search.tokenize import build_search_text
+        section_path = existing["section_path"] or ""
+        st, bc = build_search_text(clause_no, title, content, section_path)
         conn.execute(
             """UPDATE clauses SET clause_no = ?, title = ?, content = ?,
                dim4_specialty = ?, dim5_location = ?, dim6_material = ?,
-               search_text = ?
+               search_text = ?, breadcrumb = ?, section_path = ?
                WHERE id = ?""",
             (clause_no, title, content,
              dim4_specialty, dim5_location, dim6_material,
-             build_search_text(clause_no, title, content),
+             st, bc, section_path,
              clause_id),
         )
 

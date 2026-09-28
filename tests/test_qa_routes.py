@@ -22,7 +22,7 @@ def _setup_qa_data(conn):
     for no, title, content in clauses_data:
         conn.execute(
             "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
-            (spec_id, no, title, content, build_search_text(no, title, content)),
+            (spec_id, no, title, content, build_search_text(no, title, content)[0]),
         )
 
 
@@ -516,7 +516,7 @@ def test_qa_include_invalid_controls_meta_filter(auth_client, monkeypatch, tmp_p
         conn.execute(
             "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?,?,?,?,?)",
             (spec_id, "1.0.1", "", "钢筋旧规范内容",
-             build_search_text("1.0.1", "", "钢筋旧规范内容")),
+             build_search_text("1.0.1", "", "钢筋旧规范内容")[0]),
         )
 
     monkeypatch.setattr("app.ai.cli_client.ClaudeCodeCLI.is_available", _mock_is_available_true)

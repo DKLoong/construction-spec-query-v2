@@ -23,25 +23,25 @@ def _setup_db(monkeypatch, tmp_path):
             """INSERT INTO clauses (spec_id, clause_no, title, content, dim4_specialty,
                dim5_location, dim6_material, ai_classified, search_text) VALUES (?,?,?,?,?,?,?,?,?)""",
             (spec_id, "5.1.1", "正常", "正常内容", "结构专业", "主体结构", "钢筋", 1,
-             build_search_text("5.1.1", "正常", "正常内容")),
+             build_search_text("5.1.1", "正常", "正常内容")[0]),
         )
         # 孤立条文：parent_clause 指向不存在的 id
         conn.execute(
             """INSERT INTO clauses (spec_id, clause_no, content, parent_clause, search_text)
                VALUES (?,?,?,?,?)""",
-            (spec_id, "5.1.2", "孤立内容", 99999, build_search_text("5.1.2", "", "孤立内容")),
+            (spec_id, "5.1.2", "孤立内容", 99999, build_search_text("5.1.2", "", "孤立内容")[0]),
         )
         # 空内容条文
         conn.execute(
             """INSERT INTO clauses (spec_id, clause_no, content, search_text)
                VALUES (?,?,?,?)""",
-            (spec_id, "5.1.3", "   ", build_search_text("5.1.3", "", "")),
+            (spec_id, "5.1.3", "   ", build_search_text("5.1.3", "", "")[0]),
         )
         # 分类异常：ai_classified=1 但六维空
         conn.execute(
             """INSERT INTO clauses (spec_id, clause_no, content, ai_classified, search_text)
                VALUES (?,?,?,?,?)""",
-            (spec_id, "5.1.4", "异常内容", 1, build_search_text("5.1.4", "", "异常内容")),
+            (spec_id, "5.1.4", "异常内容", 1, build_search_text("5.1.4", "", "异常内容")[0]),
         )
     return db_path
 
@@ -94,6 +94,30 @@ def test_fix_issue_empty_content_not_fixable(monkeypatch, tmp_path):
     from app.maintenance.health_check import fix_issue
     result = fix_issue("empty_content")
     assert result["fixed"] is False  # 仅报告不自动删
+
+
+def test_fix_issue_fts_mismatch_backfills_breadcrumb_too(monkeypatch, tmp_path):
+    """补齐 FTS 时必须**同时**写 breadcrumb 列（FTS 已是两列）。
+
+    只写 search_text 会让该行面包屑列落 NULL —— 检索侧按列权重取不到值，
+    且 init_db 的 backfill 门槛（「值相等即跳过」）也判不出差异 ⇒ 不会自愈。
+    """
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance_bc"))
+    _setup_db(monkeypatch, tmp_path)
+    from app.maintenance.health_check import fix_issue
+    with get_db() as conn:
+        cid = conn.execute("SELECT id FROM clauses WHERE clause_no = '5.1.1'").fetchone()[0]
+        conn.execute("UPDATE clauses SET breadcrumb = '5 混凝土 5.1 正常' WHERE id = ?", (cid,))
+        conn.execute("DELETE FROM clauses_fts WHERE rowid = ?", (cid,))  # 制造缺失行
+    result = fix_issue("fts_mismatch")
+    assert result["fixed"] is True
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT search_text, breadcrumb FROM clauses_fts WHERE rowid = ?", (cid,)
+        ).fetchone()
+    assert row is not None, "缺失的 FTS 行应被补插"
+    assert row["breadcrumb"] == "5 混凝土 5.1 正常", "补插时必须一并写入 breadcrumb 列"
+    assert row["search_text"] == build_search_text("5.1.1", "正常", "正常内容")[0]
 
 
 def test_vector_missing_table_missing_not_fixable(monkeypatch, tmp_path):

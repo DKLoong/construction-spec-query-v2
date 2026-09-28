@@ -19,6 +19,30 @@ def _mock_search_rerank(monkeypatch):
 
 
 @pytest.fixture
+def isolated_paths(tmp_path, monkeypatch):
+    """把四处运行时路径全部指向 tmp_path。
+
+    ⚠ **C-4：patch 的必须是「消费方所在模块」的名字**。`app.search.vector_search`
+    第 4 行是 `from app.config import LANCE_DB_PATH`、`app.routes.import_routes`
+    第 7 行是 `from app.config import UPLOAD_DIR, OUTPUT_DIR` —— 导入时值已绑定到
+    各自模块的命名空间，patch `app.config.*` **不会**改变它们（本仓既有 20+ 处测试
+    用的正是下面这套目标）。只 patch `DATABASE_PATH` 会让 pytest 往**真实**
+    `lance_db` 写夹具向量、并往 `data/uploads/` 堆垃圾 md（实测累积 147 个）。
+
+    ⚠ **C-5**：`app/config.py:16-19` 其实**有** `os.getenv` 入口
+    （`DATABASE_PATH`/`LANCE_DB_PATH`/`UPLOAD_DIR`/`OUTPUT_DIR`），但只在**模块导入时**
+    生效，测试期间改动已太晚 —— 所以这里仍只能用 monkeypatch，理由要写对。
+    """
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance_db"))
+    monkeypatch.setattr("app.routes.import_routes.UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setattr("app.routes.import_routes.OUTPUT_DIR", str(tmp_path / "outputs"))
+    for d in ("lance_db", "uploads", "outputs"):
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
+    return tmp_path
+
+
+@pytest.fixture
 def test_dir(tmp_path):
     """提供临时目录作为测试用的 data 根目录"""
     return tmp_path
@@ -88,5 +112,5 @@ def setup_search_data(conn):
                dim4_specialty, dim5_location, dim6_material, search_text)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (spec_id, no, title, content, dim4, dim5, dim6,
-             build_search_text(no, title, content)),
+             build_search_text(no, title, content)[0]),
         )

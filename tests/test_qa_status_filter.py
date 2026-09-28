@@ -39,7 +39,7 @@ def _setup(auth_client, monkeypatch, tmp_path):
         conn.execute(
             "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
             (sid, "1.0.1", "旧条文", "钢筋废止旧条文内容。",
-             build_search_text("1.0.1", "旧条文", "钢筋废止旧条文内容。")),
+             build_search_text("1.0.1", "旧条文", "钢筋废止旧条文内容。")[0]),
         )
 
 

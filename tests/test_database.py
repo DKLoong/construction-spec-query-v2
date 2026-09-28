@@ -221,6 +221,74 @@ def test_init_db_fts_backfill_idempotent(monkeypatch, tmp_path):
         assert row["search_text"] and "钢筋" in row["search_text"], "backfill 应生成非空 search_text"
 
 
+def test_fts_has_two_columns(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "t.db"))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='clauses_fts'"
+        ).fetchone()[0]
+    assert "search_text" in sql and "breadcrumb" in sql
+
+
+def test_migrate_single_column_fts_to_two(tmp_path, monkeypatch):
+    """既有库的 clauses_fts 是单列 → 必须被识别并重建为两列，**且重建后不为空**。
+
+    注意 `CREATE VIRTUAL TABLE IF NOT EXISTS` 不会改造已存在的表，
+    故迁移必须显式判定「旧形态」并 DROP。
+
+    ⚠ **夹具必须带数据**（见 C-1）：空表夹具永远走不到 backfill 的写分支，
+    而真实库上门槛会因「新列刚 ALTER 为 NULL ⇒ 算得空串」「旧列由同一公式
+    算过 ⇒ 与新值相等」而恒假 ⇒ 重建出的 FTS 一行都没有、关键词检索全空，
+    且下次 init_db 不再 DROP ⇒ 永不自愈。故本用例断言行数守恒。
+    """
+    import sqlite3
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE clauses (id INTEGER PRIMARY KEY AUTOINCREMENT, spec_id INTEGER,
+            clause_no TEXT, title TEXT, content TEXT, search_text TEXT);
+        CREATE VIRTUAL TABLE clauses_fts USING fts5(search_text);
+        INSERT INTO clauses (id, spec_id, clause_no, title, content, search_text)
+            VALUES (1, 1, '6.3.1', '接头安装', '正文甲', '接头 安装 正文甲 6.3.1'),
+                   (2, 1, '6.3.2', '接头检验', '正文乙', '接头 检验 正文乙 6.3.2');
+        INSERT INTO clauses_fts(rowid, search_text)
+            VALUES (1, '接头 安装 正文甲 6.3.1'), (2, '接头 检验 正文乙 6.3.2');
+    """)
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='clauses_fts'"
+        ).fetchone()[0]
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(clauses)")]
+        n_clauses = conn.execute("SELECT COUNT(*) FROM clauses").fetchone()[0]
+        n_fts = conn.execute("SELECT COUNT(*) FROM clauses_fts").fetchone()[0]
+    assert "breadcrumb" in sql, "单列 FTS 必须被重建为两列"
+    assert "breadcrumb" in cols and "section_path" in cols
+    assert n_fts == n_clauses, "重建前有数据的库，迁移后 FTS 不得为空（C-1）"
+
+
+def test_breadcrumb_column_is_copied_by_trigger(tmp_path, monkeypatch):
+    """触发器从 clauses.breadcrumb（预分词）拷贝进 FTS 的 breadcrumb 列"""
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "t.db"))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('T','t')")
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text, breadcrumb)"
+            " VALUES (1, '6.3.1', '接头安装', '正文', '接头 安装 正文', '6 接头 的 现场 加工 6.3 接头 安装')"
+        )
+        got = conn.execute("SELECT breadcrumb FROM clauses_fts WHERE rowid = 1").fetchone()[0]
+    assert got == "6 接头 的 现场 加工 6.3 接头 安装"
+
+
 def test_lexicon_table_and_seed(monkeypatch, tmp_path):
     """init_db 建 lexicon 表 + 预置 alias 混凝土/砼、confusable 箍筋×钢筋"""
     from app.database import init_db, get_db, DATABASE_PATH
