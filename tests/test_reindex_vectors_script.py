@@ -74,3 +74,55 @@ def test_reindex_vectors_includes_section_path(tmp_path, monkeypatch):
     assert rows, "重建后向量表应有行"
     assert any("混凝土分项工程" in r["text"] for r in rows), \
         "重建后的向量文本不含面包屑（查询漏选 section_path 或未传第 6 参）"
+
+
+def test_reindex_vectors_compacts_after_batch_index(tmp_path, monkeypatch, capsys):
+    """重建脚本收尾必须压实向量表，且必须在 batch_index **之后**。
+
+    为什么这条最要紧：全量重建是本批唯一一次写满整库的操作，子块 + 10% 重叠使行数
+    上升 ~15-18%、每次 add/delete 又各产生一个版本——版本增长在这里最猛（维护页重建
+    与导入路径都已接线，漏掉脚本等于在最该压实的那一次不压实）。
+
+    证据形态：跑真实的 `main()`（真建表、真写向量、真压实），只在 `VectorStore` 的
+    两个方法上加**记录并透传**的间谍，断言调用顺序。源码断言只防「写法漂移」，
+    证伪不了「没被调用」，故不作主证据。
+    """
+    from app.database import init_db, get_db
+
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    monkeypatch.setattr("app.search.vector_search.embed_texts",
+                        lambda texts: [[0.0] * 8 for _ in texts])
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB 50010', '混凝土规范')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """INSERT INTO clauses (spec_id, clause_no, title, content)
+               VALUES (?, ?, ?, ?)""",
+            (spec_id, "5.1.1", "模板", "内容"),
+        )
+
+    from app.search.vector_search import VectorStore
+    calls: list[str] = []
+    real_batch_index = VectorStore.batch_index
+    real_optimize = VectorStore.optimize
+
+    def spy_batch_index(self, *args, **kwargs):
+        calls.append("batch_index")
+        return real_batch_index(self, *args, **kwargs)
+
+    def spy_optimize(self):
+        calls.append("optimize")
+        return real_optimize(self)
+
+    monkeypatch.setattr(VectorStore, "batch_index", spy_batch_index)
+    monkeypatch.setattr(VectorStore, "optimize", spy_optimize)
+
+    mod = _load_reindex_module()
+    monkeypatch.setattr(mod, "get_model", lambda: object())  # 让 main() 的 None 检查通过
+    mod.main()
+
+    assert calls == ["batch_index", "optimize"], \
+        f"重建脚本未在 batch_index 之后调 optimize: {calls}"
+    assert "Compact" in capsys.readouterr().out, "压实这一步应有 stdout 提示（长停顿需可见）"

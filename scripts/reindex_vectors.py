@@ -69,6 +69,13 @@ def main():
     vs = VectorStore()
     vs.batch_index(clauses)
 
+    # 收尾压实（与导入路径、维护页重建共用唯一实现 VectorStore.optimize）：
+    # 本脚本是批二唯一的全量重建通道，也是版本增长最猛的一次——子块 + 10% 重叠使
+    # 行数上升 ~15-18%，而 batch_index 逐批 add 每次都产生一个新版本（历史真实表
+    # rows=73 / version=173）。压实失败只记 WARNING，不影响重建结果。
+    print("Compacting vector table (merging versions)...")
+    vs.optimize()
+
     print()
     print(f"Done: {len(clauses)} clauses reindexed successfully.")
     print()
