@@ -604,6 +604,13 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                     progress_store[task_id].update(
                         progress=90 + int(9 * done / total),
                         message=f"正在写入向量索引（{done}/{total}）…")
+
+                # 收尾压实：子块使行数上升 ~15-18%，版本数随之加快增长（真实表曾
+                # rows=73 / version=173）。压实失败只记 WARNING——见 VectorStore.optimize，
+                # 它绝不抛异常，故不会把已入库的导入判成失败。只换文案不动 progress
+                # （上一档已是 99，写回固定值反而像故障）。
+                progress_store[task_id].update(message="正在压实向量表…")
+                vs.optimize()
             except Exception as e:
                 # 不影响导入完成，但绝不静默：进度 message 随任务结束即消失，
                 # 故同时收集告警，commit 后落 system_logs（否则向量缺失无从追查）。
@@ -641,7 +648,16 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 conn.rollback()
             except Exception:
                 pass
-        progress_store[task_id].update(status="error", progress=0, message=str(e))
+        # 文案必须点明「本次未完成、需重跑」：上方 rollback 只回滚 SQLite 事务，
+        # LanceDB 的向量写入不在事务内（向量在 commit 前就已落表）——失败会留下
+        # **常驻半成品态**（维护页随后报「缺失向量索引」），只写原始异常串会让用户
+        # 以为这是一次可以忽略的偶发错误。
+        # 不加「导入失败」前缀：import_progress.html 的 error 分支已渲染
+        # 「导入失败: {{ message }}」（且第 14 行另有一处裸渲染），带了会重复。
+        progress_store[task_id].update(
+            status="error", progress=0,
+            message=f"本次未完成，请重跑：{e}",
+        )
         log_action("import", "ERROR", "导入失败",
                    detail=json_detail({"task_id": task_id, "code": code, "error": str(e)}),
                    username=progress_store.get(task_id, {}).get("owner", "system"))

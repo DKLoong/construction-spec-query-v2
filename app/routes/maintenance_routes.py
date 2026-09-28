@@ -123,7 +123,13 @@ def _run_rebuild(task_id: str, username: str = ""):
                                          "message": f"已重建 {done}/{n} 条"}
 
         # batch_index 内部先 clear_all 再逐批写入，progress_cb 每批上报
-        VectorStore().batch_index(records, progress_cb=_cb)
+        vs = VectorStore()
+        vs.batch_index(records, progress_cb=_cb)
+        # 收尾压实（与导入路径共用唯一实现 VectorStore.optimize）：子块使行数上升，
+        # 版本数随之加快增长。压实失败只记 WARNING，不把重建判成失败。
+        rebuild_progress[task_id] = {"status": "running", "progress": 100,
+                                     "message": "正在压实向量表…"}
+        vs.optimize()
         rebuild_progress[task_id] = {"status": "done", "progress": 100,
                                      "message": f"重建完成，共 {total} 条"}
         log_action("maintenance", "INFO", "重建向量索引", detail=str(total), username=username)

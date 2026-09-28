@@ -197,6 +197,10 @@ class _RecordVS:
     def _get_table(self):
         return _RecordTable(self._sink)
 
+    def optimize(self):
+        """导入收尾会压实：替身只记录 add，压实视为成功（不写入任何记录）"""
+        return True
+
 
 def _run_import_records(isolated_paths, monkeypatch, md_text: str) -> list[dict]:
     """跑真实导入链路（只把向量表换成记录替身），返回写入的向量记录"""

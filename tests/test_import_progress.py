@@ -63,6 +63,10 @@ class _FakeVS:
     def _get_table(self):
         return _FakeTable(self._sink)
 
+    def optimize(self):
+        """导入收尾会压实（`VectorStore.optimize`）：替身无真实表可压实，直接成功"""
+        return True
+
 
 def _run_phase2(monkeypatch, tmp_path, task_id):
     """跑一遍 Phase 2，返回记录的 (progress, message) 序列"""

@@ -56,6 +56,10 @@ class _FakeVS:
     def _get_table(self):
         return _FakeTable(self._sink)
 
+    def optimize(self):
+        """导入收尾会压实：替身只记录 add，压实视为成功（不产生写入事件）"""
+        return True
+
 
 def _run_import(monkeypatch, tmp_path, task_id):
     _setup(monkeypatch, tmp_path)
@@ -107,6 +111,9 @@ def test_import_embed_text_carries_section_path(monkeypatch, tmp_path):
         def _get_table(self):
             return _TextTable()
 
+        def optimize(self):
+            return True
+
     monkeypatch.setattr(ir, "VectorStore", lambda: _TextVS())
     monkeypatch.setattr("app.ai.embedding.embed_texts",
                         lambda ts: [[0.0] * 8 for _ in ts])
@@ -151,6 +158,9 @@ def test_vector_write_covers_every_clause_exactly_once(monkeypatch, tmp_path):
 
         def _get_table(self):
             return _IdTable()
+
+        def optimize(self):
+            return True
 
     monkeypatch.setattr(ir, "VectorStore", lambda: _IdVS())
     monkeypatch.setattr("app.ai.embedding.embed_texts",

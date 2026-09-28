@@ -100,6 +100,29 @@ class VectorStore:
             return True
         return "chunk_index" not in names
 
+    def optimize(self) -> bool:
+        """收尾压实向量表（合并数据文件、清理过期版本）。
+
+        **为什么需要**：超长条文按子块写入使行数上升 ~15-18%，而每次 `add` / `delete`
+        都产生一个新版本，版本数增长随之加快（真实表曾落到 `rows=73 / version=173`，
+        读放大与启动开销一起变差）。导入与全量重建收尾各压实一次。
+
+        **绝不抛异常**：压实是收尾优化，**不是**导入/重建的交付物——压实失败不得让
+        「条文已入库」的导入变成失败（也正因为它同时记了 WARNING，吞掉异常才可接受）。
+
+        Returns:
+            True  = 压实已执行；
+            False = 未压实（无表——新库首次导入前的合法状态，不告警；或失败——已记 WARNING）。
+        """
+        if not self._table_exists():
+            return False
+        try:
+            self._get_table().optimize()
+        except Exception as e:
+            logger.warning("向量表压实失败（不影响本次导入/重建结果）: %s", e)
+            return False
+        return True
+
     def index_clause(self, clause_id: int, spec_id: int, text: str, dim_scores: str = "",
                      chunk_index: int = 0) -> int:
         """写**单块**向量（`chunk_index` 标明它是该条文的第几块）。
