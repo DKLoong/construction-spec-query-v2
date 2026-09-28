@@ -1,5 +1,22 @@
 """导入入库时 status 打标与 replace_by 反向联动测试"""
+import pytest
+
 from app.database import get_db, init_db
+
+
+@pytest.fixture(autouse=True)
+def _isolate_vector_store(monkeypatch, tmp_path):
+    """把**真实**向量库隔离掉：本文件 4 个用例都会走到导入的向量写入。
+
+    ⚠️ 原先只 patch 了 `DATABASE_PATH` / `OUTPUT_DIR` / `UPLOAD_DIR`，漏了向量库 ——
+    这是**既有的隔离缺口**，长期休眠：本文件的夹具 md 以 `# 第1章`（无编号）开头，
+    T20（Task 17 / 改动⑤）之前它连同其后正文一起被「空栈 flush」丢弃，故没有可索引的
+    条文、写入路径根本没跑。T20 保留孤儿文本后夹具多出一条隐藏条文 → 向量写入真的发生
+    → 真实 `lance_db` 被写入（实测每跑一次本文件 +4 行，会话级守卫随即变红）。
+    patch 消费方模块名（`app.search.vector_search.LANCE_DB_PATH`）是仓库既定口径
+    （见 `tests/conftest.py::isolated_paths` 的 C-4 说明）；**不是** patch `app.config.*`。
+    """
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance_db"))
 
 
 def test_import_phase2_writes_status(monkeypatch, tmp_path):

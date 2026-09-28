@@ -531,6 +531,8 @@ def parse_markdown(md_text: str) -> list[dict]:
     - **无条件结算**：每条候选行在被下一条候选行取代（或文本结束）时结算一次
     - **内节点判据**：无自身正文的候选行（章名/节名）只作祖先、不入库
     - 非候选行的文本归属当前条，构成其 content
+    - **孤儿文本**（首个候选行之前的非候选行）无条可归属，但**不丢**：自成一块
+      `is_non_clause=True` 的隐藏块（改动⑤，Task 17；见 `flush()` docstring）
     - 祖先链取栈中**不含自身**的部分：`parent_path`（标签路径）与 `section_path`（面包屑）
 
     返回: [{
@@ -566,6 +568,7 @@ def parse_markdown(md_text: str) -> list[dict]:
     discard_section = False         # 目次段：段内一切丢弃
     inherit_non_clause = False      # 条文说明段：正文型行继承打标
     in_commentary = False           # 条文说明段（文档级）：单向、至文末，见裁定 R-T13-3
+    saw_candidate_row = False       # 改动⑤：本文件是否出现过候选行（= 是不是一份真规范）
 
     def flush() -> None:
         """结算「当前条」= `stack[-1]`。
@@ -573,9 +576,11 @@ def parse_markdown(md_text: str) -> list[dict]:
         改动② **无条件结算**：旧实现只在 `current_content_lines` 非空时才结算。
         ⚠️ **归因更正（Task 3 复核）**：`3.0.1` 获救**不是**这一改动的作用 —— 它是被
         改动①（R14 投票判它**正文型**）救的：正文型把 tail 推进 `pending`，于是无论
-        条件还是无条件结算都会产出它。本改动的**唯一真实行为效果**是「`stack` 为空时
+        条件还是无条件结算都会产出它。本改动原本的**唯一真实行为效果**是「`stack` 为空时
         （即首个候选行之前）丢弃 `pending`」＝封面/前引文字不再并入首条真条文
         （设计性的泄漏修复，旧实现把它们并进了伪条文号）。
+        ⚠️ **改动⑤ 已改掉这个副作用**（孤儿文本不再丢弃）；设计意图（不并入首个真条文）
+        仍然成立 —— 见改动⑤。
 
         改动③ **内节点判据**：无自身正文者只作祖先、不入库。
           - 标题型且有后续内容 → 有自身正文 → 叶条文
@@ -583,6 +588,21 @@ def parse_markdown(md_text: str) -> list[dict]:
           - 正文型（title 为空）→ 其 tail 就是自身正文 → 必然产出
 
         改动④ 祖先链取 `stack[:-1]`，**不含自身**（与旧实现一致）。
+
+        改动⑤ **孤儿文本不得消失**（Task 17 / T20）：`stack` 为空（= 首个候选行之前，
+        该状态在文档内**只会出现一次**——首个候选行一入栈，`stack` 就永不再空）时，
+        `pending` **不再丢弃**，而是自成一块 `is_non_clause=True` 的隐藏块。
+        「缓冲到下一个被结算的条」这个形状**实测不成立**（本 Task 的候选方案，量过）：
+        它使孤儿文本落进 `中华人民共和国住房和城乡建设部 公告` 那条，令其命中封面
+        特征词 ≥2（第一版/印刷/定价/书号）→ 导入侧 `_filter_cover_clauses` 把**该公告
+        整条**丢弃：库级 plain 141,548 → 141,543、行数 887 → 886（净亏），而夹具级
+        反而上涨（141,694 → 142,316）——只按夹具级判会误判为修好。
+        故取**不改道**的形态：真条文的正文/面包屑**逐字不变**，孤儿文本只多出一条隐藏行
+        （`clause_is_non=1` ⇒ 检索侧被过滤、`_survey` 的覆盖率分母不含它）。
+        身份（`clause_no`/`title`）取自块首行，与 `_candidate_of` 的页标记分支
+        `(1, t, t)` 同一约定。
+        ⚠️ 设计意图不变：封面/前引文字**仍然不并入首个真条文**（这正是旧实现的泄漏点），
+        消失的只是「文本无处安放」这一步。
         """
         nonlocal pending
         if stack:
@@ -601,6 +621,27 @@ def parse_markdown(md_text: str) -> list[dict]:
                     # feature ②：自身正文全是次分组标签的空壳节点同样打标（保留但默认隐藏）。
                     # 不改 stack 内 entry 的 is_non_clause，故其子条的面包屑仍含该节名。
                     "is_non_clause": entry["is_non_clause"] or _is_subgroup_label_only_body(content),
+                })
+        else:                                        # 改动⑤：孤儿文本，见本函数 docstring
+            head = _clean_title(next((t.strip() for t in pending if t.strip()), ""))
+            # 两道**保留既有判定**的边界，都不是为通过测试而加的例外：
+            # ① `saw_candidate_row`：整篇没有任何候选行的文档维持「不产出」的既有语义
+            #    （`# Code for …` 这类无编号英文标题**不得**变成伪条文号，R1 ⑦；
+            #    `test_hash_heading_without_clause_no_is_not_clause` 守之）。孤儿文本
+            #    「值得留」的前提是它属于一份真规范 —— 没有节点就没有规范。
+            # ② 直接过滤类（目次/Contents）：与 `# 目次` 候选行的 `discard_section`
+            #    **同一条规则的另一落点**（`_NON_CLAUSE_FILTER_TITLES`：导入时不生成条文）。
+            #    裸 `目次` 行不是候选行，旧实现靠「空栈 flush」这个副作用把它丢掉；
+            #    改动⑤ 把这个副作用补成显式规则，否则它会以隐藏块身份进库。
+            if head and saw_candidate_row and not is_filter_non_clause_title(head):
+                clauses.append({
+                    "clause_no": head,
+                    "title": head,
+                    "content": "\n".join(pending).strip(),
+                    "level": 1,
+                    "parent_path": [],
+                    "section_path": "",
+                    "is_non_clause": True,
                 })
         pending = []
 
@@ -635,6 +676,9 @@ def parse_markdown(md_text: str) -> list[dict]:
         # 的 continue 之后，数字命名的过滤标题（如 `## 1.1 目次`）会让主循环漏记、
         # 与预扫的 seen 分叉（round 2 Finding 3）。
         state.seen_clause_nos.add(clause_no)
+        # 改动⑤：候选行出现过 ⇒ 本文档是一份规范（**必须在 `flush()` 之前**推进：
+        # 首个候选行触发的正是那次「空栈结算」，即孤儿文本的落块时机）。
+        saw_candidate_row = True
 
         flush()                                  # 新候选行到达 → 先结算上一条
 

@@ -1,6 +1,8 @@
+import re
+
 from app.parser.md_parser import (
     parse_markdown, is_non_clause_title, is_cover_clause, _should_emit_clause,
-    _is_zero_segment_node, _extract_title, _candidate_of,
+    _is_zero_segment_node, _extract_title, _candidate_of, _DOT_LEADER,
 )
 
 SAMPLE_MD = """# GB 50204-2015 混凝土结构工程施工质量验收规范
@@ -475,6 +477,11 @@ def test_toc_section_is_discarded_entirely():
     ⚠ brief 的裸 `目次` 夹具对这一机制**零保护**：裸行不是候选行，`discard_section`
     根本不置位，目录行只是恰好被「空栈 flush」丢掉。变异探针（把
     `is_filter_non_clause_title` 改成恒 False）下，裸夹具**仍然通过**。故补跑 `#` 形式。
+
+    ✅ **T20 后（Task 17 / 改动⑤）裸夹具不再是「零保护」**：那个「空栈 flush 的副作用」
+    已被显式规则取代——`flush()` 里的孤儿块若以直接过滤类标题（目次/Contents）开头则
+    **不保留**（同一条规则的另一落点）。故现在把 `is_filter_non_clause_title` 改成恒 False
+    时，裸夹具也会变红（`目次` 会以隐藏块身份出现）。两条既有断言均未改。
     """
     md = "目次\n\n1 总则 ..... 1\n\n2 术语 ..... 3\n\n1.0.1 正文甲。\n"
     results = parse_markdown(md)
@@ -1600,10 +1607,18 @@ def test_subgroup_label_only_body_with_roman_prefix_and_control():
 
 
 def test_cjj2_label_only_sections_are_non_clause(cjj2_md):
-    """feature ②端到端：CJJ2 恰好 6 个「自身正文全是次分组标签」的空壳节被打标（168 → 174）。
+    """feature ②端到端：CJJ2 恰好 6 个「自身正文全是次分组标签」的空壳节被打标（168 → 174 → 175）。
 
     6 行均为 `### X 检验标准` 后紧跟一个 `主控项目` 标签行（无其他正文），其 content 恰为
     「主控项目」4 字。JGJ107 语料 0 行（无任何 `主控项目`/`一般项目`，由探针实测、不进本用例）。
+
+    ⚠️ 总数由 174 更新为 **175**（Task 17 / 改动⑤，可预期、非回归）：文首孤儿文本自成
+    一块 `is_non_clause=True` 的隐藏块（CJJ2 的封面块，身份取块首行 `UDC`），故 +1。
+    这一挪动是**被迫的**：孤儿文本要么进某个既有条（实测「并进下一个被结算的条」会把
+    `中华人民共和国住房和城乡建设部 公告` 变成封面脏数据 → 导入侧整条丢弃，库级
+    plain 141,548 → 141,543），要么自成一块 —— 而任何承载它的块都必须打标隐藏
+    （否则进检索、且会把 `breadcrumb_coverage` 的分母拉大）。本用例**真正锁定**的是
+    上面那个 `expect` 六号集合（逐号断言，未动）。
     """
     clauses = parse_markdown(cjj2_md)
     expect = {"5.4", "6.5", "7.13", "8.5", "9.6", "12.5"}
@@ -1613,4 +1628,161 @@ def test_cjj2_label_only_sections_are_non_clause(cjj2_md):
     assert all(c["is_non_clause"] and c["content"] == "主控项目" for c in label_only), \
         "6 个空壳节应全部打标且 content 仍为「主控项目」"
     marked = sum(1 for c in clauses if c["is_non_clause"])
-    assert marked == 174, f"打标总数 {marked}（预期 174 = 168 + 6）"
+    assert marked == 175, f"打标总数 {marked}（预期 175 = 168 + 6 空壳节 + 1 孤儿块）"
+
+
+# ═══════════════════════════════════════════
+# 组 9：孤儿文本守恒（Task 17 / T20）——「任何行的文本都不会因为『不被当作节点』而消失」
+# ═══════════════════════════════════════════
+
+def _lines_not_treated_as_nodes(md_text: str) -> list[tuple[int, str]]:
+    """列出「不被当作节点」的源行 `(行号, 文本)`——它们的文本**不得消失**。
+
+    判据 = 非候选行（`_candidate_of` 返回 None）**且**非目录点引行。
+    - 候选行不在本判据范围内：它们的文本由节点身份承载（进 title 或 content），
+      是否入库由内节点判据等既定设计决定（**本 Task 不动**）。
+    - 点引行（`_DOT_LEADER`，≥5 连续点）是**设计性丢弃**（fix ④：它们是目次的页码
+      对齐，从不是规范正文），故排除。这里直接 import 解析器的同一个正则，避免
+      将来改了丢弃口径而本探针静默失配。
+    - 文本取 `re.sub(r'^#{1,6}\\s*', '', line)`：与主循环把非候选行写入 `pending` 时
+      的改写**逐字一致**（否则带 `#` 的行会被判「消失」）。
+    """
+    out: list[tuple[int, str]] = []
+    for i, line in enumerate(md_text.split("\n")):
+        s = line.strip()
+        if not s or _candidate_of(line) is not None or _DOT_LEADER.search(s):
+            continue
+        out.append((i + 1, re.sub(r"^#{1,6}\s*", "", line)))
+    return out
+
+
+def _output_text_pool(clauses: list[dict]) -> str:
+    """全部产出的可见文本池（content + title + section_path），去空白后供子串核对。"""
+    return re.sub(r"\s+", "", "\n".join(
+        c["content"] + "\n" + c["title"] + "\n" + c["section_path"] for c in clauses
+    ))
+
+
+def _head_orphan_lines(md_text: str) -> list[tuple[int, str]]:
+    """**首个候选行之前**的非候选行 `(行号, 文本)`——即「其前无任何候选可归属」的那批。
+
+    候选行判定用**无状态**的 `_candidate_of(line)`：与主循环相比它对 `#`+裸数字行更宽松
+    （不跑 fix ① 的章号单调），故得出的「首个候选行」只会**不晚于**主循环的那一个——
+    返回集合是真实孤儿集合的**子集**，断言只会偏弱、不会误报。
+    """
+    lines = md_text.split("\n")
+    for i, line in enumerate(lines):
+        if line.strip() and _candidate_of(line) is not None:
+            return [(n, t) for n, t in _lines_not_treated_as_nodes(md_text) if n <= i]
+    return _lines_not_treated_as_nodes(md_text)
+
+
+def test_no_line_text_vanishes_merely_by_not_being_a_node(cjj2_md):
+    """守恒（T20）：非候选行的文本必须出现在某条 content 里——**整篇**范围，不只文首。
+
+    RED（本 Task 实测，实现前）：CJJ2 夹具上 20 行「实测可检出丢失」——
+    全部在**首个候选行之前**（夹具 L1~L57 的封面/出版信息页：`UDC`、
+    `2008-11-04 发布`、`中国建筑工业出版社出版、发行（北京西郊百万庄）`、
+    `统一书号：15112·17217`、`定价：45.00元` …）。成因：`flush()` 只在 `stack`
+    非空时结算，`stack` 为空（= 首个候选行之前）时 `pending` 被整体丢弃。
+
+    ⚠️ 本探针是**子串口径**，灵敏度有限、只报「可检出」的丢失：逐行**处置**探针
+    （按 pending 落点统计）实测文首孤儿文本共 **29 行 / raw 686 / plain 647**，
+    其中 9 行的文本恰好在别处（公告标题等）也出现，故不被本探针检出。
+    即本断言是**下界**仪器：它红了必有真丢失，它绿不等于逐字无损。
+    """
+    clauses = parse_markdown(cjj2_md)
+    pool = _output_text_pool(clauses)
+    lost = [(n, t) for n, t in _lines_not_treated_as_nodes(cjj2_md)
+            if re.sub(r"\s+", "", t) not in pool]
+    assert not lost, (
+        f"{len(lost)} 行非候选文本凭空消失（合计 {sum(len(t) for _n, t in lost)} 字符）——"
+        f"它们不因「不被当作节点」而消失（T20）：{[(n, t[:40]) for n, t in lost[:5]]}"
+    )
+    # 探针自检（双向，防本判据恒红/恒绿）：孤儿行必须被取到；候选行与目录点引行必须排除
+    probe = "孤儿行甲\n\n1 总则 ..... 1\n\n1.0.1 正文。\n"
+    assert [t for _n, t in _lines_not_treated_as_nodes(probe)] == ["孤儿行甲"]
+
+
+def test_orphan_block_at_document_head_is_hidden_and_has_no_children(cjj2_md):
+    """孤儿文本必须被**保留为隐藏块**，且不得改道进任何真条文（不得成为祖先）。
+
+    三条不变量（对应三种「假修好」）：
+    - 保留：文首孤儿文本出现在某条 content 里（否则就是丢）；
+    - 隐藏：该块 `is_non_clause=True` —— 它既不该进检索（`clause_is_non=0` 过滤），
+      也不该进 `breadcrumb_coverage` 的分母（`_survey` 只统计条文行）；
+    - 不改道：它不是任何条文的祖先（不出现在别的条文的 `section_path` 里），
+      即真条文的正文与面包屑**逐字不变**（P2 的候选「缓冲到下一个被结算的条」
+      做不到这一点：实测它把封面文本并进 `中华人民共和国住房和城乡建设部 公告`
+      那条，使其命中封面特征词 ≥2 → 导入侧 `_filter_cover_clauses` 把它整条丢弃，
+      库级 plain 由 141,548 掉到 141,543）。
+    """
+    clauses = parse_markdown(cjj2_md)
+    head = _head_orphan_lines(cjj2_md)
+    assert head, "探针自检：夹具文首应有非候选行"
+    block = clauses[0]
+    assert block["is_non_clause"] is True, "孤儿块必须打标隐藏"
+    assert block["clause_no"] == head[0][1].strip() == block["title"], \
+        "孤儿块身份应取自块首行（与页标记 `## 第X页` 的 (1, t, t) 同一约定）"
+    assert block["section_path"] == "" and block["parent_path"] == [], \
+        "孤儿块无祖先（不做任何条文的子级）"
+    # 保留：文首孤儿行全部在该块 content 里
+    block_text = re.sub(r"\s+", "", block["content"])
+    missing = [(n, t) for n, t in head if re.sub(r"\s+", "", t) not in block_text]
+    assert not missing, f"孤儿块 content 未覆盖文首行：{missing[:3]}"
+    # 不改道：它的条号不得出现在任何其它条文的 section_path 里
+    others = [c for c in clauses if c is not block]
+    assert not any(block["clause_no"] in c["section_path"] for c in others), \
+        "孤儿块成了其它条文的祖先——文本被改道了（真条文的面包屑会被污染）"
+
+
+def test_orphan_retention_is_scoped_to_documents_with_a_node():
+    """保留的**边界**：孤儿文本「值得留」的前提是它属于一份真规范（本文档出现过候选行）。
+
+    这是本 Task 唯一需要设计判断的一处，依据是**既有断言 + 规范语义**（不是为过测试而设）：
+    - 无候选行的文档维持既有「不产出」语义 —— `test_hash_heading_without_clause_no_is_not_clause`
+      逐字守之（`# Code for …` 这类无编号英文标题不得变成伪条文号，R1 ⑦；若为此类文档
+      也造隐藏块，块身份（取块首行）就会正好是那串英文标题）。
+    - 没有节点 ⇒ 不是规范 ⇒ 没有「谁的前引文字」这回事。
+    - 同一段文首文本，只要后面有真节点，就必须保留（否则就是 T20 的丢文本）。
+    """
+    head = "封面文字第一行\n\n封面文字第二行\n"
+    assert parse_markdown(head) == [], "无候选行的文档不得产出（既有语义，勿改）"
+    kept = parse_markdown(head + "\n1.0.1 正文甲。\n")
+    assert len(kept) == 2, f"有节点时文首文本必须保留为一块（实测 {len(kept)} 条）"
+    assert kept[0]["is_non_clause"] is True, "保留的孤儿块必须打标隐藏"
+    assert "封面文字第一行" in kept[0]["content"] and "封面文字第二行" in kept[0]["content"]
+    assert kept[1]["clause_no"] == "1.0.1" and kept[1]["content"] == "正文甲。", \
+        "真条文的正文不得被孤儿块改写（不改道）"
+
+
+def test_head_candidate_document_gains_no_orphan_block():
+    """控制组（JGJ107 形状）：首行即候选行（`## 第1页` 页标记）→ **不得**凭空多出隐藏块。
+
+    JGJ107 逐行处置探针实测该语料丢失 **0 行 / 0 字符**（页标记使它首行即成候选），
+    故本修复对它必须**零增量**——否则就是把「保留」做成了「多插一条」。
+    """
+    md = "## 第1页\n\n1.0.1 正文甲。\n"
+    assert [c["clause_no"] for c in parse_markdown(md)] == ["1.0.1"]
+
+
+def test_library_level_plain_chars_do_not_decrease(cjj2_md):
+    """判据（brief）：`content_chars_plain` **不下降**——库级口径。
+
+    库级 = `clean_ocr_text` → `parse_markdown` → 封面过滤（`_filter_cover_clauses`
+    在导入侧用 `is_cover_clause` 丢弃封面/出版信息页脏数据）。实测（spec 24 = CJJ2，
+    只读核对真实库 `clauses`）：**887 行 / 141,548 plain 字符**，与夹具
+    `clean_ocr_text` 管线下的同口径值逐字相等。
+
+    ⚠️ 它是本 Task 唯一能拦下 P2 候选（「缓冲到下一个被结算的条」）的断言：
+    那个形状让夹具级 plain 上涨（141,694 → 142,316），却使库级掉到 **141,543**
+    （封面文本并进 `公告` → 该条被封面过滤整条丢弃）。只断言夹具级会把它判为通过。
+    """
+    from app.ai.text_clean import plain_text
+    from app.parser.ocr_clean import clean_ocr_text
+
+    clauses = [c for c in parse_markdown(clean_ocr_text(cjj2_md))
+               if not is_cover_clause(c.get("content", ""))]
+    total = sum(len(plain_text(c["content"])) for c in clauses)
+    assert len(clauses) >= 887, f"库级条文数 {len(clauses)} 跌破 887（有真条文被过滤掉）"
+    assert total >= 141_548, f"库级 content_chars_plain {total} 跌破 141,548（T20 判据）"

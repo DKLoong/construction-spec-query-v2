@@ -225,7 +225,11 @@ def test_imported_parent_links_are_segment_prefixes(isolated_paths, monkeypatch)
     rows = _drive_real_import(isolated_paths, monkeypatch, _ANCESTOR_MD)
 
     # 夹具前提：条文集合与祖先链都得真的产生出来（否则下面两条断言形同虚设）
-    assert set(rows) == {"9.1.1", "5", "5.1", "5.1.1", "5.2", "5.2.1"}, \
+    # ⚠️ T20（Task 17 / 改动⑤）后夹具多一条 `测试规范`：`_ANCESTOR_MD` 的首行
+    #    `# 测试规范` 是无编号标题（不是候选行），原先随「空栈 flush」被丢弃；
+    #    改动⑤ 把它保留为一块 `is_non_clause=True` 的隐藏块，故它**确实入库**。
+    #    它无父无子，不影响下面两条关于 `parent_clause` 的断言，也不影响父子链不变量。
+    assert set(rows) == {"9.1.1", "5", "5.1", "5.1.1", "5.2", "5.2.1", "测试规范"}, \
         f"夹具条文集合不符：{sorted(rows)}"
     assert rows["5.1.1"]["parent_clause"] == rows["5.1"]["id"], \
         "有现存祖先的条文必须挂到该祖先（最近现存祖先）"
