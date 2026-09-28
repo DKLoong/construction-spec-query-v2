@@ -95,17 +95,24 @@ def hybrid_search(query: SearchQuery) -> tuple[list[dict], int]:
             try:
                 from app.search.vector_search import VectorStore
                 vs = VectorStore()
+                # top_k 就是**最终**要的条数：超取（×_VECTOR_FETCH_MULTIPLIER）、按
+                # clause 去重取最优块、截回 top_k 都在 VectorStore.search 内部完成。
+                # ⚠ 这里**不要**再乘倍数（两处乘就是 ×100），也不要绕过去重。
                 vector_raw = vs.search(keyword, top_k=vector_top_k)
             except (ImportError, OSError, RuntimeError, ValueError) as e:
                 logger.warning("向量搜索不可用，降级为仅 LIKE 搜索: %s", e)
 
         # ── 3. 向量候选过滤（L2 < 阈值，含与 SQL 重叠的，全部参与 RRF） ──
         # L2 距离阈值可调（默认 1.0 → 余弦相似度 > 0.5 视为语义相关）
+        # 同一条文可能有多块（子块），**必须取最小距离（最优块）**：
+        # 原实现 `dist_map[id] = dist` 是后者覆盖，会保留最差的那块。
         dist_map = {}
         for v in vector_raw:
             dist = v.get("_distance", 0)
             if dist < vector_threshold:
-                dist_map[v["clause_id"]] = dist
+                prev = dist_map.get(v["clause_id"])
+                if prev is None or dist < prev:
+                    dist_map[v["clause_id"]] = dist
 
         vector_results = []
         if dist_map:

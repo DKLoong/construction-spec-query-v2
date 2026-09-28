@@ -71,14 +71,17 @@ def test_build_embed_text_plain_content_unchanged():
 # 源码守卫：生产调用点不得漏传面包屑
 # ═══════════════════════════════════════════
 
-#: 生产调用点全表（`app/` 4 处 + `scripts/` 2 处）。
+#: 生产调用点全表（`app/` 2 处 + `scripts/` 1 处）。
 #: 实测依据：`grep -rn "build_embed_text" app/ scripts/ --include=*.py`
+#:
+#: ⚠ 导入 phase2 / 维护页全量重建 / 重建脚本 / index_missing 这**四条写入路径**
+#: 已改为调用 `app.search.chunking.build_embed_chunks`（它内部才调 build_embed_text，
+#: 并顺带做超长条文切块与前缀预算预留），故不在此表中；它们的面包屑仍由
+#: build_embed_chunks 的 section_path 形参传递，切块路径本身另有
+#: tests/test_vector_chunk.py 守卫。
 PRODUCTION_EMBED_CALLERS = [
-    "app/routes/import_routes.py",       # 导入 phase2（量最大）
-    "app/routes/maintenance_routes.py",  # 维护页全量重建
+    "app/search/chunking.py",            # 四条写入路径的公共入口（前缀 + 切块）
     "app/routes/spec_routes.py",         # 条文编辑重索引
-    "app/search/vector_search.py",       # index_missing 补齐缺失向量
-    "scripts/reindex_vectors.py",        # 重建脚本
     "scripts/probe_rebuild_effect.py",   # 重建效果探针
 ]
 

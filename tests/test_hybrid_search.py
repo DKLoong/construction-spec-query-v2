@@ -438,3 +438,143 @@ def test_hybrid_search_ce_rerank_cache_isolated(monkeypatch, tmp_path):
     hybrid_search(SearchQuery(keyword="钢筋", ce_rerank=True))   # 命中 True 缓存，不重复精排
 
     assert calls["rerank"] == 1, "开关状态应隔离缓存；True 第二次应命中缓存不重复精排"
+
+
+# ═══════════════════════════════════════════
+# 向量臂去重（Task 9：超取 ×10 → 按 clause 取最优块 → 截回 top_k）
+# ═══════════════════════════════════════════
+
+def test_dist_map_keeps_best_chunk_not_last():
+    """同一条文多块时，必须保留**最小**（最近）距离，而非最后写入的那个"""
+    dist_map: dict[int, float] = {}
+    for cid, d in ((7, 0.9), (7, 0.3), (7, 0.7)):     # 命中顺序任意
+        dist_map[cid] = min(dist_map.get(cid, float("inf")), d)
+    assert dist_map[7] == 0.3
+
+
+def test_search_overfetches_before_dedup(monkeypatch):
+    """去重发生在检索之后 → 必须先超取，否则有效召回被自己挤掉。
+
+    倍数**唯一定义在 app.search.vector_search**（超取/去重/截断同一处实现，
+    放在调用方会让两处倍数静默分叉）；这里只钉住「倍数 ≥ 2」这一前提。
+    """
+    from app.search import vector_search as vs
+    assert vs._VECTOR_FETCH_MULTIPLIER >= 2
+
+
+def test_dedupe_by_clause_keeps_highest_scoring_row():
+    """去重语义：同一条文同一个席位里留下的是 `_distance` 最小的那块。
+
+    ⚠ 显式 `max_per_clause=1`：R9 的默认上限是 2（每个条文可保留 2 块），
+    默认值下 clause 7 的两块都该留下，本用例要钉的是「取最优块」而非上限。
+    """
+    from app.search.vector_search import _dedupe_by_clause
+    rows = [
+        {"clause_id": 7, "chunk_index": 0, "_distance": 0.9, "text": "a"},
+        {"clause_id": 7, "chunk_index": 1, "_distance": 0.3, "text": "b"},
+        {"clause_id": 8, "chunk_index": 0, "_distance": 0.5, "text": "c"},
+    ]
+    out = _dedupe_by_clause(rows, max_per_clause=1)
+    assert [r["clause_id"] for r in out] == [7, 8]
+    assert out[0]["_distance"] == 0.3 and out[0]["chunk_index"] == 1
+    # 默认上限按 R9 是 2：clause 7 的两块都保留，仍按距离升序
+    assert [r["clause_id"] for r in _dedupe_by_clause(rows)] == [7, 8, 7]
+
+
+def test_dedupe_caps_chunks_per_clause_and_truncates_to_top_k():
+    """R2/R9：每 clause ≤2 块，且整体按距离截回 top_k。
+
+    没有每-clause 上限时，一条长条文的块可占满全部块位（外部评审的偏斜场景）；
+    没有截断时，向量臂的 RRF 席位被静默放大。
+    """
+    from app.search.vector_search import _dedupe_by_clause
+    rows = [{"clause_id": 1, "chunk_index": i, "_distance": 0.1 + i * 0.01, "text": "x"}
+            for i in range(6)]                       # 同一条文的 6 个块
+    rows += [{"clause_id": c, "chunk_index": 0, "_distance": 0.5, "text": "y"}
+             for c in (2, 3, 4)]
+    out = _dedupe_by_clause(rows, max_per_clause=2, top_k=3)
+    assert len(out) == 3, "必须截回 top_k"
+    assert sum(1 for r in out if r["clause_id"] == 1) <= 2, "同一条文最多 2 块"
+    assert {r["clause_id"] for r in out} >= {1, 2}, "其他条文必须仍有席位"
+
+
+def test_vector_store_search_oversamples_then_dedupes_and_truncates(monkeypatch, tmp_path):
+    """**R2 固定顺序的行为化断言**：LanceDB 取 top_k×倍数 → 去重取最优 → 返回 ≤ top_k。
+
+    整链一次跑完（不是只查常量）：漏了超取 → 取的行数不对；漏了去重 → 同一条文
+    出现两行；漏了截断 → 返回行数超过 top_k。
+    """
+    from app.search import vector_search as vsmod
+
+    limits: list[int] = []
+
+    class _Query:
+        def limit(self, n):
+            limits.append(n)
+            return self
+
+        def to_list(self):
+            return [
+                {"clause_id": 7, "spec_id": 1, "text": "块0", "chunk_index": 0, "_distance": 0.9},
+                {"clause_id": 7, "spec_id": 1, "text": "块1", "chunk_index": 1, "_distance": 0.2},
+                {"clause_id": 8, "spec_id": 1, "text": "块0", "chunk_index": 0, "_distance": 0.4},
+            ]
+
+    class _Tbl:
+        def search(self, q_vec, vector_column_name=None):  # noqa: ARG002 — 替身签名
+            return _Query()
+
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    monkeypatch.setattr(vsmod.VectorStore, "_table_exists", lambda self: True)
+    monkeypatch.setattr(vsmod.VectorStore, "_get_table", lambda self: _Tbl())
+    monkeypatch.setattr(vsmod, "embed_texts", lambda texts: [[0.0] * 4 for _ in texts])
+
+    rows = vsmod.VectorStore().search("钢筋", top_k=2)
+
+    assert limits == [2 * vsmod._VECTOR_FETCH_MULTIPLIER], \
+        f"未按 top_k×倍数超取: {limits}"
+    assert len(rows) <= 2, "必须截回 top_k"
+    assert [r["clause_id"] for r in rows] == [7, 8], "每条文一行、按距离升序"
+    assert rows[0]["_distance"] == 0.2 and rows[0]["chunk_index"] == 1, "必须取最优块"
+    assert {"clause_id", "spec_id", "text", "chunk_index", "_distance"} <= set(rows[0])
+
+
+def test_vector_arm_keeps_best_chunk_distance(monkeypatch, tmp_path):
+    """端到端：同一条文 3 块（距离 0.9/0.3/0.5）→ 结果里的 _distance 必须是 0.3。
+
+    原实现 `dist_map[id] = dist` 是**后者覆盖**，会留下最差的那块（0.5 或 0.9），
+    使该条文的 RRF 名次被自己的烂块拖下去。
+    """
+    db_path = tmp_path / "test_best_chunk.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text) VALUES (?, ?, ?, ?, ?)",
+            (spec_id, "9.9.9", "标题", "其他内容",
+             build_search_text("9.9.9", "标题", "其他内容")[0]),
+        )
+        cid = conn.execute("SELECT id FROM clauses WHERE clause_no='9.9.9'").fetchone()[0]
+
+    class _FakeVectorStore:
+        def search(self, query_text, top_k=10):
+            return [
+                {"clause_id": cid, "spec_id": spec_id, "text": "块0",
+                 "chunk_index": 0, "_distance": 0.9},
+                {"clause_id": cid, "spec_id": spec_id, "text": "块1",
+                 "chunk_index": 1, "_distance": 0.3},
+                {"clause_id": cid, "spec_id": spec_id, "text": "块2",
+                 "chunk_index": 2, "_distance": 0.5},
+            ]
+
+    monkeypatch.setattr("app.search.vector_search.VectorStore", _FakeVectorStore)
+
+    from app.search.hybrid_search import hybrid_search
+    results, total = hybrid_search(SearchQuery(keyword="钢筋"))
+
+    assert total == 1
+    assert results[0]["id"] == cid
+    assert results[0]["_distance"] == 0.3, "多块时必须取最小距离（最优块）"

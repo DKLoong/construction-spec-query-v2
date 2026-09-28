@@ -109,15 +109,16 @@ def test_index_missing_diffset_no_placeholders(monkeypatch, tmp_path):
             )
     calls = []
     monkeypatch.setattr(
-        VectorStore, "index_clause",
-        lambda self, clause_id, spec_id, text, dim_scores="": calls.append((clause_id, text)),
+        VectorStore, "index_clause_chunks",
+        lambda self, clause_id, spec_id, texts, dim_scores="": calls.append((clause_id, texts)),
     )
     added = VectorStore().index_missing()
     assert added == 1  # 仅 clause_id=2 缺失
     assert [c[0] for c in calls] == [2]
-    # 补齐路径的向量文本**必须**含面包屑：漏传第 6 参是静默的（默认值 ""），
-    # 而补齐是全量重建之外的唯一自动修补通道，漏了会让这些条文永远缺位置信号。
-    assert calls[0][1] == "GB T t [2] 2 术语和符号 x"
+    # 补齐路径的向量文本**必须**含面包屑：漏传面包屑是静默的（build_embed_chunks
+    # 的关键字参数有默认值 ""），而补齐是全量重建之外的唯一自动修补通道，
+    # 漏了会让这些条文永远缺位置信号。
+    assert calls[0][1] == ["GB T t [2] 2 术语和符号 x"]
 
 
 def test_batch_index_progress_cb(monkeypatch, tmp_path):

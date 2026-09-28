@@ -16,7 +16,7 @@ from app.ocr.pdf_extract import extract_text, is_scanned
 from app.classifier.rule_engine import classify_clause, should_use_ai
 from app.classifier.batch_queue import try_enqueue
 from app.search.vector_search import VectorStore
-from app.search.embed_text import build_embed_text
+from app.search.chunking import build_embed_chunks
 from app.routes.spec_routes import SPEC_STATUS_ALLOWED
 
 router = APIRouter()
@@ -540,14 +540,19 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
             if vs is not None:
                 dim_scores_str = ",".join(f"{k}={v:.2f}" for k, v in scores.items())
-                embed_text = build_embed_text(code, title, cd["clause_no"], cd["title"],
-                                              cd["content"], cd.get("section_path", ""))
-                embedding_records.append({
-                    "clause_id": clause_id,
-                    "spec_id": spec_id,
-                    "text": embed_text,
-                    "dim_scores": dim_scores_str,
-                })
+                # 超长条文切块 → **每块一条向量记录**（chunk_index 递增）。前缀预算的
+                # 预留只在 build_embed_chunks 一处做（与重建路径共用，各算一套会分叉）。
+                for ci, embed_text in enumerate(build_embed_chunks(
+                        cd["content"], code=code, spec_title=title,
+                        clause_no=cd["clause_no"], clause_title=cd["title"],
+                        section_path=cd.get("section_path", ""))):
+                    embedding_records.append({
+                        "clause_id": clause_id,
+                        "spec_id": spec_id,
+                        "text": embed_text,
+                        "dim_scores": dim_scores_str,
+                        "chunk_index": ci,
+                    })
 
         # 第二步：批量计算 embedding（比逐条快一个数量级）
         if vs is not None and embedding_records:
@@ -564,7 +569,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                     raise RuntimeError("Embedding 模型不可用")
 
                 progress_store[task_id].update(
-                    progress=84, message=f"正在生成向量（{n_vec} 条）…")
+                    progress=84, message=f"正在生成向量（{n_vec} 块）…")
                 texts = [r["text"] for r in embedding_records]
                 embeddings = embed_texts(texts)
 
@@ -575,7 +580,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                         "text": r["text"],
                         "embedding": np.array(embeddings[i], dtype=np.float32),
                         "dim_scores": r["dim_scores"],
-                        "chunk_index": 0,
+                        "chunk_index": r["chunk_index"],
                     }
                     for i, r in enumerate(embedding_records)
                 ]

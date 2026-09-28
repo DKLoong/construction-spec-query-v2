@@ -4,7 +4,7 @@ import pyarrow as pa
 from app.config import LANCE_DB_PATH
 from app.database import get_db
 from app.ai.embedding import embed_texts
-from app.search.embed_text import build_embed_text
+from app.search.chunking import build_embed_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,37 @@ def embedding_schema(dim: int, with_chunk_index: bool = True) -> pa.Schema:
         pa.field("dim_scores", pa.string()),
         *chunk_index_field,
     ])
+
+
+# 向量臂超取倍数（R2/R9）：去重按 clause_id 进行，一条长条文可能占多个块位；
+# 不超取会让块数多的条文挤掉其他条文的候选。R9 实测驳斥了「×3 就够」——
+# 重叠（R4）后相邻块文本近似重复、距离簇拥，一条长条文可以独占全部 3×top_k 个块位，
+# 去重后只剩它一条、向量臂塌成个位数。故倍数放到 10，**并在应用层限制
+# 「同一 clause_id 最多保留 _MAX_CHUNKS_PER_CLAUSE 块」**——席位由这个上限保证，
+# 而不是靠倍数凑巧够用。**唯一定义处**：超取/去重/截断是同一段固定顺序（R2），
+# 常量放在调用方会让两处倍数静默分叉（调用方再乘一次就是 ×100）。
+_VECTOR_FETCH_MULTIPLIER = 10
+_MAX_CHUNKS_PER_CLAUSE = 2
+
+
+def _dedupe_by_clause(rows: list[dict], max_per_clause: int = _MAX_CHUNKS_PER_CLAUSE,
+                      top_k: int | None = None) -> list[dict]:
+    """按 clause_id 去重，保留 `_distance` 最小（最相关）的若干块，再按距离截回 top_k。
+
+    R2：**顺序固定为「超取 → 去重取最优 → 截回 top_k」**——超取的目的是把
+    「被自己的块挤掉的候选」找回来，不是让向量臂拿更多席位；截回后普通查询的
+    RRF 行为与改前等价（无偏斜时）。R9：`max_per_clause` 保证每个条文都有席位
+    （否则一条长条文可以独占全部块位，去重后向量臂反而比改前更薄）。
+    """
+    best: dict[int, list[dict]] = {}
+    for r in sorted(rows, key=lambda d: d.get("_distance", float("inf"))):
+        cid = r["clause_id"]
+        kept = best.setdefault(cid, [])
+        if len(kept) < max_per_clause:
+            kept.append(r)
+    flat = [r for kept in best.values() for r in kept]
+    flat.sort(key=lambda d: d.get("_distance", float("inf")))
+    return flat[:top_k] if top_k is not None else flat
 
 
 class VectorStore:
@@ -63,54 +94,94 @@ class VectorStore:
             return True
         return "chunk_index" not in names
 
-    def index_clause(self, clause_id: int, spec_id: int, text: str, dim_scores: str = ""):
-        import numpy as np
-        vectors = embed_texts([text])
-        emb = np.array(vectors[0], dtype=np.float32)
+    def index_clause(self, clause_id: int, spec_id: int, text: str, dim_scores: str = "",
+                     chunk_index: int = 0) -> int:
+        """写**单块**向量（`chunk_index` 标明它是该条文的第几块）。
 
-        # 先删旧记录，防止同一 clause_id 重复出现
+        先删该 clause 的全部旧行再写。⚠ 故一条条文的多块必须**一次**交给
+        `index_clause_chunks`——逐块循环调用本方法会「后块删前块」，只剩最后一块。
+        """
+        return self._write_clause_vectors(clause_id, spec_id, [text], dim_scores, chunk_index)
+
+    def index_clause_chunks(self, clause_id: int, spec_id: int, texts: list[str],
+                            dim_scores: str = "") -> int:
+        """写一条条文的**全部子块**：先删旧行，再一次性批量 add（chunk_index 0..N-1）。
+
+        texts 由 `app.search.chunking.build_embed_chunks` 产出（已含前缀预算预留，
+        故每块模型输入不超上限）。空列表不写、返回 0（空正文不产向量行）。
+
+        ⚠ 一次 add 是有意的：实测逐条 add 比批量慢 40 倍，且每次 add 产生一个新版本。
+        """
+        return self._write_clause_vectors(clause_id, spec_id, texts, dim_scores, 0)
+
+    def _write_clause_vectors(self, clause_id: int, spec_id: int, texts: list[str],
+                              dim_scores: str, first_chunk_index: int) -> int:
+        """删该 clause 的旧行 + 一次性批量写 N 行（chunk_index 自 first_chunk_index 递增）。"""
+        import numpy as np
+        if not texts:
+            return 0
+        # 先算完（慢）再删：编码失败时不动既有行，不会把旧向量删成窟窿
+        vectors = embed_texts(texts)
+        records = [
+            {
+                "clause_id": clause_id,
+                "spec_id": spec_id,
+                "text": text,
+                "embedding": np.array(vectors[i], dtype=np.float32),
+                "dim_scores": dim_scores,
+                "chunk_index": first_chunk_index + i,
+            }
+            for i, text in enumerate(texts)
+        ]
+
+        # 先删旧记录，防止同一 clause_id 的旧块残留（多块时整条一起替换）
         if self._table_exists():
             try:
                 self._get_table().delete(f"clause_id = {clause_id}")
-            except Exception:
-                pass
+            except Exception as e:
+                # 删不掉 → 旧块与新块并存（同一 clause 被重复召回），不得静默
+                logger.warning("删除 clause_id=%s 的旧向量失败: %s", clause_id, e)
 
         if not self._table_exists():
             # 显式指定 schema，确保 embedding 列是固定大小向量类型
-            schema = embedding_schema(len(emb))
+            schema = embedding_schema(len(records[0]["embedding"]))
             tbl = self.db.create_table("clause_embeddings", schema=schema)
-            tbl.add([{
-                "clause_id": clause_id,
-                "spec_id": spec_id,
-                "text": text,
-                "embedding": emb,
-                "dim_scores": dim_scores,
-                "chunk_index": 0,
-            }])
+            tbl.add(records)
         else:
-            self._get_table().add([{
-                "clause_id": clause_id,
-                "spec_id": spec_id,
-                "text": text,
-                "embedding": emb,
-                "dim_scores": dim_scores,
-                "chunk_index": 0,
-            }])
+            self._get_table().add(records)
+        return len(records)
 
     def search(self, query_text: str, top_k: int = 10,
-               dim_filter: str | None = None) -> list[dict]:
+               dim_filter: str | None = None,
+               dedupe_by_clause: bool = True) -> list[dict]:
+        """向量检索：超取 top_k × `_VECTOR_FETCH_MULTIPLIER` → 去重取最优块 → 截回 top_k。
+
+        超长条文在表里是多行（每块一行），故**同一条文只返回一次**（取距离最小的
+        那块）：否则一条长条文的多块会挤掉其他条文的候选，且调用方拿到的最差块
+        距离会拖低它的融合名次。
+
+        返回项含 `clause_id` / `spec_id` / `text` / `chunk_index` / `_distance`。
+        `chunk_index` 用 `.get(..., 0)`：本机现存表仍是加列前的 5 列形态（重建才落地），
+        缺列时取 0，读写都不因此报错。
+        `dedupe_by_clause=False` 保留原始块（供需要看各块的调用方/探针）。
+        """
         if not self._table_exists():
             return []
         import numpy as np
         q_vec = embed_texts([query_text])[0]
         q_vec = np.array(q_vec, dtype=np.float32)
         tbl = self._get_table()
-        results = tbl.search(q_vec, vector_column_name="embedding").limit(top_k).to_list()
-        return [
+        fetch_k = top_k * _VECTOR_FETCH_MULTIPLIER if dedupe_by_clause else top_k
+        results = tbl.search(q_vec, vector_column_name="embedding").limit(fetch_k).to_list()
+        rows = [
             {"clause_id": r["clause_id"], "spec_id": r["spec_id"],
-             "text": r["text"], "_distance": r.get("_distance", 0)}
+             "text": r["text"], "chunk_index": r.get("chunk_index", 0),
+             "_distance": r.get("_distance", 0)}
             for r in results
         ]
+        if not dedupe_by_clause:
+            return rows
+        return _dedupe_by_clause(rows, max_per_clause=_MAX_CHUNKS_PER_CLAUSE, top_k=top_k)
 
     def get_orphans(self) -> list[int]:
         """返回向量表有而 SQLite 无的孤儿 clause_id（只读，不删除）"""
@@ -174,11 +245,17 @@ class VectorStore:
         missing = [r for r in all_rows if r["id"] not in vector_ids]
         added = 0
         for r in missing:
-            embed_text = build_embed_text(
-                r["code"], r["spec_title"], r["clause_no"], r["title"], r["content"],
-                r["section_path"] or "")
+            # 超长条文切块（与导入/重建同一条路径、同一处前缀预留）；
+            # 补齐若只写单块，长条文经此修补后尾部仍不可召回。
+            texts = build_embed_chunks(
+                r["content"], code=r["code"], spec_title=r["spec_title"],
+                clause_no=r["clause_no"], clause_title=r["title"],
+                section_path=r["section_path"] or "")
+            if not texts:
+                logger.debug("跳过无正文条文的向量补齐: clause_id=%s", r["id"])
+                continue
             try:
-                self.index_clause(r["id"], r["spec_id"], embed_text)
+                self.index_clause_chunks(r["id"], r["spec_id"], texts)
                 added += 1
             except Exception as e:
                 logger.warning("补齐向量 clause_id=%s 失败: %s", r["id"], e)
@@ -220,7 +297,8 @@ class VectorStore:
                     progress_cb=None):
         """批量索引条文（先建表再逐批插入）
 
-        clauses: [{"clause_id": int, "spec_id": int, "text": str, "dim_scores": str}, ...]
+        clauses: [{"clause_id": int, "spec_id": int, "text": str, "dim_scores": str,
+                   "chunk_index": int}, ...]（同一条文的多块 = 多行，chunk_index 递增）
         progress_cb(done: int, total: int) — 每处理完一批回调一次（供后台重建显示进度）
         """
         import numpy as np
@@ -250,7 +328,7 @@ class VectorStore:
                 "text": c["text"],
                 "embedding": np.array(first_embs[i], dtype=np.float32),
                 "dim_scores": c.get("dim_scores", ""),
-                "chunk_index": 0,
+                "chunk_index": c.get("chunk_index", 0),
             })
         tbl.add(records)
         if progress_cb:
@@ -268,7 +346,7 @@ class VectorStore:
                     "text": c["text"],
                     "embedding": np.array(embs[i], dtype=np.float32),
                     "dim_scores": c.get("dim_scores", ""),
-                    "chunk_index": 0,
+                    "chunk_index": c.get("chunk_index", 0),
                 })
             tbl.add(records)
             if progress_cb:

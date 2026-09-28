@@ -89,7 +89,7 @@ def _run_rebuild(task_id: str, username: str = ""):
         rebuild_progress[task_id] = {"status": "running", "progress": 0,
                                      "message": "正在清空旧向量索引…"}
         from app.search.vector_search import VectorStore
-        from app.search.embed_text import build_embed_text
+        from app.search.chunking import build_embed_chunks
         with get_db() as conn:
             clauses = conn.execute(
                 """SELECT c.id, c.spec_id, c.clause_no, c.title, c.content, c.section_path,
@@ -104,12 +104,17 @@ def _run_rebuild(task_id: str, username: str = ""):
             return
         records = []
         for c in clauses:
-            records.append({
-                "clause_id": c["id"], "spec_id": c["spec_id"],
-                "text": build_embed_text(c["code"], c["spec_title"], c["clause_no"],
-                                         c["title"], c["content"], c["section_path"]),
-                "dim_scores": "",
-            })
+            # 超长条文切块 → 每块一条记录（chunk_index 递增）。前缀预算的预留只在
+            # build_embed_chunks 一处做（与导入路径共用）；重建只写单行 = 长条文尾部
+            # 永久不可召回，正是本批要修的问题。
+            for ci, text in enumerate(build_embed_chunks(
+                    c["content"], code=c["code"], spec_title=c["spec_title"],
+                    clause_no=c["clause_no"], clause_title=c["title"],
+                    section_path=c["section_path"] or "")):
+                records.append({
+                    "clause_id": c["id"], "spec_id": c["spec_id"],
+                    "text": text, "dim_scores": "", "chunk_index": ci,
+                })
         total = len(records)
 
         def _cb(done: int, n: int) -> None:

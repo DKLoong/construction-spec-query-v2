@@ -66,6 +66,15 @@ SEARCH_RRF_K = 60                  # RRF 融合分母常数
 SEARCH_LEXICON_EXPAND = 1          # 词库同义/别名检索扩展开关（1 开 / 0 关）
 SEARCH_BREADCRUMB_WEIGHT = 0.3     # 面包屑在 BM25 排序里的列权重（0=完全不参与）
 
+# ── 向量子块切分（超长条文）──
+# 口径是**字符**，不是 token：实测切分处数的是 `len()`（与 BGE 的 512 token 上限
+# 只是同量级，中文 1 字≈1 token），故常量名与 docstring 一律声明字符。
+# ⚠ 本值是**总预算**：真正传给 chunk_text 的生效上限还要扣掉 build_embed_text
+# 的前缀长度，扣减只允许发生在 app/search/chunking.build_embed_chunks 一处。
+CHUNK_CHAR_LIMIT = 512
+# 生效上限的下限：前缀极长时不再继续压缩（过小的块会让语义碎片化）
+CHUNK_CHAR_FLOOR = 128
+
 # ── 日志保留（D15）──
 LOG_RETENTION_DAYS = 90        # system_logs 默认保留天数
 LOG_CLEAN_BATCH = 500          # 清理每批删除上限（防长事务）

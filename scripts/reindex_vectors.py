@@ -10,7 +10,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 from app.database import get_db
 from app.search.vector_search import VectorStore
-from app.search.embed_text import build_embed_text
+from app.search.chunking import build_embed_chunks
 from app.ai.embedding import get_model
 
 
@@ -40,15 +40,11 @@ def main():
     print("Rebuilding vector index from scratch...")
     print()
 
-    # 构建嵌入文本：走共享的 build_embed_text（含 plain_text 去标记 + 与导入路径同格式）。
-    # 此处曾内联重复拼接，导致与导入路径漂移、且会绕过标记清洗，切勿再内联。
+    # 构建嵌入文本：走共享的 build_embed_chunks（含 plain_text 去标记、与导入路径同格式，
+    # 且**承担前缀预算预留**）。此处曾内联重复拼接，导致与导入路径漂移、且会绕过标记清洗；
+    # 重建若只写单行，超长条文的尾部还会永久不可召回，切勿再内联。
     clauses = []
     for r in rows:
-        text = build_embed_text(
-            r["spec_code"] or "", r["spec_title"] or "",
-            r["clause_no"] or "", r["title"] or "", r["content"] or "",
-            r["section_path"] or "")
-
         # 构建维度分数字符串
         dim_parts = []
         if r["dim4_specialty"]:
@@ -59,12 +55,18 @@ def main():
             dim_parts.append(f"dim6={r['dim6_material']}")
         dim_scores = ",".join(dim_parts)
 
-        clauses.append({
-            "clause_id": r["clause_id"],
-            "spec_id": r["spec_id"],
-            "text": text,
-            "dim_scores": dim_scores,
-        })
+        # 超长条文切块 → 每块一条记录（chunk_index 递增）
+        for ci, text in enumerate(build_embed_chunks(
+                r["content"] or "", code=r["spec_code"] or "", spec_title=r["spec_title"] or "",
+                clause_no=r["clause_no"] or "", clause_title=r["title"] or "",
+                section_path=r["section_path"] or "")):
+            clauses.append({
+                "clause_id": r["clause_id"],
+                "spec_id": r["spec_id"],
+                "text": text,
+                "dim_scores": dim_scores,
+                "chunk_index": ci,
+            })
 
     # 批量索引（内部会先 clear_all 再建表）
     vs = VectorStore()
