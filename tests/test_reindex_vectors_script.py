@@ -23,3 +23,54 @@ def test_reindex_vectors_reuses_shared_embed_chunk_builder():
     src = _REINDEX.read_text(encoding="utf-8")
     assert "build_embed_chunks" in src, "必须调用 build_embed_chunks（切块 + 前缀预留的唯一入口）"
     assert "text_parts" not in src, "不得内联重复实现拼接（会绕过 plain_text 并再次漂移）"
+
+
+def _load_reindex_module():
+    """以独立模块名加载重建脚本本体（不触发 `__main__` 分支的 stdout 包裹）。
+
+    源码级守卫只防「内联拼接/绕过切块」，防不了「查询漏选 c.section_path 却传空串」
+    这类静默漂移；下面的功能级用例跑真实的 main() 并读回向量表 text 列来钉住它。
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("reindex_vectors_under_test", _REINDEX)
+    assert spec is not None, f"无法定位重建脚本模块: {_REINDEX}"
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_reindex_vectors_includes_section_path(tmp_path, monkeypatch):
+    """重建后的向量文本必须含面包屑——否则「搜节名」在向量臂失效。
+
+    这是功能级守卫：跑真实的 reindex_vectors.main()（真建表、真写向量、读回 text 列），
+    断言重建产物的 text 确实含 section_path 的面包屑。批二的存量向量补面包屑只有
+    「全量重建」这一条通道，这里漏了是静默的。
+    """
+    from app.database import init_db, get_db
+
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    # 假嵌入：不加载真实模型（8 维即可满足建表）
+    monkeypatch.setattr("app.search.vector_search.embed_texts",
+                        lambda texts: [[0.0] * 8 for _ in texts])
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB 50010', '混凝土规范')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """INSERT INTO clauses (spec_id, clause_no, title, content, section_path)
+               VALUES (?, ?, ?, ?, ?)""",
+            (spec_id, "5.1.1", "模板", "内容", "5 混凝土分项工程 > 5.1 模板"),
+        )
+
+    mod = _load_reindex_module()
+    monkeypatch.setattr(mod, "get_model", lambda: object())  # 让 main() 的 None 检查通过
+    mod.main()
+
+    from app.search.vector_search import VectorStore
+    rows = VectorStore()._get_table().to_arrow().to_pylist()
+    assert rows, "重建后向量表应有行"
+    assert any("混凝土分项工程" in r["text"] for r in rows), \
+        "重建后的向量文本不含面包屑（查询漏选 section_path 或未传第 6 参）"

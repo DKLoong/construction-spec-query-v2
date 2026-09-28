@@ -1,14 +1,16 @@
 """条文 embedding 文本构造（BGE 语义检索输入，与 FTS5 search_text 是两套）
 
 embedding 文本喂给 BGE 模型生成语义向量；FTS5 的 search_text 由 tokenize 模块
-jieba 预分词构建，两者用途不同、格式不同。统一抽成函数，避免 6 处调用点
-（导入 phase2 / 维护重建 / 补齐缺失向量 / 条文编辑重索引 / 重建脚本 / 效果探针）
-格式漂移导致向量不一致。
+jieba 预分词构建，两者用途不同、格式不同。统一抽成函数，避免格式漂移导致向量不一致。
 
 ⚠ 新增调用点时**必须**传 `section_path`：它有默认值 `""`，漏传不会报错，
 只会静默产出不含面包屑的向量（同一批条文两条路径向量不一致）。
 `tests/test_embed_text.py::test_all_production_callers_pass_section_path`
 与 `::test_production_caller_list_is_complete` 是这条约束的守卫。
+
+五条**写入路径**（导入 phase2 / 维护页重建 / 重建脚本 / 补齐缺失向量 / 条文编辑
+重索引）都经 `app.search.chunking.build_embed_chunks` 调本函数（顺带做超长条文
+切块与前缀预算预留）；直接调用本函数的只有 `chunking.py` 本身与效果探针。
 """
 
 from app.ai.text_clean import plain_text

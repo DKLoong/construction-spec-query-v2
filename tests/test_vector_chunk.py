@@ -158,12 +158,13 @@ def test_chunk_then_embed_text_matches_direct_call():
 
 
 def test_write_paths_share_one_reservation_helper():
-    """前缀预留只允许有一处实现：导入路径与重建路径**共用** `build_embed_chunks`。
+    """前缀预留只允许有一处实现：各写入路径**共用** `build_embed_chunks`。
 
-    两处各算一套预留会静默分叉（一条超长条文经导入与经重建写出的块数/文本不同）。
+    各算一套预留会静默分叉（一条超长条文经导入/编辑/重建写出的块数/文本不同）。
+    含条文编辑重索引（spec_routes）——U7 把编辑路径也收口到共享入口。
     """
     for rel in ("app/routes/import_routes.py", "app/routes/maintenance_routes.py",
-                "scripts/reindex_vectors.py"):
+                "app/routes/spec_routes.py", "scripts/reindex_vectors.py"):
         src = (_REPO_ROOT / rel).read_text(encoding="utf-8")
         assert "build_embed_chunks" in src, f"{rel} 未走共享的切块/预留入口 build_embed_chunks"
 

@@ -39,13 +39,23 @@ def test_health_check_writes_snapshot(auth_client, monkeypatch, tmp_path):
 
 def test_rebuild_start_returns_task_id(auth_client, monkeypatch, tmp_path):
     """POST rebuild 立即返回 task_id（后台线程执行，不阻塞请求）"""
+    import threading
     import app.routes.maintenance_routes as mr
-    monkeypatch.setattr(mr, "_run_rebuild", lambda tid: None)  # 不真实跑后台
+    ran = threading.Event()
+
+    def fake_run(tid, username=""):
+        ran.set()
+
+    # 二参签名（路由 `threading.Thread(target=_run_rebuild, args=(task_id, username))`）。
+    # 旧 `lambda tid: None` 只收一参，后台线程被二参调用打爆 → 未捕获 TypeError，
+    # ran 永不置位 + 全量套件留 PytestUnhandledThreadExceptionWarning。
+    monkeypatch.setattr(mr, "_run_rebuild", fake_run)
     _setup(monkeypatch, tmp_path)
     resp = auth_client.post("/maintenance/rebuild-vectors")
     assert resp.status_code == 200
     data = resp.json()
     assert data["task_id"].startswith("rb")
+    assert ran.wait(timeout=2.0), "后台重建线程未执行（_run_rebuild 未以正确参数被调用）"
 
 
 def test_rebuild_progress_endpoint(auth_client, monkeypatch, tmp_path):

@@ -235,17 +235,25 @@ async def update_clause(
              clause_id),
         )
 
-        # 重索引向量
+        # 重索引向量：超长条文走切块（多块=多行），否则编辑会把 N 块塌回 1 行、
+        # 尾部再次不可召回，只能等下一次全量重建才恢复。与导入/重建/补齐同走
+        # build_embed_chunks（前缀预算预留只此一处，见 chunking.py）。
         try:
             from app.search.vector_search import VectorStore
-            from app.search.embed_text import build_embed_text
+            from app.search.chunking import build_embed_chunks
             spec = conn.execute(
                 "SELECT code, title FROM specifications WHERE id = ?", (spec_id,)
             ).fetchone()
             vs = VectorStore()
-            embed_text = build_embed_text(spec["code"], spec["title"], clause_no, title,
-                                          content, section_path)
-            vs.index_clause(clause_id, spec_id, embed_text)
+            texts = build_embed_chunks(
+                content, code=spec["code"], spec_title=spec["title"],
+                clause_no=clause_no, clause_title=title, section_path=section_path)
+            if texts:
+                vs.index_clause_chunks(clause_id, spec_id, texts)
+            else:
+                # 正文被清空：不写「只有前缀」的行，但要清掉该条文的旧向量，
+                # 否则旧块残留会被当成当前（已空）条文的命中。
+                vs.delete_clause(clause_id)
         except Exception as e:
             logger.warning("向量重索引失败: %s", e)
 

@@ -5,9 +5,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Force UTF-8 output to avoid GBK encoding errors on Windows
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-
 from app.database import get_db
 from app.search.vector_search import VectorStore
 from app.search.chunking import build_embed_chunks
@@ -83,4 +80,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # Force UTF-8 output to avoid GBK encoding errors on Windows。
+    # 只在 CLI 直跑时包裹：测试会 import 本模块调用 main()，模块级包裹会破坏 pytest 的
+    # stdout 捕获（把捕获对象再包一层 TextIOWrapper）。
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     main()
