@@ -540,7 +540,8 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
             if vs is not None:
                 dim_scores_str = ",".join(f"{k}={v:.2f}" for k, v in scores.items())
-                embed_text = build_embed_text(code, title, cd["clause_no"], cd["title"], cd["content"])
+                embed_text = build_embed_text(code, title, cd["clause_no"], cd["title"],
+                                              cd["content"], cd.get("section_path", ""))
                 embedding_records.append({
                     "clause_id": clause_id,
                     "spec_id": spec_id,

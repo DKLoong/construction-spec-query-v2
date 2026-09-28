@@ -24,6 +24,7 @@ def main():
     with get_db() as conn:
         rows = conn.execute(
             """SELECT c.id as clause_id, c.spec_id, c.clause_no, c.title, c.content,
+                      c.section_path,
                       c.dim4_specialty, c.dim5_location, c.dim6_material,
                       s.code as spec_code, s.title as spec_title
                FROM clauses c
@@ -45,7 +46,8 @@ def main():
     for r in rows:
         text = build_embed_text(
             r["spec_code"] or "", r["spec_title"] or "",
-            r["clause_no"] or "", r["title"] or "", r["content"] or "")
+            r["clause_no"] or "", r["title"] or "", r["content"] or "",
+            r["section_path"] or "")
 
         # 构建维度分数字符串
         dim_parts = []

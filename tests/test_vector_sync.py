@@ -101,10 +101,11 @@ def test_index_missing_diffset_no_placeholders(monkeypatch, tmp_path):
     with get_db() as conn:
         conn.execute("INSERT INTO specifications (code, title) VALUES ('GB T', 't')")
         spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        for no in ("1", "2"):
+        for no, sp in (("1", "1 总则"), ("2", "2 术语和符号")):
             conn.execute(
-                "INSERT INTO clauses (spec_id, clause_no, content) VALUES (?,?,?)",
-                (spec_id, no, "x"),
+                "INSERT INTO clauses (spec_id, clause_no, content, section_path)"
+                " VALUES (?,?,?,?)",
+                (spec_id, no, "x", sp),
             )
     calls = []
     monkeypatch.setattr(
@@ -114,8 +115,9 @@ def test_index_missing_diffset_no_placeholders(monkeypatch, tmp_path):
     added = VectorStore().index_missing()
     assert added == 1  # 仅 clause_id=2 缺失
     assert [c[0] for c in calls] == [2]
-    from app.search.embed_text import build_embed_text
-    assert calls[0][1] == build_embed_text("GB T", "t", "2", "", "x")
+    # 补齐路径的向量文本**必须**含面包屑：漏传第 6 参是静默的（默认值 ""），
+    # 而补齐是全量重建之外的唯一自动修补通道，漏了会让这些条文永远缺位置信号。
+    assert calls[0][1] == "GB T t [2] 2 术语和符号 x"
 
 
 def test_batch_index_progress_cb(monkeypatch, tmp_path):

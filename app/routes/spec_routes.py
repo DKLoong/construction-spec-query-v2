@@ -243,7 +243,8 @@ async def update_clause(
                 "SELECT code, title FROM specifications WHERE id = ?", (spec_id,)
             ).fetchone()
             vs = VectorStore()
-            embed_text = build_embed_text(spec["code"], spec["title"], clause_no, title, content)
+            embed_text = build_embed_text(spec["code"], spec["title"], clause_no, title,
+                                          content, section_path)
             vs.index_clause(clause_id, spec_id, embed_text)
         except Exception as e:
             logger.warning("向量重索引失败: %s", e)

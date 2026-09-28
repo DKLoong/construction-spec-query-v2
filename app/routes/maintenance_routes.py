@@ -92,7 +92,7 @@ def _run_rebuild(task_id: str, username: str = ""):
         from app.search.embed_text import build_embed_text
         with get_db() as conn:
             clauses = conn.execute(
-                """SELECT c.id, c.spec_id, c.clause_no, c.title, c.content,
+                """SELECT c.id, c.spec_id, c.clause_no, c.title, c.content, c.section_path,
                           s.code, s.title as spec_title
                    FROM clauses c JOIN specifications s ON c.spec_id = s.id
                    ORDER BY c.id"""
@@ -107,7 +107,7 @@ def _run_rebuild(task_id: str, username: str = ""):
             records.append({
                 "clause_id": c["id"], "spec_id": c["spec_id"],
                 "text": build_embed_text(c["code"], c["spec_title"], c["clause_no"],
-                                         c["title"], c["content"]),
+                                         c["title"], c["content"], c["section_path"]),
                 "dim_scores": "",
             })
         total = len(records)

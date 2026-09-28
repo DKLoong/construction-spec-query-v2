@@ -75,6 +75,56 @@ def _run_import(monkeypatch, tmp_path, task_id):
     return adds
 
 
+#: 带祖先层级的 md：`5.2.1` 的 section_path 应为 `5 混凝土分项工程 > 5.2 钢筋`
+_SECTIONED_MD = """# 5 混凝土分项工程
+
+5.2 钢筋
+
+5.2.1 原材料
+
+钢筋进场时应抽取试件作屈服强度检验。
+"""
+
+
+def test_import_embed_text_carries_section_path(monkeypatch, tmp_path):
+    """导入路径写进向量的文本必须含面包屑，且位置在**条文号之后、标题之前**。
+
+    漏传 `build_embed_text` 的第 6 参是**静默**的（默认值 `""`）：向量照常写入，
+    只是永远丢掉「该条属于哪一节」的位置信号，且与重建路径产出的向量不一致。
+    本用例走真实导入链路（`_process_import_phase2`），只把向量表换成记录替身。
+    """
+    _setup(monkeypatch, tmp_path)
+    texts: list[str] = []
+
+    class _TextTable:
+        def add(self, records):
+            texts.extend(r["text"] for r in records)
+
+    class _TextVS:
+        def _table_exists(self):
+            return True
+
+        def _get_table(self):
+            return _TextTable()
+
+    monkeypatch.setattr(ir, "VectorStore", lambda: _TextVS())
+    monkeypatch.setattr("app.ai.embedding.embed_texts",
+                        lambda ts: [[0.0] * 8 for _ in ts])
+    ir.progress_store["bt000003"] = {"status": "processing", "progress": 0, "owner": "t"}
+    try:
+        ir._process_import_phase2(
+            "bt000003", _SECTIONED_MD, "面包屑测试规范", "GB/T 88888-2020",
+            str(tmp_path / "f3.md"), "hash_breadcrumb", "现行", "",
+        )
+    finally:
+        ir.progress_store.pop("bt000003", None)
+
+    assert len(texts) == 1, f"应只导入 1 条条文，实际 {len(texts)}"
+    assert texts[0] == (
+        "GB/T 88888-2020 面包屑测试规范 [5.2.1] "
+        "5 混凝土分项工程 > 5.2 钢筋 原材料 钢筋进场时应抽取试件作屈服强度检验。")
+
+
 def test_vector_write_is_batched_not_per_row(monkeypatch, tmp_path):
     """向量表已存在时 → 写入次数远小于条文数（逐条实现下会等于 1000）"""
     adds = _run_import(monkeypatch, tmp_path, "bt000001")

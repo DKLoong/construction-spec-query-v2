@@ -79,6 +79,36 @@ def test_run_rebuild_updates_progress(monkeypatch, tmp_path):
     assert mr.rebuild_progress["rb_sync"]["progress"] == 100
 
 
+def test_run_rebuild_embeds_section_path(monkeypatch, tmp_path):
+    """全量重建写进向量的文本必须含面包屑，位置在条文号之后、标题之前。
+
+    重建是本批「存量向量补面包屑」的**唯一**通道（U7 的重建门禁会调它）：
+    这里漏传第 6 参是静默的，会让整库重建产出与导入路径不一致的向量。
+    """
+    import app.routes.maintenance_routes as mr
+    _setup(monkeypatch, tmp_path, name="rb_sp.db")
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB 50010', '混凝土规范')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """INSERT INTO clauses (spec_id, clause_no, title, content, section_path)
+               VALUES (?, ?, ?, ?, ?)""",
+            (spec_id, "5.1.1", "模板", "内容", "5 混凝土分项工程 > 5.1 模板"),
+        )
+    from app.search.vector_search import VectorStore
+    records: list[dict] = []
+
+    def fake_batch_index(self, recs, batch_size=32, progress_cb=None):
+        records.extend(recs)
+
+    monkeypatch.setattr(VectorStore, "batch_index", fake_batch_index)
+    mr._run_rebuild("rb_sp")
+    assert mr.rebuild_progress["rb_sp"]["status"] == "done", mr.rebuild_progress["rb_sp"]
+    assert len(records) == 1
+    assert records[0]["text"] == (
+        "GB 50010 混凝土规范 [5.1.1] 5 混凝土分项工程 > 5.1 模板 模板 内容")
+
+
 def test_pending_flag_endpoint_is_pure_read(auth_client, monkeypatch, tmp_path):
     """红点端点：返回 {red, yellow} 且不写 system_logs / 快照
 

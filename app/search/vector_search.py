@@ -166,7 +166,7 @@ class VectorStore:
             return -1
         with get_db() as conn:
             all_rows = conn.execute(
-                """SELECT c.id, c.spec_id, c.clause_no, c.title, c.content,
+                """SELECT c.id, c.spec_id, c.clause_no, c.title, c.content, c.section_path,
                           s.code, s.title as spec_title
                    FROM clauses c JOIN specifications s ON c.spec_id = s.id
                    ORDER BY c.id"""
@@ -175,7 +175,8 @@ class VectorStore:
         added = 0
         for r in missing:
             embed_text = build_embed_text(
-                r["code"], r["spec_title"], r["clause_no"], r["title"], r["content"])
+                r["code"], r["spec_title"], r["clause_no"], r["title"], r["content"],
+                r["section_path"] or "")
             try:
                 self.index_clause(r["id"], r["spec_id"], embed_text)
                 added += 1

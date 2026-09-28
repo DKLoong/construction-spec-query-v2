@@ -81,20 +81,27 @@ def main():
     conn.row_factory = sqlite3.Row
     bak = sqlite3.connect(backup)
     bak.row_factory = sqlite3.Row
+    # 本探针天生要对比**不同年代**的两个库，故不能假定列齐：`section_path` 由
+    # `init_db` 的迁移补上，尚未迁移的库（或更早的备份）没有该列 → 用空串占位。
+    sp_sel = ("c.section_path"
+              if "section_path" in {r[1] for r in conn.execute("PRAGMA table_info(clauses)")}
+              else "'' AS section_path")
     print(f"  {'clause':<10}{'修复前字符':>12}{'修复后字符':>12}{'压缩':>8}")
     for cid in (391, 393, 439, 440, 441, 373):
         ro = bak.execute(
             "SELECT c.content, c.clause_no, c.title, s.code, s.title st FROM clauses c "
             "JOIN specifications s ON c.spec_id=s.id WHERE c.id=?", (cid,)).fetchone()
         rn = conn.execute(
-            "SELECT c.content, c.clause_no, c.title, s.code, s.title st FROM clauses c "
+            f"SELECT c.content, c.clause_no, c.title, {sp_sel}, s.code, s.title st "
+            "FROM clauses c "
             "JOIN specifications s ON c.spec_id=s.id WHERE c.id=?", (cid,)).fetchone()
         if not ro or not rn:
             continue
-        # 旧路径：build_embed_text 修复前的实现（原样拼 content）
+        # 旧路径：build_embed_text 修复前的实现（原样拼 content，且当时无面包屑参数）
         eo = (f"{ro['code'] or ''} {ro['st'] or ''} [{ro['clause_no']}] "
               f"{ro['title'] or ''} {ro['content'] or ''}").strip()
-        en = build_embed_text(rn["code"], rn["st"], rn["clause_no"], rn["title"], rn["content"])
+        en = build_embed_text(rn["code"], rn["st"], rn["clause_no"], rn["title"],
+                              rn["content"], rn["section_path"])
         print(f"  {cid:<10}{len(eo):>12}{len(en):>12}{(1 - len(en) / max(1, len(eo))):>7.0%}")
     bak.close()
     conn.close()
