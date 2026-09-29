@@ -34,6 +34,38 @@
     grid-template-columns: 1fr;
 }
 
+/* ── 页脚提示语：app-frame 纵向布局，页脚固定视口底部、所有页面可见 ── */
+.app-frame {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+.app-frame .app-layout {
+    /* 覆盖 .app-layout 的 height:100vh，改由 flex 撑满 frame 剩余空间（内部滚动不变） */
+    height: auto;
+    flex: 1;
+    min-height: 0;
+}
+.app-footer {
+    flex-shrink: 0;
+    border-top: 1px solid var(--pico-muted-border-color);
+    background: #faf7f3;
+    padding: 0.45rem 1.5rem;
+    text-align: center;
+    font-size: 0.72rem;
+    line-height: 1.7;
+    color: var(--pico-muted-color);
+}
+/* 登录页：内容不足一屏时页脚仍贴底 */
+.login-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+.login-body > main {
+    flex: 1;
+}
+
 /* ── 审查页工具栏：搜索/替换控件同行、统一高度、基线对齐 ──
    Pico 全局规则 `input:not([type=checkbox],[type=radio]),select,textarea{width:100%}`，
    input 需内联 width 覆盖（模板已设 search=200px / replace=180px）；height 统一 36px

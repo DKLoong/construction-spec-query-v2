@@ -6,7 +6,7 @@
     <title>施工规范查询系统 V2</title>
     <link rel="stylesheet" href="/static/pico.min.css">
     <link rel="stylesheet" href="/static/pico.custom.css?v=1">
-    <link rel="stylesheet" href="/static/app.css?v=29">
+    <link rel="stylesheet" href="/static/app.css?v=30">
     <link rel="stylesheet" href="/static/katex/katex.min.css">
     <script src="/static/htmx.min.js"></script>
     <script src="/static/alpine.min.js" defer></script>
@@ -14,15 +14,20 @@
     <script src="/static/purify.min.js"></script>
 </head>
 <body>
-    <div x-data="appLayout()" class="app-layout{% if hide_tree %} full-width{% endif %}">
-        {% if not hide_tree %}
-        <aside class="left-panel">
-            {% if left_content %}{% include left_content %}{% endif %}
-        </aside>
-        {% endif %}
-        <main class="center-panel-v2">
-            {% if center_content %}{% include center_content %}{% endif %}
-        </main>
+    <div class="app-frame">
+        <div x-data="appLayout()" class="app-layout{% if hide_tree %} full-width{% endif %}">
+            {% if not hide_tree %}
+            <aside class="left-panel">
+                {% if left_content %}{% include left_content %}{% endif %}
+            </aside>
+            {% endif %}
+            <main class="center-panel-v2">
+                {% if center_content %}{% include center_content %}{% endif %}
+            </main>
+        </div>
+        <footer class="app-footer">
+            本工具规范资料取自公开渠道，仅供个人学习，禁止商用，侵权请联系删除；OCR 识别可能存在错漏，检索及 AI 回复仅作参考，不得作为专业评估、工程决策依据，请以官方规范原文为准。
+        </footer>
     </div>
     <script>
         function appLayout() {
