@@ -12,13 +12,20 @@ from typing import NamedTuple
 #    正是靠它才没被认成条文。
 # ⚠️ 通过本组正则得到的编号**必须**经 `_normalize_clause_no` 去掉内部空白，
 #    否则落库的 clause_no 会带空格（见该函数）。
+# 编号里的**数字段**：纯数字，或**独立成段**的 O/o（OCR 把 0 认成字母 O 的变体，
+# 实测 JTG F80/1-2017 源 L5413 `M. O. 2` —— 该行走到哪一步都被漏，代价是 `M.0.2` 整条缺失）。
+# ⚠️ 「独立成段」由 `(?=[.．\s]|$)` 强制（O 后面必须是点/空白/行尾）：不这样限制，
+#    `2. O 型橡胶圈…` 这类正文也会长成编号形状。即便如此，此类行仍会因落成 `2.0`
+#    被 R3 判为节位占位而拒（见 test_letter_o_followed_by_text_is_not_swallowed_into_the_number）。
+_NUM_SEG = r'(?:\d+|[Oo](?=[.．\s]|$))'
+
 _NUM_PATTERNS = [
     # 中文附录: 附录A, 附录A.1, 附录 A（OCR 空格变体）
-    r'^(附录\s*[A-Z]+(?:\s*[.．]\s*[\d]+)*)\s+(.+)',
+    r'^(附录\s*[A-Z]+(?:\s*[.．]\s*' + _NUM_SEG + r')*)\s+(.+)',
     # 字母+数字编号: D.4, D.4.1, A.1, B. 0.1 (字母后跟数字，可选点分隔)
-    r'^([A-Z]+(?:\s*[.．]?\s*\d+)+)\s+(.+)',
-    # 纯数字编号: 1, 3.1, 1.0.1, 1. 0.1 (OCR 空格变体)
-    r'^(\d+(?:\s*[.．]\s*\d+)*)\s+(.+)',
+    r'^([A-Z]+(?:\s*[.．]?\s*' + _NUM_SEG + r')+)\s+(.+)',
+    # 纯数字编号: 1, 3.1, 1.0.1, 1. 0.1, 1. O. 1 (OCR 空格与 O/0 变体)
+    r'^(' + _NUM_SEG + r'(?:\s*[.．]\s*' + _NUM_SEG + r')*)\s+(.+)',
 ]
 
 
@@ -33,7 +40,25 @@ def _normalize_clause_no(raw: str) -> str:
     若归一化不跟着删，clause_no 会带着空格落库（`'B. 0.1'` / `'附录 A'`）——
     与 FTS、唯一键、号身份断言全部对不上，且面包屑里会出现双空格。
     """
-    return re.sub(r'\s+', '', raw).replace('．', '.')
+    return _fold_letter_o_segments(
+        re.sub(r'\s+', '', raw).replace('．', '.'))
+
+
+def _fold_letter_o_segments(clause_no: str) -> str:
+    """把**非首段**里**整段只有 O/o** 的段折成 `0`（OCR 的 0→O 错认，见 `_NUM_SEG`）。
+
+    只折非首段：首段是字母/附录标识（`M.O.2` 的 `M`、`附录A` 的 `附录A`），
+    OCR 把 0 认成 O 的位置必在点号后的数字位。只折**整段**：段内有别的字符
+    （如 `O型`）说明那不是被认错的 0。
+
+    在 `_normalize_clause_no` 之后单独一步，是为了让「正则放宽」与「落库归一」
+    两件事各自可读、也可被各自的用例钉住。
+    """
+    segs = clause_no.split('.')
+    return '.'.join(
+        '0' * len(seg) if i and seg and set(seg) <= {'O', 'o'} else seg
+        for i, seg in enumerate(segs)
+    )
 
 
 # 行首**结构编号 token**（只吃编号本身，不要求后面跟正文）。
@@ -45,9 +70,9 @@ def _normalize_clause_no(raw: str) -> str:
 #   - `_candidate_of` 的 F4a 分支（`#` + 整行只有编号 → 仍开条文）；
 #   - `find_degraded_heading_lines`（降级行自检）。
 _HEADING_TOKEN = re.compile(
-    r'^(附录[\s　]*[A-Z]+(?:[\s　]*[.．][\s　]*\d+)*'   # 附录A / 附录 A / 附录A.1
-    r'|[A-Z]{1,4}(?:[\s　]*[.．][\s　]*\d+)+'            # B.0.1 / B. 0.1 / A.1
-    r'|\d+(?:[\s　]*[.．][\s　]*\d+)+)'                  # 1.0.1 / 1. 0.1
+    r'^(附录[\s　]*[A-Z]+(?:[\s　]*[.．][\s　]*' + _NUM_SEG + r')*'   # 附录A / 附录 A
+    r'|[A-Z]{1,4}(?:[\s　]*[.．][\s　]*' + _NUM_SEG + r')+'           # B.0.1 / B. 0.1
+    r'|' + _NUM_SEG + r'(?:[\s　]*[.．][\s　]*' + _NUM_SEG + r')+)'   # 1.0.1 / 1. O. 1
 )
 # ⚠️ 三条都必须**吃满整个编号**（多段用 `(?:…)+`、不做首段短匹配）：只吃 `4.2` 时
 # `#### 4.2.1` 余下的 `1` 会被「token 后须有空白或行尾」的判据当成"紧跟标点"而漏判

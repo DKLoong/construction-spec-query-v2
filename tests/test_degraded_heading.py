@@ -13,15 +13,20 @@
 ⚠️ 判据的**可失败性**是这里的重点：检测器若用解析器那套正则，就只能看见两者的
 重叠区 —— 而重叠区恰好是空的（解析器认了的行不算降级、按设计拒了的行必须排除），
 于是一旦出现正则不认识的变体，两边同时失明、指标纹丝不动。故本文件的**正例**一律
-取「解析器不认识、但人眼一看就是结构标题」的形态（全角字母、字母 O 冒充 0）。
+取「解析器不认识、但人眼一看就是结构标题」的形态（当前是**全角字母**：
+`附录 Ａ`、`Ｂ.１.２`）。半角的三类变体（编号内空格 / 裸编号标题 / 字母 O 冒充 0）
+已在 2026-09-29 这一轮修完，改列在反例里钉住。
 """
 from app.database import get_db, init_db
 from app.parser.md_parser import find_degraded_heading_lines
 
 
-# 解析器当前**不认识**、但确实是结构标题的两种形态（检测器的正例来源）
+# 解析器当前**不认识**、但确实是结构标题的形态（检测器的正例来源）。
+# ⚠️ 为什么用全角字母：半角变体（编号内空格、裸编号标题、字母 O 冒充 0）都已在
+#    2026-09-29 这一轮修完，**再拿它们当正例就是在测已修好的东西**；全角字母
+#    （`Ａ`/`Ｂ`）是同类里尚未覆盖的一种，也是"未来变体会不会被发现"的真实样本。
 _FULLWIDTH_APPENDIX = "### 附录 Ａ 单位、分部及分项工程的划分"
-_LETTER_O_AS_ZERO = "M. O. 2 试验及计算方法应符合现行标准的规定。"
+_FULLWIDTH_LETTER_NUMBER = "Ｂ.１.２ 说明行内容。"
 
 
 def _clean_md_around(*lines: str) -> str:
@@ -39,29 +44,30 @@ def test_fullwidth_letter_appendix_is_reported():
     ]
 
 
-def test_letter_o_used_for_zero_is_reported():
-    """字母 O 冒充数字 0（`M. O. 2`）：JTG F80/1-2017 源 L5413 实况
+def test_fullwidth_letter_and_digit_token_is_reported():
+    """全角字母 + 全角数字编号（`Ｂ.１.２`）：解析器的半角 `[A-Z]` 正则不认 ⇒ 整行降级
 
-    后果是 `M.0.2` 整条缺失 —— 该行是 A/B/F4 三个补丁都盖不住的真残留，
-    正是被本判据抓出来的（模糊形状容忍 `O`）。
+    全角**数字**其实已被 Python 的 `\\d`（Unicode 十进制数字）覆盖，被漏的是
+    **全角字母**。它与 `附录 Ａ` 属同一类，但走的是字母编号支而非附录支。
     """
-    hits = find_degraded_heading_lines(_clean_md_around(_LETTER_O_AS_ZERO))
-    assert [(n, t) for n, t, _ in hits] == [(5, _LETTER_O_AS_ZERO)]
+    hits = find_degraded_heading_lines(_clean_md_around(_FULLWIDTH_LETTER_NUMBER))
+    assert [(n, t) for n, t, _ in hits] == [(5, _FULLWIDTH_LETTER_NUMBER)]
 
 
 # ── 判据本体：反例（不得恒真，也不得随实现漂移成"什么都报"） ────────────
 
 def test_forms_fixed_this_round_are_no_longer_reported():
-    """本轮修好的三种写法不得再被报出
+    """本轮修好的写法不得再被报出
 
-    `附录 A`（编号内空格，A）、`B. 0.1`（点后空格，A）、`#### 4.2.1`（裸编号标题，F4a）
-    修好后都不再是降级行 —— 这条反例钉住「修复真的生效」，防止检测器变成报什么
-    都对的恒真断言。
+    `附录 A`（编号内空格）、`B. 0.1`（点后空格）（以上 A）、`#### 4.2.1`（裸编号标题，
+    F4a）、`M. O. 2`（字母 O 冒充 0，F5）修好后都不再是降级行 —— 这条反例钉住
+    「修复真的生效」，防止检测器变成报什么都对的恒真断言。
     """
     md = _clean_md_around(
         "### 附录 A 单位、分部及分项工程的划分",
         "B. 0.1 路基和路面基层的压实度应以重型击实标准为准。",
         "#### 4.2.1",
+        "M. O. 2 试验及计算方法应符合现行标准的规定。",
     )
     assert find_degraded_heading_lines(md) == []
 
@@ -103,7 +109,7 @@ def test_survey_reports_degraded_heading_rows():
     """勘察脚本产出 degraded_heading_rows，值等于判据命中的行数"""
     from scripts import survey_structure as ss
 
-    md = _clean_md_around(_FULLWIDTH_APPENDIX, _LETTER_O_AS_ZERO)
+    md = _clean_md_around(_FULLWIDTH_APPENDIX, _FULLWIDTH_LETTER_NUMBER)
     assert ss.survey_structure(md)["degraded_heading_rows"] == 2
 
 
@@ -139,7 +145,7 @@ def test_import_path_writes_warning_into_system_logs(monkeypatch, tmp_path):
     "能被看见"，故这里把级别也钉住。
     """
     rows = _run_import(monkeypatch, tmp_path, "deg_warn",
-                       _clean_md_around(_FULLWIDTH_APPENDIX, _LETTER_O_AS_ZERO))
+                       _clean_md_around(_FULLWIDTH_APPENDIX, _FULLWIDTH_LETTER_NUMBER))
 
     warns = [r for r in rows if r["level"] == "WARN"]
     assert any("结构标题" in r["action"] for r in warns), (

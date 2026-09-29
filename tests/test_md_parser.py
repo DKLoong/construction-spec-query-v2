@@ -1027,6 +1027,38 @@ def test_bare_number_at_document_start_is_not_a_node():
     assert any("正文甲" in r["content"] for r in rows), "孤儿文本不得丢失"
 
 
+def test_letter_o_segment_is_normalized_to_zero():
+    """OCR 把数字 0 认成字母 O（`M. O. 2`）时仍应成条，且 clause_no 归一为 `M.0.2`
+
+    实测来源：JTG F80/1-2017 源 L5413（附录 M 的 M.0.2）—— 编号内空格（A）、
+    裸编号标题（F4）都盖不住它，是**被新增的降级行自检抓出来的**（指标 12 由 0 变 1），
+    代价是附录 M 少一条。
+    """
+    md = ("### 附录 M 水泥基浆体抗压强度评定\n\n"
+          "M. O. 2 试验及计算方法应符合现行标准的规定。\n\n"
+          "M.0.3 水泥基浆体强度的合格标准应符合下列规定：\n")
+    rows = parse_markdown(md)
+    nums = [r["clause_no"] for r in rows]
+    assert "M.0.2" in nums, f"`M. O. 2` 未被识别为条文：{nums}"
+    assert all("O" not in n for n in nums), f"clause_no 里残留字母 O：{nums}"
+    m2 = [r for r in rows if r["clause_no"] == "M.0.2"][0]
+    assert m2["section_path"] == "附录M 水泥基浆体抗压强度评定"
+
+
+def test_letter_o_followed_by_text_is_not_swallowed_into_the_number():
+    """O 只有**独立成段**时才算 0：正文里 `2. O 型橡胶圈…` 不得被吃进编号
+
+    这是上一条放宽的边界 —— 放宽「数字位可以是 O」会让 `2. O 型圈` 这类行也长成
+    编号形状。实测结论：这类行会落到 `2.0`、被 R3 判为节位占位而拒，文本仍归当前条。
+    """
+    md = "1.0.1 正文甲。\n\n2. O 型橡胶圈应符合现行标准的规定。\n"
+    rows = parse_markdown(md)
+    assert [r["clause_no"] for r in rows] == ["1.0.1"], (
+        f"正文里的 `O 型` 被吃进了编号：{[r['clause_no'] for r in rows]}"
+    )
+    assert "O 型橡胶圈" in rows[0]["content"], "正文不得丢失"
+
+
 # ═══════════════════════════════════════════
 # 解析主循环：R14 投票 / 无条件 flush / 内节点判据 / section_path（Task 3）
 # ═══════════════════════════════════════════
