@@ -35,6 +35,33 @@ def _normalize_clause_no(raw: str) -> str:
     """
     return re.sub(r'\s+', '', raw).replace('．', '.')
 
+
+# 行首**结构编号 token**（只吃编号本身，不要求后面跟正文）。
+# 与 `_NUM_PATTERNS` 的两点关键差别：
+#   ① 不要求尾部正文 —— 故 `#### 4.2.1`（编号单独成行、标题文本在下一行）也能吃到；
+#   ② 数字支**要求至少一个点** —— 单段裸数字（`7` 路面工程 / `1` 钢筋）与条内的「项」
+#      同形，无法判定，故不进本判据（两者都覆盖的只有"带点"的编号）。
+# 它同时服务两处，故抽成唯一实现（各写一份会让自检与解析器悄悄分叉）：
+#   - `_candidate_of` 的 F4a 分支（`#` + 整行只有编号 → 仍开条文）；
+#   - `find_degraded_heading_lines`（降级行自检）。
+_HEADING_TOKEN = re.compile(
+    r'^(附录[\s　]*[A-Z]+(?:[\s　]*[.．][\s　]*\d+)*'   # 附录A / 附录 A / 附录A.1
+    r'|[A-Z]{1,4}(?:[\s　]*[.．][\s　]*\d+)+'            # B.0.1 / B. 0.1 / A.1
+    r'|\d+(?:[\s　]*[.．][\s　]*\d+)+)'                  # 1.0.1 / 1. 0.1
+)
+# ⚠️ 三条都必须**吃满整个编号**（多段用 `(?:…)+`、不做首段短匹配）：只吃 `4.2` 时
+# `#### 4.2.1` 余下的 `1` 会被「token 后须有空白或行尾」的判据当成"紧跟标点"而漏判
+# （实测：那正是本函数第一版的行为，`#### 4.2.1` 报不出来）。
+
+
+def _split_heading_token(text: str) -> tuple[str, str] | None:
+    """拆出**行首**的结构编号 token → `(归一化编号, 余下文本)`；不像编号则 `None`。"""
+    m = _HEADING_TOKEN.match(text)
+    if not m:
+        return None
+    return _normalize_clause_no(m.group(1)), text[m.end():]
+
+
 # 层级上限（与旧实现一致的封顶，避免异常输入产生超深层级）
 _MAX_LEVEL = 6
 
@@ -436,6 +463,17 @@ def _candidate_of(line: str, state: _ParseState | None = None) -> tuple[int, str
         raw_title = m_hash.group(2).strip()
         clause_no = _extract_clause_no(raw_title)
         if clause_no is None:
+            # F4a（2026-09-29）：`#` 行**整行只有编号**时仍开条文（title 留空、其后各行
+            # 成为它的 content）。实测 JTG F80/1-2017 的条文说明 83 行写作 `#### 4.2.1`，
+            # 说明文字在**下一行**：原实现不成候选 ⇒ 该行连同说明一起被折进上一条
+            # （`4.2.1` 的说明挂到 `4.2` 名下，条文号本身再也查不到）。
+            # 判据=token 吃满整行；单段裸数字（`#### 7`）不在其中（与「项」同形，见
+            # `_HEADING_TOKEN` 的说明），`#### 4.0` 仍按 R3 判节位占位、不成节点。
+            parts = _split_heading_token(raw_title.strip())
+            if parts is not None and not parts[1].strip():
+                if _is_zero_segment_node(parts[0]):
+                    return None
+                return (_level_from_clause_no(parts[0]), parts[0], "")
             # 无编号标题：以下三类保留为候选，其余（如英文标题）不当条文（R1 ⑦）。
             t = _clean_title(_extract_title(raw_title))
             # (a) 页分隔标记（`## 第X页`）：**必须保留为候选**，以维持「每页独立隔离」的契约
@@ -1018,22 +1056,23 @@ def _should_emit_clause(title, content) -> bool:
 # 降级行自检（结构标题没被识别出来时必须"有声"）
 # ═══════════════════════════════════════════
 
-# 结构标题的**宽松形状**。⚠️ **故意不复用 `_NUM_PATTERNS`**：检测器与解析器共用一套
-# 正则时，正则的盲区会同时在两边失效 —— 谁也不会报警，而这正是本检测器要防的事
-# （JTG F80/1 的 `附录 A` 因此静默降级 29 行，靠人工翻条文才发现）。
-# 覆盖：附录标识、字母编号、多段数字编号（含编号内的空白）。
-# **不覆盖**（勿当「无降级」的证明）：全角字母（`附录 Ａ`）、单段裸数字章号
-# （`7 路面工程` 与条内的「项」`1 钢筋` 同形，无法判定）。
-_DEGRADED_HEADING_SHAPE = re.compile(
-    r'^(?:附录[\s　]*[A-Z]+(?:[\s　]*[.．][\s　]*\d+)*'   # 附录A / 附录 A / 附录A.1
-    r'|[A-Z]{1,4}(?:[\s　]*[.．][\s　]*\d+)+'            # B.0.1 / B. 0.1 / A.1
-    r'|\d+(?:[\s　]*[.．][\s　]*\d+)+)'                  # 1.0.1 / 1. 0.1
+# 结构标题的**模糊形状**：必须比解析器的接受判据（`_NUM_PATTERNS`）与
+# F4 的 token 判据（`_HEADING_TOKEN`）**都宽**，否则检测器只能看见两者的重叠区——
+# 而重叠区恰好是空的（解析器认了的行不算降级、解析器按设计拒了的行必须排除），
+# 检测器就永远报不出它唯一该报的东西：**解析器的盲区**。
+# 故本正则刻意容忍 OCR 的常见编号变体：
+#   全角字母/数字（`附录 Ａ`、`４.２.１`）、字母 O 与 0 的混淆（`B.O.1`）、
+#   各种点状分隔符（`. ． 。 · ・`）、以及任意空白（含全角空格 U+3000）。
+# **仍不覆盖**（勿当成「无降级」的证明）：单段裸数字章号（`7 路面工程` 与条内的
+# 「项」`1 钢筋` 同形，无法判定）、以及完全无编号的标题行。
+# ⚠️ 第一版曾与 `_HEADING_TOKEN` 共用同一正则（理由是"避免两处判据分叉"）——
+# 那是**错的**：共用后 JTG F80/1 全量 83 行降级行在 F4a 落地后确实归零，但一旦出现
+# 正则不认识的变体（如 `附录 Ａ`），两边同时失明、指标纹丝不动。判据必须**故意分叉**。
+_FUZZY_HEADING_SHAPE = re.compile(
+    r'^(?:附录[\s　]*[A-Za-zＡ-Ｚａ-ｚ]+(?:[\s　]*[.．。·・][\s　]*[0-9０-９Oo]+)*'
+    r'|[A-Za-zＡ-Ｚａ-ｚ]{1,4}(?:[\s　]*[.．。·・][\s　]*[0-9０-９Oo]+)+'
+    r'|[0-9０-９]+(?:[\s　]*[.．。·・][\s　]*[0-9０-９]+)+)'
 )
-# ⚠️ 三条都必须**吃满整个编号**（多段用 `(?:…)+` 而不是只吃首段）：只吃 `4.2` 时
-# `#### 4.2.1` 的余下 `1` 会被下面「编号后必须有空白或行尾」的护栏当成"紧跟标点"而漏报
-# （已实测：那正是本函数第一版的行为，`#### 4.2.1` 报不出来）。
-# ⚠️ 数字支必须**要求至少一个点**，否则单段裸章号（`7 路面工程`）会被当成降级行
-# ——它与条内的「项」（`1 钢筋`）同形，本就无法判定，不在本判据的覆盖范围内。
 
 
 def find_degraded_heading_lines(md_text: str) -> list[tuple[int, str, str]]:
@@ -1066,10 +1105,10 @@ def find_degraded_heading_lines(md_text: str) -> list[tuple[int, str, str]]:
         text = line.strip().lstrip("#").strip()
         if not text or _DOT_LEADER.search(line):
             continue
-        m = _DEGRADED_HEADING_SHAPE.match(text)
-        if not m:
+        m_shape = _FUZZY_HEADING_SHAPE.match(text)
+        if not m_shape:
             continue
-        rest = text[m.end():]
+        rest = text[m_shape.end():]
         if rest.strip() and not re.match(r'^[\s　]+\S', rest):
             continue                            # 编号后紧跟标点 → 交叉引用残句
         if is_non_clause_title(_clean_title(_extract_title(text)) or text):

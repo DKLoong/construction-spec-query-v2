@@ -925,6 +925,57 @@ def test_clause_no_with_inner_space_still_needs_a_tail():
 
 
 # ═══════════════════════════════════════════
+# F4：裸编号标题行（编号单独成行、标题文本在下一行）
+# ═══════════════════════════════════════════
+# 实测来源：JTG F80/1-2017 条文说明 83 行写作 `#### 4.2.1`（后换行才是说明文字），
+# 而同一段里另一些条写成 `4.1.1 说明文字…`（同行）。原实现两条正则都要求
+# 「编号 + 空白 + 文本」⇒ 裸编号行不成候选 ⇒ 该行连同其说明一起被折进上一条
+# （`4.2.1` 的说明挂到 `4.2` 名下，条文号本身也查不到）。
+# 修复分两档：F4a 只认 `#` 前缀的裸编号（OCR 的"这是标题"信号，风险最低）；
+# F4b 再认无 `#` 的裸编号行，另加"不在句中"护栏。
+
+def test_hash_bare_clause_number_opens_a_clause():
+    """F4a：`#### 4.2.1` 应开出新条文（title 留空，后续行成为它的 content）"""
+    md = ("## 4 路基土石方工程\n\n"
+          "### 4.2 土方路基\n\n"
+          "#### 4.2.1\n\n"
+          "（1）明确地表清理范围。\n")
+    rows = parse_markdown(md)
+    assert [r["clause_no"] for r in rows] == ["4.2.1"], (
+        f"裸编号标题行未开出条文：{[r['clause_no'] for r in rows]}"
+    )
+    assert rows[0]["title"] == ""
+    assert "明确地表清理范围" in rows[0]["content"], "说明文字未归属到 4.2.1"
+    assert rows[0]["section_path"] == "4 路基土石方工程 > 4.2 土方路基"
+
+
+def test_hash_bare_zero_segment_is_still_not_a_node():
+    """F4a 不改变 R3：`#### 4.0`（末段为 0 的节位占位）即便只有编号也不是节点
+
+    钉的是**属性**（不得成节点）而非产出清单：裸行 `4.0` 的文本会照常落进当前条的
+    content，使章节点成为"有自身正文"的叶条文——那是既有语义，与本判据无关。
+    """
+    md = "## 4 路基土石方工程\n\n#### 4.0\n\n4.0.1 正文甲。\n"
+    rows = parse_markdown(md)
+    assert "4.0" not in [r["clause_no"] for r in rows], "节位占位 `4.0` 成了节点"
+    c = [r for r in rows if r["clause_no"] == "4.0.1"]
+    assert c and c[0]["section_path"] == "4 路基土石方工程", (
+        f"4.0.1 的祖先链不该含 4.0：{c[0]['section_path']!r}"
+    )
+
+
+def test_hash_bare_single_segment_number_is_not_a_node():
+    """F4a 不覆盖单段裸数字：`#### 7` 与条内的「项」`1 钢筋` 同形，无法判定
+
+    判据要求数字支**至少一个点**，故 `#### 7` 维持既有行为（不成节点、文本进 content）。
+    """
+    md = "1.0.1 正文甲。\n\n#### 7\n\n（1）说明乙。\n"
+    rows = parse_markdown(md)
+    assert [r["clause_no"] for r in rows] == ["1.0.1"]
+    assert "7" in rows[0]["content"], "`#### 7` 的文本不得消失"
+
+
+# ═══════════════════════════════════════════
 # 解析主循环：R14 投票 / 无条件 flush / 内节点判据 / section_path（Task 3）
 # ═══════════════════════════════════════════
 

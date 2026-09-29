@@ -1,44 +1,73 @@
 """降级行自检：结构标题没被识别出来时必须**有声**
 
 背景（2026-09-29，JTG F80/1-2017 实况）：OCR 把 `### 附录 A …` 写成带空格的形态后，
-整行被降级为普通正文、折进上一条（`13.4.3` 吞掉 10,923 字符），导入**不报错、进度条
-正常、条文数看起来也只差几条** —— 用户是翻条文时人工发现的。这类失效模式下，
-"没报警"比"报错"更贵。
+整行被降级为普通正文、折进上一条（`13.4.3` 吞掉 10,923 字符），导入**不报错、进度
+正常、条文数只差几条** —— 用户是翻条文时人工发现的。这类失效模式里，"没报警"比
+"报错"更贵。
 
 本文件锁定三件事：
   1. `find_degraded_heading_lines` 能认出「形如结构标题、却未成候选行」的行；
   2. 该计数进 `scripts/survey_structure.py` 的回归指标（指标 12）；
   3. 导入链路（`_process_import_phase2`）命中时必须落 WARN 进 system_logs。
+
+⚠️ 判据的**可失败性**是这里的重点：检测器若用解析器那套正则，就只能看见两者的
+重叠区 —— 而重叠区恰好是空的（解析器认了的行不算降级、按设计拒了的行必须排除），
+于是一旦出现正则不认识的变体，两边同时失明、指标纹丝不动。故本文件的**正例**一律
+取「解析器不认识、但人眼一看就是结构标题」的形态（全角字母、字母 O 冒充 0）。
 """
 from app.database import get_db, init_db
 from app.parser.md_parser import find_degraded_heading_lines
 
 
-# ── 判据本体 ──────────────────────────────────────────────────────────────
+# 解析器当前**不认识**、但确实是结构标题的两种形态（检测器的正例来源）
+_FULLWIDTH_APPENDIX = "### 附录 Ａ 单位、分部及分项工程的划分"
+_LETTER_O_AS_ZERO = "M. O. 2 试验及计算方法应符合现行标准的规定。"
 
-def test_bare_number_heading_is_reported():
-    """`#### 4.2.1`（只有编号、无标题文本）→ 报出
 
-    这是 JTG F80/1 条文说明的 83 行实况形态：编号后换行才是说明文字，
-    而三条编号正则都要求「编号 + 空白 + 文本」⇒ 该行不成候选行，
-    4.2.1 的说明被折进上一条 `4.2`。
+def _clean_md_around(*lines: str) -> str:
+    """把给定行包进一份最小可解析的文档里。"""
+    return "## 13 声屏障工程\n\n13.4.3 外观质量应符合下列规定：\n\n" + "\n\n".join(lines) + "\n"
+
+
+# ── 判据本体：正例（解析器的盲区） ──────────────────────────────────────
+
+def test_fullwidth_letter_appendix_is_reported():
+    """全角字母 `附录 Ａ`：解析器三条编号正则都只认半角 `[A-Z]` ⇒ 整行降级"""
+    hits = find_degraded_heading_lines(_clean_md_around(_FULLWIDTH_APPENDIX))
+    assert [(n, t, r) for n, t, r in hits] == [
+        (5, _FULLWIDTH_APPENDIX, "unrecognized_shape")
+    ]
+
+
+def test_letter_o_used_for_zero_is_reported():
+    """字母 O 冒充数字 0（`M. O. 2`）：JTG F80/1-2017 源 L5413 实况
+
+    后果是 `M.0.2` 整条缺失 —— 该行是 A/B/F4 三个补丁都盖不住的真残留，
+    正是被本判据抓出来的（模糊形状容忍 `O`）。
     """
-    md = ("## 4 路基土石方工程\n\n"
-          "### 4.2 土方路基\n\n"
-          "#### 4.2.1\n\n"
-          "（1）明确地表清理范围。\n")
-    assert find_degraded_heading_lines(md) == [(5, "#### 4.2.1", "bare_clause_no")]
+    hits = find_degraded_heading_lines(_clean_md_around(_LETTER_O_AS_ZERO))
+    assert [(n, t) for n, t, _ in hits] == [(5, _LETTER_O_AS_ZERO)]
 
 
-def test_bare_appendix_marker_is_reported():
-    """`附录A` 单独成行（标题在下一行）同样是降级形态（旧语料实测 3 行）"""
-    md = "1.0.1 正文甲。\n\n附录A\n\n接头试件试验方法\n"
-    hits = find_degraded_heading_lines(md)
-    assert [(n, t) for n, t, _ in hits] == [(3, "附录A")]
+# ── 判据本体：反例（不得恒真，也不得随实现漂移成"什么都报"） ────────────
+
+def test_forms_fixed_this_round_are_no_longer_reported():
+    """本轮修好的三种写法不得再被报出
+
+    `附录 A`（编号内空格，A）、`B. 0.1`（点后空格，A）、`#### 4.2.1`（裸编号标题，F4a）
+    修好后都不再是降级行 —— 这条反例钉住「修复真的生效」，防止检测器变成报什么
+    都对的恒真断言。
+    """
+    md = _clean_md_around(
+        "### 附录 A 单位、分部及分项工程的划分",
+        "B. 0.1 路基和路面基层的压实度应以重型击实标准为准。",
+        "#### 4.2.1",
+    )
+    assert find_degraded_heading_lines(md) == []
 
 
 def test_recognized_and_non_heading_lines_are_not_reported():
-    """判据不得恒真：已识别的条文、目录点引行都不算降级行"""
+    """已识别的条文、目录点引行（两种点引写法）都不算降级行"""
     md = (
         "## 1 总则\n\n"
         "1.0.1 正文甲。\n\n"
@@ -74,8 +103,7 @@ def test_survey_reports_degraded_heading_rows():
     """勘察脚本产出 degraded_heading_rows，值等于判据命中的行数"""
     from scripts import survey_structure as ss
 
-    md = ("## 4 路基土石方工程\n\n### 4.2 土方路基\n\n#### 4.2.1\n\n（1）说明甲。\n\n"
-          "#### 4.2.2\n\n（1）说明乙。\n")
+    md = _clean_md_around(_FULLWIDTH_APPENDIX, _LETTER_O_AS_ZERO)
     assert ss.survey_structure(md)["degraded_heading_rows"] == 2
 
 
@@ -110,8 +138,8 @@ def test_import_path_writes_warning_into_system_logs(monkeypatch, tmp_path):
     模块 logger 桥接写的 `WARNING` 在界面上不可见（已实测）。自检的全部价值就是
     "能被看见"，故这里把级别也钉住。
     """
-    md = "## 4 路基土石方工程\n\n#### 4.2.1\n\n（1）明确地表清理范围。\n"
-    rows = _run_import(monkeypatch, tmp_path, "deg_warn", md)
+    rows = _run_import(monkeypatch, tmp_path, "deg_warn",
+                       _clean_md_around(_FULLWIDTH_APPENDIX, _LETTER_O_AS_ZERO))
 
     warns = [r for r in rows if r["level"] == "WARN"]
     assert any("结构标题" in r["action"] for r in warns), (
