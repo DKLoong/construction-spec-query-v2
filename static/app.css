@@ -286,9 +286,9 @@
    ═══════════════════════════════════════════════════════════════ */
 .field-hint-pop {
     position: fixed; z-index: 20000; max-width: 22rem;
-    background: #fffdf8; border: 1px solid #ddd0bd; border-radius: 6px;
+    background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
     box-shadow: 0 4px 14px rgba(74, 68, 84, .14); padding: 0.4rem 0.5rem;
-    font-size: 0.72rem; color: #5a4a33; line-height: 1.35;
+    font-size: 0.72rem; color: var(--pico-color); line-height: 1.35;
     font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
     pointer-events: none;   /* 别挡住用户点下面的输入框 */
 }

@@ -3,7 +3,11 @@
    低饱和度、暖灰基调、优雅克制的配色
    ═══════════════════════════════════════════════════════════════ */
 
-:root {
+/* 亮色块选择器与 Pico v2 自身同特异性（0,2,0），否则颜色变量会被 Pico 的高优先级
+   主题块压掉（TODOS T10）：Pico 声明于 :root:not([data-theme=dark])，裸 :root(0,1,0)
+   无论加载顺序都输；同特异性下后加载的 pico.custom.css 胜出，颜色才生效。
+   深色块（下方 @media 内）已是 :root:not([data-theme="light"])，特异性足够，不动。 */
+:root:not([data-theme=dark]) {
     /* ── 排版 ── */
     --pico-font-size: 90%;
     --pico-border-radius: 0.35rem;
