@@ -474,11 +474,57 @@ def test_md_render_converts_literal_newline_to_br():
 
 
 def test_search_include_non_clause_checkbox_present():
-    """检索页须有「包含前言·条文说明」复选框（勾选即重搜）"""
+    """检索页须有「包含非条文内容」复选框（检索页勾选即重搜；QA 页只影响下一轮）"""
     html = _read("tree_panel.html")
     assert "include_non_clause" in html, "tree_panel 应含 include_non_clause 复选框"
     assert 'type="checkbox"' in html
-    assert "包含前言·条文说明" in html, "复选框应有说明文案"
+    assert "包含非条文内容" in html, "复选框应有说明文案"
+
+
+def test_search_include_non_clause_change_routes_by_view():
+    """勾选处理器须按视图分流：检索页重搜 / QA 页只同步 URL（用户 2026-09-29 实测反馈）。
+
+    旧实现两边都调 `search()`：QA 页勾一下，`search()` 会把检索结果 htmx 换进
+    `.center-panel-v2` 并 pushState('/') ⇒ **整个 AI 问答界面被顶掉**（不是"多搜一次"）。
+    范式与 onCeChange/onStatusChange 完全一致（`isQaView()` 早退 + `syncQaUrl()`）。
+    """
+    import re
+    html = _read("tree_panel.html")
+    inp = re.search(r'<input[^>]*x-model="includeNonClause"[^>]*>', html, re.S)
+    assert inp, "应找到 include_non_clause 复选框 input"
+    assert 'onIncludeChange()' in inp.group(0), \
+        "勾选应走 onIncludeChange（按视图分流），不得直接绑 search()"
+    js = _read_static("components/search.js")
+    idx = js.index("onIncludeChange()")
+    # 取定义点之后的一段（方法体很短，400 字符足够覆盖；不按 `},` 切分以免缩进改动即失效）
+    body = js[idx: idx + 400]
+    assert "isQaView()" in body, f"onIncludeChange 缺 QA 判据：{body!r}"
+    assert "syncQaUrl()" in body, f"onIncludeChange 的 QA 分支未同步 URL：{body!r}"
+    assert "this.search()" in body, f"onIncludeChange 在非 QA 视图应发起重搜：{body!r}"
+
+
+def test_qa_filter_label_matches_checkbox_name():
+    """「筛选：/本轮生效：」里的标签名必须与左栏勾选框一致。
+
+    否则用户会看到一个界面上**不存在**的名字（旧值 '含前言说明' 是 UI 上从来没有的措辞）。
+    """
+    js = _read_static("components/qa.js")
+    assert "include_non_clause: '含非条文内容'" in js, \
+        "qa.js 的 LABELS 未跟随勾选框改名（describeFilters 会显示陌生名字）"
+
+
+def test_qa_page_appends_fallback_sentence_to_hint():
+    """QA 页在 tooltip 里追加「提问文本兜底」那句——只存在于 QA 链路（qa_routes.py）。
+
+    两页共用同一个 partial，故差异只能在 QA 页初始化时追加；检索页写这句就是撒谎
+    （检索链路没有任何问题文本兜底）。
+    """
+    js = _read_static("components/qa.js")
+    assert "AI 问答中即使不勾选" in js, "qa.js 未追加 QA 专属的兜底说明"
+    assert "include-non-clause" in js, "qa.js 未定位左栏勾选框（追加无处落）"
+    html = _read("tree_panel.html")
+    assert "AI 问答中即使不勾选" not in html, \
+        "该句属于 QA 链路，不得写进两页共用的 partial"
 
 
 def test_search_include_non_clause_carried_by_search_js():
@@ -506,8 +552,8 @@ def test_search_include_non_clause_checkbox_styled():
     assert "width:0.875rem" in input_tag, "复选框应固定宽度"
     assert "height:0.875rem" in input_tag, "复选框应为正方形（宽高相等）"
     assert "flex:none" in input_tag, "复选框不应被 flex 拉伸/压缩"
-    # 标签：单行不换行
-    label_line = next(l for l in html.splitlines() if "包含前言·条文说明" in l)
+    # 标签：单行不换行（按**可见文案所在的 span 行**取，不按首次出现——aria-label 里也有该名字）
+    label_line = next(l for l in html.splitlines() if ">包含非条文内容</span>" in l)
     assert "white-space:nowrap" in label_line, "文字应单行不换行"
 
 

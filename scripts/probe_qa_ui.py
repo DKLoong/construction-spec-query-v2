@@ -1,4 +1,4 @@
-"""QA 页的浏览器行为回归套件（t1~t5 共 34 条用例）。
+"""QA 页的浏览器行为回归套件（t1~t6）。
 
 **保留决定（2026-09-24，用户裁定）**：原计划把它当「一次性探针，验证完删除」，
 但它是本仓**唯一**的前端行为验收网（覆盖整页路由与 URL 筛选、折叠几何、筛选统一、
@@ -16,7 +16,7 @@ D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8123 &   # 
 # 副本库写入 mock 配置（否则 /qa/ask 会去调真实模型）：
 #   ai.backend='custom' / ai.custom.base_url='http://127.0.0.1:8199/v1'
 #   ai.custom.api_key='mock' / ai.custom.model='mock-model'
-D:/Python/python.exe scripts/probe_qa_ui.py t1          # t1|t2|t3|t4|t5
+D:/Python/python.exe scripts/probe_qa_ui.py t1          # t1|t2|t3|t4|t5|t6
 ```
 
 **前置要点**：
@@ -1752,6 +1752,78 @@ CASES["t5"] = [t5_streaming_renders_progressively,
                # 简报 Step 1 登记的 4 条一条都不碰错误路径（mutation B 因此无从判红）。
                # 放最后：它会临时改运行期设置（用例内已用 finally 还原）。
                t5_error_frame_is_not_retried_as_fallback]
+
+
+# ═══════════════════════════════════════════════════════════════
+# T6（2026-09-29 收尾批）：左栏「包含非条文内容」勾选框的三项行为
+#   ① 检索页改勾选 → **必须**重搜；QA 页改勾选 → **只同步 URL**（本轮不生效，下一轮抓取才带）
+#   ② 说明走 `title` 悬停 tooltip（撤掉常驻可见文字），并给可聚焦的 input 挂 aria-label
+#   ③ 该 tooltip 在 QA 页多一句「问题文本兜底」——该兜底只存在于 QA 链路
+# 本组不发 /qa/ask（无需 mock LLM 的确定性标记），故可在只有副本库的环境下单独跑。
+# ═══════════════════════════════════════════════════════════════
+
+def t6_qa_page_toggle_does_not_search(page):
+    """QA 页改勾选：不得发起 /search，且 URL 要同步。
+
+    为什么这是真问题而不是"多搜一次"：`search()` 会把结果 htmx 换进 `.center-panel-v2`
+    并 pushState('/') ⇒ **整个 AI 问答界面被顶掉**（用户实测反馈）。
+    判据用 `track_search_requests`（DOM 计数在「没重搜」与「重搜后被顶掉」两个世界里
+    都可能成立，不可证伪）。
+    """
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    seen = track_search_requests(page)      # 必须在点击前注册（见该函数注释）
+    n_before = len(seen)
+    page.locator("#include-non-clause").check()
+    # 正向证据优先：URL 已带回参数 ⇒ 这次勾选确实被处理了（否则"没发请求"可能只是事件还没跑）
+    assert poll_until(page, lambda: "include_non_clause=1" in page.url, timeout_ms=3000), \
+        f"QA 页勾选后 URL 未同步 include_non_clause=1（syncQaUrl 未生效）：{page.url}"
+    # 负断言的有界观察窗：窗口内一旦出现新 /search 立即判红（不是"睡够就算过"）
+    assert poll_until(page, lambda: len(seen) > n_before, timeout_ms=1500) is False, \
+        f"QA 页改勾选发起了 /search，会把问答界面顶掉：{seen[n_before:]}"
+    assert page.locator("#qa-root").count() == 1, "QA 界面被替换了（#qa-root 消失）"
+    page.locator("#include-non-clause").uncheck()   # 收尾：不给后续用例留脏状态
+
+
+def t6_search_page_toggle_still_searches(page):
+    """检索页改勾选：**必须**重搜（反向对照——防"两边都不搜"的过度修复）。"""
+    page.goto(f"{BASE}/")
+    page.wait_for_selector("#include-non-clause", timeout=10000)
+    seen = track_search_requests(page)
+    n_before = len(seen)
+    page.locator("#include-non-clause").check()
+    assert poll_until(page, lambda: len(seen) > n_before, timeout_ms=5000), \
+        "检索页改勾选未发起 /search（热切换失效）"
+    assert "include_non_clause=1" in seen[n_before], \
+        f"重搜请求未携带 include_non_clause=1：{seen[n_before]}"
+    page.locator("#include-non-clause").uncheck()
+
+
+def t6_hint_is_tooltip_and_qa_page_only_extra(page):
+    """说明须为悬停 tooltip（非常驻文字）；QA 页比检索页多一句问题文本兜底。"""
+    page.goto(f"{BASE}/")
+    page.wait_for_selector("#include-non-clause", timeout=10000)
+    label = page.locator("label[for='include-non-clause']")
+    base = label.get_attribute("title") or ""
+    assert "前言" in base and "引用标准名录" in base, f"检索页勾选框缺说明 tooltip：{base!r}"
+    assert "AI 问答中即使不勾选" not in base, \
+        "检索页的 tooltip 不得宣称 QA 链路才有的问题文本兜底（检索链路没有它）"
+    assert page.locator(".search-box small.field-hint").count() == 0, \
+        "勾选框说明仍以常驻文字显示（应为 title tooltip）"
+    # 键盘/触屏看不到 title ⇒ 可聚焦的 input 必须有等价说明
+    aria = page.locator("#include-non-clause").get_attribute("aria-label") or ""
+    assert "前言" in aria, f"复选框缺 aria-label 等价说明（title 对键盘/触屏不显示）：{aria!r}"
+    # QA 页：qa.js 在 init 时追加兜底句（两页共用同一个 partial，差异只能运行时补）
+    page.goto(f"{BASE}/qa")
+    page.wait_for_selector("#qa-root", timeout=10000)
+    qa_title = page.locator("label[for='include-non-clause']").get_attribute("title") or ""
+    assert "AI 问答中即使不勾选" in qa_title, \
+        f"QA 页 tooltip 未追加问题文本兜底说明（qa.js 的 init 未生效？）：{qa_title!r}"
+
+
+CASES["t6"] = [t6_qa_page_toggle_does_not_search,
+               t6_search_page_toggle_still_searches,
+               t6_hint_is_tooltip_and_qa_page_only_extra]
 
 
 if __name__ == "__main__":

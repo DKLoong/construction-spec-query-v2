@@ -14,7 +14,10 @@
   之间的独立分隔元素察觉不到，故按顶层子元素核对（同上）。
 
 另两条为用户实测第 5 项（勾选框说明文案）与静态资源版本号：
-- `title` 属性对键盘 focus 与触屏均不显示，屏幕阅读器支持也不一致 → 改可见文字 + aria
+- 2026-09-29 用户裁定**回到 tooltip**（常驻文字把本就拥挤的左栏又挤高一行）⇒ 说明文案
+  由**单一变量**承载，`title` 悬停与 input 的 `aria-label` 同源引用——a11y 不再靠
+  "删掉说明"解决（`title` 对键盘/触屏不显示，故必须另有一条等价通道）；
+  QA 页由 `qa.js` 追加一句问题文本兜底（该兜底只存在于 QA 链路，检索页写了就是撒谎）
 - 帮助文案不得含「目次」（属「直接过滤」类，导入时整段丢弃、从不入库）
 """
 import re
@@ -265,36 +268,54 @@ def test_result_row_without_section_path_renders_nothing(auth_client, monkeypatc
     assert "clause-path" not in frags[0], "空面包屑的行渲染了 clause-path 占位"
 
 
-# ── 帮助文案（tooltip → 可见文字 + aria） ───────────────────
+# ── 勾选框说明（tooltip + QA 页独有的兜底句） ───────────────────
 
-def test_include_non_clause_help_is_visible_text_not_title():
-    """勾选框说明须为可见文字并挂到可聚焦的 input 上（title 对键盘/触屏不可见）"""
+def _non_clause_hint() -> str:
+    """取出说明文案变量 `{% set non_clause_hint = ... %}` 的值（单一来源）。"""
+    m = re.search(r'\{%\s*set\s+non_clause_hint\s*=\s*"([^"]+)"\s*%\}',
+                  _read_partial("tree_panel.html"))
+    assert m, "说明文案应由单一变量承载（否则 title 与 aria-label 会各自漂移）"
+    return m.group(1)
+
+
+def test_include_non_clause_hint_is_tooltip_not_always_visible():
+    """说明走 `title` 悬停 tooltip（设计文档 §4.5），不再是常驻可见文字。
+
+    2026-09-28（d3a899a）曾把 title 换成常驻 `<small>`，理由是「title 对键盘 focus 与
+    触屏均不显示」——方向对，但违背设计且把左栏挤高一行；2026-09-29 用户裁定回到 tooltip。
+    a11y 改由 `aria-label` 承担，**同一个变量**同时喂两处，故说明不会只剩一条通道。
+    """
     html = _read_partial("tree_panel.html")
-    # 旧 title 说明整段撤下
-    assert "勾选后放行前言/条文说明等打标非条文" not in html, "不得再用 title 承载说明"
-    # 检索页不得再串 AI 问答页的措辞：该「问题文本兜底」只在 QA 链路生效
-    assert "若提问中含" not in html, "检索页不得宣称 QA 链路才有的问题文本兜底"
-    # 说明须可见（<small>），并作为 input 的描述（挂 label 上不会随聚焦播报）
-    assert '<small id="include-non-clause-help" class="field-hint">' in html, \
-        "说明应为可见的 <small> 元素"
+    # 常驻文字撤下（含它的 aria-describedby 目标——留着就是死引用）
+    assert "include-non-clause-help" not in html, "说明不得再常驻渲染/被引用"
+    assert 'class="field-hint"' not in html, "左栏不得再有常驻说明元素"
+    hint = _non_clause_hint()
+    # 悬停通道：title 挂 label（覆盖整行，与相邻「启用 CE 精排」同形）
+    label = re.search(r'<label[^>]*for="include-non-clause"[^>]*>', html)
+    assert label, "应找到 for=include-non-clause 的 label"
+    assert 'title="{{ non_clause_hint }}"' in label.group(0), \
+        "勾选框缺 title 悬停 tooltip"
+    # 键盘/触屏通道：aria-label 挂**可聚焦的 input**（挂 label 上不会随聚焦播报）
     inp = re.search(r'<input[^>]*x-model="includeNonClause"[^>]*>', html, re.S)
     assert inp, "应找到 include_non_clause 复选框 input"
-    assert 'aria-describedby="include-non-clause-help"' in inp.group(0), \
-        "aria-describedby 必须挂在可聚焦的 input 上"
+    assert 'aria-label="包含非条文内容（{{ non_clause_hint }}）"' in inp.group(0), \
+        "input 缺 aria-label 等价说明（title 对键盘/触屏不显示）"
+    # 说明文案须真的进到这两处（不是引用了空变量）
+    assert "前言" in hint and "引用标准名录" in hint, f"说明文案不完整：{hint!r}"
+    # 检索页不得宣称 QA 链路才有的问题文本兜底（该句由 qa.js 只在 QA 页追加）
+    assert "若提问中含" not in html and "AI 问答中即使不勾选" not in html, \
+        "该兜底只在 QA 链路存在，不得写进两页共用的 partial"
 
 
-def test_include_non_clause_help_lists_no_toc():
+def test_include_non_clause_hint_lists_no_toc():
     """帮助文案不得含「目次」——目次属「直接过滤」类，导入时整段丢弃、从不入库"""
     from app.parser.md_parser import _NON_CLAUSE_FILTER_TITLES
     # 前置事实（若该集合变了，本条断言的前提也就没了）
     assert "目次" in _NON_CLAUSE_FILTER_TITLES
-    m = re.search(r'<small id="include-non-clause-help"[^>]*>(.*?)</small>',
-                  _read_partial("tree_panel.html"), re.S)
-    assert m, "应找到帮助文案元素"
-    help_text = m.group(1)
-    assert "目次" not in help_text and "Contents" not in help_text, \
-        f"帮助文案不得宣称包含目次（实际导入时被丢弃）：{help_text!r}"
-    assert "前言" in help_text, "帮助文案应列出真正入库的非条文类别"
+    hint = _non_clause_hint()
+    assert "目次" not in hint and "Contents" not in hint, \
+        f"帮助文案不得宣称包含目次（实际导入时被丢弃）：{hint!r}"
+    assert "前言" in hint, "帮助文案应列出真正入库的非条文类别"
 
 
 # ── 样式与静态资源版本号 ────────────────────────────────────

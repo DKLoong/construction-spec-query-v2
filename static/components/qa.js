@@ -82,8 +82,31 @@ document.addEventListener('alpine:init', () => {
             //    删掉它 ⇒ 筛选无法经 URL 带入 QA 页 / 刷新后丢失
             //    （T1 的 t1_filters_carry_into_qa_via_url、t1_qa_page_filters_survive_reload 回归失败）。
             this.seedFiltersFromUrl();
+            this._extendNonClauseHint();     // 左栏勾选框 tooltip 的 QA 专属那半句
             await this.loadSessions();
             this.scrollToBottom();
+        },
+
+        // 左栏「包含非条文内容」勾选框的 tooltip：QA 页要比检索页多一句**问题文本兜底**。
+        // 为什么是运行时追加、而不是写在模板里：两页共用同一个 partial
+        // （qa_routes.py 与其它路由都传 partials/tree_panel.html），而「提问含前言等字样
+        // 仍放行」这条兜底只存在于 QA 链路（qa_routes.py 的 _NON_CLAUSE_QUESTION_KEYWORDS）
+        // ——检索页写这句就是对用户撒谎（2026-09-28 正是据此把该句从共用模板撤下）。
+        // 幂等：init 只跑一次，但仍按 MARK 去重，重复调用无副作用。
+        // 两个属性一起补：title 管悬停，aria-label 管键盘/触屏（title 对二者不显示）。
+        _extendNonClauseHint() {
+            const MARK = "AI 问答中即使不勾选";
+            const extra = MARK + "，提问含上述类别字样时仍会自动放行这类内容";
+            const append = (el, attr) => {
+                const cur = el.getAttribute(attr) || "";
+                if (cur.includes(MARK)) return;
+                el.setAttribute(attr, cur ? cur + "；" + extra : extra);
+            };
+            const label = document.querySelector("label[for='include-non-clause']");
+            if (!label) return;              // 左栏缺失（hide_tree 的全宽页）时静默跳过
+            append(label, "title");
+            const input = document.getElementById("include-non-clause");
+            if (input) append(input, "aria-label");
         },
 
         // 从 URL 回填共享筛选状态。维度用 getAll（同维多选）。
@@ -510,7 +533,7 @@ document.addEventListener('alpine:init', () => {
                 dim1_hierarchy: '层级', dim1_industry: '行业', dim1_nature: '性质',
                 dim2_stage: '阶段', dim3_usage: '用途', dim4_specialty: '专业',
                 dim5_location: '地区', dim6_material: '材料',
-                status_filter: '状态', include_non_clause: '含前言说明',
+                status_filter: '状态', include_non_clause: '含非条文内容',
             };
             if (!f || !Object.keys(f).length) return '';
             return Object.entries(f).map(([k, v]) => {

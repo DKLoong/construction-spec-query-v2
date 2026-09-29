@@ -30,6 +30,13 @@ router = APIRouter()
 # 记录本次请求实际生效的精排器（RERANK_CE / RERANK_VECTOR / RERANK_NONE），供阈值选型与埋点
 _last_rerank_used = RERANK_NONE
 
+# 问题文本兜底词（设计文档 §4.3）：提问直接点名这些非条文类别时**自动放行**，无需用户
+# 手动勾选左栏「包含非条文内容」。取值 = 左栏勾选框放行的全部打标非条文类别
+# （与 md_parser 的打标保留类一致；2026-09-29 由「前言/条文说明」两词扩到五词——
+# 用户问「引用标准名录有哪些」不该因为忘了勾选框而扑空）。
+# **不含「目次」**：它属「直接过滤」类，导入时整段丢弃、库里根本不存在，放行也无从召回。
+_NON_CLAUSE_QUESTION_KEYWORDS = ("前言", "条文说明", "用词说明", "公告", "引用标准名录")
+
 
 # ── 精排降级链（CrossEncoder → bi-encoder 向量 → 原始顺序） ──
 
@@ -314,10 +321,10 @@ def _prepare_qa_context(question: str, body: QaRequest) -> QaContext:
     # ① RRF 混合召回（候选池大小走配置）
     pool = get_qa_int("retrieve.candidate_pool")
     # 放行非条文：左栏复选框显式开关 **或** 问题文本兜底
-    # （「问题文本含前言/条文说明字样时隐式放行」是设计文档 §4.3 的兜底条款）
+    # （兜底词表见模块级 _NON_CLAUSE_QUESTION_KEYWORDS，设计文档 §4.3 的兜底条款）
     include_non_clause = (
         body.include_non_clause
-        or ("前言" in question) or ("条文说明" in question)
+        or any(kw in question for kw in _NON_CLAUSE_QUESTION_KEYWORDS)
     )
     # 放宽（relaxed）时清空分类维度：那正是「放宽」的语义（状态过滤与前言设置仍生效）
     dims = _dim_filters(body, body.relaxed)

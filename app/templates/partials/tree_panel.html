@@ -4,21 +4,29 @@
     <div class="search-box" x-data="searchBox()">
         <input type="search" x-model="keyword" @keyup.enter="search()"
                placeholder="输入关键词搜索条文...">
-        <!-- 勾选立即重搜：放行前言/条文说明等打标非条文（后端 include_non_clause=1）。
-             说明文字改为**可见的** <small>（原为 title 属性）：title 对键盘 focus 与
-             触屏均不显示、屏幕阅读器支持也不一致。aria-describedby 挂在**可聚焦的
-             input** 上（挂 label 上不会随聚焦播报）。
+        <!-- 勾选后放行前言/条文说明等打标非条文（后端 include_non_clause=1）。
+             处理器按**视图分流**（search.js 的 onIncludeChange，与 onCeChange/onStatusChange
+             同一范式）：检索页立即重搜；QA 页只同步 URL——QA 页调 search() 会把检索结果
+             htmx 换进 .center-panel-v2 并 pushState('/')，**整个问答界面会被顶掉**
+             （2026-09-29 用户实测反馈），且问答的筛选本就「只影响下一轮」。
+             说明走 **title 悬停 tooltip**（设计文档 §4.5）：常驻文字会把本就拥挤的左栏
+             再挤高一行。a11y 不靠"删掉说明"解决——title 对键盘 focus 与触屏均不显示
+             （2026-09-28 曾因此改成常驻 <small>），故 input 另挂 aria-label；两处引用
+             **同一个变量**，避免文案漂移。
              文案只列真正入库的非条文类别——**不含「目次」**：目次属「直接过滤」类
              （md_parser._NON_CLAUSE_FILTER_TITLES），导入时整段丢弃、从不入库。
-             也**不含**「问句含前言字样仍放行」——那是 QA 链路独有的问题文本兜底
-             （qa_routes.py），检索页没有，写在这里是对用户撒谎。 -->
-        <label for="include-non-clause" style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1">
-            <input type="checkbox" id="include-non-clause" x-model="includeNonClause" @change="search()"
-                   aria-describedby="include-non-clause-help"
+             也**不含**「提问含前言字样仍放行」——那是 QA 链路独有的问题文本兜底
+             （qa_routes.py），检索页没有，写在这里是对用户撒谎；该句由 qa.js 只在
+             QA 页追加（见 _extendNonClauseHint）。 -->
+        {% set non_clause_hint = "含：前言 / 条文说明 / 用词说明 / 公告 / 引用标准名录" %}
+        <label for="include-non-clause" title="{{ non_clause_hint }}"
+               style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1">
+            <input type="checkbox" id="include-non-clause" x-model="includeNonClause"
+                   @change="onIncludeChange()"
+                   aria-label="包含非条文内容（{{ non_clause_hint }}）"
                    style="width:0.875rem;height:0.875rem;flex:none;margin:0;padding:0">
-            <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">包含前言·条文说明</span>
+            <span style="font-size:0.8rem;line-height:0.875rem;white-space:nowrap">包含非条文内容</span>
         </label>
-        <small id="include-non-clause-help" class="field-hint">含：前言 / 条文说明 / 用词说明 / 公告 / 引用标准名录</small>
         <!-- CE 精排热切换：勾选/取消立即重搜（onCeChange 弹提示 + 触发重搜），结果实时按新开关排序。
              tooltip 说明其作用域，避免用户误以为 AI 问答也受此开关影响 -->
         <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem;line-height:1"

@@ -376,6 +376,35 @@ def test_qa_ask_keyword_qianyan_passes_through(auth_client, monkeypatch, tmp_pat
     assert query_log[0].include_non_clause is True
 
 
+@pytest.mark.parametrize("kw,slug", [
+    ("用词说明", "yongci"),
+    ("公告", "gonggao"),
+    ("引用标准名录", "minglu"),
+])
+def test_qa_ask_extended_fallback_words_pass_through(auth_client, monkeypatch, tmp_path, kw, slug):
+    """兜底词从 2 个扩到 5 个（2026-09-29 用户裁定）：左栏勾选框放行的全部类别，
+    提问直接点名时都必须自动放行——否则用户问「引用标准名录有哪些」会扑空。
+
+    参数化而非复制三遍：三条的**唯一差异**就是那个词，复制必然漂移。
+    slug 只用于库文件名：中文文件名在 Windows 上虽可用，但没必要引入这类差异。
+    """
+    db_path = tmp_path / f"test_qa_kw_{slug}.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        _setup_qa_data(conn)
+
+    query_log = []
+    _patch_cli_and_hybrid(monkeypatch, query_log)
+
+    resp = auth_client.post("/qa/ask", json={"question": f"{kw}里写了什么"})
+    assert resp.status_code == 200
+    assert query_log, "应调用 hybrid_search"
+    assert query_log[0].include_non_clause is True, \
+        f"提问含「{kw}」未自动放行非条文（兜底词表漏了它？）"
+
+
 # ═══════════════════════════════════════════
 # CrossEncoder 精排降级链（_rerank_scored 单元测试）
 # ═══════════════════════════════════════════

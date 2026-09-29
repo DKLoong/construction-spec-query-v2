@@ -95,6 +95,16 @@ document.addEventListener('alpine:init', () => {
             this.search();
         },
 
+        // 勾选/取消「包含非条文内容」→ 检索页立即重搜；QA 页只同步 URL（下一轮抓取才带）
+        onIncludeChange() {
+            // 同 onCeChange/onStatusChange：QA 页**不得**调 search()——那会把检索结果 htmx
+            // 换进 .center-panel-v2 并 pushState('/')，**整个问答界面被顶掉**（用户 2026-09-29
+            // 实测反馈），而问答侧的筛选本就只影响下一轮（设计文档 D8）；勾选后由
+            // 「已修改，将在下一轮生效」给可见性（filtersChanged 的比对里含该开关）。
+            if (typeof isQaView === 'function' && isQaView()) { syncQaUrl(); return; }
+            this.search();
+        },
+
         async search() {
             // 用户发起一次新查询（非翻页）：重置"本次查询已提示过CE"标记，
             // 使后续对新结果集翻页过半/超3页时能再次提示（Bug1 根因：标记只随整页刷新重置）

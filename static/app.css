@@ -330,8 +330,10 @@
 .search-box { margin-bottom: 0.5rem; }
 .search-box input { width: 100%; }
 /* 静态字段说明文字（<small class="field-hint">）：观感与 rules_list.html 内联定义的
-   同名类一致，收敛为全局类供多处复用（如检索页勾选框的可见帮助文字）。
-   注意与 .field-hint-pop（输入框聚焦悬浮提示）不是一回事。 */
+   同名类一致，收敛为全局类供多处复用（现用于规则表单的字段说明小字）。
+   注意与 .field-hint-pop（输入框聚焦悬浮提示）不是一回事。
+   ⚠️ 左栏「包含非条文内容」勾选框**不再**用它：2026-09-29 该说明改回 title tooltip
+   （常驻文字把左栏挤高一行），a11y 由 input 的 aria-label 承担——别再往那儿加回去。 */
 .field-hint { font-size: 0.72rem; color: var(--pico-muted-color); }
 .dim-tag {
     display: inline-block; font-size: 0.72rem; padding: 2px 8px;
