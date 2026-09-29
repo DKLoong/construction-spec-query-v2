@@ -1,3 +1,5 @@
+import pytest
+
 from app.search.sql_search import search_clauses
 from app.database import init_db, get_db
 from app.models import SearchQuery
@@ -307,3 +309,71 @@ def test_breadcrumb_weight_from_settings_takes_effect(monkeypatch, tmp_path):
     results_half, total_half = search_clauses(SearchQuery(keyword="接头安装"))
     assert total_zero == 0 and results_zero == []
     assert total_half == 1 and results_half[0]["id"] == id_b
+
+
+# ═══════════════════════════════════════════
+# U16：源文件写成「词内空格」的节名（`1 总 则`）也必须能被自然名召回
+# ═══════════════════════════════════════════
+
+#: （节名原文, 自然查询词）——都是 CJJ2 夹具里逐字存在的带词内空格节名
+_SPACED_SECTION_CASES = [
+    ("1 总 则", "总则"),
+    ("6 钢 筋", "钢筋"),
+    ("12 支 座", "支座"),
+    ("10 基 础 > 10.4 沉 井", "沉井"),
+]
+
+
+def _seed_spaced_section_case(monkeypatch, tmp_path, name, section_path):
+    """建库并在**只有面包屑**含该节名的条文上插一条，返回 (clause_id, breadcrumb, search_text)。
+
+    正文与标题刻意不含查询词的任何 token —— 唯一召回通道是 breadcrumb 列，
+    故「查不到」只可能是面包屑没产出整词（这正是 U16 的缺陷形态）。
+    """
+    import app.database as _db
+    import app.params.registry as registry
+    monkeypatch.setattr(_db, "DATABASE_PATH", str(tmp_path / name))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / (name + "_lance")))
+    registry.clear_param_cache()
+    init_db()
+    with get_db() as conn:
+        conn.execute("INSERT INTO specifications (code, title) VALUES ('GB-TEST', '测试')")
+        spec_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        st, bc = build_search_text("6.3.1", "现场加工", "本条只讲施工要点，不重复节名。", section_path)
+        conn.execute(
+            "INSERT INTO clauses (spec_id, clause_no, title, content, search_text, breadcrumb) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (spec_id, "6.3.1", "现场加工", "本条只讲施工要点，不重复节名。", st, bc))
+        cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    return cid, bc, st
+
+
+@pytest.mark.parametrize("section_path, word", _SPACED_SECTION_CASES)
+def test_spaced_section_name_is_recallable_by_natural_name(monkeypatch, tmp_path, section_path, word):
+    """节名原文带词内空格（`1 总 则`）时，查自然名「总则」必须经面包屑列召回
+
+    缺陷形态：面包屑直接分词 → jieba 得 `1 / 总 / 则`，查「总则」在任何权重下都 0 结果。
+    修法（D13）只在派生文本（面包屑列）折叠词内空白，`section_path` 原文不动。
+    """
+    cid, bc, st = _seed_spaced_section_case(
+        monkeypatch, tmp_path, f"u16_{word}.db", section_path)
+    # 夹具守卫：正文/标题切不出查询词 → 命中只可能来自面包屑列（否则本用例测不到该通道）
+    assert word not in st.split(), f"夹具守卫：search_text 已含 {word!r}，面包屑通道测不到"
+    results, total = search_clauses(SearchQuery(keyword=word))
+    assert total == 1 and results[0]["id"] == cid, \
+        f"节名 {section_path!r} 无法被自然名 {word!r} 召回（total={total}，面包屑={bc!r}）"
+
+
+def test_spaced_section_name_recall_holds_at_disabled_weight_boundary(monkeypatch, tmp_path):
+    """边界：权重 = 0（面包屑列退出检索）时**不应**召回；权重恢复后仍能召回
+
+    两态对照，证明上面那条召回真的来自面包屑列，而不是别处漏进的 token。
+    """
+    section_path, word = _SPACED_SECTION_CASES[0]
+    cid, _bc, _st = _seed_spaced_section_case(monkeypatch, tmp_path, "u16_w0.db", section_path)
+    _set_breadcrumb_weight(0)
+    results_off, total_off = search_clauses(SearchQuery(keyword=word))
+    assert total_off == 0 and results_off == [], "权重 0 时面包屑列应完全退出检索"
+    _set_breadcrumb_weight(0.3)
+    results_on, total_on = search_clauses(SearchQuery(keyword=word))
+    assert total_on == 1 and results_on[0]["id"] == cid

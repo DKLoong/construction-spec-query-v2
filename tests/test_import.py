@@ -186,7 +186,11 @@ _ANCESTOR_MD = """# 测试规范
 
 def _drive_real_import(isolated_paths, monkeypatch, md_text: str,
                        task_id: str = "anc00001") -> dict[str, dict]:
-    """走**真实导入路径**（`_process_import` → phase2 写库），返回 `{clause_no: 行}`"""
+    """走**真实导入路径**（`_process_import` → phase2 写库），返回 `{clause_no: 行}`
+
+    行内含 `section_path`（原文快照，供展示）与 `breadcrumb`（派生 FTS 文本）两列，
+    供 U16 核对「原文不动、派生文本归一化」这条边界。
+    """
     from app.database import get_db, init_db
     from app.routes import import_routes as ir
 
@@ -207,7 +211,7 @@ def _drive_real_import(isolated_paths, monkeypatch, md_text: str,
 
     with get_db() as conn:
         return {r["clause_no"]: dict(r) for r in conn.execute(
-            "SELECT id, clause_no, parent_clause, section_path FROM clauses")}
+            "SELECT id, clause_no, parent_clause, section_path, breadcrumb FROM clauses")}
 
 
 def test_imported_parent_links_are_segment_prefixes(isolated_paths, monkeypatch):
@@ -605,3 +609,56 @@ def test_cancel_review_skips_db_referenced_output_dir(monkeypatch, tmp_path, aut
     assert resp.status_code == 200
     assert out_task.exists(), "被 DB 引用的 output_dir 不应被删除"
     assert task_id not in import_routes.progress_store
+
+
+# ═══════════════════════════════════════════
+# U16：导入级核对「section_path 原文不动 / breadcrumb 派生文本归一化」
+# ═══════════════════════════════════════════
+
+#: 源文件把节名写成**词内空格**（CJJ2 夹具里 `## 1 总 则`、`## 6 钢 筋`、
+#: `## 12 支 座` 就是这种字面）。展示必须保留原文，检索必须能查到。
+_SPACED_SECTION_MD = """# 1 总 则
+
+1.0.1 适用范围
+
+本规范适用于城市桥梁工程。
+
+## 6 钢 筋
+
+6.1 一般规定
+
+6.1.1 原材料
+
+进场材料应抽取试件作检验。
+"""
+
+
+def test_imported_section_path_keeps_source_spacing_while_breadcrumb_is_normalized(
+        isolated_paths, monkeypatch):
+    """原文/派生的**双向**边界（U16 / D13）：
+
+    - `section_path`（存储列 + 详情/列表展示用）：**逐字保留**源文件的词内空格
+      （`1 总 则`）—— 归一化只许发生在派生文本里；
+    - `breadcrumb`（FTS 派生列）：折叠词内空格，使 jieba 产出整词 `总则`。
+
+    两条必须同时断言：只钉其中一条时，另一条被「顺手统一」都无人发现
+    （把 section_path 也归一化 = 破坏源文保真；漏归一化 = 查不到该节）。
+    """
+    rows = _drive_real_import(isolated_paths, monkeypatch, _SPACED_SECTION_MD,
+                              task_id="u16imp01")
+
+    # 夹具前提：两个带空格的节名都真的进了祖先链（否则下面的断言形同虚设）
+    assert rows["1.0.1"]["section_path"] == "1 总 则", \
+        f"section_path 必须保留源文件原文: {rows['1.0.1']['section_path']!r}"
+    assert rows["6.1.1"]["section_path"] == "6 钢 筋 > 6.1 一般规定", \
+        f"多级路径每级都要保真: {rows['6.1.1']['section_path']!r}"
+
+    # 派生列：空格被折叠 → jieba 得到整词
+    assert "总则" in rows["1.0.1"]["breadcrumb"].split(), \
+        f"面包屑未产出整词「总则」: {rows['1.0.1']['breadcrumb']!r}"
+    assert "钢筋" in rows["6.1.1"]["breadcrumb"].split(), \
+        f"面包屑未产出整词「钢筋」: {rows['6.1.1']['breadcrumb']!r}"
+    # 折叠只发生在词内：编号与节名之间的空白保留（`6 钢筋` 而非 `6钢筋`）
+    assert rows["1.0.1"]["breadcrumb"].split()[:1] == ["1"]
+    assert " ".join(rows["6.1.1"]["breadcrumb"].split()).startswith("6 钢筋"), \
+        f"编号与节名之间的空白不应被折叠: {rows['6.1.1']['breadcrumb']!r}"

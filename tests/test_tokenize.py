@@ -1,10 +1,12 @@
 """jieba 预分词工具（app/search/tokenize.py）单元测试
 
 验证：中文词组分词、纯标点过滤、search_text 构建（含 clause_no 原文追加）、
-FTS MATCH 查询串构造、确定性（一致性基础）。
+FTS MATCH 查询串构造、确定性（一致性基础）、面包屑的词内空白归一化（U16）。
 """
 
-from app.search.tokenize import tokenize, build_search_text, build_match_query
+from app.search.tokenize import (
+    tokenize, build_search_text, build_match_query, normalize_cjk_spacing,
+)
 
 
 def test_tokenize_chinese_words():
@@ -136,3 +138,95 @@ def test_build_match_query_or_joins_tokens():
     assert q == '"I" OR "级" OR "接头" OR "强度"'
     # 默认仍是 AND（不破坏原调用）
     assert build_match_query("I级接头强度") == '"I" AND "级" AND "接头" AND "强度"'
+
+
+# ═══════════════════════════════════════════
+# U16：面包屑的词内空白归一化（派生文本，不动 section_path）
+# ═══════════════════════════════════════════
+
+#: 分词器会把 `1 总 则` 切成 `1 / 总 / 则`（词的**字面被空格劈开**），
+#: 于是查「总则」永远命中不了这一节。归一化只折叠**两侧都是 CJK 表意文字**的空白。
+_SPACED_SECTIONS = [
+    ("1 总 则", "1 总则", "总则"),
+    ("6 钢 筋", "6 钢筋", "钢筋"),
+    ("12 支 座", "12 支座", "支座"),
+    # 多级路径 + 节号点段：每级各自折叠，编号/分隔符不动
+    ("10 基 础 > 10.4 沉 井", "10 基础 > 10.4 沉井", "沉井"),
+]
+
+
+def test_normalize_cjk_spacing_collapses_intra_word_spaces():
+    """「CJK 空白 CJK」折叠；一个或多个空白（含全角空格 U+3000）都折叠"""
+    for spaced, collapsed, _word in _SPACED_SECTIONS:
+        assert normalize_cjk_spacing(spaced) == collapsed, f"{spaced!r} 未折叠"
+    # 多个空白一起折叠
+    assert normalize_cjk_spacing("总  则") == "总则"
+    assert normalize_cjk_spacing("总　　则") == "总则"
+    # 全角空格（U+3000）同样是「词内空白」
+    assert normalize_cjk_spacing("钢　筋") == "钢筋"
+    assert normalize_cjk_spacing("1　总　则") == "1　总则", \
+        "数字与 CJK 之间的空白不属词内空白（保留），只折叠 CJK–CJK 的那一处"
+    # 空串/无空白：原样返回（幂等）
+    assert normalize_cjk_spacing("") == ""
+    assert normalize_cjk_spacing("1 总则") == "1 总则"
+
+
+def test_normalize_cjk_spacing_is_idempotent():
+    """幂等：归一化后再归一化不变（否则面包屑与查询侧会漂移）"""
+    for spaced, collapsed, _word in _SPACED_SECTIONS:
+        assert normalize_cjk_spacing(normalize_cjk_spacing(spaced)) == collapsed
+
+
+#: 非词内空白形态 → 归一化必须**逐字不动**，且面包屑 token 流与归一化前逐 token 相同。
+#: 每组是（section_path, 期望 token 列表）。
+_UNTOUCHED_SPACING = [
+    # 路径分隔符两旁的空白（`>` 非 CJK）
+    ("6 混凝土分项工程 > 6.1 接头安装", ["6", "混凝土", "分项", "工程", "6.1", "接头", "安装"]),
+    # 纯 ASCII/数字段
+    ("GB 50010", ["GB", "50010"]),
+    ("GB/T 1499.1-2017 > GB 50010", ["GB", "T", "1499.1", "2017", "GB", "50010"]),
+    # 数字后接 CJK（`6.3.1 接头`）：单个空白保留
+    ("6.3.1 接头", ["6.3", "1", "接头"]),
+    # 单位数编号后接 CJK（`6 混凝土分项工程`）：单个空白保留
+    ("6 混凝土分项工程", ["6", "混凝土", "分项", "工程"]),
+    # 单条无空白的普通路径（对照组）
+    ("2 术语和符号 > 2.1 术语", ["2", "术语", "和", "符号", "2.1", "术语"]),
+]
+
+
+def test_breadcrumb_spacing_normalization_leaves_non_cjk_spaces_alone():
+    """非词内空白形态：归一化逐字不动，面包屑 token 流与今天**完全一致**
+
+    ⚠ 这里是**逐 token 等值**断言（不是「含某词」）：归一化若误伤任意一处，
+    对应 token 会消失或变形，本用例立刻变红。
+    """
+    for path, expected in _UNTOUCHED_SPACING:
+        assert normalize_cjk_spacing(path) == path, f"{path!r} 被误改（不该动的空白被折叠）"
+        _st, bc = build_search_text("1.0.1", "标题", "正文", path)
+        assert bc.split() == expected, f"{path!r} 的 token 流变了: {bc.split()}"
+        # 与「不归一化」的旧口径逐 token 相同 —— 即这些形态的行为零变化
+        assert bc == " ".join(tokenize(path))
+
+
+def test_breadcrumb_collapses_intra_word_spaces_before_tokenizing():
+    """面包屑列必须先折叠词内空白再分词，才能产出整词 `总则` 而非 `总`/`则`"""
+    for spaced, collapsed, word in _SPACED_SECTIONS:
+        _st, bc = build_search_text("1.0.1", "适用范围", "正文甲", spaced)
+        assert bc == " ".join(tokenize(collapsed)), f"{spaced!r} → {bc!r}"
+        assert word in bc.split(), f"{spaced!r} 的面包屑未产出整词 {word!r}: {bc!r}"
+
+    # 全角空格形态同样产出整词
+    _st, bc = build_search_text("1.0.1", "", "正文甲", "1　总　则")
+    assert "总则" in bc.split()
+
+
+def test_search_text_is_not_normalized_only_breadcrumb():
+    """归一化只作用于面包屑列：search_text 不含面包屑，故不受影响
+
+    护住「派生文本就地清洗」的边界——若有人顺手把归一化挪进 tokenize/查询侧，
+    查询串与全库索引口径会同时漂移（`normalize_cjk_spacing` 只在面包屑列调用）。
+    """
+    title, content = "适用范围", "正文甲 适用于 城市 桥梁"
+    st_spaced, _bc = build_search_text("1.0.1", title, content, "1 总 则")
+    st_no_path, _ = build_search_text("1.0.1", title, content)
+    assert st_spaced == st_no_path, "search_text 不得随 section_path（更不得随归一化）变化"

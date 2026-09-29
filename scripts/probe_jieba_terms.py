@@ -58,6 +58,10 @@ def build_search_text(tk, clause_no, title, content, section_path=""):
 
     返回 (search_text, breadcrumb)。本探针的三组索引只用第 0 列——
     实验问的是「术语词典对 search_text 切分与召回的影响」，面包屑不在其内。
+
+    ⚠ 第 1 列**刻意不复刻** U16 的 `normalize_cjk_spacing`（词内空白折叠）：
+    该归一化只影响生产的面包屑列，本探针从不消费它。若将来要用本探针
+    评估面包屑，必须先补上这一层，否则结论与生产口径不符。
     """
     parts = tokenize(tk, f"{title or ''} {content or ''}")
     if clause_no and clause_no.strip():
