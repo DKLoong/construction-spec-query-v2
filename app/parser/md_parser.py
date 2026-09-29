@@ -4,14 +4,36 @@ from typing import NamedTuple
 
 # 编号行前缀正则（按匹配优先级排列）
 # 点号兼容半角 `.` 与全角 `．`（U+FF0E，OCR 高频把条文号点误识别为全角）
+# 编号**内部**的空白一并容忍（`\s*`）：OCR 会把编号里的空白原样带出，实测
+# JTG F80/1-2017 写作 `附录 A …`（29 行）与 `B. 0.1 …`（6 行）；不容白的代价
+# 是整行降级为正文、被折进上一条（13.4.3 因此吞掉 10,923 字符）。
+# ⚠️ 放宽的**只有编号内部**：「编号后必须有空白+正文」这一条（末尾的 `\s+`）
+#    不许放宽——GB 50086-2015 里被换行劈开的交叉引用 `A. 4.1)。永久性…`
+#    正是靠它才没被认成条文。
+# ⚠️ 通过本组正则得到的编号**必须**经 `_normalize_clause_no` 去掉内部空白，
+#    否则落库的 clause_no 会带空格（见该函数）。
 _NUM_PATTERNS = [
-    # 中文附录: 附录A, 附录B.1
-    r'^(附录[A-Z]+(?:[\.．][\d]+)*)\s+(.+)',
-    # 字母+数字编号: D.4, D.4.1, A.1, TB.10423 (字母后跟数字，可选点分隔)
-    r'^([A-Z]+(?:[\.．]?\d+)+)\s+(.+)',
-    # 纯数字编号: 1, 3.1, 1.0.1, 5.0.3
-    r'^(\d+(?:[\.．]\d+)*)\s+(.+)',
+    # 中文附录: 附录A, 附录A.1, 附录 A（OCR 空格变体）
+    r'^(附录\s*[A-Z]+(?:\s*[.．]\s*[\d]+)*)\s+(.+)',
+    # 字母+数字编号: D.4, D.4.1, A.1, B. 0.1 (字母后跟数字，可选点分隔)
+    r'^([A-Z]+(?:\s*[.．]?\s*\d+)+)\s+(.+)',
+    # 纯数字编号: 1, 3.1, 1.0.1, 1. 0.1 (OCR 空格变体)
+    r'^(\d+(?:\s*[.．]\s*\d+)*)\s+(.+)',
 ]
+
+
+def _normalize_clause_no(raw: str) -> str:
+    """编号归一化：删除内部空白 + 全角点号转半角。
+
+    本函数与 `_candidate_of` 的两个编号产出点（`#` 分支走 `_extract_clause_no`、
+    非 `#` 分支走 `_match_clause_line`）共同保证 M5 的前提：`_is_zero_segment_node`
+    只按半角 `.` 切分、不做任何归一化，故**绕过这两处直接传原文会误判**。
+
+    删空白是 2026-09-29 补的一半：`_NUM_PATTERNS` 已容忍编号内的 OCR 空白，
+    若归一化不跟着删，clause_no 会带着空格落库（`'B. 0.1'` / `'附录 A'`）——
+    与 FTS、唯一键、号身份断言全部对不上，且面包屑里会出现双空格。
+    """
+    return re.sub(r'\s+', '', raw).replace('．', '.')
 
 # 层级上限（与旧实现一致的封顶，避免异常输入产生超深层级）
 _MAX_LEVEL = 6
@@ -281,8 +303,9 @@ def _match_clause_line(line: str):
     for pattern in _NUM_PATTERNS:
         m = re.match(pattern, s)
         if m:
-            # 统一归一化全角点号（U+FF0E）为半角，保证后续层级推断/查询一致
-            clause_no = m.group(1).replace('．', '.')
+            # 统一归一化：全角点号（U+FF0E）转半角 + 删除编号内部空白，
+            # 保证后续层级推断/查询/落库一致（见 `_normalize_clause_no`）
+            clause_no = _normalize_clause_no(m.group(1))
             tail = m.group(2).rstrip(' .…')
             if not tail:
                 return None
@@ -938,12 +961,13 @@ def _extract_clause_no(raw_title: str) -> str | None:
     R1 ⑦：旧实现兜底 `return title` 会把 `### 某英文标题` 变成 clause_no，
     导致英文标题成条文、以及 `Ⅰ 主控项目` 这类非条文号入库（实测 124 条伪条文号）。
 
-    兼容全角点号（U+FF0E），提取后统一归一化为半角点号。
+    兼容全角点号（U+FF0E）与编号内部空白，提取后统一经 `_normalize_clause_no`
+    归一化（半角点号、无空白）。
     """
     for pattern in _NUM_PATTERNS:
         m = re.match(pattern, raw_title)
         if m:
-            return m.group(1).replace('．', '.')
+            return _normalize_clause_no(m.group(1))
     return None
 
 

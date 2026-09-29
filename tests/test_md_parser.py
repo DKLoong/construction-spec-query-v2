@@ -842,6 +842,89 @@ def test_appendix_without_dots_is_still_a_candidate():
 
 
 # ═══════════════════════════════════════════
+# OCR 在编号内部插入空白（JTG F80/1-2017 实测，2026-09-29）
+# ═══════════════════════════════════════════
+# 成因：三条 `_NUM_PATTERNS` 都要求编号各段**无空白**，而 PaddleOCR-VL 会把编号里的
+# 空白原样带出。实测源 `data/outputs/8376e02c/8376e02c.md`（JTG F80/1-2017）：
+#   - 29 行写作 `附录 A …`（附录与字母间有空格）→ 整行降级为正文、折进上一条
+#     `13.4.3`（实测吞 10,923 字符），其后 B/C/D 的 section_path 全部套着 `13.4 复合结构声屏障`；
+#   - 6 行写作 `B. 0.1 …`（点号后有空格）→ B.0.1 / B.0.3 / E.0.1 / F.0.1 / M.0.1 / M.0.4
+#     六条整条缺失。
+# 同类写法在其余语料亦存在（GB 50086-2015 14+7 行、JGJ 107-2016 2 行），非本篇独有。
+# 归一化口径与全角点号一致：`clause_no` 落库时**去掉编号内部全部空白**（`附录 A`→`附录A`）。
+
+def test_appendix_letter_separated_by_space_is_a_candidate():
+    """`附录 A`（附录与字母间有空格）仍是合法结构编号，其正文不得折进上一条"""
+    md = (
+        "## 13 声屏障工程\n\n"
+        "### 13.4 复合结构声屏障\n\n"
+        "13.4.3 复合结构声屏障外观质量应符合下列规定：\n\n"
+        "1 屏体应无裂纹、划伤。\n\n"
+        "### 附录 A 单位、分部及分项工程的划分\n\n"
+        "表 A-1 一般建设项目的工程划分\n\n"
+        "A.0.1 本附录适用于一般建设项目。\n"
+    )
+    rows = parse_markdown(md)
+    body = [r for r in rows if r["clause_no"] == "13.4.3"]
+    assert body, "13.4.3 应产出"
+    assert "附录 A" not in body[0]["content"], "附录 A 标题行被折进了 13.4.3 的 content"
+
+    ap = [r for r in rows if r["clause_no"] == "附录A"]
+    assert len(ap) == 1, f"`附录 A` 未成为结构节点（现有：{[r['clause_no'] for r in rows]}）"
+    assert ap[0]["title"] == "单位、分部及分项工程的划分"
+
+    a1 = [r for r in rows if r["clause_no"] == "A.0.1"]
+    assert len(a1) == 1, "`A.0.1` 未被识别为条文"
+    assert a1[0]["section_path"] == "附录A 单位、分部及分项工程的划分", (
+        f"附录编号未被归一化去掉内部空白：{a1[0]['section_path']!r}"
+    )
+
+
+def test_letter_clause_no_with_space_after_dot_is_a_candidate():
+    """`B. 0.1`（点号后有空格）仍是条；clause_no 归一化为 `B.0.1`"""
+    md = (
+        "### 附录 B 压实度评定\n\n"
+        "B. 0.1 路基和路面基层的压实度应以重型击实标准为准。\n\n"
+        "B.0.2 标准密度应做平行试验。\n"
+    )
+    rows = parse_markdown(md)
+    nums = [r["clause_no"] for r in rows]
+    assert "B.0.1" in nums, f"`B. 0.1` 未被识别为条文（现有：{nums}）"
+
+    b1 = [r for r in rows if r["clause_no"] == "B.0.1"][0]
+    assert "路基和路面基层" in b1["content"], "条文正文未归属到 B.0.1"
+    assert b1["section_path"] == "附录B 压实度评定", (
+        f"`B. 0.1` 的祖先链不对：{b1['section_path']!r}"
+    )
+
+
+def test_numeric_clause_no_with_inner_space_is_normalized():
+    """数字编号内插空白（`1. 0.1`）同样被容忍并归一化
+
+    当前语料 0 例，属与上两条同一判据的零成本覆盖——不加则同一类 OCR 写法在
+    数字编号上复发时仍会静默降级。编号后**无空白分隔正文**的形态不受影响
+    （见 test_clause_no_with_inner_space_still_needs_a_tail）。
+    """
+    md = "## 1 总则\n\n1. 0.1 为加强公路工程质量管理，制定本标准。\n"
+    rows = parse_markdown(md)
+    assert [r["clause_no"] for r in rows] == ["1.0.1"]
+
+
+def test_clause_no_with_inner_space_still_needs_a_tail():
+    """容错只放宽「编号内空白」，**不**放宽「编号后必须有正文」
+
+    GB 50086-2015 源里有被换行劈开的交叉引用 `A. 4.1)。永久性压力分散型锚杆…`：
+    编号后紧跟标点、无空白分隔，不得被认成条文（否则每次放宽都多造伪条文）。
+    """
+    md = ("## 4 锚杆\n\n"
+          "4.0.1 锚杆施工应符合下列规定（见附录 A. 4.1)。永久性压力分散型锚杆应满足要求。\n")
+    rows = parse_markdown(md)
+    nums = [r["clause_no"] for r in rows]
+    assert nums == ["4.0.1"], f"断行残句被认成了条文：{nums}"
+    assert "永久性压力分散型锚杆" in rows[0]["content"], "残句文本应折入当前条"
+
+
+# ═══════════════════════════════════════════
 # 解析主循环：R14 投票 / 无条件 flush / 内节点判据 / section_path（Task 3）
 # ═══════════════════════════════════════════
 
@@ -1875,9 +1958,13 @@ def _assert_streams_identical(md_text: str, *, lines: int, nodes: int, filters: 
 # 语料基线（U14 实测）。口径：「候选形状」= `_candidate_of` 认出的行
 # = 节点 + 过滤标题 + 被 fix ③ 拒的行：
 #   CJJ2     1,030 = 1,027 + 0 + 3    ← 批一记录「7,334 行 / 1,030 候选 / 3 拒绝」
-#   JGJ107      88 =    86 + 2 + 0    ← 批一记录「626 / 88 / 0」
+#   JGJ107      90 =    88 + 2 + 0    ← 批一记录「626 / 88 / 0」；2026-09-29 起 +2：
+#                                        编号正则容忍「编号内部空白」后，`附录 A 接头试件
+#                                        试验方法`(L408) 与 `附录 B 接头试件型式检验报告
+#                                        式样`(L525) 由降级正文变回节点（**0 行消失**，
+#                                        逐行核对见该次提交说明）。属预期收敛，非放宽。
 _CJJ2_STREAM = dict(lines=7334, nodes=1027, filters=0, rejects=3)
-_JGJ107_STREAM = dict(lines=626, nodes=86, filters=2, rejects=0)
+_JGJ107_STREAM = dict(lines=626, nodes=88, filters=2, rejects=0)
 _JGJ107_MD = (Path(__file__).resolve().parent.parent
               / "data" / "outputs" / "aa96b73a" / "aa96b73a.md")
 
@@ -1896,7 +1983,7 @@ def test_two_pass_decision_streams_are_identical(cjj2_md):
 
 
 def test_two_pass_decision_streams_are_identical_jgj107():
-    """同一判据的**第二份语料**（JGJ107）：626 行 / 88 候选形状 / 0 拒绝。
+    """同一判据的**第二份语料**（JGJ107）：626 行 / 90 候选形状 / 0 拒绝。
 
     ⚠️ 该语料在 `data/outputs/`（运行目录、未入库：`.gitignore:11` 忽略整个 `data/`），
     缺失时**跳过**而非报红 —— 跳过会被 pytest 如实计入，不会冒充「已复现」。
