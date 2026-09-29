@@ -1653,6 +1653,61 @@ def test_toc_dot_leader_lines_kept_out_of_content():
     assert "为适应混凝土结构工程发展的需要而编制" in qy[0]["content"], "前言正文不得被误删"
 
 
+def test_toc_chinese_ellipsis_dot_leader_is_not_a_clause():
+    """目录点引的**中文省略号**变体（`……`，U+2026）同样不得成候选行、不得进 content。
+
+    实测来源：JTG F80/1-2017 的目次（`data/outputs/8376e02c/8376e02c.md` L90–L126，
+    即 6.9~9.8 共 37 行）用 `……` 排页码，而同一份目次的其余行用 `.....`；
+    `_DOT_LEADER` 原式 `[.．]{5,}` 不认省略号 ⇒ 这 37 行既成了候选行、文本也照常进
+    pending ⇒ 落库 5 条伪条文（6.11 / 7.3 / 7.4 / 7.11 / 8.12），其中 6.11 的 content
+    还夹带着下一条目录行 `7 路面工程……29`。
+    """
+    md = (
+        "## 1 总则\n\n"
+        "1.0.1 正文甲。\n\n"
+        "6.11 导流工程……28\n"
+        "7 路面工程……29\n"
+        "7.3 沥青混凝土面层和沥青碎（砾）石面层……31\n"
+    )
+    rows = parse_markdown(md)
+    assert [r["clause_no"] for r in rows] == ["1.0.1"], (
+        f"目录省略号行被认成了条文：{[r['clause_no'] for r in rows]}"
+    )
+    assert "导流工程" not in rows[0]["content"], "目录行文本漏进了条文 content"
+    assert "路面工程" not in rows[0]["content"], "目录行文本漏进了条文 content"
+    assert "正文甲" in rows[0]["content"], "正文不得被误删"
+
+
+def test_body_ellipsis_is_not_a_dot_leader():
+    """**边界护栏**：正文里的省略号不是点引，不得被 `_DOT_LEADER` 误伤。
+
+    与上一条同源、方向相反：判据若写成「含 `……` 即点引」会**删掉真条文**——
+    全语料实测 10 行正文含 `……`（每份规范的用词说明都有
+    `写法为“应符合……的规定”或“应按……执行”`；CJJ2 还有一条真条文
+    `6.3.4 条文中出现的“在同条件下……”是指钢筋生产厂、批号…`）。
+    故省略号必须**作点引**（后面只跟页码、且到行尾）才排除：
+    `…{2,}\\s*\\d{1,4}\\s*$`。
+
+    可失败性已实测（变异：把 `_DOT_LEADER` 换成粗判 `…{2,}`）→ 本条变红：
+    6.3.4 整条消失、`应按……执行` 那行文本从用词说明的 content 里消失。
+    """
+    body = '2 条文中指明应按其他有关标准执行的写法为：“应符合……的规定”或“应按……执行”。'
+    clause = '6.3.4 条文中出现的“在同条件下……”是指钢筋生产厂、批号、级别均相同。'
+    md = (
+        "## 1 总则\n\n"
+        "1.0.1 正文甲。\n\n"
+        f"{body}\n\n"
+        f"{clause}\n"
+    )
+    rows = parse_markdown(md)
+    nums = [r["clause_no"] for r in rows]
+    assert "6.3.4" in nums, f"含省略号的条文被整条丢掉：{nums}"
+    c = [r for r in rows if r["clause_no"] == "6.3.4"][0]
+    assert "在同条件下" in c["content"], "条文正文被省略号规则删掉了"
+    plain = "".join(r["content"] for r in rows)
+    assert "应符合……的规定" in plain, "含省略号的正文行被删掉了"
+
+
 def test_numeric_filter_title_seen_advances_identically():
     """fix round 2（Finding 3）：数字命名的过滤标题不得让预扫与主循环的 seen 集合分叉。
 
