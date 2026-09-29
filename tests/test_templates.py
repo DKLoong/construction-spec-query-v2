@@ -598,3 +598,17 @@ def test_result_list_renders_pagination_meta():
     html = _read("result_list.html")
     assert "data-total-pages" in html, "结果容器应渲染总页数"
     assert "data-page" in html, "结果容器应渲染当前页"
+
+
+def test_result_content_renders_dims_through_split_filter():
+    """检索结果页的 dim 标签必须与条文行同口径（经 `split_values` 过滤）
+
+    多值分类（半角逗号分隔）在显示层要拆成多个标签；三处渲染（条文行/检索结果/条文详情）
+    必须同一口径，否则又是一次「多份拷贝各自进化」（见 tests/test_clause_row.py 的同类教训）。
+    条文行与详情由 HTTP 级用例覆盖，结果页在此以源码级判据兜底。
+    """
+    html = _read("result_content.html")
+    assert html.count("| split_values") == 3, (
+        "result_content.html 的三个 dim 值应各自经 split_values 渲染，"
+        f"实测 {html.count('| split_values')} 处"
+    )

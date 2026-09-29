@@ -32,9 +32,11 @@ async def specs_list(request: Request):
     """规范列表 HTML 片段"""
     with get_db() as conn:
         rows = conn.execute(
-            """SELECT s.*, COUNT(c.id) as clause_count
+            """SELECT s.*, COUNT(c.id) as clause_count,
+                      r.code AS replace_by_code, r.title AS replace_by_title
                FROM specifications s
                LEFT JOIN clauses c ON c.spec_id = s.id
+               LEFT JOIN specifications r ON r.id = s.replace_by_spec_id
                GROUP BY s.id
                ORDER BY s.created_at DESC"""
         ).fetchall()

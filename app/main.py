@@ -107,6 +107,28 @@ from fastapi.templating import Jinja2Templates
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
 
+def split_values(value) -> list[str]:
+    """把「半角逗号分隔的多值分类」拆成列表（**显示层专用**）。
+
+    口径必须与另外两处一致（否则又是"同一值三种理解"）：
+      - 分类树 `import_routes._build_tree_nodes` 显式按 `,` 拆成多个节点；
+      - 检索 `sql_search` 用 `col LIKE '%值%'` 子串命中（点任一子值都能筛到）。
+    分类输入框的提示也写明分隔符是**半角**逗号：
+    `data-hint='如需设置多个分类，请用半角标点(英文标点)","隔开。'` ⇒ 中文逗号不拆。
+
+    之前只有**显示层**没拆：`施工,验收` 被整串塞进一个 `dim-tag`，看起来是一个标签
+    （2026-09-29 修）。空值/None → 空列表；每项 strip、空项丢弃。
+
+    ⚠️ 只改显示、**不改数据**：写库的值保持原样逗号串（检索与分类树都依赖它）。
+    """
+    if not value:
+        return []
+    return [p.strip() for p in str(value).split(",") if p.strip()]
+
+
+templates.env.filters["split_values"] = split_values
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         public_paths = ["/login", "/static", "/health"]

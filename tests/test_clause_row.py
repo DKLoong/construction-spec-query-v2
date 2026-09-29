@@ -66,6 +66,62 @@ def test_normal_row_identical_after_class_save(auth_client, monkeypatch, tmp_pat
 
 
 # ═══════════════════════════════════════════
+# 多值分类（半角逗号）在**显示层**必须拆成多个标签
+# ═══════════════════════════════════════════
+# 背景：分类输入框的提示明确支持多值（`data-hint='如需设置多个分类，请用半角标点(英文标点)","隔开。'`），
+# 分类树（`import_routes._build_tree_nodes`）与检索（`sql_search` 的 `col LIKE '%值%'`）
+# 都按半角逗号识别，**只有标签渲染把整串塞进一个 dim-tag** ⇒ 用户看到的是「一个标签」
+# （2026-09-29 补）。分隔符口径必须与那两处一致：**只认半角逗号**，不认中文逗号。
+
+_DIM_TAG_RE = re.compile(r'<span class="dim-tag"[^>]*>(.*?)</span>', re.S)
+
+
+def _tag_texts(html: str) -> list[str]:
+    """抽出所有 dim-tag 的文本（去空白），用于逐值比对"""
+    return [re.sub(r"\s+", "", t) for t in _DIM_TAG_RE.findall(html)]
+
+
+def _set_dims(clause_id: int, dim4: str, dim5: str, dim6: str) -> None:
+    from app.database import get_db
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE clauses SET dim4_specialty = ?, dim5_location = ?, dim6_material = ? "
+            "WHERE id = ?", (dim4, dim5, dim6, clause_id),
+        )
+
+
+def test_multi_value_dims_split_in_list_row(auth_client, monkeypatch, tmp_path):
+    """条文列表的行：`施工,验收` 必须渲染成两个标签，而不是一个"""
+    spec_id, clause_id = _setup(monkeypatch, tmp_path, "mv1.db")
+    _set_dims(clause_id, "施工,验收", "桥面", "钢筋,混凝土")
+
+    row = _row(auth_client.get(f"/specs/{spec_id}/clauses").text, clause_id)
+    assert _tag_texts(row) == ["施工", "验收", "桥面", "钢筋", "混凝土"], (
+        f"多值未按半角逗号拆成多个标签：{_tag_texts(row)}"
+    )
+
+
+def test_multi_value_dims_split_in_clause_detail(auth_client, monkeypatch, tmp_path):
+    """条文详情弹窗：三处渲染必须同一口径（否则又是一次「多份拷贝各自进化」）"""
+    _spec_id, clause_id = _setup(monkeypatch, tmp_path, "mv2.db")
+    _set_dims(clause_id, "施工,验收", "桥面", "钢筋,混凝土")
+
+    detail = auth_client.get(f"/clause/{clause_id}").text
+    assert _tag_texts(detail) == [
+        "专业：施工", "专业：验收", "部位：桥面", "材料/工艺：钢筋", "材料/工艺：混凝土",
+    ], f"详情页多值未拆分：{_tag_texts(detail)}"
+
+
+def test_single_value_dim_still_renders_one_tag(auth_client, monkeypatch, tmp_path):
+    """单值不受影响：仍然只一个标签（防「拆分」改成无条件多渲染）"""
+    spec_id, clause_id = _setup(monkeypatch, tmp_path, "mv3.db")
+    _set_dims(clause_id, "桥梁", "", "")
+
+    row = _row(auth_client.get(f"/specs/{spec_id}/clauses").text, clause_id)
+    assert _tag_texts(row) == ["桥梁"], f"单值被渲染成多个标签：{_tag_texts(row)}"
+
+
+# ═══════════════════════════════════════════
 # 「编辑」按钮一律走分栏编辑页（本次 bug 的判据）
 # ═══════════════════════════════════════════
 

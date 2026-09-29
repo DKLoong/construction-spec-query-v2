@@ -33,9 +33,9 @@
         </div>
         {% endif %}
         <div class="dim-tags">
-            {% if r.dim4_specialty %}<span class="dim-tag">{{ r.dim4_specialty }}</span>{% endif %}
-            {% if r.dim5_location %}<span class="dim-tag">{{ r.dim5_location }}</span>{% endif %}
-            {% if r.dim6_material %}<span class="dim-tag">{{ r.dim6_material }}</span>{% endif %}
+            {% for v in r.dim4_specialty | split_values %}<span class="dim-tag">{{ v }}</span>{% endfor %}
+            {% for v in r.dim5_location | split_values %}<span class="dim-tag">{{ v }}</span>{% endfor %}
+            {% for v in r.dim6_material | split_values %}<span class="dim-tag">{{ v }}</span>{% endfor %}
         </div>
     </div>
     {% endfor %}

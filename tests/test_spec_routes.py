@@ -1,4 +1,6 @@
 """规范管理与条文 CRUD 路由测试"""
+import re
+
 import pytest
 
 
@@ -49,6 +51,49 @@ def test_specs_list_with_data(auth_client, monkeypatch, tmp_path):
     resp = auth_client.get("/specs/list")
     assert resp.status_code == 200
     assert "GB 50204" in resp.text
+
+
+def test_specs_list_shows_replacement_hint(auth_client, monkeypatch, tmp_path):
+    """状态列必须显示「已由谁替代」——数据早已在 context 里，此前模板没用
+
+    背景：条文详情（`clause_detail.html`）有红色废止提示块，但**列表页的状态列只有三选下拉**
+    ⇒ 管理员在列表里看不出「这条废止规范的新版是哪个/是否已入库」，必须逐条点进条文详情。
+    2026-09-29 补。两个来源取其一：库内替代者（`replace_by_spec_id` 外键 → 新版的 code）
+    或导入时留存的 `replaced_by_code`（新版尚未入库）。
+    """
+    db_path = tmp_path / "test_specs_replace.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        new_id = _setup_spec_data(conn)          # 新版（在库，且自己不该有提示）
+        conn.execute("UPDATE specifications SET code = ?, title = ? WHERE id = ?",
+                     ("GB 50204-2015", "混凝土结构工程施工质量验收规范", new_id))
+        conn.execute(
+            """INSERT INTO specifications (code, title, status, replace_by_spec_id,
+                                           replaced_by_code)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("GB 50204-2002", "混凝土结构工程施工质量验收规范（旧版）",
+             "废止", new_id, "GB 50204-2015"),
+        )
+
+    html = auth_client.get("/specs/list").text
+    hints = re.findall(r'<small class="spec-replace-hint"[^>]*>(.*?)</small>', html, re.S)
+    assert len(hints) == 1, f"替代提示应只出现在被替代的那条规范上，实测 {len(hints)} 处"
+    assert "GB 50204-2015" in hints[0], f"提示里没有新版编号：{hints[0]!r}"
+
+
+def test_specs_list_replacement_hint_absent_without_relation(auth_client, monkeypatch, tmp_path):
+    """没有替代关系时不得出现提示（否则就是无差别噪音，等同告警疲劳）"""
+    db_path = tmp_path / "test_specs_noreplace.db"
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(db_path))
+    from app.database import init_db, get_db
+    init_db()
+    with get_db() as conn:
+        _setup_spec_data(conn)
+
+    html = auth_client.get("/specs/list").text
+    assert "spec-replace-hint" not in html, "无关规范上出现了替代提示"
 
 
 # ═══════════════════════════════════════════

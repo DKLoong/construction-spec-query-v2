@@ -49,6 +49,16 @@
                     <option value="{{ st }}" {% if s.status == st %}selected{% endif %}>{{ st }}</option>
                     {% endfor %}
                 </select>
+                {# 替代关系提示（2026-09-29 补）：状态列此前只显示「废止/修订中」，看不出**新版是谁、
+                   是否已入库**，必须点进条文详情才知道（详情页早有红色提示块，见 clause_detail.html）。
+                   两个来源取其一，与详情页同口径：库内替代者外键（replace_by_spec_id → r.code）
+                   优先，其次导入时留存的 replaced_by_code（新版尚未入库）。
+                   无替代关系时**不渲染任何东西**（避免无差别噪音）。新版名称较长 → 走 title tooltip。 #}
+                {% set new_code = s.replace_by_code or s.replaced_by_code %}
+                {% if new_code %}
+                <small class="spec-replace-hint" style="display:block;font-size:0.7rem;color:#b00000;margin-top:0.2rem"
+                       title="{% if s.replace_by_title %}新版名称：{{ s.replace_by_title }}{% else %}该新版尚未入库{% endif %}">→ 新版：{{ new_code }}</small>
+                {% endif %}
             </td>
             <td>{{ s.clause_count }}</td>
             <td>{{ s.created_at[:10] if s.created_at else '-' }}</td>

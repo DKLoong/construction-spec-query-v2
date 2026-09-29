@@ -20,9 +20,11 @@
     </td>
     <td>
         {% if clause.dim4_specialty or clause.dim5_location or clause.dim6_material %}
-            {% if clause.dim4_specialty %}<span class="dim-tag">{{ clause.dim4_specialty }}</span>{% endif %}
-            {% if clause.dim5_location %}<span class="dim-tag">{{ clause.dim5_location }}</span>{% endif %}
-            {% if clause.dim6_material %}<span class="dim-tag">{{ clause.dim6_material }}</span>{% endif %}
+            {# 多值分类（半角逗号分隔）**逐值一个标签**——与分类树/检索同口径，
+               见 app/main.py 的 split_values docstring。空值 → 空列表，故不再需要 if。 #}
+            {% for v in clause.dim4_specialty | split_values %}<span class="dim-tag">{{ v }}</span>{% endfor %}
+            {% for v in clause.dim5_location | split_values %}<span class="dim-tag">{{ v }}</span>{% endfor %}
+            {% for v in clause.dim6_material | split_values %}<span class="dim-tag">{{ v }}</span>{% endfor %}
         {% else %}
             <span style="color:#999">-</span>
         {% endif %}

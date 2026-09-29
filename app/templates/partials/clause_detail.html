@@ -18,21 +18,22 @@
         </script>
         <footer style="margin-top:1rem">
             <div class="dim-tags">
-                {% if clause.dim4_specialty %}
+                {# 多值分类逐值一个标签（口径见 app/main.py 的 split_values）；前缀每值各带一次 #}
+                {% for v in clause.dim4_specialty | split_values %}
                 <span class="dim-tag" style="background:var(--pico-primary-background);color:white;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.8rem">
-                    专业：{{ clause.dim4_specialty }}
+                    专业：{{ v }}
                 </span>
-                {% endif %}
-                {% if clause.dim5_location %}
+                {% endfor %}
+                {% for v in clause.dim5_location | split_values %}
                 <span class="dim-tag" style="background:var(--pico-primary-background);color:white;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.8rem">
-                    部位：{{ clause.dim5_location }}
+                    部位：{{ v }}
                 </span>
-                {% endif %}
-                {% if clause.dim6_material %}
+                {% endfor %}
+                {% for v in clause.dim6_material | split_values %}
                 <span class="dim-tag" style="background:var(--pico-primary-background);color:white;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.8rem">
-                    材料/工艺：{{ clause.dim6_material }}
+                    材料/工艺：{{ v }}
                 </span>
-                {% endif %}
+                {% endfor %}
             </div>
             <div style="margin-top:0.6rem;display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
                 {% if clause.spec_status %}
