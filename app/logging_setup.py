@@ -67,12 +67,25 @@ def logger_to_category(name: str) -> str:
     return "app"
 
 
+# `logging` 级别名 → `system_logs.level`。**必须归一**：本表的产品词汇表是
+# {INFO, WARN, ERROR}（`log_action` 的调用方一律这么写），而日志 UI 的「⚠️ 异常」
+# 筛选（`ERROR,WARN`）与 `logs_table.html` 的告警着色只认 `WARN`。桥接若原样写
+# `WARNING`，模块级告警在界面上既筛不到也不着色 —— 桥接本身的意义（"让 47 处
+# 告警可见"）就会在这最后一米落空（实测库里 6 条 `WARNING` 记录正是如此）。
+_LEVEL_ALIASES = {"WARNING": "WARN"}
+
+
+def _system_logs_level(record: logging.LogRecord) -> str:
+    """LogRecord 的级别名 → `system_logs.level`（见 `_LEVEL_ALIASES` 的说明）。"""
+    return _LEVEL_ALIASES.get(record.levelname, record.levelname)
+
+
 def _make_item(record: logging.LogRecord) -> dict:
     """把 LogRecord 归一为 system_logs 一行（action 存消息，detail 存结构化上下文）"""
     message = record.getMessage()
     return {
         "category": logger_to_category(record.name),
-        "level": record.levelname,
+        "level": _system_logs_level(record),
         "action": message[:200],
         "detail": json_detail({
             "logger": record.name,

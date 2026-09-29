@@ -90,7 +90,11 @@ def test_warning_is_persisted_to_system_logs(log_env):
     ).fetchone()
     conn.close()
     assert row[0] == "lexicon"
-    assert row[1] == "WARNING"
+    # 级别落 `WARN` 而非 `WARNING`：`system_logs.level` 的**产品词汇表**是
+    # {INFO, WARN, ERROR}（`log_action` 的调用方一律这么写），而日志 UI 的
+    # 「⚠️ 异常」筛选（`ERROR,WARN`）与告警着色只认 `WARN` —— 桥接若原样写
+    # `logging` 的 `WARNING`，这些记录在界面上既筛不到也不着色（实测库里 6 条）。
+    assert row[1] == "WARN"
     assert "混凝土浇筑" in row[2]
     assert "app.lexicon.store" in row[3]
 
