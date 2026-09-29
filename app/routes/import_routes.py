@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from app.config import UPLOAD_DIR, OUTPUT_DIR
 from app.database import get_db
 from app.logging_util import log_action, json_detail
-from app.parser.md_parser import parse_markdown, is_cover_clause
+from app.parser.md_parser import parse_markdown, is_cover_clause, find_degraded_heading_lines
 from app.parser.ocr_clean import clean_ocr_text
 from app.parser.spec_prefix import (
     detect_hierarchy, detect_nature, detect_industry, normalize_spec_code, PREFIX_WHITELIST,
@@ -419,6 +419,11 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
         # Step 2: 解析条文 + 过滤封面/出版信息页脏数据
         clauses_data = _filter_cover_clauses(parse_markdown(md_text))
+        # 降级行自检（2026-09-29）：结构标题没被认出来属**静默**失效 —— 不报错、进度正常、
+        # 条文数只差几条，后果只是标题被折进上一条（实测 JTG F80/1 的 `13.4.3` 因此吞掉
+        # 10,923 字符、其后 B/C/D 的面包屑全被套成 13.4），用户只能翻条文才发现。
+        # 此处只收集，留到 commit 后落 WARN（log_action 自开新连接，事务内调用会 BUSY）。
+        degraded_rows = find_degraded_heading_lines(md_text)
 
         # Step 3: 规范级分类（code 先归一化，再 detect 层级/性质/行业）
         code = normalize_spec_code(code) or Path(file_path).stem
@@ -640,6 +645,18 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
             log_action("import", "WARN", "向量索引未完整写入",
                        detail=json_detail({"code": code, "reason": vector_warn,
                                            "clause_count": len(embedding_records)}),
+                       username=progress_store.get(task_id, {}).get("owner", "system"))
+        if degraded_rows:
+            # 结构标题降级同理（见 Step 2 的收集点）：条文已入库、不影响可用性，
+            # 但那些标题的正文挂在**上一条**名下 —— 这条 WARN 是用户唯一的追查线索。
+            # 级别取 'WARN'（而非模块 logger 桥接写的 'WARNING'）：日志 UI 的
+            # 「⚠️ 异常」筛选与告警着色只认 'WARN'，用后者会变成界面里的隐形记录。
+            log_action("import", "WARN", "结构标题疑似未被识别",
+                       detail=json_detail({
+                           "code": code,
+                           "rows": len(degraded_rows),
+                           "samples": [f"L{n} {t[:60]}" for n, t, _ in degraded_rows[:5]],
+                       }),
                        username=progress_store.get(task_id, {}).get("owner", "system"))
 
         progress_store[task_id].update(

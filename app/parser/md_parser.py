@@ -1012,3 +1012,68 @@ def _should_emit_clause(title, content) -> bool:
     无标题但有正文 → 保留。
     """
     return bool((title or "").strip() or (content or "").strip())
+
+
+# ═══════════════════════════════════════════
+# 降级行自检（结构标题没被识别出来时必须"有声"）
+# ═══════════════════════════════════════════
+
+# 结构标题的**宽松形状**。⚠️ **故意不复用 `_NUM_PATTERNS`**：检测器与解析器共用一套
+# 正则时，正则的盲区会同时在两边失效 —— 谁也不会报警，而这正是本检测器要防的事
+# （JTG F80/1 的 `附录 A` 因此静默降级 29 行，靠人工翻条文才发现）。
+# 覆盖：附录标识、字母编号、多段数字编号（含编号内的空白）。
+# **不覆盖**（勿当「无降级」的证明）：全角字母（`附录 Ａ`）、单段裸数字章号
+# （`7 路面工程` 与条内的「项」`1 钢筋` 同形，无法判定）。
+_DEGRADED_HEADING_SHAPE = re.compile(
+    r'^(?:附录[\s　]*[A-Z]+(?:[\s　]*[.．][\s　]*\d+)*'   # 附录A / 附录 A / 附录A.1
+    r'|[A-Z]{1,4}(?:[\s　]*[.．][\s　]*\d+)+'            # B.0.1 / B. 0.1 / A.1
+    r'|\d+(?:[\s　]*[.．][\s　]*\d+)+)'                  # 1.0.1 / 1. 0.1
+)
+# ⚠️ 三条都必须**吃满整个编号**（多段用 `(?:…)+` 而不是只吃首段）：只吃 `4.2` 时
+# `#### 4.2.1` 的余下 `1` 会被下面「编号后必须有空白或行尾」的护栏当成"紧跟标点"而漏报
+# （已实测：那正是本函数第一版的行为，`#### 4.2.1` 报不出来）。
+# ⚠️ 数字支必须**要求至少一个点**，否则单段裸章号（`7 路面工程`）会被当成降级行
+# ——它与条内的「项」（`1 钢筋`）同形，本就无法判定，不在本判据的覆盖范围内。
+
+
+def find_degraded_heading_lines(md_text: str) -> list[tuple[int, str, str]]:
+    """找出「形如结构标题、却没被认作候选行」的行 → `[(行号, 原文, 理由)]`。
+
+    **为什么需要它**：这类失效是**静默**的 —— 不报错、进度条正常、条文数只差几条，
+    后果只是标题被折进上一条（JTG F80/1 的 `13.4.3` 因此吞掉 10,923 字符，其后 B/C/D
+    的面包屑全被套成 `13.4`）。用户是翻条文时人工发现的。本函数把它变成可计数、
+    可告警的信号：导入期落 WARN（`import_routes._process_import_phase2`），
+    并进 `scripts/survey_structure.py` 的指标 12。
+
+    判据（三条同时成立才报）：
+      1. 形状像结构标题（`_DEGRADED_HEADING_SHAPE`），且编号 token 之后是**空白+正文**
+         或**行尾**。这条收窄是承重的：被换行劈开的交叉引用（GB 50086-2015 实测
+         `A. 4.1)。永久性压力分散型锚杆…`）token 后紧跟标点，靠它才不被误报
+         —— 少了它，该语料会多出 7 条假报，指标随即失去可信度。
+      2. `_candidate_of` 认不出它（按文档顺序用一份 `_ParseState` 推进，与真实解析同序；
+         章号单调等状态判据因此一致）。
+      3. 不是目录点引行、也不是前言/条文说明等法定非条文块（它们本就不该是普通条文）。
+
+    理由字段二值：`bare_clause_no` = 行内只有编号（标题文本在下一行，JTG F80/1 条文
+    说明的 83 行实况）；`unrecognized_shape` = 编号后有正文却没被认出来。
+    """
+    out: list[tuple[int, str, str]] = []
+    state = _ParseState()
+    for lineno, line in enumerate(md_text.split("\n"), 1):
+        cand = _candidate_of(line, state)      # 每行都调用，保证状态与真实解析同序
+        if cand is not None:
+            continue
+        text = line.strip().lstrip("#").strip()
+        if not text or _DOT_LEADER.search(line):
+            continue
+        m = _DEGRADED_HEADING_SHAPE.match(text)
+        if not m:
+            continue
+        rest = text[m.end():]
+        if rest.strip() and not re.match(r'^[\s　]+\S', rest):
+            continue                            # 编号后紧跟标点 → 交叉引用残句
+        if is_non_clause_title(_clean_title(_extract_title(text)) or text):
+            continue
+        reason = "bare_clause_no" if not rest.strip() else "unrecognized_shape"
+        out.append((lineno, line.strip(), reason))
+    return out

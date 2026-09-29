@@ -1,6 +1,6 @@
 """结构勘察：批次验收的回归门禁。
 
-产出 **11 项**指标（批一验收用，见 spec §6 与 CEO 评审记录 Section 6）：
+产出 **12 项**指标（批一验收用，见 spec §6 与 CEO 评审记录 Section 6）：
 ⚠️ M15：上面这个数字**必须**与下方清单、与 `_survey` 的返回键**三者一致** —— 本批已因
    「写了五项却列六项」栽过一次（Task 11 又加了 5 个键）。故不再靠人工同步：
    `tests/test_md_parser.py::test_survey_docstring_lists_every_metric` 同时比对
@@ -18,6 +18,11 @@
                             的分布分类 → `{"designed": 119, "body_only": 2, "commentary_only": 2}`
  11. duplicate_group_kinds_members  指标 10 每一类里的**号身份**（fix round 2）：
                             `{"body_only": ["10.7.3", "17.5.1"], "commentary_only": ["2", "前言"], …}`
+ 12. degraded_heading_rows  形如结构标题却**未成候选行**的行数（2026-09-29 降级行自检，
+                            判据见 `md_parser.find_degraded_heading_lines`）。
+                            正例：JTG F80/1-2017 的 `#### 4.2.1`（只有编号、标题在下一行）
+                            83 行。**它量的不是"有没有丢文本"，而是"标题有没有被折进上一条"**
+                            —— 后者不报错、条文数只差几条，只能靠人工翻条文发现。
 
 ⚠️ 指标 7~11（Task 11）：CJJ2 实测 123 组 / 258 行，其中打标 135 行。**组级**分解（探针实测，无余项）：
 **119 组** `designed` —— **设计性**的「正文 + 条文说明同号」（1 条正文 + N 条逐款解释，注释侧
@@ -68,7 +73,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.ai.text_clean import plain_text  # noqa: E402
-from app.parser.md_parser import parse_markdown  # noqa: E402
+from app.parser.md_parser import parse_markdown, find_degraded_heading_lines  # noqa: E402
 
 # ── 格式/显示常量（M15：原先散落为内联字面量与魔法数字） ──────────────────────
 # ⚠️ `PATH_SEP` 必须与**产出侧**逐字一致：`section_path` 由
@@ -122,7 +127,11 @@ def _kind_of(flags: list[bool]) -> str:
 
 def survey_structure(md_text: str) -> dict:
     """唯一公开入口：解析 md 文本并产出全部指标（见模块 docstring）。"""
-    return _survey(parse_markdown(md_text))
+    metrics = _survey(parse_markdown(md_text))
+    # 指标 12 的判据作用在**候选行**层面（解析后拿不到），故在本层补、且放在最后
+    # ——M15 门禁按顺序比对「docstring 清单 ↔ 返回键」。
+    metrics["degraded_heading_rows"] = len(find_degraded_heading_lines(md_text))
+    return metrics
 
 
 def _survey(clauses: list[dict]) -> dict:
