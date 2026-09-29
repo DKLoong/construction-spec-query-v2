@@ -5,8 +5,6 @@ document.addEventListener('alpine:init', () => {
         uploading: false,
         // 是否已选择文件：未选时「开始导入」按钮被白色蒙版遮罩并禁用（见 tree_panel.html）
         hasFile: false,
-        // 记录输入框当前值是否来自自动识别（区分自动填充 vs 用户手动输入）
-        autoFilled: { code: false, title: false },
         // 校核相关状态：codeInput/titleInput 为当前输入框内容，checkResult 为校核结果
         codeInput: '',
         titleInput: '',
@@ -28,17 +26,32 @@ document.addEventListener('alpine:init', () => {
             this.checkResult = null;
             this.contentEdited = false;
         },
-        closeDialog() { this.open = false; this.uploading = false; },
+        // 关闭弹窗。导入进行中先确认：任务跑在服务端后台（与浏览器无关），关掉不会中断，
+        // 但进度就看不见了 —— 误触会让人以为任务丢了。
+        // 注意**不复位 uploading**：复位会让「开始导入」提前解禁（文件仍选着）→ 重复导入。
+        // uploading 只走三条终态路径复位：import-finished 事件、非轮询终态响应、请求异常。
+        closeDialog() {
+            if (this.uploading && !window.confirm(
+                '导入正在后台进行，关闭弹窗不会中断任务，可再次打开本弹窗查看进度。确定关闭？'
+            )) return;
+            this.open = false;
+        },
 
-        // 用户手动编辑输入框时清除自动填充标记：后续选文件不再覆盖手动输入
+        // 用户手动编辑输入框：同步 Alpine 状态，并作废上一轮校核结论。
+        // 为什么要作废：checkResult.replacedBy 会随表单无条件提交，而编号/名称已不是校核时
+        // 的那一个 → 服务端 _link_replacement 在 status=现行 时会把库里该编号的规范静默标废。
+        // 「校核结论绑定编号+名称，任一变化即失效」是唯一自洽的口径。
         markManual(field) {
             if (field === 'code') this.codeInput = document.querySelector('input[name=code]').value;
             if (field === 'title') this.titleInput = document.querySelector('input[name=title]').value;
-            this.autoFilled[field] = false;
-            this.contentEdited = true;  // 修改后提示重新校核（不自动触发）
+            this.checkResult = null;
+            this.contentEdited = true;  // 提示重新校核（不自动触发）
         },
 
-        // 选择文件后自动识别规范编号/名称并回填（不匹配通用命名格式则跳过，交用户手动录入）
+        // 选择文件后按文件名**整体改写**规范编号/名称；不匹配识别规则则清空，交用户手动录入。
+        // 「一律改写」而非「只填空缺」是用户裁定：文件即规范身份 —— 换了个文件还留着上一个
+        // 文件的编号，配上此时已解禁的「开始导入」，就是拿着错编号导入。手动输入的内容同样
+        // 被覆盖（该行为在文件选择框的 tooltip 里对用户声明）。
         async autoFillFromFilename(event) {
             const file = event.target.files && event.target.files[0];
             // 同步「已选文件」状态：未选/取消选择 → 恢复蒙版与禁用
@@ -48,31 +61,30 @@ document.addEventListener('alpine:init', () => {
             const codeInput = form ? form.querySelector('input[name="code"]') : null;
             const titleInput = form ? form.querySelector('input[name="title"]') : null;
             if (!codeInput || !titleInput) return;
-            // 每个字段仅当「为空」或「当前值是自动填充的」才重新识别覆盖：
-            // 选错文件后再次选择可纠正，而用户手动输入过的字段保持不动
-            const wantCode = !codeInput.value.trim() || this.autoFilled.code;
-            const wantTitle = !titleInput.value.trim() || this.autoFilled.title;
-            if (!wantCode && !wantTitle) return;
+            let code = '';
+            let title = '';
             try {
                 const fd = new FormData();
                 fd.append('filename', file.name);
                 const resp = await fetch('/import/parse-filename', { method: 'POST', body: fd });
                 const data = await resp.json();
                 if (data && data.matched) {
-                    if (wantCode && data.code) {
-                        codeInput.value = data.code;
-                        this.autoFilled.code = true;
-                        this.codeInput = data.code;  // 同步 Alpine 状态，供校核读取
-                    }
-                    if (wantTitle && data.title) {
-                        titleInput.value = data.title;
-                        this.autoFilled.title = true;
-                        this.titleInput = data.title;  // 同步 Alpine 状态，供校核读取
-                    }
+                    code = data.code || '';
+                    title = data.title || '';
                 }
             } catch (e) {
-                // 识别接口异常静默忽略，不阻断用户手动录入
+                // 接口异常/非 JSON 响应（如 401 跳登录页）也走清空：文件已换，
+                // 留着上一个文件的值比留空更危险，故不保留旧值
             }
+            codeInput.value = code;
+            titleInput.value = title;
+            // 同步 Alpine 状态：x-model 只做初始绑定，直接改 DOM value 不会回写状态，
+            // 不同步的话 runVersionCheck 读到的还是旧值
+            this.codeInput = code;
+            this.titleInput = title;
+            // 编号/名称已变 → 上一轮校核结论（尤其 replacedBy）不再适用，必须作废
+            this.checkResult = null;
+            this.contentEdited = false;
         },
 
         async handleUpload(event) {

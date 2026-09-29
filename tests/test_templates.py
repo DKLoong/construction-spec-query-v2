@@ -7,6 +7,7 @@
 2. 设置弹窗 OCR 标签页必须保留「测试连通性」按钮与结果提示
    （OCR 多后端重构时曾丢失，按钮/JS/后端路由均存在但 HTML 缺失）
 """
+import re
 from pathlib import Path
 
 PARTIALS = Path(__file__).resolve().parent.parent / "app" / "templates" / "partials"
@@ -421,22 +422,48 @@ def test_return_reload_defers_htmx():
     assert "htmx.ajax" in html, "仍应通过 htmx.ajax 重载"
 
 
-def test_import_autofill_tracks_auto_filled_state():
-    """自动填充应跟踪来源：选错文件后再次选择可覆盖自动填充值，但保留用户手动输入"""
+def test_import_autofill_always_rewrites_both_inputs():
+    """文件名识别结果**无条件整体改写**编号/名称；不匹配写空串，不留上一个文件的值。
+
+    **契约已变更（2026-09-29，用户裁定）**：原契约是「跟踪 autoFilled 来源 —— 覆盖自动填充值、
+    保留用户手动输入」（即本用例的前身 `test_import_autofill_tracks_auto_filled_state`）。
+    用户改为「不匹配时一律清空，含手动输入的内容」，理由是文件即规范身份：换了文件还留着上一个
+    文件的编号，而「开始导入」此时已因 hasFile=true 解禁 ⇒ 拿着错编号导入；残留的
+    checkResult.replacedBy 更会让服务端 _link_replacement 把库里无关规范静默标废。
+    故此处断言「无条件整体赋值」（命中写识别值、不命中写空串），禁止退回分支内各自赋值 ——
+    本次 bug 的形态正是「只有命中分支、没有 else」。
+
+    ⚠️ 源码字符串断言只是防回归粗筛，行为验收见 scripts/probe_spec_ui.py 的 f6 组。
+    """
     js = _read_static("components/import.js")
-    assert "autoFilled" in js, "应跟踪自动填充状态"
-    # 不再整体跳过（旧逻辑：任一输入框有值就整体跳过，导致选错文件后无法重新识别）
-    assert "codeInput.value.trim() || titleInput.value.trim()" not in js, "不应因任一输入框有值而整体跳过"
-    assert "this.autoFilled.code" in js, "应按字段判断是否更新（为空或来自自动填充）"
-    assert "this.autoFilled.title" in js
+    assert "data.matched" in js, "应仍按 matched 区分命中与否"
+    assert js.count("codeInput.value = code") == 1, "编号应只有一处无条件赋值"
+    assert js.count("titleInput.value = title") == 1, "名称应只有一处无条件赋值"
+    assert "this.checkResult = null" in js, "编号/名称被改写后须作废上一轮校核结论"
+    assert "autoFilled" not in js, (
+        "「一律改写」语义下 autoFilled 已无消费方，应删除以免留下误导性死状态"
+    )
+    # 更早的旧逻辑「任一输入框有值就整体跳过」也不得回退
+    assert "codeInput.value.trim() || titleInput.value.trim()" not in js
 
 
-def test_import_inputs_clear_autofill_on_manual_edit():
-    """用户手动编辑输入框后应清除自动填充标记，后续选择文件不覆盖手动输入值"""
+def test_import_manual_edit_invalidates_check_result():
+    """手动编辑编号/名称须作废上一轮校核结论（否则 replacedBy 会误标废旧规范）。
+
+    **职责已变更（2026-09-29，用户裁定）**：`markManual` 原职责是「清除自动填充标记，
+    后续选择文件不覆盖手动输入」（autoFilled 在新契约下已删除）。其新职责是**作废校核结论**：
+    `checkResult.replacedBy` 会随表单无条件提交，而编号/名称已不是校核时的那个 ——
+    服务端 `_link_replacement` 在 status=现行 时会把库里该编号的规范**静默标废**。
+    这条路径（先校核 A、再手改成 B、直接上传）与「换文件」路径是同一个病，必须一起堵。
+    """
     html = _read("tree_panel.html")
-    assert "markManual" in html, "手动编辑应调用 markManual 清除自动填充标记"
+    assert "markManual" in html, "手动编辑须调用 markManual"
     assert 'name="code"' in html
     assert 'name="title"' in html
+    js = _read_static("components/import.js")
+    m = re.search(r"markManual\(field\)\s*\{(.*?)\n        \},", js, re.S)
+    assert m, "import.js 应定义 markManual"
+    assert "this.checkResult = null" in m.group(1), "markManual 须作废上一轮校核结论"
 
 
 def test_search_dispatch_no_after_settle_listener():
@@ -612,3 +639,5 @@ def test_result_content_renders_dims_through_split_filter():
         "result_content.html 的三个 dim 值应各自经 split_values 渲染，"
         f"实测 {html.count('| split_values')} 处"
     )
+
+
