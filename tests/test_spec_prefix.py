@@ -97,6 +97,30 @@ def test_nature_yz_recommended():
     assert detect_nature("YZ 5002-2015") == "推荐性"
 
 
+def test_nature_association_standard_recommended():
+    """团体标准 T/CECS、T/CBDA 为推荐性。
+
+    旧实现先 `c = code.replace("/", "")` → 'TCECS 1234-2020'，`^T($|\\s|\\d)` 再也匹配不到
+    「T 后跟 /」，于是落到兜底分支返回「强制性」——与「团体标准一律推荐性」的常识相反。
+    团体标准在工程建设领域很常见，且文件名自动识别现已支持 T/CECS / T/CBDA
+    （见 import_routes._parse_filename_to_code_title），此处必须同口径。
+    """
+    assert detect_nature("T/CECS 1234-2020") == "推荐性"
+    assert detect_nature("T/CBDA 1-2016") == "推荐性"
+
+
+def test_nature_bare_t_still_recommended():
+    """裸 T（无斜杠）写法不受本次修复影响"""
+    assert detect_nature("T 1-2010") == "推荐性"
+    assert detect_nature("T 12345-2010") == "推荐性"
+
+
+def test_nature_enterprise_standard_has_no_nature():
+    """企业标准（Q/…、Q …）无强制/推荐之分，返回空串"""
+    assert detect_nature("Q/SY 1234-2020") == ""
+    assert detect_nature("Q 1234-2020") == ""
+
+
 def test_prefix_whitelist_contains_legacy():
     assert "GB" in PREFIX_WHITELIST and "GBT" in PREFIX_WHITELIST
     assert "JGJT" in PREFIX_WHITELIST and "DBT" in PREFIX_WHITELIST

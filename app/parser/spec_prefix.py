@@ -119,8 +119,12 @@ def detect_nature(code: str) -> str:
         return ""
     if c.startswith("Q"):
         return ""  # 企业标准无强制/推荐之分
-    if re.match(r"^T($|\s|\d)", c):
-        return "推荐性"  # 团体标准（T 后不能紧跟字母，以区分 TB）
+    # 团体标准。斜杠形态（T/CECS、T/CBDA）必须用**原始 code** 判断：上面已把 '/' 删掉，
+    # 'T/CECS' 会变成 'TCECS'，`^T($|\s|\d)` 再也匹配不到「T 后跟 /」，于是落到兜底分支
+    # 返回「强制性」——与「团体标准一律推荐性」相反（团体标准在工程建设领域很常见）。
+    # 裸 T 形态（T 后接空格/数字/结尾）继续用 c 判断，以区分 TB（铁路标准，字母紧邻）。
+    if re.match(r"^T\s*/", code) or re.match(r"^T($|\s|\d)", c):
+        return "推荐性"
     if c.startswith("YZ"):
         return "推荐性"  # 邮政标准始终推荐性
     m = re.match(r"^([A-Za-z]+)", c)
