@@ -11,11 +11,16 @@
 cd /d/CC-Workspace/construction-spec-query-v2
 cp data/spec_query.db data/_probe_qa.db                 # 副本库，**不要**在 dev 库上跑
 export DATABASE_PATH="$PWD/data/_probe_qa.db"           # 只走环境变量，禁止改源码常量
-D:/Python/python.exe "$TEMP/qa_mock_llm.py" 8199 &      # mock LLM（临时工具，不入仓）
+D:/Python/python.exe scripts/probe_mock_llm.py 8199 &   # mock LLM（桩已入仓，见该文件头）
 D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8123 &   # 不加 --reload
-# 副本库写入 mock 配置（否则 /qa/ask 会去调真实模型）：
+# 副本库写入 mock 配置（否则 /qa/ask 会去调真实模型 ⇒ 花钱 + 回答不含标记 ⇒ 成片假红）：
 #   ai.backend='custom' / ai.custom.base_url='http://127.0.0.1:8199/v1'
 #   ai.custom.api_key='mock' / ai.custom.model='mock-model'
+#   一行写入（键已存在则覆盖）：
+#   D:/Python/python.exe -c "import sqlite3;c=sqlite3.connect('data/_probe_qa.db');\
+#     [c.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)',kv) for kv in \
+#      [('ai.backend','custom'),('ai.custom.base_url','http://127.0.0.1:8199/v1'),\
+#       ('ai.custom.api_key','mock'),('ai.custom.model','mock-model')]];c.commit()"
 D:/Python/python.exe scripts/probe_qa_ui.py t1          # t1|t2|t3|t4|t5|t6
 ```
 
@@ -27,7 +32,9 @@ D:/Python/python.exe scripts/probe_qa_ui.py t1          # t1|t2|t3|t4|t5|t6
 - 用例自带前置（如 relax 用例自己把 `qa.retrieve.qa_min_candidates` 调到 30 并在 `finally` 还原）
   ——**不要**依赖副本库里手工设过的状态（曾被「只在上一轮跑过的库里通过」咬过）。
 - 改静态 js/css 后，跑之前记得 `base.html` 的 `?v=N` 已递增或强刷（缓存会让探针读到旧文件）。
-- 跑完清理：杀掉 8123/8199 两个进程、删除 `data/_probe_qa.db`。
+- 跑完清理：杀掉 8123/8199 两个进程、**务必删除 `data/_probe_qa.db`**
+  ——它是 dev 库的整份副本，**含真实厂商 API key**（如 `ai.deepseek.api_key`），
+  留着等于把密钥多铺一份在仓内路径上（且 `data/` 属项目目录、会被任何全量扫描命中）。
 
 用法（单组）：
   D:/Python/python.exe scripts/probe_qa_ui.py t1
@@ -81,6 +88,32 @@ def click_first_tree_label(page):
     page.click(".tree-container details > summary >> nth=0")   # 折叠 → 展开
     page.locator(".tree-label").first.wait_for(state="visible", timeout=10000)
     page.click(".tree-label >> nth=0")
+
+
+def click_smallest_tree_label(page):
+    """展开全部维度后点击**条数最少**的分类项。
+
+    为什么不用 `click_first_tree_label`（原写法）：那条要求「第一个分类项的条数 <
+    qa_min_candidates(=30)」才谈得上候选不足——是**数据依赖**的假设。库换代后
+    （批二重导：spec24/25 → spec26/27）第一个节点有 ≥30 条 ⇒ 前置静默不成立，
+    用例红在「未出现候选不足提示」而与代码无关（2026-09-29 实测，修复前代码同样红）。
+    取最小节点则让「筛完必然 < 30 条」与库内容无关地成立。
+    计数直接读页面上的 `.tree-count`（`(N)`），不另算——渲染出来的数字才是用户看到的那个。
+    """
+    page.wait_for_selector(".tree-container details", state="attached", timeout=10000)
+    for s in page.locator(".tree-container details > summary").all():
+        s.click()                       # 折叠 → 展开（默认全部折叠，子项不可见）
+    idx = page.evaluate("""() => {
+        let best = -1, bestN = Infinity;
+        [...document.querySelectorAll('.tree-label')].forEach((el, i) => {
+            const c = el.querySelector('.tree-count');
+            const n = c ? parseInt((c.textContent || '').replace(/\\D/g, ''), 10) : NaN;
+            if (!isNaN(n) && n > 0 && n < bestN) { bestN = n; best = i; }
+        });
+        return best;
+    }""")
+    assert idx >= 0, "分类树里没有任何带计数的节点（/tree/all 未返回？）"
+    page.locator(".tree-label").nth(idx).click()
 
 
 def wait_tree_filter_seeded(page):
@@ -597,11 +630,12 @@ def t3_pending_filter_hint_appears_after_change(page):
     """
     page.goto(f"{BASE}/qa")
     page.wait_for_selector("#qa-root", timeout=10000)
-    page.fill(".qa-composer textarea", "混凝土强度等级如何评定")
-    page.press(".qa-composer textarea", "Enter")
-    page.wait_for_selector(".qa-bot", timeout=60000)
-    # 原写法 `wait_for_timeout(800)`：把「等这一轮的 effectiveFiltersText 写入」换成有界断言
-    # （`.qa-effective-filters` 的 x-show 直接绑它 ⇒ 可见即「已写入且非空」，是该条件的忠实代理）。
+    # 用**共享判据**等这一轮真的收尾（2026-09-29 修：原写法是「等 .qa-bot 出现 + 5s 窗口」，
+    # 而气泡是**乐观占位**、首个增量要等检索+CE 精排跑完才到；本机冷启动实测 5~10s
+    # ⇒ 5s 窗口必然先超时，判据红在「effectiveFiltersText 未写入」而与产品无关。
+    # `_qa_ask` 的四条判据（条数/非流式/非兜底文案/含 mock 标记）才是"这一轮完成了"的忠实代理。）
+    _qa_ask(page, "混凝土强度等级如何评定")
+    # `.qa-effective-filters` 的 x-show 直接绑它 ⇒ 可见即「已写入且非空」；done 帧写入后立即成立
     assert poll_until(page, lambda: page.locator(".qa-effective-filters").is_visible(),
                       timeout_ms=5000), \
         "输入框上方未显示本轮生效筛选（effectiveFiltersText 未写入）"
@@ -1418,7 +1452,7 @@ def t5_relax_resends_with_relaxed_flag(page):
     origin = _verify_settings_restored(page, [_PARAM])
     try:
         assert _put_settings(page, {_PARAM: 30}), f"无法写入 {_PARAM}=30（前置建立失败）"
-        click_first_tree_label(page)               # 勾一个分类维度 ⇒ 触发候选不足判定
+        click_smallest_tree_label(page)            # 勾**条数最少**的分类项 ⇒ 触发候选不足判定
         wait_tree_filter_seeded(page)
         _qa_ask(page, "混凝土强度等级如何评定")
 
@@ -1821,9 +1855,66 @@ def t6_hint_is_tooltip_and_qa_page_only_extra(page):
         f"QA 页 tooltip 未追加问题文本兜底说明（qa.js 的 init 未生效？）：{qa_title!r}"
 
 
+def _require_mock_backend(page):
+    """断言副本库已指向 mock 桩（运行前设置，见文件头）。两个目的：
+
+    ① 判据成立的前提——`_qa_ask` 要求回答含 `MOCK_ANSWER_MARKER`；
+    ② **安全**：配置指向真实厂商时，本用例会真调模型、真花钱，且回答不含标记 ⇒ 假红。
+    故意**不在此写配置**：写配置就要还原，而还原失败会把脏配置留在**长期保留**的
+    副本库里、污染后续所有用例（R1-4 的教训，见 `_restore_settings` 的说明）。
+    前置不成立时响亮失败，并在信息里给出修法。
+    """
+    s = _settings_http(page, "GET")
+    assert s.get("ai.backend") == "custom", \
+        f"副本库 ai.backend 应为 'custom'，实得 {s.get('ai.backend')!r}（见 probe_qa_ui.py 文件头运行方式）"
+    assert "8199" in (s.get("ai.custom.base_url") or ""), \
+        (f"副本库 ai.custom.base_url 未指向 mock 桩：{s.get('ai.custom.base_url')!r}"
+         "——否则本用例会去调真实模型（花钱 + 回答不含标记 ⇒ 假红）")
+
+
+def t6_qa_page_toggle_hint_visible_next_round(page):
+    """QA 页勾选「包含非条文内容」：本轮不重搜，但**下一轮必须真的生效**（端到端）。
+
+    与 `t6_qa_page_toggle_does_not_search` 的分工：那条钉"本轮不受影响"（不发 /search），
+    这条钉"下一轮真的带上它"。两件事必须各自可证伪，否则「勾了完全没反应」也能全绿。
+
+    为什么需要真回答：`effectiveFiltersText` 是「本轮生效」的基线，没有它
+    `filtersChanged()` 第一行就 return false ⇒ 提示恒不出现，判据无判别力。
+    故本用例依赖 mock 桩（scripts/probe_mock_llm.py）。
+
+    「生效」的判据取**后端回执**：`.qa-effective-filters` 的内容来自 done 帧的
+    `effective_filters`，由后端按 QaRequest 现算 ⇒ 它带上该开关，即证明
+    前端 store → send() 请求体 → 后端 全链路通了（而不是只改了本地变量）。
+    """
+    _require_mock_backend(page)
+    _qa_open(page)
+    _qa_ask(page, "混凝土强度等级如何评定")          # 第 1 轮：建立基线
+    assert poll_until(page, lambda: page.locator(".qa-effective-filters").is_visible(),
+                      timeout_ms=5000), "输入框上方未显示本轮生效筛选（effectiveFiltersText 未写入）"
+    assert page.locator(".qa-filters-pending").is_hidden(), \
+        "尚未改动筛选时不应出现「将在下一轮生效」提示"
+    seen = track_search_requests(page)              # 必须在点击前注册
+    n_before = len(seen)
+    page.locator("#include-non-clause").check()
+    assert poll_until(page, lambda: page.locator(".qa-filters-pending").is_visible(),
+                      timeout_ms=3000), \
+        "QA 页勾选「包含非条文内容」后未提示「将在下一轮生效」——勾选没进共享 store，或被 filtersChanged 漏掉"
+    assert poll_until(page, lambda: len(seen) > n_before, timeout_ms=1200) is False, \
+        f"QA 页勾选发起了 /search（问答界面会被顶掉）：{seen[n_before:]}"
+    _qa_ask(page, "钢筋进场需要检验哪些项目", expect_msgs=4)     # 第 2 轮：应带上该开关
+    txt = page.locator(".qa-effective-filters").inner_text()
+    assert "含非条文内容" in txt, \
+        f"下一轮的「本轮生效」未带上该开关（没生效，或 LABELS 名字漂移）：{txt!r}"
+    assert page.locator(".qa-filters-pending").is_hidden(), \
+        "该开关已在本轮生效，不应再挂「将在下一轮生效」提示"
+    page.locator("#include-non-clause").uncheck()   # 收尾：不给后续用例留脏状态
+
+
 CASES["t6"] = [t6_qa_page_toggle_does_not_search,
                t6_search_page_toggle_still_searches,
-               t6_hint_is_tooltip_and_qa_page_only_extra]
+               t6_hint_is_tooltip_and_qa_page_only_extra,
+               # 依赖 mock 桩（真回答）⇒ 放在本组最后：桩没起时前面的用例仍是有效证据
+               t6_qa_page_toggle_hint_visible_next_round]
 
 
 if __name__ == "__main__":
