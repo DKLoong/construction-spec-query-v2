@@ -422,3 +422,19 @@
   「版本常量」就放在 `build_embed_text`/`chunk_text` 旁边，让改动者一眼看到。
 - **Blocked by**：无（随时可做；建议与下次 embed 方案变更同批）。
   —— 来源：批二收尾裁定 D17=B（2026-09-29），计划文件 §三.4 与 §五 R23/R26。
+
+## T29 — 全角字母编号变体未覆盖（自检已能报出，parser 未修）
+
+- **What**：编号里的**全角字母**（`附录 Ａ`、`Ｂ.１.２`）仍不被 `_NUM_PATTERNS` /
+  `_HEADING_TOKEN` 接受 ⇒ 整行降级为正文、折进上一条。修法方向与 `_NUM_SEG` 同族：
+  在字符类里并入全角字母（`Ａ-Ｚ ａ-ｚ`），并在 `_normalize_clause_no` 里做全角→半角折叠。
+  （全角**数字**不必管：Python 的 `\d` 本就匹配 Unicode 十进制数字，实测已被覆盖。）
+- **Why**：2026-09-29 这一轮（A / B / F4a / F4b / F5）把半角的三类 OCR 变体
+  （编号内空白、裸编号标题、字母 O 冒充 0）都修完了，全语料 `degraded_heading_rows`
+  归零；全角字母是同类里**尚未覆盖**的一种，也是自检目前唯一的正例来源。
+- **Context**：判据已就位、可观测已就位 —— 命中时导入会落 `WARN`（`结构标题疑似未被识别`，
+  含行数与前 5 条样例），`scripts/survey_structure.py` 的指标 12 也会计数。故本项
+  **不紧急**：出现了会被立刻看见，代价是重导一次。触发条件 = 任一新导入的 WARN/指标 12 > 0
+  且样例形如全角字母。入手点：`app/parser/md_parser.py` 的 `_NUM_SEG`、`_HEADING_TOKEN`、
+  `_normalize_clause_no`。可失败用例模板见 `tests/test_degraded_heading.py` 的两个正例。
+- **Blocked by**：无（触发式）。
