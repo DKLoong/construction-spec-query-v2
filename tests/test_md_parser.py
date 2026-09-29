@@ -975,6 +975,58 @@ def test_hash_bare_single_segment_number_is_not_a_node():
     assert "7" in rows[0]["content"], "`#### 7` 的文本不得消失"
 
 
+def test_bare_number_without_hash_opens_a_node():
+    """F4b：**无 `#`** 的裸编号行（标题文本在下一行）同样开节点
+
+    实测来源：旧语料 `data/outputs/64409491/64409491.md` L119/L125 —— `3.1` / `3.2`
+    单独成行，术语名与定义在后续行；JTG F80/1-2017 源 L6050/L7055 亦有
+    （`7.3.1` / `13.4.3`，前一非空行分别是以句末标点收尾的说明段落）。
+    与 F4a 的差别只有「有没有 `#`」，故必须**加护栏**（下一条）——`#` 是 OCR 的
+    "这是标题"信号，而裸行没有，正文里断行残句的编号同样长这样。
+    """
+    md = ("下列术语和定义适用于本文件。\n\n"
+          "3.1\n\n"
+          "热轧光圆钢筋 hot rolled plain bars\n\n"
+          "经热轧成型，横截面通常为圆形，表面光滑的成品钢筋。\n\n"
+          "3.2\n\n"
+          "特征值 characteristic value\n")
+    rows = parse_markdown(md)
+    # 只看条文行：首行是首个候选行之前的**孤儿文本**，按既有规则落成隐藏块（T20）
+    nums = sorted(r["clause_no"] for r in rows if not r["is_non_clause"])
+    assert nums == ["3.1", "3.2"], f"裸编号行未开出节点：{nums}"
+    t31 = [r for r in rows if r["clause_no"] == "3.1"][0]
+    assert "热轧光圆钢筋" in t31["content"], "下一行文本未归到 3.1"
+
+
+def test_bare_number_inside_a_sentence_is_not_a_node():
+    """F4b 的**护栏**：上一非空行既非 `#` 标题、也不以句末标点收尾 ⇒ 裸编号不成节点
+
+    防的是被换行劈开的交叉引用：`混凝土强度应符合本规范第` 的下一行恰是 `3.2.1`，
+    不过护栏就会多出一条伪条文，并把本属于上一句的 `条的规定。` 抢走。
+    可失败性已实跑：注掉护栏后本条变红（多出 `3.2.1`）。
+    """
+    md = "1.0.1 混凝土强度应符合本规范第\n\n3.2.1\n\n条的规定。\n"
+    rows = parse_markdown(md)
+    assert [r["clause_no"] for r in rows] == ["1.0.1"], (
+        f"句中的裸编号被认成了条文：{[r['clause_no'] for r in rows]}"
+    )
+    assert "条的规定" in rows[0]["content"], "残句下半行应折入当前条"
+
+
+def test_bare_number_at_document_start_is_not_a_node():
+    """保守方向：文档首行就是裸编号时**不**开节点（没有"上一行"可判）
+
+    文本不因此丢失——按既有孤儿块规则落成隐藏块（身份加 `~` 前缀，见
+    `_orphan_block_identity`），故封面页游离数字的处置不受影响。
+    """
+    md = "3.2.1\n\n正文甲。\n\n1.0.1 正文乙。\n"
+    rows = parse_markdown(md)
+    assert all(r["clause_no"] != "3.2.1" for r in rows), (
+        f"文档首行的裸编号成了节点：{[r['clause_no'] for r in rows]}"
+    )
+    assert any("正文甲" in r["content"] for r in rows), "孤儿文本不得丢失"
+
+
 # ═══════════════════════════════════════════
 # 解析主循环：R14 投票 / 无条件 flush / 内节点判据 / section_path（Task 3）
 # ═══════════════════════════════════════════

@@ -393,19 +393,23 @@ def _is_hash_line(line: str) -> bool:
 
 
 class _ParseState:
-    """一次解析的**单调/位置状态**（fix ①②③ 共用）。
+    """一次解析的**单调/位置状态**（fix ①②③ 与 F4b 共用）。
 
     预扫（`_vote_title_mode`）与主循环**各建一份**、按文档顺序同步推进，
     故两者的候选行判据一致（批一设计不变量：预扫投票与主循环必须用同一判据）。
     ⚠️ **不可跨两遍共享同一份**——预扫先跑完会把状态推到文末，主循环再从零读会全错。
     """
 
-    __slots__ = ("max_bare_chapter", "in_commentary", "seen_clause_nos")
+    __slots__ = ("max_bare_chapter", "in_commentary", "seen_clause_nos",
+                 "prev_boundary")
 
     def __init__(self) -> None:
         self.max_bare_chapter = -1           # fix ①: body 内已见的最高裸数字章号
         self.in_commentary = False           # 条文说明段标记（fix ①③ 的豁免边界，单向）
         self.seen_clause_nos: set[str] = set()  # fix ③: body 内已出现的纯数字条号
+        # F4b 护栏：上一**非空**行是否为段落/标题边界（`#` 标题行，或以句末标点收尾）。
+        # 首行没有"上一行"，初值 False = 保守拒绝（`3.2.1` 直接开篇不是标题的形态）。
+        self.prev_boundary = False
 
 
 class _Decision(NamedTuple):
@@ -458,6 +462,15 @@ def _candidate_of(line: str, state: _ParseState | None = None) -> tuple[int, str
     """
     if not line.strip():
         return None
+    # F4b 的护栏需要「上一非空行」的性质；空行不前移它。**先读后写**：本次判定用的是
+    # 上一行的边界标记，写完才表示本行已成为后续行的"上一行"。
+    # `state is None` 时取 True（宽松）——只有测试/探针会直接调本函数而不带 state；
+    # 生产路径（`parse_markdown` 主循环、`_vote_title_mode` 预扫、
+    # `find_degraded_heading_lines`）**都带 state**，故护栏在生产路径恒生效。
+    prev_boundary = state.prev_boundary if state is not None else True
+    if state is not None:
+        state.prev_boundary = (_is_hash_line(line)
+                               or line.strip().endswith(_TITLE_END_PUNCT))
     m_hash = re.match(r"^(#{1,6})\s+(.+)$", line)
     if m_hash:
         raw_title = m_hash.group(2).strip()
@@ -562,6 +575,19 @@ def _candidate_of(line: str, state: _ParseState | None = None) -> tuple[int, str
         return (_level_from_clause_no(clause_no), clause_no, title_txt)
     m_num = _match_clause_line(line.strip())
     if not m_num:
+        # F4b：**无 `#`** 的整行裸编号（标题文本在下一行）也开条文，但**必须过护栏**。
+        # 实测来源：旧语料 `data/outputs/64409491` 的 `3.1`/`3.2`（术语名在下一行）、
+        # JTG F80/1-2017 源 L6050/L7055。
+        # 与 F4a 的差别只有「有没有 `#`」——`#` 是 OCR 的"这是标题"信号，裸行没有，
+        # 而正文里被换行劈开的交叉引用同样长成裸编号的样子。故要求**上一非空行是
+        # 段落/标题边界**（`#` 标题行，或以句末标点收尾）：断行残句的上一行是半句话，
+        # 会被挡住（`test_bare_number_inside_a_sentence_is_not_a_node`）。
+        if prev_boundary:
+            parts = _split_heading_token(line.strip())
+            if parts is not None and not parts[1].strip():
+                if _is_zero_segment_node(parts[0]):
+                    return None
+                return (_level_from_clause_no(parts[0]), parts[0], "")
         return None
     clause_no, tail = m_num                      # Task 4 之后的返回形状
     if _is_zero_segment_node(clause_no):         # R3：末段为 0 的节位占位
