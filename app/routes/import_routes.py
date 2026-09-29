@@ -90,39 +90,125 @@ def _compute_file_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 
+# ═══════════════════════════════════════════
+# 文件名自动识别（/import/parse-filename）的字符归一与噪声词表
+# 集中在此，勿把字面量散进函数（全局规则：业务常量统一管理）
+# ═══════════════════════════════════════════
+
+# 定向全角→半角映射。**必须用 str.maketrans**：str.translate 要求键是码点整数，
+# 直接传 {str: str} 字典会被静默忽略（不报错、也不生效），正好会伪装成「全角已支持」。
+# 刻意**不用 unicodedata.normalize('NFKC')**：NFKC 会把 `（2015年版）` 的括号折成半角、
+# `Ⅲ`→`III`、`①`→`1`，破坏规范名称本身。
+_FULLWIDTH_TRANS = str.maketrans({
+    **{chr(0xFF10 + i): chr(0x30 + i) for i in range(10)},  # ０-９
+    **{chr(0xFF21 + i): chr(0x41 + i) for i in range(26)},  # Ａ-Ｚ
+    **{chr(0xFF41 + i): chr(0x61 + i) for i in range(26)},  # ａ-ｚ
+    "／": "/",   # ／ 全角斜杠
+    "＿": "_",   # ＿ 全角下划线
+    "　": " ",   # 　 全角空格
+    # 破折号族 → 半角连字符。变体收不全的后果不是「不匹配」而是**静默吞年份**：
+    # 年份落不进 (\d{4})?，被并进名称，code 退回 'GB 50010' —— 而 code 是全系统身份键
+    # （拼 output_dir、做替代关系匹配），同一本规范会被分裂成两条记录。
+    **{c: "-" for c in "-‐‑‒–—―⁃﹘﹣－"},
+})
+
+# 「文件名前缀里的格式噪声」词表：出现在编号之前，属文件流转痕迹而非规范名称。
+# 注意**不收裸「扫描」**——以「扫描」开头的真实规程名会被误剥，只收「扫描件」。
+_LEAD_NOISE_WORDS = (
+    "扫描件", "高清", "副本", "打印版", "电子版", "完整版", "无水印", "正版", "OCR",
+)
+# 「名称尾部的格式噪声」词表：比前置词表**少一个「正版」**。
+# 理由：`修正版`/`校正版` 都以「正版」结尾，放尾部规则会把 `…修正版` 过剥成 `…修`；
+# 而「正版」出现在编号**之前**时无歧义（没有规范名称以「正版」开头）。
+_TAIL_NOISE_WORDS = tuple(w for w in _LEAD_NOISE_WORDS if w != "正版")
+
+# 前置噪声词与前置序号（`扫描件_GB…`、`1. GB…`、`2）GB…`）分成两个正则而非 `|` 交替：
+# 避免交替分支的顺序歧义，也便于各自独立演进。
+_LEAD_NOISE_WORD_RE = re.compile(
+    r"^(?:" + "|".join(_LEAD_NOISE_WORDS) + r")[\s_\-]*", re.IGNORECASE
+)
+# 末尾 `(?!\d)` 让 `1.5倍…`/`2.0版…` 这类非序号前缀原样保留
+_LEAD_ORDINAL_RE = re.compile(r"^(?:\s*\d{1,3}\s*[.、)）](?!\d)\s*)+")
+# 尾部噪声：纯数字括号（`(1)`/`（2）`）或噪声词后缀
+_TAIL_NOISE_RE = re.compile(
+    r"[（(]\s*\d{1,3}\s*[）)]$|(?:" + "|".join(_TAIL_NOISE_WORDS) + r")$", re.IGNORECASE
+)
+# 剥离循环上限：仅防无界循环，正常 2 轮内收敛
+_NOISE_STRIP_MAX_PASSES = 5
+
+
+def _strip_lead_noise(name: str) -> str:
+    """循环剥离文件名开头的格式噪声（噪声词、数字序号），直到稳定。"""
+    for _ in range(_NOISE_STRIP_MAX_PASSES):
+        stripped = _LEAD_NOISE_WORD_RE.sub("", name, 1)
+        stripped = _LEAD_ORDINAL_RE.sub("", stripped, 1).lstrip()
+        if stripped == name:
+            return name
+        name = stripped
+    return name
+
+
+def _strip_tail_noise(title: str) -> str:
+    """循环剥离名称尾部的格式噪声（纯数字括号、噪声词后缀），直到稳定。
+
+    循环而非单次：`混凝土结构设计规范(1)副本` 需要连剥两层。
+    strip 的分隔符集合**不含括弧**——括弧一旦被当作分隔符削掉，`(1)` 的右括号会先消失，
+    「纯数字括号」规则就永远匹配不到它（旧实现 `strip("（）()")` 正是这个病，还会把
+    `（2015年版）` 削成悬空括号）。也**不含 `/`**：`/` 出现在名称开头是 DB13/T 这类
+    误解析的判据，削掉就失去防线。
+    """
+    for _ in range(_NOISE_STRIP_MAX_PASSES):
+        stripped = _TAIL_NOISE_RE.sub("", title).strip("- _.")
+        if stripped == title:
+            return title
+        title = stripped
+    return title
+
+
 def _parse_filename_to_code_title(filename: str) -> tuple[str, str, bool]:
     """从文件名识别规范编号与名称，返回 (code, title, matched)。
 
-    通用命名格式：{字母前缀}[/T] {标准号}[-年份] {名称}
+    通用命名格式：{字母前缀}[/推荐代号] {标准号}[-年份] {名称}
     例如 'GB/T 50010-2010 混凝土结构设计规范.pdf'
         → code='GB/T 50010-2010', title='混凝土结构设计规范'
     不匹配通用格式时 matched=False，交由用户手动录入。
+
+    容错分三段：**归一**（全角与破折号族 → 半角）→ **剥离**（前置噪声词/序号）→
+    **清理**（尾部噪声；编号再过 normalize_spec_code）。
     """
     raw = filename.strip()
-    # 剥离扩展名：用 rsplit 而非 Path——文件名含 '/T'（如 GB/T 50010-2010）时，
+    # 剥离扩展名：用 rsplit 而非 Path——文件名含 '/'（如 GB/T 50010-2010）时，
     # '/' 会被 Path 当作路径分隔符，把 GB 误当目录吞掉。
     name = raw.rsplit(".", 1)[0].strip() if "." in raw else raw
+    name = _strip_lead_noise(name.translate(_FULLWIDTH_TRANS))
     m = re.match(
-        r"^([A-Za-z]{1,5})(/T)?[\s\-—–_]*(\d{2,5}(?:\.\d+)?)[\s\-—–_]*(\d{4})?[\s_\-—–]*(.*)$",
+        r"^([A-Za-z]{1,5})(/[A-Za-z]{1,4})?[\s\-_]*(\d{1,5}(?:\.\d+)?)[\s\-_]*(\d{4})?[\s_\-]*(.*)$",
         name,
     )
     if not m:
         return "", "", False
-    prefix, slash_t, number, year, title = m.groups()
+    prefix, slash_suffix, number, year, title = m.groups()
     prefix = prefix.upper()
     if prefix not in PREFIX_WHITELIST:
         return "", "", False
+    # 裸 Q/T（团体/企业标准代号）必须带 ≥2 位序号：真实的团体/企业标准写成 T/CECS、Q/SY，
+    # 裸 T/Q 本身不构成编号；而施工场景里 `T2塔楼施工方案`（栋号）、`Q1报表`（季度）是高频
+    # 文件名，序号放宽到 1 位后若放行，会把它们误回填成 `T 2` / `Q 1`。
+    if prefix in ("Q", "T") and slash_suffix is None and len(number) < 2:
+        return "", "", False
 
-    title = title.strip("- _—–.（）()　").strip()
+    title = _strip_tail_noise(title.strip("- _."))
     # 名称以残留分隔符开头（如 DB13/T 被误解析成 DB+13 后名称以 /T 开头）→ 判定不匹配
-    if title and title[:1] in "/-_—–":
+    if title and title[:1] in "/-_":
         return "", "", False
     # 既无名称也无年份，信息过少，不自动填充
     if not title and not year:
         return "", "", False
 
-    code = f"{prefix}{slash_t or ''} {number}" + (f"-{year}" if year else "")
-    return code, title, True
+    code = f"{prefix}{slash_suffix or ''} {number}" + (f"-{year}" if year else "")
+    # 编号过规范化兜底：无斜杠推荐变体（GBT50353）补成 GB/T 50353；并保证
+    # 「界面显示的编号 == 入库编号」（_process_import_phase2 会做同一次归一）
+    return normalize_spec_code(code), title, True
 
 
 @router.post("/import/parse-filename")
