@@ -641,3 +641,31 @@ def test_result_content_renders_dims_through_split_filter():
     )
 
 
+def test_import_dialog_closes_only_via_close_button():
+    """导入弹窗只允许用右上角 × 关闭；导入进行中关闭须先确认。
+
+    用户裁定（2026-09-29）：点击遮罩外部关闭太容易误触——关掉后进度就看不见了，
+    会让人以为导入任务丢了。故去掉遮罩上的 `@click.self`，只留右上角 ×。
+
+    另有一条**不是**视觉问题、而是重复导入隐患的约束：`closeDialog` 内**不得复位
+    `uploading`**。原来的 `closeDialog() { this.open = false; this.uploading = false; }`
+    会在导入进行中把「开始导入」提前解禁（文件还选着），一点就是第二次导入。
+    `uploading` 只应走三条终态路径复位：import-finished 事件、非轮询终态响应、请求异常。
+
+    ⚠️ 源码断言只是防回归粗筛；「点 × 弹确认、取消不关、关后进度仍在」的行为验收见
+    scripts/probe_spec_ui.py 的 f6 组。
+    """
+    html = _read("tree_panel.html")
+    assert "dialog-close" in html, "弹窗应有右上角关闭按钮"
+    assert '@click.self="closeDialog()"' not in html, (
+        "不得再支持点击遮罩外部关闭（导入中误触会关掉进度可见性）"
+    )
+    js = _read_static("components/import.js")
+    assert "window.confirm" in js, "导入进行中关闭须先弹确认"
+    m = re.search(r"closeDialog\(\)\s*\{(.*?)\},", js, re.S)
+    assert m, "import.js 应定义 closeDialog"
+    assert "this.uploading = false" not in m.group(1), (
+        "closeDialog 内复位 uploading 会让「开始导入」提前解禁（文件仍选着）→ 重复导入隐患"
+    )
+
+

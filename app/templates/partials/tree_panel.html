@@ -52,8 +52,12 @@
     <div style="margin-bottom: 0.5rem;" x-data="importDialog()">
         <button class="contrast" style="width: 100%;" @click="openDialog()">📥 导入规范</button>
         <!-- 导入对话框 -->
-        <div class="dialog-overlay" x-show="open" x-cloak @click.self="closeDialog()">
-            <div class="dialog-box">
+        {# 关闭方式：**只留右上角 ×**。原「点击遮罩外部关闭」太易误触 —— 关掉后进度不可见，
+           会让人以为导入任务丢了（任务其实在服务端后台继续）。#}
+        <div class="dialog-overlay" x-show="open" x-cloak>
+            <div class="dialog-box dialog-box--closable">
+                <button type="button" class="dialog-close" @click="closeDialog()"
+                        aria-label="关闭" title="关闭">&times;</button>
                 <h3>导入规范文件</h3>
                 <form @submit.prevent="handleUpload">
                     <label>规范编号 <input type="text" name="code" placeholder="如 GB 50204-2015"
@@ -88,12 +92,16 @@
                                    style="font-size:0.8rem;padding:0.2rem 0.4rem">
                         </label>
                     </div></template>
-                    <small x-show="contentEdited && checkResult" style="color:var(--pico-muted-color);font-size:0.75rem">
+                    {# 条件只看 contentEdited：手动编辑会作废 checkResult（见 import.js markManual，
+                       防陈旧 replacedBy 误标废旧规范），若仍要求 checkResult 非空则提示永不出现 #}
+                    <small x-show="contentEdited" style="color:var(--pico-muted-color);font-size:0.75rem">
                         内容已修改，建议重新校核
                     </small>
+                    {# 说明走 title + aria-label 双通道（用户裁定：只留一条通道都是错的） #}
                     <label>选择文件 <input type="file" name="file" accept=".md,.pdf"
                                            @change="autoFillFromFilename($event)"
-                                           title="选择文件后将自动识别规范编号与名称"></label>
+                                           title="选择文件后按文件名自动识别规范编号与名称；识别失败会清空这两个输入框，请手动填写"
+                                           aria-label="选择文件：按文件名自动识别规范编号与名称，识别失败会清空这两个输入框，需手动填写"></label>
                     <label style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem">
                         <input type="checkbox" name="force_ocr" value="true">
                         <span style="font-size:0.8rem">强制 OCR（扫描件/格式丢失的 PDF 勾选此项）</span>

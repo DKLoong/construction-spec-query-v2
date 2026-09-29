@@ -243,6 +243,19 @@
     box-shadow: 0 6px 32px rgba(74, 68, 84, 0.18);
     border: 1px solid var(--pico-card-border-color);
 }
+/* 「只允许右上角 × 关闭」的弹窗（当前仅导入弹窗）：需要定位上下文承载绝对定位的关闭按钮。
+   刻意只加在需要的弹窗上，不给公共 .dialog-box 加 position —— 那会波及
+   params_panel.html / rules_list.html 的弹窗。配套类 .dialog-close 用法见 tree_panel.html。 */
+.dialog-box--closable { position: relative; }
+.dialog-close {
+    position: absolute; top: 0.6rem; right: 0.6rem;
+    background: none; border: none; cursor: pointer;
+    font-size: 1.4rem; line-height: 1; color: #666;
+    width: 32px; height: 32px; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s, color 0.15s;
+}
+.dialog-close:hover { background: rgba(0, 0, 0, 0.08); color: #333; }
 
 /* ═══════════════════════════════════════════════════════════════
    条文详情弹窗
