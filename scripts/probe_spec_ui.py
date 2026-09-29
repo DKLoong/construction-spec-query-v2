@@ -12,7 +12,7 @@ cd /d/CC-Workspace/construction-spec-query-v2
 cp data/spec_query.db data/_probe_spec.db          # 副本库，**不要**在 dev 库上跑
 export DATABASE_PATH="$PWD/data/_probe_spec.db"    # 只走环境变量，禁止改源码常量
 D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8123 &   # 不加 --reload
-D:/Python/python.exe scripts/probe_spec_ui.py f1   # f1|f2|f3
+D:/Python/python.exe scripts/probe_spec_ui.py f1   # f1|f2|f3|f4|f5|f6
 ```
 
 **前置要点**：
@@ -486,6 +486,139 @@ def f5_clause_class_hint_survives_table_scroll_container(page):
 
 CASES["f5"] = [f5_spec_class_hint_appears_below_and_hides_on_blur,
                f5_clause_class_hint_survives_table_scroll_container]
+
+
+# ═══════════════════════════════════════════
+# f6：导入弹窗（回填清空 / 关闭方式 / 导入中关闭确认）
+# ═══════════════════════════════════════════
+
+def _open_import_dialog(page):
+    page.goto(f"{BASE}/")
+    page.wait_for_selector(".left-panel-content", timeout=15000)
+    page.click("button:has-text('导入规范')")
+    page.wait_for_selector(".dialog-box--closable", state="visible", timeout=10000)
+
+
+def _set_file(page, name):
+    """把文件框设成「只有文件名、内容无意义」的假文件——识别只看文件名。"""
+    page.set_input_files("input[name=file]", {
+        "name": name, "mimeType": "application/pdf", "buffer": b"%PDF-1.4\n",
+    })
+
+
+def _field(page, name):
+    return page.input_value(f"input[name={name}]")
+
+
+def f6_1_autofill_rewrites_then_clears_inputs(page):
+    """匹配 → 回填；不匹配 → **两框清空（含用户手输内容）**；再换回匹配 → 重新回填。
+
+    走**真实后端**（POST /import/parse-filename），故同时验收文件名识别增强的收益：
+    `CJJ2-2008城市桥梁工程施工与质量验收规范.pdf` 现应识别出 `CJJ 2-2008`。
+    """
+    _open_import_dialog(page)
+
+    _set_file(page, "GB 50010-2010 混凝土结构设计规范.pdf")
+    assert poll_until(page, lambda: _field(page, "code") == "GB 50010-2010", 5000), \
+        f"匹配文件未回填编号：{_field(page, 'code')!r}"
+    assert _field(page, "title") == "混凝土结构设计规范"
+
+    # 1 位序号的识别增强（走真实接口，防「单测过但接口没接上」）
+    _set_file(page, "CJJ2-2008城市桥梁工程施工与质量验收规范.pdf")
+    assert poll_until(page, lambda: _field(page, "code") == "CJJ 2-2008", 5000), \
+        f"1 位序号未识别回填：{_field(page, 'code')!r}"
+
+    # 用户报的 bug 场景：先手改（模拟用户录入），再选一个识别不了的文件
+    page.fill("input[name=code]", "手工输入的编号")
+    assert _field(page, "code") == "手工输入的编号"
+    _set_file(page, "新建文档.pdf")
+    assert poll_until(
+        page, lambda: _field(page, "code") == "" and _field(page, "title") == "", 5000), \
+        (f"不匹配时未清空（用户裁定：一律清空，含手输内容）："
+         f"code={_field(page, 'code')!r} title={_field(page, 'title')!r}")
+
+    # 清空后「开始导入」**仍可点**（文件还选着）—— 这正是「不清空就会拿错编号导入」的实证
+    submit = page.locator(".dialog-box--closable button[type=submit]")
+    assert submit.is_enabled(), "清空后提交按钮却禁用了（与 hasFile 语义不符）"
+
+    # 再换回匹配文件 → 重新回填
+    _set_file(page, "GB 50010-2010 混凝土结构设计规范.pdf")
+    assert poll_until(page, lambda: _field(page, "code") == "GB 50010-2010", 5000), \
+        "再次选择匹配文件未重新回填"
+
+
+def f6_2_overlay_click_does_not_close_dialog(page):
+    """点遮罩外部不再关闭弹窗（防误触）；点右上角 × 才关。"""
+    _open_import_dialog(page)
+    box = page.locator(".dialog-box--closable")
+    bb = box.bounding_box()
+    assert bb, "取不到弹窗位置，无法定位遮罩上的点击点"
+    # 取「弹窗左缘再往左 60px、与弹窗同一水平中线」的点：确保落在遮罩上而不在弹窗内
+    page.mouse.click(max(5.0, bb["x"] - 60), bb["y"] + bb["height"] / 2)
+    page.wait_for_timeout(300)
+    assert box.is_visible(), "点击遮罩外部竟关闭了弹窗（防误触改造失效）"
+
+    page.click(".dialog-close")
+    assert poll_until(page, lambda: not box.is_visible(), 3000), "点右上角 × 未关闭弹窗"
+
+
+# 与 import_routes 的真实轮询态响应同形（关键是有 hx-get="/import/progress/…"，
+# import.js 靠这个字符串判断「已进入后台轮询」从而保持 uploading=true）
+_PROGRESS_STUB = (
+    '<div id="import-status" hx-get="/import/progress/stub0001" '
+    'hx-trigger="every 2s" hx-swap="outerHTML">处理中...</div>'
+)
+
+
+def f6_3_close_during_import_confirms_and_keeps_progress(page):
+    """导入进行中点 × → 弹确认；取消不关；确认关掉后重开进度仍在、按钮未解禁。
+
+    **后端被桩掉**（`page.route` 拦截 /import/upload 与 /import/progress/**）：真实导入要走
+    解析 / 分类 / 向量索引（重、且依赖外部服务），不适合放进回归探针。本用例验的是**前端契约**：
+    关窗确认、关窗后 `#import-result` 未被清空（这正是「重开能看到进度」的机制）、
+    `uploading` 未被复位（否则「开始导入」提前解禁 → 重复导入）。
+    """
+    _open_import_dialog(page)
+    page.route("**/import/upload", lambda r: r.fulfill(
+        status=200, content_type="text/html", body=_PROGRESS_STUB))
+    page.route("**/import/progress/**", lambda r: r.fulfill(
+        status=200, content_type="text/html", body=_PROGRESS_STUB))
+    try:
+        _set_file(page, "GB 50010-2010 混凝土结构设计规范.pdf")
+        page.click(".dialog-box--closable button[type=submit]")
+        assert poll_until(
+            page, lambda: "import-status" in page.locator("#import-result").inner_html(), 5000), \
+            "上传后未进入轮询态（桩未生效？）"
+
+        # 1) 导入中点 × → 弹确认；取消 → 弹窗仍在
+        msgs = []
+        page.once("dialog", lambda d: (msgs.append(d.message), d.dismiss()))
+        page.click(".dialog-close")
+        page.wait_for_timeout(300)
+        assert msgs, "导入进行中点 × 未弹确认框"
+        assert "后台" in msgs[0], f"确认文案未说明任务在后台继续：{msgs[0]!r}"
+        assert page.locator(".dialog-box--closable").is_visible(), "取消确认后弹窗却关了"
+
+        # 2) 确认 → 关闭；重开 → 进度内容仍在，且「开始导入」仍禁用
+        page.once("dialog", lambda d: d.accept())
+        page.click(".dialog-close")
+        assert poll_until(
+            page, lambda: not page.locator(".dialog-box--closable").is_visible(), 3000), \
+            "确认后弹窗未关闭"
+        page.click("button:has-text('导入规范')")
+        page.wait_for_selector(".dialog-box--closable", state="visible", timeout=5000)
+        assert "import-status" in page.locator("#import-result").inner_html(), \
+            "重开弹窗后进度内容丢失（关窗不得清空 #import-result）"
+        assert page.locator(".dialog-box--closable button[type=submit]").is_disabled(), \
+            "重开弹窗后「开始导入」已解禁 —— 导入进行中可再次上传＝重复导入隐患"
+    finally:
+        page.unroute("**/import/upload")
+        page.unroute("**/import/progress/**")
+
+
+CASES["f6"] = [f6_1_autofill_rewrites_then_clears_inputs,
+               f6_2_overlay_click_does_not_close_dialog,
+               f6_3_close_during_import_confirms_and_keeps_progress]
 
 
 if __name__ == "__main__":
