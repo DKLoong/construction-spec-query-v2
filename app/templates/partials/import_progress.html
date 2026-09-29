@@ -12,6 +12,9 @@
     {% set st1 = 'done' if p >= 10 else ('active' if s in ('uploading', 'processing') else '') %}
     {% set st2 = 'done' if s in ('review_needed', 'done') or p >= 50 else ('active' if s == 'processing' else '') %}
     {% set st3 = 'done' if s == 'done' else '' %}
+    {# 「解析→完成」线段 = 平滑进度条：填充百分比由 progress 驱动（逻辑同原单条进度条）。
+       映射：progress 50→100 线性映射到线段 0→100%；≤50 为空（上传/OCR/待审查段不在此线段上） #}
+    {% set fill = 0 if p <= 50 else (100 if p >= 100 else ((p - 50) * 2)) %}
     {% if s == 'error' %}
         {% if st1 != 'done' %}{% set st1 = 'err' %}
         {% elif st2 != 'done' %}{% set st2 = 'err' %}
@@ -28,7 +31,9 @@
         </div>
         <div class="step {{ st3 }}">
             <div class="dot">{{ '✓' if st3 == 'done' else ('!' if st3 == 'err' else '3') }}</div>
-            <div class="label">完成</div><div class="line"></div>
+            <div class="label">完成</div>
+            {# 解析→完成线段即平滑进度条：宽度按 progress 填充，见上方 fill 计算 #}
+            <div class="line"><div class="line-fill" style="width:{{ fill }}%"></div></div>
         </div>
     </div>
     {% if progress.status == "done" %}

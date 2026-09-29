@@ -244,17 +244,17 @@
           <div class="step" data-step="0">
             <div class="dot">1</div>
             <div class="label">上传</div>
-            <div class="line"><div class="line-fill"></div></div>
+            <div class="line"></div>
           </div>
           <div class="step" data-step="1">
             <div class="dot">2</div>
             <div class="label">解析</div>
-            <div class="line"><div class="line-fill"></div></div>
+            <div class="line"></div>
           </div>
           <div class="step" data-step="2">
             <div class="dot">3</div>
             <div class="label">完成</div>
-            <div class="line"><div class="line-fill"></div></div>
+            <div class="line"><div class="line-fill" id="fillBar"></div></div>
           </div>
         </div>
         <div class="stepmsg" id="stepMsg">点击下方按钮模拟各阶段</div>
@@ -263,14 +263,15 @@
 
     <div class="demo-btns" id="stateBtns">
       <button data-state="uploading">上传中</button>
-      <button data-state="processing">解析中</button>
+      <button data-state="processing">解析中·OCR</button>
+      <button data-state="phase2">解析→完成·推进中</button>
       <button data-state="review">解析完成·待审查</button>
       <button data-state="done">完成</button>
       <button data-state="error">失败</button>
     </div>
 
     <div class="change-note">
-      <b>改动说明：</b>进度条改为 <b>上传 → 解析 → 完成</b> 三段式。配色沿用系统莫兰迪灰绿（<code>#8a9e8b / #718573</code>），与暖灰背景对比清晰但不跳；当前阶段实心高亮，完成阶段打勾变深，未开始阶段浅灰。连接线段<b>只在圆形框之间</b>（圆点 z-index 高于连线，线被圆点盖住，不穿过框内数字）。与后端 <code>progress.status</code> 映射：<code>uploading</code>→上传中；<code>processing</code>/OCR→解析中；<code>review_needed</code>→解析已完成、等待审查（第 3 步未点亮）；<code>done</code>→完成；<code>error</code>→失败（首个未完成步骤置为低饱和暖红并显示原因）。
+      <b>改动说明：</b>进度条改为 <b>上传 → 解析 → 完成</b> 三段式。配色沿用系统莫兰迪灰绿（<code>#8a9e8b / #718573</code>），与暖灰背景对比清晰但不跳；当前阶段实心高亮，完成阶段打勾变深，未开始阶段浅灰。连接线段<b>只在圆形框之间</b>（圆点 z-index 高于连线，不穿过框内数字）；其中<b>“解析→完成”线段即平滑进度条</b>，宽度由 progress 驱动（50→100 线性映射 0→100%，transition 平滑推进），解决分类/索引长耗时卡顿错觉。与后端 <code>progress.status</code> 映射：<code>uploading</code>→上传中；<code>processing</code>/OCR→解析中；<code>review_needed</code>→解析已完成、等待审查（线段待 Phase 2 填充）；<code>done</code>→完成；<code>error</code>→失败（首个未完成步骤置暖红并显示原因）。
     </div>
   </section>
 
@@ -420,14 +421,17 @@ editor.value = SRC; find();
 
 /* ── §2 三段式进度条状态演示 ── */
 const STEPS = [
-  {uploading:[1,0,0], processing:[1,1,0], review:[1,1,0], done:[1,1,1], error:['e',0,0]},
+  {uploading:[1,0,0], processing:[1,1,0], phase2:[1,1,0], review:[1,1,0], done:[1,1,1], error:['e',0,0]},
 ];
+/* 「解析→完成」线段填充：progress 50→100 线性映射 0→100%（与产品模板一致） */
+const FILL = {uploading:0, processing:0, phase2:70, review:0, done:100, error:0};
 const MSG = {
   uploading:'正在上传文件…（对应 status=uploading，后端 progress 0～10）',
-  processing:'正在解析：提取文本 / OCR 识别…（对应 status=processing，progress 10～50）',
-  review:'<b>解析完成</b>，已暂停等待人工审查 OCR 结果（对应 status=review_needed）',
-  done:'<b>导入完成！</b>解析 + 分类 + 索引全部结束（对应 status=done）',
-  error:'<b>导入失败</b>：仅支持 .md / .pdf（对应 status=error，整条暖红并显示原因）'
+  processing:'正在解析：提取文本 / OCR 识别…（对应 status=processing，progress 10～50，线段尚未填充）',
+  phase2:'<b>解析→完成 线段平滑推进：</b>正在分类条文 / 生成向量 / 写入索引（progress 60→100，线段 20%→100% 随进度填充）',
+  review:'<b>解析完成</b>，已暂停等待人工审查 OCR 结果（对应 status=review_needed，线段待 Phase 2 才填充）',
+  done:'<b>导入完成！</b>解析 + 分类 + 索引全部结束（对应 status=done，线段 100%）',
+  error:'<b>导入失败</b>：仅支持 .md / .pdf（对应 status=error，首个未完成步骤置暖红）'
 };
 const stepEls = [...document.querySelectorAll('#steps .step')];
 function setState(st){
@@ -440,7 +444,8 @@ function setState(st){
     else if(mark===0){ dot.textContent=String(i+1); }
   });
   if(st==='processing'){ stepEls[1].classList.remove('done'); stepEls[1].classList.add('active'); dot1(); }
-  if(st==='review'){ stepEls[2].classList.remove('done'); }
+  const fillEl = document.getElementById('fillBar');
+  if(fillEl) fillEl.style.width = (FILL[st]||0) + '%';
   const msg = document.getElementById('stepMsg');
   msg.innerHTML = MSG[st];
   msg.className = 'stepmsg' + (st==='error'?' err':'');

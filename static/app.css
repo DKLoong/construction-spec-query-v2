@@ -611,3 +611,13 @@
 .import-steps .step:first-child .line { display: none; }
 .import-steps .step.done .line,
 .import-steps .step.active .line { background: var(--pico-primary-border); }
+/* 「解析→完成」线段 = 平滑进度条：line-fill 宽度由 progress 驱动（模板内联 style），
+   transition 让分档跳变视觉平滑推进，缓解 Phase 2 长耗时卡顿错觉 */
+.import-steps .line-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 2px;
+    background: var(--pico-primary-border);
+    transition: width 0.5s ease;
+}
