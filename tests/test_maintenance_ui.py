@@ -40,11 +40,12 @@ def test_maintenance_page_has_rebuild_overlay(auth_client, monkeypatch, tmp_path
 
 
 def test_health_result_states_one_time_rebuild_notice(auth_client, monkeypatch, tmp_path):
-    """R6：本批改了写入向量的**内容**（text/embedding 加面包屑），而
-    `needs_rebuild()` 只看列是否存在 ⇒ 察觉不到内容变更。
+    """R6：本批改了写入向量的**内容**（text/embedding 加面包屑），而健康检查只查结构与计数
+    ⇒ 察觉不到内容变更（当初那个只看「列是否存在」的小探针同样看不到，且已于 2026-09-29
+    删除，见 TODOS T28）。
 
-    本批的一次性全量重建门禁在后续单元，此处不得把「全部 ✅」当「索引健康」——
-    维护页必须明说「升级后需重建一次」，否则用户会把列结构就绪误读成索引已重建。
+    此处不得把「全部 ✅」当「索引健康」——维护页必须明说「升级后需重建一次」，
+    否则用户会把列结构就绪误读成索引已重建。
     """
     _setup(monkeypatch, tmp_path)
     monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))

@@ -395,10 +395,30 @@
   但纠正只留了「未来加列不必重建」一句话，操作性细节无处可查。
 - **Context**：本批的重建**不是**因为加列，而是因为面包屑改了 `text`/`embedding` 两个既有列的内容 ⇒ 必须重嵌，
   `add_columns` 救不了；故本批不做，仅登记。真正适用场景 = 将来**纯增元数据列**（如 `ingested_at`、`section_key`）。
-  入手点：`app/search/vector_search.py` 的 `embedding_schema()` 与 `needs_rebuild()`；验证脚本可仿
+  入手点：`app/search/vector_search.py` 的 `embedding_schema()`（曾与它并列的 `needs_rebuild()` 探针已于 2026-09-29 删除，见 T28）；验证脚本可仿
   `tests/test_vector_chunk.py` 的建表方式，先验证 0.17 的 `add_columns(transforms: Dict[str, str])` 能否加常量列、
   旧行是否报 schema 不匹配（外部检索显示 2026 年已有实际项目因 `Append with different schema` 被拒写）。
 - **Pros**：下次纯加列可走零拷贝元数据路径，省一次全量重嵌（当前语料 959 条，spec 预估规模 2.4 万条时是小时级操作）。
 - **Cons**：需先验证常量列与旧行兼容性；`add_columns` 与并发写有冲突（须在无写入窗口执行）。
 - **Blocked by**：无（纯登记，与批二无关）。
   —— 来源：批二 `/plan-eng-review`（2026-09-28）的 C-8 与外部评审（Codex）。
+
+## T28 — 向量索引的「内容世代标记」（deferred，2026-09-29 收尾决定 B 后登记）
+
+- **What**：让「**写向量的内容公式变了**」这种陈旧能被自动发现——例如在 settings 里存一个
+  「embed 文本/切块方案版本」，方案一变就 bump，维护检查比对它并在不一致时提示「索引需重建」。
+- **Why**：批二删掉了 `needs_rebuild()` 探针（它只看**列是否存在**），理由是：本批真正踩到的陈旧不是缺列，
+  而是 `text`/`embedding` 的**内容**按旧公式算的（列表结构一个不缺）。当时**没有任何探测器**能看见它——
+  这恰好是「全量重建」这条门禁必须靠人工记得跑的根本原因。留一个看不到痛点的绿灯比没有更糟，故删除；
+  但**真正的解**是这个内容世代标记。
+- **Context**：批二的收尾三选一（A 泛化探针 / B 删探针 + 记账 / C 泛化 + 内容标记）中用户选了 **B**——
+  因为真库 2026-09-28/29 刚全量重建（6 列、内容全新），**今天无物可测**；而代价最低的做法是把「内容标记」
+  与「下次动 embed 方案」绑在一起做。**触发条件**：下次要改 embed 文本拼法、切块口径、或面包屑进向量的方式时，
+  **同一批里**一并落地本项（否则那次变更又会静默陈旧）。
+  入手点：`app/search/embed_text.py`（`build_embed_text` 的拼法）、`app/search/chunking.py`（切块口径）、
+  `app/params/registry.py` 的 settings 表读写（存版本号）、`app/maintenance/health_check.py`（比对并提示）。
+- **Pros**：把「必须记得重建」变成「系统告诉你该重建」，正对本批（以及未来每次）内容变更的痛点。
+- **Cons**：多一条**约定**——改 embed 方案时必须 bump 版本，忘了就报假健康（比没有更糟）；故实现时最好把
+  「版本常量」就放在 `build_embed_text`/`chunk_text` 旁边，让改动者一眼看到。
+- **Blocked by**：无（随时可做；建议与下次 embed 方案变更同批）。
+  —— 来源：批二收尾裁定 D17=B（2026-09-29），计划文件 §三.4 与 §五 R23/R26。

@@ -76,33 +76,11 @@ class VectorStore:
     def _get_table(self):
         return self.db.open_table("clause_embeddings")
 
-    def needs_rebuild(self) -> bool:
-        """现存表是否缺少 chunk_index 列。
-
-        ⚠ **C-8**：不要写「LanceDB 不支持 ALTER」——实测本机 `lancedb 0.17.0`
-        提供 `add_columns` / `alter_columns` / `drop_columns`，加一个全空列是
-        零拷贝的元数据操作。**本批之所以重建**，是因为面包屑改了既有两列
-        （`text` / `embedding`）的**内容**，必须重嵌——`add_columns` 救不了内容变更。
-        将来若只是纯加元数据列，应优先试 `add_columns` 而非全量重建（见 TODOS T27）。
-
-        **探针语义**：现存表缺 `chunk_index` 列 ⇒ 该表由旧 schema 建出，需全量重建。
-        ⚠ 但它**当前零消费方**——既未接线到维护页提前提示重建，也未作重建门禁
-        （见下段 U7 裁定；实测 `app/` 内只有本定义，消费方是测试）。
-
-        ⚠ **U7 裁定（批二收口）**：本探测**不**接线到维护页判定/重建门禁。它只看
-        「列是否存在」，察觉不到本批「面包屑改了 text/embedding **内容**」的重建理由
-        （内容变更≠列缺失），把它当「索引健康」判定会误导（列就绪 ≠ 内容已按新公式
-        重建）。维护页因此用定时态静态文案（「升级后须重建一次」，见
-        maintenance_health_result.html 的 R6 注），本批真正的门禁是全量重建 + 验收跑。
-        """
-        if not self._table_exists():
-            return False
-        try:
-            names = {f.name for f in self._get_table().schema}
-        except Exception as e:
-            logger.warning("读取向量表 schema 失败: %s", e)
-            return True
-        return "chunk_index" not in names
+    # 曾有一个 `needs_rebuild()` 探针（判现存表是否缺 `chunk_index` 列）。2026-09-29 按收尾决定**删除**：
+    # 它只看「列是否存在」，察觉不到本批真正会踩的那类陈旧——**写向量的内容公式变了**
+    # （面包屑改了 `text`/`embedding` 的内容，列却一个不缺）。留着一个看不到痛点的绿灯，
+    # 比没有探测器更糟。本批真正的重建门禁始终是**全量重建 + 验收跑**；
+    # 将来若需要自动探测内容陈旧，方向是**内容世代标记**（见 TODOS T28）。纯加列的治法见 T27。
 
     def optimize(self) -> bool:
         """收尾压实向量表（合并数据文件、清理过期版本）。
