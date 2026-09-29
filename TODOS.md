@@ -133,7 +133,7 @@
   | `--pico-border-radius` | `0.35rem` | `0.35rem` | ✅ 生效 |
   | `--pico-font-size` | `90%` | `90%` | ✅ 生效 |
 
-- **根因（推断，待验证）**：Pico v2 把**颜色**变量声明在更高优先级的主题块里（形如 `:root:not([data-theme=dark])`，特异性 0,1,1），而 `pico.custom.css` 用朴素 `:root`（0,1,0）→ 无论加载顺序都输给 Pico。`--pico-border-radius` / `--pico-font-size` 在 Pico 侧也是朴素 `:root` 声明（0,1,0），同级下**后加载者胜** → 自定义表恰好生效。这解释了「为什么只有颜色没生效」，也是问题长期隐蔽的原因。
+- **根因（已被修复证实）**：Pico v2 把**颜色**变量声明在更高优先级的主题块里（形如 `:root:not([data-theme=dark])`，特异性 0,1,1），而 `pico.custom.css` 用朴素 `:root`（0,1,0）→ 无论加载顺序都输给 Pico。`--pico-border-radius` / `--pico-font-size` 在 Pico 侧也是朴素 `:root` 声明（0,1,0），同级下**后加载者胜** → 自定义表恰好生效。这解释了「为什么只有颜色没生效」，也是问题长期隐蔽的原因。
 - **影响面**：全站组件配色停留在 Pico 默认蓝（按钮、链接、表单焦点等）。页面背景的暖色来自 `app.css` 而非主题变量，进一步掩盖了症状。**这也意味着任何新写的、依赖 `pico.custom.css` 颜色 token 的样式都会静默取到与设计意图不同的值**——本次规则页组头的深底就是这种情况（幸而 Pico 默认的 contrast 底也是深色，白字仍达 ~15:1，未出可读性问题）。
 - **修法候选**（择一，需全站视觉走查后决定）：
   1. 把自定义表的 `:root` 改成与 Pico 同特异性的选择器（如 `:root:not([data-theme=dark])`），或直接 `[data-theme=light]`/`html` 提升特异性；
@@ -141,6 +141,14 @@
   3. 用 CSS `@layer` 控制层序（改动面最大）。
 - **风险**：修好后**全站配色会立刻从默认蓝变成鼠尾草绿系**，属大范围视觉变更，必须逐页走查后再启用，不可顺手改。
 - **Status（2026-09-20）**：已定位并留证，**未修**（超出当次「规则页 4 项 UI 修正」范围，且属全站级变更）。
+- **Status（2026-09-29）：✅ 已修**（`a9d32de`，采用下文的修法候选 ①）——亮色块选择器由 `:root` 改为
+  `:root:not([data-theme=dark])`，与 Pico 主题块**同特异性**（0,2,0），后加载的自定义表胜出；
+  深色块（`@media` 内）本就是 `:root:not([data-theme="light"])`，未动。
+  **验证**：Playwright `getComputedStyle` 断言 `--pico-primary-background` = `#8a9e8b`、
+  `--pico-background-color` = `#f4f0ea`、`--pico-contrast-background` = `#4a4454` 均生效；
+  顺带把三处写死的非信号色改为引用变量（词库进度条 / 设置弹窗 Tab 文字 / 输入框提示浮层），
+  并按静态资源纪律递增 `base.html` 的 `pico.custom.css?v=1` 与 `app.css?v=28`。
+  ⚠️ 上文「修好后全站配色会立刻变化、须逐页走查」的风险提示**仍然成立**——本次已按此走查。
 
 ## T11 — Pico 按钮下边距触发器：同一 flex 行混用「有/无 type」按钮会错位（余 33 处待核查）
 
