@@ -67,7 +67,8 @@
                     <template x-if="checkResult"><div id="version-check-result" style="margin-top:0.5rem">
                         <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">
                             <span style="font-size:0.8rem">状态：</span>
-                            <select x-model="checkResult.status" style="font-size:0.8rem;padding:0.15rem 0.3rem;width:auto">
+                            {# 挂公共 class .status-select：padding-right 给箭头留位、行高与「状态：」对齐（见 app.css） #}
+                            <select x-model="checkResult.status" class="status-select">
                                 <option value="现行">现行</option>
                                 <option value="修订中">修订中</option>
                                 <option value="废止">废止</option>

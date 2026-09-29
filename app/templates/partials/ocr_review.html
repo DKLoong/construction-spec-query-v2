@@ -28,8 +28,16 @@
         <div style="display:flex;gap:0.75rem;align-items:center">
             {# md 走 raw body 由 confirmImport() 以 fetch 提交：表单字段有 1MB 上限，
                大规范（md 46 万字符）会被 400 拒掉且页面毫无反应 #}
-            <button type="button" style="margin:0" @click="confirmImport()"
-                    x-text="submitting ? '提交中…' : '✅ 确认并继续导入'"></button>
+            {# 防重复提交：提交中叠加白蒙版遮罩并禁用（同「开始导入」方案） #}
+            <span style="position:relative;display:inline-flex;align-items:center">
+                <span x-show="submitting" x-cloak
+                      style="position:absolute;inset:0;background:rgba(255,255,255,.55);
+                             border:1px dashed var(--pico-muted-border-color);border-radius:6px;
+                             z-index:2;"></span>
+                <button type="button" style="position:relative;z-index:1;margin:0" :disabled="submitting"
+                        @click="confirmImport()"
+                        x-text="submitting ? '提交中…' : '✅ 确认并继续导入'"></button>
+            </span>
             <button type="button" class="secondary" style="margin:0"
                     hx-post="/import/review/{{ task_id }}/cancel"
                     hx-confirm="确定取消本次导入？已上传的文件和识别结果将被删除。">

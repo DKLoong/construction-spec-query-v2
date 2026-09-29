@@ -449,6 +449,23 @@
 }
 .rebuild-spinner-text { margin-top: 1.2rem; color: #2f7d4a; font-size: 0.9rem; font-weight: 600; }
 
+/* ── 状态下拉修复 ──
+   Pico select 用 appearance:none + 背景箭头（background-position: center right .75rem），
+   默认 padding-right 2.5rem 给箭头留位；内联 padding 曾把 padding-right 压成 0.3rem
+   → 文字穿进箭头区重叠。padding-right:1.9rem 留出箭头空间；height+line-height 统一
+   使与同行文字（如「状态：」）垂直居中。 */
+.status-select {
+    width: auto;
+    margin: 0;
+    flex: none;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    height: 1.9em;
+    padding: 0 0.6rem;
+    padding-right: 1.9rem;
+    vertical-align: middle;
+}
+
 /* ── 规范状态三色标签（现行=绿 / 修订中=橙 / 废止=红） ── */
 .spec-status-tag { padding:0.15rem 0.5rem; border-radius:4px; font-size:0.75rem; }
 .status-current { background:#d8f5d8; color:#1a7a1a; }
