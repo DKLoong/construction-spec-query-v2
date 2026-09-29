@@ -89,9 +89,19 @@
                         <input type="checkbox" name="force_ocr" value="true">
                         <span style="font-size:0.8rem">强制 OCR（扫描件/格式丢失的 PDF 勾选此项）</span>
                     </label>
-                    <div style="margin-top: 1rem;">
-                        <button type="submit" :disabled="uploading">开始导入</button>
-                        <button type="button" class="secondary" @click="closeDialog()">取消</button>
+                    <div style="margin-top: 1rem; display:flex; align-items:center; gap:0.6rem;">
+                        {# 未选文件：白色蒙版遮罩「开始导入」并禁用；选中后恢复（hasFile 由 import.js 维护） #}
+                        <span style="position:relative; display:inline-flex; align-items:center;">
+                            <span x-show="!hasFile" x-cloak
+                                  style="position:absolute; inset:0; background:rgba(255,255,255,.55);
+                                         border:1px dashed var(--pico-muted-border-color); border-radius:6px;
+                                         z-index:2;"></span>
+                            <button type="submit" :disabled="uploading || !hasFile"
+                                    style="position:relative; z-index:1; margin:0">开始导入</button>
+                        </span>
+                        <button type="button" class="secondary" style="margin:0" @click="closeDialog()">取消</button>
+                        <small x-show="!hasFile" x-cloak
+                               style="color:var(--pico-muted-color); font-size:0.8rem;">未选择文件，不可导入</small>
                     </div>
                 </form>
                 <div style="text-align:right;margin-top:0.3rem">

@@ -2,18 +2,16 @@
 <div x-data="ocrReview()" class="ocr-review">
     <h2>📝 OCR 审查 <small x-text="fileName" style="color:var(--pico-muted-color);font-size:0.8rem"></small></h2>
 
-    <!-- 搜索/替换工具栏 -->
+    <!-- 搜索/替换工具栏：所有控件同一行、统一高度 36px、基线对齐（样式见 app.css .review-toolbar） -->
     <div class="review-toolbar">
-        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-            <input type="search" x-model="searchQuery" @input="findMatches()"
-                   placeholder="搜索..." style="width:200px">
-            <small x-text="matchInfo" style="color:var(--pico-muted-color);min-width:60px"></small>
-            <button class="outline" @click="prevMatch()" :disabled="!hasMatches" style="font-size:0.8rem">◀ 上一个</button>
-            <button class="outline" @click="nextMatch()" :disabled="!hasMatches" style="font-size:0.8rem">下一个 ▶</button>
-            <input type="text" x-model="replaceText" placeholder="替换为..." style="width:180px">
-            <button class="secondary outline" @click="replaceCurrent()" :disabled="!hasMatches" style="font-size:0.8rem">替换</button>
-            <button class="secondary outline" @click="replaceAll()" :disabled="!hasMatches" style="font-size:0.8rem">全部替换</button>
-        </div>
+        <input type="search" x-model="searchQuery" @input="findMatches()"
+               placeholder="搜索..." style="width:200px">
+        <small x-text="matchInfo" style="color:var(--pico-muted-color);min-width:60px"></small>
+        <button class="outline" @click="prevMatch()" :disabled="!hasMatches" style="font-size:0.8rem">◀ 上一个</button>
+        <button class="outline" @click="nextMatch()" :disabled="!hasMatches" style="font-size:0.8rem">下一个 ▶</button>
+        <input type="text" x-model="replaceText" placeholder="替换为..." style="width:180px">
+        <button class="secondary outline" @click="replaceCurrent()" :disabled="!hasMatches" style="font-size:0.8rem">替换</button>
+        <button class="secondary outline" @click="replaceAll()" :disabled="!hasMatches" style="font-size:0.8rem">全部替换</button>
     </div>
 
     <!-- 左右双栏：编辑 | 预览 -->
@@ -23,8 +21,8 @@
         <div x-html="renderedHtml" class="review-preview" id="review-preview"></div>
     </div>
 
-    <!-- 确认 / 取消 -->
-    <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--pico-muted-border-color);
+    <!-- 确认 / 取消（与双栏保持 30px 间距，样式在 .review-panels margin 基础上由本行 margin-top 提供） -->
+    <div style="margin-top:30px;padding-top:1rem;border-top:1px solid var(--pico-muted-border-color);
                 display:flex;justify-content:space-between;align-items:center">
         <small style="color:var(--pico-muted-color)">审查完毕后点击确认继续导入流程（解析 + 分类 + 索引）</small>
         <div style="display:flex;gap:0.75rem;align-items:center">

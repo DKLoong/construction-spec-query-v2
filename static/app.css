@@ -34,12 +34,38 @@
     grid-template-columns: 1fr;
 }
 
-/* ── 审查页：编辑 | 预览 左右双栏 ── */
+/* ── 审查页工具栏：搜索/替换控件同行、统一高度、基线对齐 ──
+   Pico 全局规则 `input:not([type=checkbox],[type=radio]),select,textarea{width:100%}`，
+   input 需内联 width 覆盖（模板已设 search=200px / replace=180px）；height 统一 36px
+   让 input 与 button 基线对齐、不再因换行掉到搜索框下方。 */
+.review-toolbar {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: nowrap;
+}
+.review-toolbar input,
+.review-toolbar button {
+    height: 36px;
+    box-sizing: border-box;
+    vertical-align: middle;
+    margin: 0;
+}
+.review-toolbar button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0.75rem;
+    white-space: nowrap;
+}
+
+/* ── 审查页：编辑 | 预览 左右双栏（增高，与上下元素各保持 30px）── */
 .review-panels {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 1rem;
-    height: 62vh;
+    height: 72vh;
+    margin: 30px 0 0;
 }
 .review-editor,
 .review-preview {
@@ -513,3 +539,75 @@
    此处**不加 transition**：过渡会让 getComputedStyle 在摘/加类的瞬间读到动画起点的
    中间值，探针的计算样式判据将不可判。 */
 .qa-highlight { background: #fff3cd; outline: 2px solid #e0a800; outline-offset: 1px; }
+
+/* ═══════════════════════════════════════════════════════════════
+   导入进度 — 三段式步骤条（上传 → 解析 → 完成）
+   配色沿用系统莫兰迪灰绿（--pico-primary-* 系列），与暖灰背景对比清晰不突兀。
+   连线(.line) z-index 低于圆点(.dot)：线段只露在圆形框之间，不穿过框内文字。
+   ═══════════════════════════════════════════════════════════════ */
+.import-steps {
+    display: flex;
+    align-items: flex-start;
+    margin: 0.25rem 0 0.6rem;
+}
+.import-steps .step {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+    min-width: 0;
+}
+.import-steps .dot {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace;
+    background: #e6e1d8;              /* 未开始：浅灰（与背景有对比） */
+    color: #a39aa6;
+    border: 2px solid var(--pico-muted-border-color);
+    position: relative;
+    z-index: 2;                       /* 圆点盖在连线上方 */
+    transition: background 0.25s, border-color 0.25s, color 0.25s;
+}
+.import-steps .step.active .dot {
+    background: var(--pico-primary-background);   /* 进行中：莫兰迪灰绿实心 */
+    border-color: var(--pico-primary-border);
+    color: var(--pico-primary-inverse);
+    box-shadow: 0 0 0 4px rgba(138, 158, 139, 0.22);
+}
+.import-steps .step.done .dot {
+    background: var(--pico-primary-border);        /* 完成：深灰绿 + ✓ */
+    border-color: var(--pico-primary-border);
+    color: var(--pico-primary-inverse);
+}
+.import-steps .step.err .dot {
+    background: #b07a6a;              /* 失败：低饱和暖红 */
+    border-color: #b07a6a;
+    color: #faf8f5;
+}
+.import-steps .label {
+    font-size: 12.5px;
+    color: var(--pico-muted-color);
+    margin-top: 8px;
+    white-space: nowrap;
+}
+.import-steps .step.active .label { color: var(--pico-primary); font-weight: 700; }
+.import-steps .step.done .label { color: var(--pico-color); }
+.import-steps .step.err .label { color: #b07a6a; font-weight: 700; }
+.import-steps .step .line {
+    position: absolute;
+    top: 13px;                        /* 与圆点中心对齐 */
+    left: -50%;
+    width: 100%;
+    height: 2px;
+    background: var(--pico-muted-border-color);
+    z-index: 1;                       /* 位于圆点之下，只露出圆框之间的段 */
+}
+.import-steps .step:first-child .line { display: none; }
+.import-steps .step.done .line,
+.import-steps .step.active .line { background: var(--pico-primary-border); }

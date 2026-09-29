@@ -4,14 +4,33 @@
      hx-trigger="every 2s"
      hx-swap="outerHTML"
      {% endif %}>
-    {# pico 给 progress 设了 width:100%，放进 flex 行必须用确定值 flex-basis，
-       否则 flex:1 1 auto 会解析成 100% 而独占整行（见 pico-form-width100-flex） #}
-    <div style="display:flex;align-items:center;gap:0.5rem">
-        <progress value="{{ progress.progress }}" max="100"
-                  style="flex:1 1 0;margin:0"></progress>
-        <small style="min-width:2.5rem;text-align:right">{{ progress.progress }}%</small>
+    {# 三段式步骤进度条（上传→解析→完成）：状态按 progress/status 推导。
+       done=已完成(✓) / active=进行中 / err=失败(!) / 空=未开始。
+       连线只画在圆点之间（z-index 低于圆点），不穿过框内文字，样式见 app.css .import-steps #}
+    {% set s = progress.status %}
+    {% set p = progress.progress | default(0) %}
+    {% set st1 = 'done' if p >= 10 else ('active' if s in ('uploading', 'processing') else '') %}
+    {% set st2 = 'done' if s in ('review_needed', 'done') or p >= 50 else ('active' if s == 'processing' else '') %}
+    {% set st3 = 'done' if s == 'done' else '' %}
+    {% if s == 'error' %}
+        {% if st1 != 'done' %}{% set st1 = 'err' %}
+        {% elif st2 != 'done' %}{% set st2 = 'err' %}
+        {% elif st3 != 'done' %}{% set st3 = 'err' %}{% endif %}
+    {% endif %}
+    <div class="import-steps" aria-label="导入进度">
+        <div class="step {{ st1 }}">
+            <div class="dot">{{ '✓' if st1 == 'done' else ('!' if st1 == 'err' else '1') }}</div>
+            <div class="label">上传</div><div class="line"></div>
+        </div>
+        <div class="step {{ st2 }}">
+            <div class="dot">{{ '✓' if st2 == 'done' else ('!' if st2 == 'err' else '2') }}</div>
+            <div class="label">解析</div><div class="line"></div>
+        </div>
+        <div class="step {{ st3 }}">
+            <div class="dot">{{ '✓' if st3 == 'done' else ('!' if st3 == 'err' else '3') }}</div>
+            <div class="label">完成</div><div class="line"></div>
+        </div>
     </div>
-    <p>{{ progress.message }}</p>
     {% if progress.status == "done" %}
     <p style="color: green; font-weight: bold;">导入完成！<a href="/">刷新页面</a>查看新导入的规范。</p>
     {% elif progress.status == "review_needed" %}
@@ -23,6 +42,8 @@
     </a>
     {% elif progress.status == "error" %}
     <p style="color: red;">导入失败: {{ progress.message }}</p>
+    {% else %}
+    <p style="color: var(--pico-muted-color);">{{ progress.message }}</p>
     {% endif %}
     {# 处理中状态：外层 div 自带的 hx-get 负责轮询，无需内层 div #}
     {# 终态广播：通知 import.js 复位 uploading（允许再次导入/恢复开始导入按钮） #}

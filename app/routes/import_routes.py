@@ -317,7 +317,7 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
             else:
                 md_text = extract_text(file_path)
         else:
-            progress_store[task_id].update(status="error", message=f"不支持的文件格式: {ext}")
+            progress_store[task_id].update(status="error", message=f"仅支持 .md/.pdf（当前为 {ext or '无扩展名'}）")
             return
 
         # 保守清洗（OCR/extract 通用）：删除页码行、纯数字行、OCR 失败标记、重复页眉

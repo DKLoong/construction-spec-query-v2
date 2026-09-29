@@ -3,6 +3,8 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('importDialog', () => ({
         open: false,
         uploading: false,
+        // 是否已选择文件：未选时「开始导入」按钮被白色蒙版遮罩并禁用（见 tree_panel.html）
+        hasFile: false,
         // 记录输入框当前值是否来自自动识别（区分自动填充 vs 用户手动输入）
         autoFilled: { code: false, title: false },
         // 校核相关状态：codeInput/titleInput 为当前输入框内容，checkResult 为校核结果
@@ -39,6 +41,8 @@ document.addEventListener('alpine:init', () => {
         // 选择文件后自动识别规范编号/名称并回填（不匹配通用命名格式则跳过，交用户手动录入）
         async autoFillFromFilename(event) {
             const file = event.target.files && event.target.files[0];
+            // 同步「已选文件」状态：未选/取消选择 → 恢复蒙版与禁用
+            this.hasFile = !!file;
             if (!file) return;
             const form = event.target.closest('form');
             const codeInput = form ? form.querySelector('input[name="code"]') : null;
@@ -73,6 +77,26 @@ document.addEventListener('alpine:init', () => {
 
         async handleUpload(event) {
             const form = event.target;
+            // 前端前置校验：未选择文件 / 扩展名不支持 → 直接提示，不发导入请求
+            //（避免后端兜底报错文案与「未选文件」混淆；合法扩展名与 <input accept=".md,.pdf"> 一致）
+            const fileInput = form.querySelector('input[name="file"]');
+            const file = fileInput && fileInput.files && fileInput.files[0];
+            const resultBox = document.getElementById('import-result');
+            if (!file) {
+                if (resultBox) {
+                    resultBox.innerHTML = '<p style="color:var(--pico-muted-color);">未选择文件，不可导入</p>';
+                }
+                return;
+            }
+            const dotIdx = file.name.lastIndexOf('.');
+            const ext = dotIdx >= 0 ? file.name.slice(dotIdx + 1).toLowerCase() : '';
+            if (!['md', 'pdf'].includes(ext)) {
+                if (resultBox) {
+                    resultBox.innerHTML =
+                        `<p style="color:#c00;">导入失败：仅支持 .md/.pdf（当前为 ${ext ? '.' + ext : '无扩展名'}）</p>`;
+                }
+                return;
+            }
             const formData = new FormData(form);
             // 校核结果随表单提交：未校核时回退默认「现行」/ 空被替代编号
             formData.append('status', this.checkResult ? this.checkResult.status : '现行');
