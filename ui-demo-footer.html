@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Demo · 页脚提示语效果预览</title>
+    <link rel="stylesheet" href="static/pico.min.css">
+    <link rel="stylesheet" href="static/pico.custom.css">
+    <link rel="stylesheet" href="static/app.css">
+    <style>
+        /* ── Demo 专用：模拟 base.html 的结构改造（正式实施时对应改动 app.css） ── */
+        .app-frame {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        .app-frame .app-layout {
+            /* 覆盖原 height:100vh，改为撑满 frame 剩余空间（内部滚动不变） */
+            height: auto;
+            flex: 1;
+            min-height: 0;
+        }
+        .app-footer {
+            flex-shrink: 0;
+            border-top: 1px solid var(--pico-muted-border-color, #ddd);
+            background: #faf7f3;
+            padding: 0.45rem 1.5rem;
+            text-align: center;
+            font-size: 0.72rem;
+            line-height: 1.7;
+            color: var(--pico-muted-color, #777);
+        }
+        .app-footer .sep { margin: 0 0.5rem; color: #c5bfb5; }
+
+        /* Demo 顶部说明条，仅 demo 用，不进入正式页面 */
+        .demo-banner {
+            position: fixed;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 999;
+            background: #2b3f6e;
+            color: #fff;
+            font-size: 0.8rem;
+            padding: 0.3rem 1rem;
+            border-radius: 0 0 6px 6px;
+            box-shadow: 0 2px 6px rgba(0,0,0,.2);
+        }
+
+        /* 模拟内容用占位样式 */
+        .demo-card {
+            background: #fff;
+            border: 1px solid var(--pico-muted-border-color, #e5e2dc);
+            border-radius: 8px;
+            padding: 1rem 1.2rem;
+            margin-bottom: 0.8rem;
+        }
+        .demo-card .t {
+            font-weight: 600;
+            margin-bottom: 0.3rem;
+        }
+        .demo-card .s {
+            font-size: 0.8rem;
+            color: var(--pico-muted-color, #777);
+        }
+    </style>
+</head>
+<body>
+    <div class="demo-banner">DEMO · 页脚提示语效果（红色说明条仅为演示标注，不会出现在正式页面）</div>
+
+    <!-- 模拟 base.html 改造后的结构：app-frame 包裹原布局 + 页脚 -->
+    <div class="app-frame">
+        <div class="app-layout">
+            <aside class="left-panel">
+                <div style="font-weight:600;margin-bottom:.5rem;">📂 规范分类树</div>
+                <div style="font-size:.8rem;color:var(--pico-muted-color,#777);line-height:1.9;">
+                    <div>· 公路工程</div>
+                    <div>· 铁路工程</div>
+                    <div>· 桥涵结构</div>
+                    <div>· 路基路面</div>
+                    <div style="margin-top:.4rem;color:#c5bfb5;">（左栏占位，实际页面为分类树）</div>
+                </div>
+            </aside>
+            <main class="center-panel-v2">
+                <h1 style="margin-top:0;">规范智能检索与问答系统</h1>
+                <div style="display:flex;gap:.5rem;margin-bottom:1rem;">
+                    <input type="search" placeholder="输入条文关键词，如：锚杆注浆" style="flex:1;">
+                    <button>搜 索</button>
+                </div>
+                <div class="demo-card">
+                    <div class="t">JTGF80/1-2017 第 X 条（示例占位）</div>
+                    <div class="s">公路工程质量检验评定标准 · 检评规则（此区域仅为模拟内容，与本次改动无关）</div>
+                </div>
+                <div class="demo-card">
+                    <div class="t">TB 10002-2017 第 X 条（示例占位）</div>
+                    <div class="s">铁路桥涵设计规范 · 荷载与作用（此区域仅为模拟内容，与本次改动无关）</div>
+                </div>
+                <div class="demo-card">
+                    <div class="t">搜索 / 问答 / 导入 / 审核（示例占位）</div>
+                    <div class="s">真实页面的左侧分类树与右侧内容区结构与此处一致，页脚将固定于视口底部，所有页面可见。</div>
+                </div>
+            </main>
+        </div>
+
+        <!-- 页脚提示语：正式实施时加入 base.html 与 login.html -->
+        <footer class="app-footer">
+            本工具规范资料取自公开渠道，仅供个人学习，禁止商用，侵权请联系删除；<br>
+            OCR 识别可能存在错漏，检索及 AI 回复仅作参考，不得作为专业评估、工程决策依据，请以官方规范原文为准。
+        </footer>
+    </div>
+</body>
+</html>
