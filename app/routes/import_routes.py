@@ -1,5 +1,7 @@
 import hashlib
+import html
 import re
+import unicodedata
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Request, UploadFile, File, Form, BackgroundTasks
@@ -83,6 +85,105 @@ def _link_replacement(conn, spec_id: int, replaced_by_code: str, status: str) ->
             "UPDATE specifications SET status = '废止', replace_by_spec_id = ? WHERE id = ?",
             (spec_id, other["id"]),
         )
+
+
+# ═══════════════════════════════════════════
+# 导入判重（编号 / 名称）
+# 用户口径（2026-09-30 裁定）：以编号或名称判重；**状态不参与判定** ——
+# 同一本规范不可能有两种状态，库中同码的废止版与现行版并存属历史记录，
+# 不该被当成「不同规范」，也不该因此放过重复导入。
+# 与 `file_hash`（上传字节 SHA256）判重**互补**：同文件是确定性重复，
+# 同编号/同名称是疑似重复，两者文案与后续动作分开。
+# ═══════════════════════════════════════════
+
+# 名称判重时剥除的末尾版本括号（如 `（2015年版）`/`(2016版)`/`(2015)`）。
+# 库里可能带、导入名可能不带 —— 不剥就会把同一本判成两本，判重形同虚设。
+_DUP_TITLE_VERSION_RE = re.compile(r"[（(]\s*\d{4}\s*(?:年版|版)?\s*[）)]$")
+# 归一化后要剥掉的末尾标点（全角空格与全角句号都在内 —— 前者不在 \s 的直观预期里，
+# 后者是最常见的句末残留）
+_DUP_TITLE_STRIP = " 　.,，、。;；:：!！?？-—_·…"
+_DUP_TITLE_MAX_PASSES = 3
+
+
+def _dup_norm_code(code: str | None) -> str:
+    """编号判重归一：只保留字母数字并大写。
+
+    为什么不能直接用 `normalize_spec_code` 的返回值比较：它**不插**前缀与序号之间的
+    空格 —— `normalize_spec_code('GBT50010-2010')` 得 `GB/T50010-2010`，而库中存的是
+    `GB/T 50010-2010`，直接相等比较会把同一本判成两本（判重形同虚设）。
+    抹掉 '/'-空格-连字符后对齐：`GBT50010-2010` / `GB/T 50010-2010` / `gb/t 50010—2010`
+    一律得到 `GBT500102010`。顺带把 GB/T 与 GBT 这类写法差异一并消掉。
+    """
+    return re.sub(r"[^0-9A-Z]", "", normalize_spec_code(code or "").upper())
+
+
+def _normalize_title_for_dup(title: str | None) -> str:
+    """名称判重归一：NFKC 折叠 → 去空白 → 剥末尾标点与版本括号。
+
+    与解析侧（`_parse_filename_to_code_title`）**刻意不同**：那边禁用 NFKC，因为它会
+    改坏要入库的名称（`Ⅲ`→`III`、`（2015年版）` 折成半角）。这里只用于**比较**、
+    不写回任何字段，所以 NFKC 正合适 —— 正需要把全角/兼容字符折叠掉，
+    才能让 `ＪＧＪ１０７` 与 `JGJ107` 判为同名。
+    """
+    t = unicodedata.normalize("NFKC", title or "").lower()
+    t = re.sub(r"\s+", "", t)
+    for _ in range(_DUP_TITLE_MAX_PASSES):
+        stripped = _DUP_TITLE_VERSION_RE.sub("", t).strip(_DUP_TITLE_STRIP)
+        if stripped == t:
+            break
+        t = stripped
+    return t
+
+
+def _dup_text(value: object) -> str:
+    """外部输入 → 去空白文本：非字符串一律视作空（防 int/list 打进 .strip() 抛 500）"""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def find_duplicate_specs(code: str | None, title: str | None) -> list[dict]:
+    """按**编号或名称**查库中已存在的规范，返回命中列表（判重用）。
+
+    - 编号比较走 `normalize_spec_code` 同口径（入库前已归一），否则
+      `GBT50010-2010` 与 `GB/T 50010-2010` 会被判成两本。
+    - 名称比较走 `_normalize_title_for_dup`：SQL 做不了跨行归一，故取回内存比较。
+      规范库规模天然是「一本一行」（数百量级），只取 id/code/title/status/clause_count
+      五列全量比较的开销可忽略 —— 这是**有意的**全量读，不是待优化的全量加载。
+    - **状态不参与判定**，但原样带出供前端展示（库里同码可能废止版与现行版并存，
+      用户需要看到到底是哪一条）。
+    """
+    norm_code = _dup_norm_code(code)
+    norm_title = _normalize_title_for_dup(title)
+    if not norm_code and not norm_title:
+        return []
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, code, title, status, clause_count FROM specifications"
+        ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        reasons = []
+        if norm_code and _dup_norm_code(r["code"]) == norm_code:
+            reasons.append("code")
+        if norm_title and _normalize_title_for_dup(r["title"]) == norm_title:
+            reasons.append("title")
+        if reasons:
+            out.append({"id": r["id"], "code": r["code"], "title": r["title"],
+                        "status": r["status"], "clause_count": r["clause_count"],
+                        "reasons": reasons})
+    return out
+
+
+def _format_duplicate_rows(dups: list[dict]) -> str:
+    """把命中项渲染成可读行。
+
+    **必须转义**：code/title 来自导入表单与 OCR，属用户可控内容，直接插进 f-string
+    HTML 就是存储型 XSS（全局规则 §1.1 零容忍）。
+    """
+    return "<br>".join(
+        f"#{d['id']} {html.escape(str(d['code']))} | {html.escape(str(d['title']))}"
+        f" | {html.escape(str(d['status']))} | {d['clause_count']} 条"
+        for d in dups
+    )
 
 
 def _compute_file_hash(file_bytes: bytes) -> str:
@@ -218,6 +319,20 @@ async def parse_filename(filename: str = Form("")):
     return {"code": code, "title": title, "matched": matched}
 
 
+@router.post("/import/check-duplicate")
+async def check_duplicate(body: dict):
+    """按编号/名称查库中是否已有同规范（导入弹窗判重用）。
+
+    **纯读接口**：不落库、不埋点 —— 用户在弹窗里每敲一次编号都会被防抖调用一次，
+    埋点会把 system_logs 刷爆（口径同维护宫格的纯读端点）。
+
+    未命中返回 `{"duplicates": []}`，命中返回带 reasons 的列表；两种情形**结构一致**，
+    不返回 null（全局规则 §1.2：禁止「成功返回数组、失败返回 null」）。
+    """
+    return {"duplicates": find_duplicate_specs(
+        _dup_text(body.get("code")), _dup_text(body.get("title")))}
+
+
 @router.post("/import/validate-version")
 async def validate_version(request: Request, body: dict):
     """AI 校核规范版本与命名：返回 {status, replaced_by_code, corrected_code, corrected_title, ai_available}
@@ -282,6 +397,7 @@ async def upload_file(
     force_ocr: bool = Form(False),
     status: str = Form("现行"),
     replaced_by_code: str = Form(""),
+    dup_confirmed: str = Form(""),
 ):
     content = await file.read()
     file_hash = _compute_file_hash(content)
@@ -300,11 +416,35 @@ async def upload_file(
                                        "created_at": existing["created_at"],
                                        "file_hash": file_hash}),
                    username=getattr(request.state, "username", ""))
+        # code/title 来自导入表单与 OCR（用户可控），必须转义后再插进 f-string HTML
+        # —— 这里是 HTMLResponse，不经过 Jinja 自动转义（全局规则 §1.1）
         return HTMLResponse(
             f"""<div id="import-status" style="color:#c08552;font-weight:bold">
             ⚠️ 该文件已导入过<br>
-            <small>规范编号：{existing['code']} | 名称：{existing['title']}<br>
-            导入时间：{existing['created_at']}</small><br>
+            <small>规范编号：{html.escape(str(existing['code']))} | 名称：{html.escape(str(existing['title']))}<br>
+            导入时间：{html.escape(str(existing['created_at']))}</small><br>
+            <a href="/specs">前往规范管理 →</a>
+            </div>"""
+        )
+
+    # 疑似重复（同编号/同名称但**文件不同**）：警告 + 可确认继续。
+    # 不做硬拒绝 —— 用更清晰的文件重导同一本是合法需求（用户 2026-09-30 就做过一次），
+    # 硬拒绝会逼用户先删旧规范（实测删一条 887 条的规范约 10 分钟）才能重导。
+    # 放在这里（file_hash 检查之后、progress_store 注册之前）：同文件仍走上面那条更硬的
+    # 文案；未确认时不创建任务、不落盘。
+    # `_dup_text` 兜住非字符串：真实 HTTP 下 FastAPI 恒给 str，但端点被**直接调用**时
+    # （测试里有这种用法）拿到的是 `Form()` 声明对象，直接 .strip() 会 AttributeError
+    dups = find_duplicate_specs(_dup_text(code), _dup_text(title))
+    if dups and _dup_text(dup_confirmed).lower() not in ("1", "true", "on", "yes"):
+        log_action("import", "WARN", "导入疑似重复规范",
+                   detail=json_detail({"code": code, "title": title,
+                                       "matched": [d["id"] for d in dups]}),
+                   username=getattr(request.state, "username", ""))
+        return HTMLResponse(
+            f"""<div id="import-dup-blocked" style="color:#c08552;font-weight:bold">
+            ⚠️ 库中已存在同一规范（疑似重复导入）<br>
+            <small>{_format_duplicate_rows(dups)}</small><br>
+            <small>如确认仍要导入（例如用更清晰的文件重导），请再次点击「开始导入」。</small><br>
             <a href="/specs">前往规范管理 →</a>
             </div>"""
         )
