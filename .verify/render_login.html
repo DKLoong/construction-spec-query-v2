@@ -3,16 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>登录 - 规范智能检索与问答系统</title>
-    <link rel="stylesheet" href="/static/pico.min.css">
-    <link rel="stylesheet" href="/static/app.css?v=30">
+    <title>登录 - 施工规范查询系统</title>
+    <link rel="stylesheet" href="../static/pico.min.css">
+    <link rel="stylesheet" href="../static/app.css?v=30">
 </head>
 <body class="login-body">
     <main class="container" style="max-width: 400px; margin-top: 10vh;">
-        <h1>规范智能检索与问答系统</h1>
-        {% if error %}
-        <article style="background: #fee; color: #c00;">{{ error }}</article>
-        {% endif %}
+        <h1>施工规范查询系统</h1>
+        
         <form method="post">
             <label>用户名 <input type="text" name="username" required autofocus></label>
             <label>密码 <input type="password" name="password" required></label>

@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>规范智能检索与问答系统 使用说明</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%2312304F'/%3E%3Ctext x='5' y='17' font-size='13' fill='white' font-family='sans-serif'%3E规%3C/text%3E%3C/svg%3E">
+<style>
+:root{
+  --ink:#1A2333; --ink-2:#4A5A6E; --ink-3:#7A8798;
+  --brand:#12304F; --brand-2:#3B6EA5; --brand-soft:#E8F0F7;
+  --bg:#F2F5F8; --card:#FFFFFF; --line:#D8E0E8;
+  --accent:#E8A33D; --ok:#2E7D32; --warn:#C0392B;
+  --side-w:248px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  font-family:-apple-system,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Source Han Sans SC",sans-serif;
+  color:var(--ink); background:var(--bg); line-height:1.75; font-size:15px;
+}
+a{color:var(--brand-2); text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ===== 顶部条 ===== */
+.topbar{
+  position:fixed; top:0; left:0; right:0; z-index:50;
+  background:var(--brand); color:#fff;
+  display:flex; align-items:center; gap:12px;
+  padding:10px 20px; box-shadow:0 1px 6px rgba(18,48,79,.25);
+}
+.topbar .logo{
+  width:30px; height:30px; border-radius:6px; background:var(--accent);
+  display:flex; align-items:center; justify-content:center;
+  font-weight:700; color:var(--brand); font-size:15px; flex:none;
+}
+.topbar h1{font-size:16px; font-weight:600; letter-spacing:.5px}
+.topbar .sub{font-size:12px; color:#C7D6E5; margin-left:auto}
+
+/* ===== 侧栏目录 ===== */
+.side{
+  position:fixed; top:52px; left:0; bottom:0; width:var(--side-w);
+  background:var(--card); border-right:1px solid var(--line);
+  overflow-y:auto; padding:18px 10px 40px;
+}
+.side h2{
+  font-size:12px; color:var(--ink-3); font-weight:600;
+  letter-spacing:1px; padding:0 10px 8px; text-transform:uppercase;
+}
+.side nav a{
+  display:flex; gap:8px; align-items:baseline;
+  padding:7px 10px; border-radius:6px; color:var(--ink);
+  font-size:13.5px; text-decoration:none;
+}
+.side nav a .no{color:var(--brand-2); font-weight:600; font-size:12px; min-width:20px}
+.side nav a:hover{background:var(--brand-soft)}
+.side nav a.active{background:var(--brand); color:#fff}
+.side nav a.active .no{color:var(--accent)}
+.side .foot-note{margin-top:18px; padding:10px; font-size:12px; color:var(--ink-3); border-top:1px dashed var(--line)}
+
+/* ===== 主内容 ===== */
+.main{
+  margin-left:var(--side-w); margin-top:52px;
+  padding:34px 40px 80px;
+}
+.wrap{max-width:860px; margin:0 auto}
+
+/* 章节 */
+section{margin-bottom:56px}
+.section-head{
+  display:flex; align-items:baseline; gap:12px;
+  border-bottom:3px solid var(--brand); padding-bottom:8px; margin-bottom:18px;
+}
+.section-head .idx{
+  font-size:13px; font-weight:700; color:var(--brand);
+  border:1.5px solid var(--brand); border-radius:5px; padding:1px 7px; flex:none;
+}
+.section-head h2{font-size:22px; font-weight:700; color:var(--brand)}
+.section-head .en{color:var(--ink-3); font-size:12px; letter-spacing:1px}
+h3{font-size:16.5px; color:var(--ink); margin:26px 0 10px; font-weight:700}
+h4{font-size:14.5px; color:var(--brand-2); margin:18px 0 8px; font-weight:600}
+p{margin:8px 0}
+ul,ol{margin:8px 0 8px 22px}
+li{margin:4px 0}
+strong{color:var(--brand)}
+code{
+  font-family:"Cascadia Mono","JetBrains Mono",Consolas,monospace;
+  background:#EEF2F6; border:1px solid #DDE5EC; border-radius:4px;
+  padding:1px 6px; font-size:13px; color:#0F3557;
+}
+
+/* 图片 */
+figure{
+  margin:18px 0; background:var(--card); border:1px solid var(--line);
+  border-radius:10px; padding:12px; box-shadow:0 1px 3px rgba(26,35,51,.06);
+}
+figure img{width:100%; height:auto; display:block; border-radius:6px; border:1px solid #E3E9EF}
+figcaption{
+  margin-top:10px; font-size:13px; color:var(--ink-2);
+  display:flex; gap:8px; align-items:baseline;
+}
+figcaption .tag{
+  flex:none; background:var(--brand-soft); color:var(--brand);
+  border-radius:4px; padding:0 8px; font-size:12px; font-weight:600;
+}
+
+/* 步骤卡片 */
+.steps{counter-reset:step; margin:14px 0}
+.step{
+  position:relative; background:var(--card); border:1px solid var(--line);
+  border-left:4px solid var(--brand-2); border-radius:8px;
+  padding:12px 16px 12px 52px; margin:10px 0;
+}
+.step::before{
+  counter-increment:step; content:counter(step);
+  position:absolute; left:14px; top:12px;
+  width:26px; height:26px; border-radius:50%;
+  background:var(--brand); color:#fff; font-size:13px; font-weight:700;
+  display:flex; align-items:center; justify-content:center;
+}
+.step p{margin:2px 0}
+
+/* 提示框 */
+.tip,.warn,.info{
+  border-radius:8px; padding:12px 16px 12px 16px; margin:14px 0; font-size:14px;
+}
+.tip{background:#F3F7EF; border:1px solid #D9E4CF; color:#2F4B1F}
+.warn{background:#FDF1EF; border:1px solid #F0D2CC; color:#7A2A22}
+.info{background:var(--brand-soft); border:1px solid #C8D9E8; color:#12304F}
+.tip b,.warn b,.info b{display:block; margin-bottom:2px}
+
+/* 功能卡片 */
+.cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin:16px 0}
+.card{
+  background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px;
+}
+.card h4{margin:0 0 6px; color:var(--brand)}
+.card p{font-size:13px; color:var(--ink-2); margin:0}
+
+/* 表格 */
+table{width:100%; border-collapse:collapse; margin:14px 0; background:var(--card); table-layout:fixed}
+th,td{border:1px solid var(--line); padding:9px 12px; text-align:left; font-size:13.5px; vertical-align:top}
+th{background:var(--brand); color:#fff; font-weight:600; white-space:nowrap}
+tr:nth-child(even) td{background:#F7FAFC}
+td code{white-space:normal}
+
+/* 高亮图注 */
+.compare{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+.compare figure{margin:0}
+@media (max-width:1000px){.compare{grid-template-columns:1fr}}
+
+/* 返回顶部 */
+#toTop{
+  position:fixed; right:22px; bottom:22px; z-index:40;
+  width:40px; height:40px; border-radius:50%;
+  background:var(--brand); color:#fff; border:none; font-size:16px; cursor:pointer;
+  box-shadow:0 2px 8px rgba(18,48,79,.35); display:none;
+  font-family:inherit; line-height:1;
+}
+#toTop:hover{background:var(--brand-2)}
+
+/* 页脚 */
+.doc-footer{
+  margin-top:20px; border-top:1px solid var(--line); padding-top:16px;
+  font-size:12.5px; color:var(--ink-3);
+  text-align:center; line-height:1.8;
+}
+
+/* 响应式 */
+@media (max-width:920px){
+  .side{display:none}
+  .main{margin-left:0; padding:24px 18px 60px}
+  .topbar .sub{display:none}
+  .section-head h2{font-size:19px}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo">规</div>
+  <h1>规范智能检索与问答系统</h1>
+  <span class="sub">使用说明 · 图文版</span>
+</header>
+
+<aside class="side">
+  <h2>目录</h2>
+  <nav id="toc">
+    <a href="#overview"><span class="no">01</span>项目概况</a>
+    <a href="#start"><span class="no">02</span>界面总览</a>
+    <a href="#import"><span class="no">03</span>规范导入</a>
+    <a href="#specs"><span class="no">04</span>规范管理</a>
+    <a href="#clauses"><span class="no">05</span>条文查看与编辑</a>
+    <a href="#search"><span class="no">06</span>检索与筛选</a>
+    <a href="#rules"><span class="no">07</span>分类规则管理</a>
+    <a href="#review"><span class="no">08</span>审核</a>
+    <a href="#lexicon"><span class="no">09</span>词库管理</a>
+    <a href="#maintenance"><span class="no">10</span>知识库维护</a>
+    <a href="#qa"><span class="no">11</span>AI 智能问答</a>
+    <a href="#settings"><span class="no">12</span>系统设置</a>
+    <a href="#compliance"><span class="no">13</span>合规与免责声明</a>
+    <a href="#faq"><span class="no">14</span>常见问题</a>
+  </nav>
+  <div class="foot-note">截图取自本地演示环境（演示数据为 GB 50204-2015、JGJ/T 104-2011、JGJ 130-2011 节选）。</div>
+</aside>
+
+<main class="main">
+<div class="wrap">
+
+<!-- ============ 01 项目概况 ============ -->
+<section id="overview">
+  <div class="section-head">
+    <span class="idx">01</span>
+    <h2>项目概况</h2>
+    <span class="en">OVERVIEW</span>
+  </div>
+
+  <p><strong>规范智能检索与问答系统</strong> 是一套面向工程建设从业者的本地化规范检索与管理工具。它将分散的施工规范文本（国标、行标等）导入为结构化条文库，提供<strong>全文检索、分类管理、规则自动分类、AI 智能问答</strong>等能力，帮助使用者快速定位规范条文原文。</p>
+
+  <div class="cards">
+    <div class="card"><h4>全文检索</h4><p>关键词搜索条文，支持包含非条文内容、CE 精排、现行/修订中状态筛选。</p></div>
+    <div class="card"><h4>规范管理</h4><p>导入、校核、查看、编辑、删除规范与条文，支持状态维护与批量重分类。</p></div>
+    <div class="card"><h4>规则分类</h4><p>通过关键词规则 + AI 分类，自动为条文打标签，配合人工审核闭环。</p></div>
+    <div class="card"><h4>词库维护</h4><p>同义词 / 别名 / 易混淆术语管理，扩展检索召回，支持 CSV 批量导入。</p></div>
+    <div class="card"><h4>AI 问答</h4><p>基于条文库的综合问答与原文摘抄两种模式，回复标注规范来源。</p></div>
+    <div class="card"><h4>运维自检</h4><p>健康检查、向量索引重建、备份与日志，保障知识库长期可用。</p></div>
+  </div>
+
+  <h3>系统界面概览</h3>
+  <p>打开系统地址（本地部署为 <code>http://127.0.0.1:8023</code>），进入主界面，左侧为<strong>功能导航区</strong>（搜索框、筛选选项、功能按钮、分类筛选），右侧为主内容区，页面底部为全站统一的<strong>免责提示语</strong>。</p>
+
+  <figure>
+    <img src="assets/02-home.jpg" alt="系统首页 - 欢迎界面">
+    <figcaption><span class="tag">图 2-2</span>系统首页：左侧功能导航 + 分类筛选，右侧欢迎区</figcaption>
+  </figure>
+
+  <h3>主要功能入口</h3>
+  <table>
+    <colgroup><col style="width:18%"><col style="width:52%"><col style="width:30%"></colgroup>
+    <tr><th>入口</th><th>用途</th><th>说明</th></tr>
+    <tr><td><code>导入规范</code></td><td>导入规范文件（Markdown / PDF 等）</td><td>支持 AI 校核规范名称有效性</td></tr>
+    <tr><td><code>规范</code></td><td>规范列表与条文管理</td><td>查看条文、编辑、分类、删除</td></tr>
+    <tr><td><code>规则</code></td><td>分类规则管理</td><td>新建规则、运行 AI 分类</td></tr>
+    <tr><td><code>审核</code></td><td>待审核内容处理</td><td>条文待审、词面校核、黑名单</td></tr>
+    <tr><td><code>词库</code></td><td>同义词 / 别名 / 易混淆术语</td><td>支持 CSV 批量导入与模板下载</td></tr>
+    <tr><td><code>维护</code></td><td>知识库健康检查与运维</td><td>索引重建、备份、日志、参数设置</td></tr>
+    <tr><td><code>AI 问答</code></td><td>AI 智能问答</td><td>原文摘抄 / 综合问答两种模式</td></tr>
+  </table>
+</section>
+
+<!-- ============ 02 界面总览 ============ -->
+<section id="start">
+  <div class="section-head">
+    <span class="idx">02</span>
+    <h2>界面总览</h2>
+    <span class="en">GET STARTED</span>
+  </div>
+
+  <h3>界面布局</h3>
+  <ul>
+    <li><strong>顶部</strong>：系统名称与当前页面标题。</li>
+    <li><strong>左侧功能导航</strong>：搜索框、四个筛选开关（包含非条文内容 / 启用 CE 精排 / 仅现行 / 修订中）、七个功能入口、八类分类筛选（规范层级、规范行业、规范性质、工程阶段、工程用途、所属专业、工程部位、材料/工艺）。</li>
+    <li><strong>主内容区</strong>：随所选功能切换。</li>
+    <li><strong>页脚</strong>：所有页面统一显示免责提示语（见第 13 章）。</li>
+  </ul>
+</section>
+
+<!-- ============ 03 规范导入 ============ -->
+<section id="import">
+  <div class="section-head">
+    <span class="idx">03</span>
+    <h2>规范导入</h2>
+    <span class="en">IMPORT</span>
+  </div>
+
+  <p>点击左侧<strong>导入规范</strong>按钮，打开「导入规范文件」对话框。系统支持 Markdown 等文本格式的规范文件，导入后自动解析为条文入库。</p>
+
+  <h3>导入流程</h3>
+
+  <div class="steps">
+    <div class="step"><p>点击左栏<strong>导入规范</strong>，打开导入对话框。</p></div>
+    <div class="step"><p>填写<strong>规范编号</strong>（如 <code>GB 50204-2015</code>）与<strong>规范名称</strong>（如《混凝土结构工程施工质量验收规范》），确认<strong>状态</strong>（现行 / 修订中）。</p></div>
+    <div class="step"><p>点击<strong>校核有效性</strong>，由 AI 校验规范编号与名称，返回标准名称建议。</p></div>
+    <div class="step"><p>选择规范文件（点击<strong>选择文件</strong>，在系统文件对话框中定位文件）。扫描件或格式丢失的 PDF 请勾选<strong>强制 OCR</strong>。</p></div>
+    <div class="step"><p>点击<strong>开始导入</strong>，等待上传、解析、完成三步骤全部通过。</p></div>
+  </div>
+
+  <h3>导入对话框</h3>
+  <figure>
+    <img src="assets/03-import-dialog.jpg" alt="导入规范文件对话框">
+    <figcaption><span class="tag">图 3-1</span>导入对话框：编号、名称、状态、被替代编号、文件选择、强制 OCR、开始导入</figcaption>
+  </figure>
+
+  <h3>AI 校核有效性</h3>
+  <p>填写编号与名称后点击<strong>校核有效性</strong>，系统调用 AI 校验规范名称，返回<strong>建议的标准名称</strong>，可点击<strong>应用</strong>采纳建议，或<strong>忽略</strong>保留原输入。</p>
+
+  <figure>
+    <img src="assets/05-check-effective.jpg" alt="校核有效性 AI 建议">
+    <figcaption><span class="tag">图 3-2</span>校核结果：AI 建议规范标准名称，提供「应用 / 忽略」</figcaption>
+  </figure>
+
+  <div class="info"><b>提示</b>校核有效性可自动修正录入的规范名称（如补充「建筑施工」等标准前缀），减少人工核对成本。</div>
+
+  <h3>导入完成</h3>
+  <figure>
+    <img src="assets/06-import-progress.jpg" alt="导入完成状态">
+    <figcaption><span class="tag">图 3-3</span>导入完成：上传、解析、完成三步全部打勾，刷新页面查看新规范</figcaption>
+  </figure>
+
+  <div class="warn"><b>注意</b>导入完成后需<strong>刷新页面</strong>才能在规范列表中看到新导入的规范。</div>
+</section>
+
+<!-- ============ 04 规范管理 ============ -->
+<section id="specs">
+  <div class="section-head">
+    <span class="idx">04</span>
+    <h2>规范管理</h2>
+    <span class="en">SPECIFICATIONS</span>
+  </div>
+
+  <p>点击左栏<strong>规范</strong>进入规范管理页。这里集中管理所有已导入的规范文件，支持查看条文、编辑分类、删除规范。</p>
+
+  <h3>规范列表</h3>
+  <figure>
+    <img src="assets/09-specs.jpg" alt="规范管理列表">
+    <figcaption><span class="tag">图 4-1</span>规范管理：编号、名称、分类、状态、条文数、导入时间及操作</figcaption>
+  </figure>
+
+  <p>列表各列含义：</p>
+  <table>
+    <colgroup><col style="width:22%"><col style="width:78%"></colgroup>
+    <tr><th>列</th><th>说明</th></tr>
+    <tr><td>编号 / 名称</td><td>规范标准号与规范名称（导入时可经 AI 校核）</td></tr>
+    <tr><td>分类</td><td>当前条文的分类维度标签；未分类显示 <code>-</code></td></tr>
+    <tr><td>状态</td><td><strong>现行</strong>或<strong>修订中</strong>，影响检索时的默认过滤</td></tr>
+    <tr><td>条文数</td><td>该规范解析出的条文总数</td></tr>
+    <tr><td>导入时间</td><td>导入入库的时间</td></tr>
+    <tr><td>操作</td><td><code>查看条文</code> / <code>分类</code> / <code>删除</code></td></tr>
+  </table>
+
+  <h3>列表工具</h3>
+  <ul>
+    <li><strong>全选</strong>：勾选多条规范后执行批量操作。</li>
+    <li><strong>仅未分类条文</strong>：只显示尚未打分类标签的规范。</li>
+    <li><strong>重新分类所选</strong>：对勾选规范的全部条文按现有规则重新执行分类。</li>
+  </ul>
+
+  <div class="warn"><b>注意</b>删除规范会一并删除其全部条文，操作前请确认。</div>
+</section>
+
+<!-- ============ 05 条文查看与编辑 ============ -->
+<section id="clauses">
+  <div class="section-head">
+    <span class="idx">05</span>
+    <h2>条文查看与编辑</h2>
+    <span class="en">CLAUSES</span>
+  </div>
+
+  <p>在规范列表点击<strong>查看条文</strong>，进入该规范的条文管理页，可逐条查看条文号、标题、内容与分类，并对条文进行编辑、分类、删除。</p>
+
+  <figure>
+    <img src="assets/10-spec-clauses.jpg" alt="条文列表页">
+    <figcaption><span class="tag">图 5-1</span>条文管理：GB 50204-2015 共 37 条条文，每行提供「编辑 / 分类」操作</figcaption>
+  </figure>
+
+  <h3>条文的操作</h3>
+  <table>
+    <colgroup><col style="width:20%"><col style="width:80%"></colgroup>
+    <tr><th>操作</th><th>说明</th></tr>
+    <tr><td><code>编辑</code></td><td>进入条文编辑页，修改条文标题与内容正文，修正 OCR 或解析产生的错漏</td></tr>
+    <tr><td><code>分类</code></td><td>为单条条文指定或修改分类维度标签（规范层级、工程阶段、材料/工艺等）</td></tr>
+    <tr><td><code>删除</code></td><td>删除该条文（不可恢复，请谨慎）</td></tr>
+  </table>
+
+  <div class="info"><b>提示</b>条文标题为空时显示 <code>-</code>。若导入文本中条文标题与正文未分离，可通过编辑页补全，便于检索结果展示更清晰。</div>
+</section>
+
+<!-- ============ 06 检索与筛选 ============ -->
+<section id="search">
+  <div class="section-head">
+    <span class="idx">06</span>
+    <h2>检索与筛选</h2>
+    <span class="en">SEARCH</span>
+  </div>
+
+  <p>系统提供<strong>关键词全文检索</strong>与<strong>多维分类筛选</strong>两种方式定位条文，二者可组合使用。</p>
+
+  <h3>关键词检索</h3>
+  <p>在左侧<strong>搜索框</strong>输入关键词（如「钢筋」）后回车，主内容区列出命中条文。每条结果展示：所属规范编号与名称、条文号、章标题、条文内容摘录、状态标签。</p>
+
+  <figure>
+    <img src="assets/08-search-results.jpg" alt="检索结果页">
+    <figcaption><span class="tag">图 6-1</span>搜索「钢筋」共命中 12 条，标注规范编号、条文号、内容与「现行」状态</figcaption>
+  </figure>
+
+  <h3>筛选开关</h3>
+  <ul>
+    <li><strong>包含非条文内容</strong>：是否检索规范中除条文外的其他内容（前言、附录说明等）。</li>
+    <li><strong>启用 CE 精排</strong>：使用 CE 精排（Cross-Encoder）对结果按相关性重新排序，命中更精准。</li>
+    <li><strong>仅现行</strong> / <strong>修订中</strong>：按规范状态过滤结果。</li>
+  </ul>
+
+  <h3>分类筛选</h3>
+  <p>左栏底部提供八类维度：<strong>规范层级、规范行业、规范性质、工程阶段、工程用途、所属专业、工程部位、材料/工艺</strong>。展开分类树勾选后，检索与列表均按所选维度过滤。</p>
+
+  <div class="tip"><b>小贴士</b>「启用 CE 精排」依赖向量检索与重排模型；若维护页提示 AI 模型缺失，精排会自动退化为关键词匹配（见第 10 章）。</div>
+</section>
+
+<!-- ============ 07 分类规则管理 ============ -->
+<section id="rules">
+  <div class="section-head">
+    <span class="idx">07</span>
+    <h2>分类规则管理</h2>
+    <span class="en">RULES</span>
+  </div>
+
+  <p>点击左栏<strong>规则</strong>进入分类规则管理页。规则用于<strong>自动为条文打分类标签</strong>：系统按规则的关键词与维度匹配条文，也可由 AI 批量分析给出分类建议。</p>
+
+  <h3>规则管理页</h3>
+  <figure>
+    <img src="assets/11-rules.jpg" alt="分类规则管理页">
+    <figcaption><span class="tag">图 7-1</span>规则管理：维度标签页、统计栏、新建规则 / 运行 AI 分类、待处理计数</figcaption>
+  </figure>
+
+  <h3>页面要素</h3>
+  <table>
+    <colgroup><col style="width:30%"><col style="width:70%"></colgroup>
+    <tr><th>要素</th><th>说明</th></tr>
+    <tr><td>维度标签页</td><td>全部 / 工程阶段 / 工程类型 / 所属专业 / 工程部位 / 材料/工艺</td></tr>
+    <tr><td>统计栏</td><td>建议启用、建议停用、僵尸规则的数量（无：表示暂无对应规则）</td></tr>
+    <tr><td>待处理</td><td>如「待处理 56 条文 / 168 项」——尚未分类或待确认的条文数与候选项数</td></tr>
+    <tr><td>查看方式</td><td>按规则 / 按标签 切换列表组织方式</td></tr>
+    <tr><td>按钮</td><td><code>导出质量报表</code> <code>新建规则</code> <code>运行 AI 分类</code></td></tr>
+  </table>
+
+  <h3>新建规则</h3>
+  <p>点击<strong>新建规则</strong>，在对话框中配置规则。规则命中后会把「标签」写入条文分类；同一标签可配置多个关键词。</p>
+
+  <figure>
+    <img src="assets/15-rules-new.jpg" alt="新建分类规则对话框">
+    <figcaption><span class="tag">图 7-2</span>新建分类规则：维度、子字段、关键词、标签、匹配方式、优先级、阈值</figcaption>
+  </figure>
+
+  <table>
+    <colgroup><col style="width:22%"><col style="width:78%"></colgroup>
+    <tr><th>字段</th><th>说明</th></tr>
+    <tr><td>维度</td><td>规则所属分类维度（工程阶段、所属专业等）</td></tr>
+    <tr><td>子字段</td><td>信息性字段，不参与匹配，可留空</td></tr>
+    <tr><td>关键词</td><td>用于匹配条文的规范术语（避免过泛词），如「混凝土」</td></tr>
+    <tr><td>标签</td><td>命中后写入分类的标签；留空则关键词本身即标签</td></tr>
+    <tr><td>匹配方式</td><td>关键词（keyword）匹配</td></tr>
+    <tr><td>优先级</td><td>0–10，多条规则同时命中时按优先级取舍</td></tr>
+    <tr><td>阈值</td><td>0–1，匹配得分达到该值才生效（AI 分类场景）</td></tr>
+  </table>
+
+  <h3>运行 AI 分类</h3>
+  <ol>
+    <li>点击<strong>运行 AI 分类</strong>，系统对未分类条文进行批量 AI 分析。</li>
+    <li>分类建议进入<strong>待处理</strong>区，供人工在「审核」页确认（见第 8 章）。</li>
+    <li>确认后标签写入条文，规则页统计随之更新。</li>
+  </ol>
+
+  <div class="info"><b>提示</b>「导出质量报表」可下载当前规则的分类质量统计，便于核查规则命中效果。</div>
+</section>
+
+<!-- ============ 08 审核 ============ -->
+<section id="review">
+  <div class="section-head">
+    <span class="idx">08</span>
+    <h2>审核</h2>
+    <span class="en">REVIEW</span>
+  </div>
+
+  <p>点击左栏<strong>审核</strong>进入审核页。这里汇集需要人工确认的内容，形成「AI 生成建议 → 人工审核 → 正式生效」的闭环。</p>
+
+  <figure>
+    <img src="assets/12-review.jpg" alt="审核页">
+    <figcaption><span class="tag">图 8-1</span>审核页：条文待审 / 词面校核 / 黑名单管理三个分页；无待审时显示「暂无待审核项」</figcaption>
+  </figure>
+
+  <h3>审核分页</h3>
+  <table>
+    <colgroup><col style="width:24%"><col style="width:76%"></colgroup>
+    <tr><th>分页</th><th>说明</th></tr>
+    <tr><td>条文待审</td><td>AI 分类建议、规则命中结果等，逐条确认「采纳 / 修改 / 忽略」</td></tr>
+    <tr><td>词面校核</td><td>词库导入或 AI 生成的同义词/别名建议复核</td></tr>
+    <tr><td>黑名单管理</td><td>维护禁止改写或需特殊处理的术语清单</td></tr>
+  </table>
+
+  <div class="tip"><b>小贴士</b>审核为空是正常状态——只有存在待确认内容时才显示列表。审核通过的内容会即时生效并影响检索与分类。</div>
+</section>
+
+<!-- ============ 09 词库管理 ============ -->
+<section id="lexicon">
+  <div class="section-head">
+    <span class="idx">09</span>
+    <h2>词库管理</h2>
+    <span class="en">LEXICON</span>
+  </div>
+
+  <p>点击左栏<strong>词库</strong>进入词库管理页。词库用于维护三类术语关系，扩展检索召回并控制改写行为。</p>
+
+  <figure>
+    <img src="assets/13-lexicon.jpg" alt="词库管理页">
+    <figcaption><span class="tag">图 9-1</span>词库管理：同义词 / 别名 / 易混淆术语三个类别，支持表单添加与 CSV 批量导入</figcaption>
+  </figure>
+
+  <h3>三个类别</h3>
+  <table>
+    <colgroup><col style="width:24%"><col style="width:76%"></colgroup>
+    <tr><th>类别</th><th>作用</th></tr>
+    <tr><td>同义词</td><td>如「混凝土」↔「砼」：只扩展全文检索（FTS）召回，不改写原文</td></tr>
+    <tr><td>别名</td><td>术语的俗称、简写，同样只扩展检索</td></tr>
+    <tr><td>易混淆术语</td><td>仅作检索提示，不改写、不替换原文中的词（向量检索不替换原词）</td></tr>
+  </table>
+
+  <h3>添加词条</h3>
+  <div class="steps">
+    <div class="step"><p>选择类别标签（同义词 / 别名 / 易混淆术语）。</p></div>
+    <div class="step"><p>填写<strong>代表词</strong>（如「混凝土」）。</p></div>
+    <div class="step"><p>填写<strong>变体/俗称</strong>（逗号分隔，如 <code>砼,混凝土</code>）。</p></div>
+    <div class="step"><p>点击<strong>添加</strong>，词条写入对应类别。</p></div>
+  </div>
+
+  <h3>批量导入 CSV</h3>
+  <ol>
+    <li>点击<strong>下载模板</strong>获取 CSV 格式模板。</li>
+    <li>按模板填写词条后，点击<strong>选择文件</strong>定位 CSV。</li>
+    <li>点击<strong>上传导入</strong>，系统批量写入词库。</li>
+  </ol>
+
+  <div class="info"><b>提示</b>词库中的同义/别名关系会提升检索召回率——例如用户搜「砼」，也能命中含「混凝土」的条文。</div>
+</section>
+
+<!-- ============ 10 知识库维护 ============ -->
+<section id="maintenance">
+  <div class="section-head">
+    <span class="idx">10</span>
+    <h2>知识库维护</h2>
+    <span class="en">MAINTENANCE</span>
+  </div>
+
+  <p>点击左栏<strong>维护</strong>进入知识库维护页。这里提供<strong>健康检查、导出备份、日志管理、QA 日志、参数设置</strong>，用于日常运维与异常排查。</p>
+
+  <h3>健康检查</h3>
+  <figure>
+    <img src="assets/14-maintenance.jpg" alt="知识库维护与健康检查">
+    <figcaption><span class="tag">图 10-1</span>健康检查：逐项检查条文结构、索引与模型状态；异常项提供处理指引</figcaption>
+  </figure>
+
+  <table>
+    <colgroup><col style="width:28%"><col style="width:72%"></colgroup>
+    <tr><th>检查项</th><th>含义</th></tr>
+    <tr><td>孤立无父级条文</td><td>缺少所属章节父级的条文数（正常为 0）</td></tr>
+    <tr><td>空内容条文</td><td>内容为空的条文数（正常为 0）</td></tr>
+    <tr><td>分类标签异常</td><td>分类标签格式或层级异常的条文数（正常为 0）</td></tr>
+    <tr><td>向量孤儿记录</td><td>向量索引中存在但已无对应条文的记录数（正常为 0）</td></tr>
+    <tr><td>缺失向量索引</td><td>向量索引是否已构建；缺失时显示「待重建」</td></tr>
+    <tr><td>FTS 索引缺失</td><td>全文检索索引状态（正常为 0 / 正常）</td></tr>
+    <tr><td>AI 模型就绪</td><td>embedding 等 AI 模型是否就位；缺失时需人工处理</td></tr>
+  </table>
+
+  <h3>重建向量索引</h3>
+  <p>点击<strong>重建向量索引</strong>可重新生成向量索引。从旧版本升级后（新增面包屑/子块信号）或向量召回异常时，应按提示重建一次。</p>
+
+  <div class="warn"><b>注意</b>健康检查「全部正常」只代表结构就绪，不代表索引已按最新公式重建——面包屑改变的是写入向量的文本内容，健康检查无法察觉内容变更。升级后务必手动重建索引。</div>
+
+  <h3>其他运维功能</h3>
+  <ul>
+    <li><strong>导出备份</strong>：导出知识库数据备份文件。</li>
+    <li><strong>日志管理</strong>：查看系统运行日志，定位异常。</li>
+    <li><strong>QA 日志</strong>：查看 AI 问答的历史记录。</li>
+    <li><strong>参数设置</strong>：调整检索、模型等相关参数。</li>
+  </ul>
+</section>
+
+<!-- ============ 11 AI 智能问答 ============ -->
+<section id="qa">
+  <div class="section-head">
+    <span class="idx">11</span>
+    <h2>AI 智能问答</h2>
+    <span class="en">AI Q&amp;A</span>
+  </div>
+
+  <p>点击左栏<strong>AI 问答</strong>进入智能问答页。问答基于已导入的条文库生成，回答中标注参考条文来源，右侧为历史会话区。</p>
+
+  <h3>问答界面</h3>
+  <figure>
+    <img src="assets/17-qa.jpg" alt="AI 智能问答结果">
+    <figcaption><span class="tag">图 11-1</span>提问「钢筋连接有哪些方式？」：回答按要点分节，逐条标注规范条文来源，并给出筛选口径与参考条文</figcaption>
+  </figure>
+
+  <h3>两种回答模式</h3>
+  <table>
+    <colgroup><col style="width:24%"><col style="width:76%"></colgroup>
+    <tr><th>模式</th><th>说明</th></tr>
+    <tr><td>原文摘抄模式</td><td>禁止归纳，仅从条文库摘抄原文并标注来源，适合需要严谨原文的场景</td></tr>
+    <tr><td>综合问答</td><td>结合条文库内容综合作答，按要点组织并标注参考条文，适合快速了解</td></tr>
+  </table>
+
+  <h3>使用步骤</h3>
+  <div class="steps">
+    <div class="step"><p>选择回答模式（原文摘抄 / 综合问答）。</p></div>
+    <div class="step"><p>在输入框输入问题（如「钢筋连接有哪些方式」），按 <strong>Enter</strong> 或点击<strong>发送</strong>。</p></div>
+    <div class="step"><p>等待检索与生成：回答会显示「筛选：状态=现行」等本轮生效的过滤口径，并列出参考条文编号。</p></div>
+    <div class="step"><p>右侧会话区可查看历史问题；点击<strong>+ 新会话</strong>开启新一轮对话。</p></div>
+  </div>
+
+  <div class="info"><b>提示</b>回答中的条文性质提示（如强制性条文判断）来自 AI 分析，涉及工程决策时请务必核对规范原文。</div>
+</section>
+
+<!-- ============ 12 系统设置 ============ -->
+<section id="settings">
+  <div class="section-head">
+    <span class="idx">12</span>
+    <h2>系统设置</h2>
+    <span class="en">SETTINGS</span>
+  </div>
+
+  <p>在功能页面右上角点击<strong>设置</strong>，打开系统设置弹窗，配置 AI 问答及分类所使用的后端模型，以及 OCR 识别参数。</p>
+
+  <figure>
+    <img src="assets/18-settings.jpg" alt="系统设置弹窗">
+    <figcaption><span class="tag">图 12-1</span>系统设置：OCR 识别 / AI 问答及分类两个标签页，选择后端与模块分配</figcaption>
+  </figure>
+
+  <h3>AI 问答及分类</h3>
+  <p>选择后端模型并为各模型分配能力：</p>
+  <table>
+    <colgroup><col style="width:30%"><col style="width:70%"></colgroup>
+    <tr><th>后端</th><th>说明</th></tr>
+    <tr><td>Claude Code / Codex</td><td>使用本地 CLI 工具，需已安装并登录对应命令行</td></tr>
+    <tr><td>豆包 / DeepSeek / GLM / Kimi</td><td>云端模型服务，按部署时配置的 API 接入</td></tr>
+    <tr><td>自定义</td><td>自定义 API 地址与密钥接入</td></tr>
+  </table>
+  <p>每个模型可分别勾选<strong>AI 问答</strong>与<strong>AI 分类</strong>能力，将不同任务分配到不同后端。修改后点击<strong>保存</strong>生效，点击<strong>取消</strong>放弃更改。</p>
+
+  <div class="warn"><b>注意</b>切换或配置后端后，建议在「维护」页运行一次健康检查，确认对应模型服务可用。</div>
+</section>
+
+<!-- ============ 13 合规与免责声明 ============ -->
+<section id="compliance">
+  <div class="section-head">
+    <span class="idx">13</span>
+    <h2>合规与免责声明</h2>
+    <span class="en">COMPLIANCE</span>
+  </div>
+
+  <p>本工具在所有页面页脚统一显示以下提示语：</p>
+
+  <div class="warn">
+    <b>页脚提示语（全文）</b>
+    本工具规范资料取自公开渠道，仅供个人学习，禁止商用，侵权请联系删除；OCR 识别可能存在错漏，检索及 AI 回复仅作参考，不得作为专业评估、工程决策依据，请以官方规范原文为准。
+  </div>
+
+  <h3>使用注意事项</h3>
+  <ul>
+    <li>规范文本多由公开渠道获取并经 OCR/解析入库，<strong>可能存在错漏</strong>，引用前请核对官方纸质/PDF 原文。</li>
+    <li>检索结果与 AI 回复<strong>仅供学习参考</strong>，不得作为专业评估与工程决策依据。</li>
+    <li>规范存在版本更替，使用前请确认所引用条文是否为<strong>现行有效版本</strong>。</li>
+    <li>涉及强制性条文判定、工程验收等关键场景，务必以官方规范原文为准。</li>
+  </ul>
+</section>
+
+<!-- ============ 14 常见问题 ============ -->
+<section id="faq">
+  <div class="section-head">
+    <span class="idx">14</span>
+    <h2>常见问题</h2>
+    <span class="en">FAQ</span>
+  </div>
+
+  <h3>Q1：导入规范后列表里看不到？</h3>
+  <p>导入完成后需要<strong>刷新页面</strong>（浏览器刷新或重新进入「规范」页）。若仍不显示，请检查导入对话框是否提示「导入完成」，并查看「维护」页日志。</p>
+
+  <h3>Q2：检索结果不精准 / 精排不生效？</h3>
+  <p>「启用 CE 精排」依赖向量索引与 embedding 模型。请在「维护」页运行健康检查，确认<strong>AI 模型就绪</strong>；若模型缺失，检索会退化为纯关键词匹配，需按提示补充模型并重建向量索引。</p>
+
+  <h3>Q3：AI 问答没有回复？</h3>
+  <p>请检查「设置」弹窗中的 AI 后端是否已配置并勾选了「AI 问答」能力，同时确认本地 CLI（如 Claude Code）已安装登录，或云端 API 可用。</p>
+
+  <h3>Q4：AI 分类的建议去哪里确认？</h3>
+  <p>运行 AI 分类后，建议进入「审核」页的<strong>条文待审</strong>分页逐条确认；确认后标签正式写入条文。</p>
+
+  <h3>Q5：词条添加后列表无显示？</h3>
+  <p>请切换词库类别标签（同义词 / 别名 / 易混淆术语）查看对应列表，或刷新页面；CSV 批量导入请确认使用模板格式且代表词非空。</p>
+
+  <h3>Q6：如何找回误删的规范？</h3>
+  <p>删除规范不可恢复。请在「维护」页定期使用<strong>导出备份</strong>；误删后可重新导入备份文件。</p>
+</section>
+
+<div class="doc-footer">
+  规范智能检索与问答系统 · 使用说明 · 文档版本 v1.0<br>
+  本说明文档所引截图与数据来自本地演示环境，仅用于功能讲解。
+</div>
+
+</div>
+</main>
+
+<button id="toTop" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="返回顶部">↑</button>
+
+<script>
+(function(){
+  var toc=document.querySelectorAll('#toc a');
+  var secs=[];
+  toc.forEach(function(a){secs.push(document.querySelector(a.getAttribute('href')))});
+  function onScroll(){
+    var y=window.scrollY+120, cur=0;
+    secs.forEach(function(s,i){if(s&&s.offsetTop<=y)cur=i});
+    toc.forEach(function(a,i){a.classList.toggle('active',i===cur)});
+    var t=document.getElementById('toTop');
+    t.style.display=window.scrollY>600?'block':'none';
+  }
+  window.addEventListener('scroll',onScroll,{passive:true});
+  onScroll();
+})();
+</script>
+</body>
+</html>

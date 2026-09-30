@@ -11,9 +11,10 @@ from jose import JWTError
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="鏂藉伐瑙勮寖鏌ヨ绯荤粺 V2")
+app = FastAPI(title="规范智能检索与问答系统")
 
-# 搴旂敤鍚姩鏃跺垵濮嬪寲鏁版嵁搴?@app.on_event("startup")
+# 应用启动时初始化数据库
+@app.on_event("startup")
 def _startup_vector_sync():
     """后台线程执行向量索引自愈，不阻塞应用启动
 
