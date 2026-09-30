@@ -669,3 +669,35 @@ def test_import_dialog_closes_only_via_close_button():
     )
 
 
+def test_import_duplicate_warning_and_confirm():
+    """导入弹窗须查重并把命中显示出来，提交时二次确认（用户口径 2026-09-30）。
+
+    口径：以**编号或名称**判重；**状态不参与判定**（只展示）；命中后是
+    **警告 + 可确认继续**而不是硬拒绝 —— 用更清晰的文件重导同一本是合法需求。
+    与既有的「重复文件」判重（上传字节 SHA256）互补。
+
+    ⚠️ 源码字符串断言只是防回归粗筛；行为验收见 scripts/probe_spec_ui.py 的 f7 组。
+    """
+    html = _read("tree_panel.html")
+    assert "duplicates" in html, "弹窗须渲染命中列表"
+    js = _read_static("components/import.js")
+    assert "/import/check-duplicate" in js, "前端须调用判重接口"
+    assert "dup_confirmed" in js, "提交须带确认标记"
+    assert "window.confirm" in js, "命中后提交须二次确认"
+    assert "import-dup-blocked" in js, (
+        "后端兜底提示须被前端识别并置为已确认（逃生口：再次点击「开始导入」）"
+    )
+    # 手输路径也必须查重：文件名识别失败时会清空字段让用户手输（见上一条用例），
+    # 那条路径若漏查，最常见的重复导入场景就没有任何提示
+    m = re.search(r"markManual\(field\)\s*\{(.*?)\n        \},", js, re.S)
+    assert m, "import.js 应定义 markManual"
+    assert "Dup" in m.group(1) or "dup" in m.group(1), \
+        "markManual 应触发判重（防抖），否则手输编号不会提示重复"
+
+
+def test_import_duplicate_style_registered():
+    """判重提示块须有样式（否则在弹窗里是一坨无分隔的裸文字）"""
+    css = _read_static("app.css")
+    assert "import-dup-warn" in css, "app.css 应定义 .import-dup-warn"
+
+

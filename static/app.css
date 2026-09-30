@@ -256,6 +256,16 @@
     transition: background 0.15s, color 0.15s;
 }
 .dialog-close:hover { background: rgba(0, 0, 0, 0.08); color: #333; }
+/* 导入弹窗的判重提示（编号/名称命中库中已有规范）。配色与后端兜底提示的 #c08552 一致。 */
+.import-dup-warn {
+    margin-top: 0.4rem; padding: 0.4rem 0.6rem;
+    border: 1px solid #e6c28a; border-left: 3px solid #c08552;
+    border-radius: 5px; background: #fdf6ec;
+    font-size: 0.8rem; color: #8a5a20;
+}
+.import-dup-warn ul { margin: 0.2rem 0 0.2rem 1rem; padding: 0; }
+.import-dup-warn li { font-size: 0.78rem; color: #6b4a1c; }
+.import-dup-warn .dup-meta { color: var(--pico-muted-color); }
 
 /* ═══════════════════════════════════════════════════════════════
    条文详情弹窗

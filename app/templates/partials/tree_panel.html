@@ -97,6 +97,24 @@
                     <small x-show="contentEdited" style="color:var(--pico-muted-color);font-size:0.75rem">
                         内容已修改，建议重新校核
                     </small>
+                    {# 判重提示：库中已有同编号/同名称的规范。状态**不参与判定**、仅展示 ——
+                       库中同码可能废止版与现行版并存（那属历史记录），用户需要看到是哪一条。 #}
+                    <template x-if="duplicates.length">
+                        <div class="import-dup-warn">
+                            <strong>⚠️ 库中已存在同一规范</strong>
+                            <ul>
+                                <template x-for="d in duplicates" :key="d.id">
+                                    <li>
+                                        <span x-text="'#' + d.id + ' ' + d.code + ' | ' + d.title"></span>
+                                        <span class="dup-meta"
+                                              x-text="d.status + ' | ' + d.clause_count + ' 条 | '
+                                                      + (d.reasons.includes('code') ? '编号相同' : '名称相同')"></span>
+                                    </li>
+                                </template>
+                            </ul>
+                            <small>点「开始导入」会再确认一次，确认后可继续导入（例如用更清晰的文件重导）。</small>
+                        </div>
+                    </template>
                     {# 说明走 title + aria-label 双通道（用户裁定：只留一条通道都是错的） #}
                     <label>选择文件 <input type="file" name="file" accept=".md,.pdf"
                                            @change="autoFillFromFilename($event)"

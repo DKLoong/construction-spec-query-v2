@@ -11,6 +11,11 @@ document.addEventListener('alpine:init', () => {
         checking: false,
         checkResult: null,   // {status, replacedBy, ai_available, corrected: {code,title}|null}
         contentEdited: false,
+        // 判重（编号或名称命中库中已有规范）：duplicates 为命中列表（含 status 供展示，
+        // 但**状态不参与判定**）；dupConfirmed 记用户是否已确认「仍要导入」。
+        duplicates: [],
+        dupConfirmed: false,
+        _dupTimer: null,
 
         // 打开对话框时重置校核状态，避免上次导入的 checkResult/contentEdited 残留
         // 污染本次 handleUpload（携带上一轮陈旧 status/replacedBy 错误标废旧规范）
@@ -25,6 +30,8 @@ document.addEventListener('alpine:init', () => {
             this.open = true;
             this.checkResult = null;
             this.contentEdited = false;
+            this.duplicates = [];
+            this.dupConfirmed = false;
         },
         // 关闭弹窗。导入进行中先确认：任务跑在服务端后台（与浏览器无关），关掉不会中断，
         // 但进度就看不见了 —— 误触会让人以为任务丢了。
@@ -46,6 +53,35 @@ document.addEventListener('alpine:init', () => {
             if (field === 'title') this.titleInput = document.querySelector('input[name=title]').value;
             this.checkResult = null;
             this.contentEdited = true;  // 提示重新校核（不自动触发）
+            // 手输也必须查重：文件名识别失败时会清空字段让用户手输，那条路径若漏查，
+            // 最常见的重复导入场景就没有任何提示。防抖，避免每敲一个字发一次请求。
+            this.dupConfirmed = false;   // 换了主体，上一轮确认作废
+            this.scheduleDupCheck();
+        },
+
+        // 按当前编号/名称查库中是否已有同规范（纯读接口）。两个字段都空则不查。
+        // 查重失败静默放行：后端提交时还会兜底拦一次，不能因网络问题阻断导入。
+        async checkDuplicate() {
+            const code = (this.codeInput || '').trim();
+            const title = (this.titleInput || '').trim();
+            if (!code && !title) { this.duplicates = []; return; }
+            try {
+                const resp = await fetch('/import/check-duplicate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code, title }),
+                });
+                const data = await resp.json();
+                this.duplicates = (data && data.duplicates) || [];
+            } catch (e) {
+                this.duplicates = [];
+            }
+        },
+
+        // 手输查重防抖：400ms 内的连续输入只发最后一次请求
+        scheduleDupCheck() {
+            if (this._dupTimer) clearTimeout(this._dupTimer);
+            this._dupTimer = setTimeout(() => this.checkDuplicate(), 400);
         },
 
         // 选择文件后按文件名**整体改写**规范编号/名称；不匹配识别规则则清空，交用户手动录入。
@@ -85,6 +121,10 @@ document.addEventListener('alpine:init', () => {
             // 编号/名称已变 → 上一轮校核结论（尤其 replacedBy）不再适用，必须作废
             this.checkResult = null;
             this.contentEdited = false;
+            // 判重：文件即主体，选文件后立即查（不防抖 —— 用户下一步就要点导入了），
+            // 上一轮的「已确认仍要导入」随之作废
+            this.dupConfirmed = false;
+            await this.checkDuplicate();
         },
 
         async handleUpload(event) {
@@ -109,10 +149,23 @@ document.addEventListener('alpine:init', () => {
                 }
                 return;
             }
+            // 判重命中且未确认 → 提交前二次确认（后端也会兜底拦一次，两处都要有：
+            // 前端是体验，后端是权威）。列出命中项，含状态 —— 状态不参与判定但必须可见。
+            if (this.duplicates.length && !this.dupConfirmed) {
+                const list = this.duplicates
+                    .map(d => `#${d.id} ${d.code} | ${d.title} | ${d.status} | ${d.clause_count} 条`)
+                    .join('\n');
+                if (!window.confirm(
+                    `库中已存在同一规范（同编号或同名称）：\n${list}\n\n`
+                    + '确定仍要导入吗？（例如用更清晰的文件重导）'
+                )) return;
+                this.dupConfirmed = true;
+            }
             const formData = new FormData(form);
             // 校核结果随表单提交：未校核时回退默认「现行」/ 空被替代编号
             formData.append('status', this.checkResult ? this.checkResult.status : '现行');
             formData.append('replaced_by_code', (this.checkResult && this.checkResult.replacedBy) || '');
+            formData.append('dup_confirmed', this.dupConfirmed ? 'true' : '');
             this.uploading = true;
             try {
                 const resp = await fetch('/import/upload', { method: 'POST', body: formData });
@@ -123,6 +176,9 @@ document.addEventListener('alpine:init', () => {
                 if (window.htmx) {
                     htmx.process(resultEl);
                 }
+                // 后端判重兜底拦下（前端查重被绕过、或查重请求本身失败）→ 置为已确认，
+                // 用户「再次点击『开始导入』」即可通过，不把他卡死在这一步
+                if (html.includes('import-dup-blocked')) this.dupConfirmed = true;
                 // 轮询态（上传成功进入后台处理）由 import-finished 事件复位 uploading；
                 // 非轮询响应（重复导入/即时错误，返回最终态 HTML）直接复位，允许再次上传
                 if (!html.includes('hx-get="/import/progress/')) {
@@ -171,6 +227,9 @@ document.addEventListener('alpine:init', () => {
             this.titleInput = this.checkResult.corrected.title;
             this.checkResult.corrected = null;
             this.contentEdited = false;
+            // 编号/名称被程序改写 → 同样要重查判重（与手输、选文件三条路径同口径）
+            this.dupConfirmed = false;
+            this.checkDuplicate();
         },
     }));
 });
