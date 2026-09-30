@@ -621,6 +621,101 @@ CASES["f6"] = [f6_1_autofill_rewrites_then_clears_inputs,
                f6_3_close_during_import_confirms_and_keeps_progress]
 
 
+# ═══════════════════════════════════════════
+# f7：导入判重（编号/名称命中库中已有规范）
+# 依赖副本库里存在 `JGJ 107-2016`（本仓 dev 库/副本库都有）——
+# 用例内先断言它存在，缺了就直接报错，不静默空跑。
+# ═══════════════════════════════════════════
+
+_DUP_FILE = "JGJ107-2016钢筋机械连接技术规程.pdf"   # 文件名能识别出库中已有的编号
+_DUP_CODE = "JGJ 107-2016"
+
+
+def _dup_warn_visible(page):
+    warn = page.locator(".import-dup-warn")
+    return warn.count() > 0 and warn.first.is_visible()
+
+
+def _dup_warn_text(page):
+    warn = page.locator(".import-dup-warn")
+    return warn.first.inner_text() if warn.count() else ""
+
+
+def f7_1_select_file_shows_duplicate_warning(page):
+    """选一个编号已在库中的文件 → 弹窗内出现判重提示（真实后端，不桩）"""
+    _open_import_dialog(page)
+    _set_file(page, _DUP_FILE)
+    assert poll_until(page, lambda: _dup_warn_visible(page), 6000), \
+        f"选文件后未出现判重提示（{_DUP_FILE}）"
+    txt = _dup_warn_text(page)
+    assert _DUP_CODE in txt, f"提示未列出命中项：{txt!r}"
+    assert "编号相同" in txt, f"提示未说明命中原因：{txt!r}"
+
+
+def f7_2_manual_typing_also_triggers_duplicate_check(page):
+    """**手输编号**也必须触发判重（防抖）。
+
+    这条最容易被漏：文件名识别失败时表单会清空字段让用户手输（见 f6_1），
+    那条路径若漏查，最常见的重复导入场景就完全没有提示。
+    """
+    _open_import_dialog(page)
+    page.fill("input[name=code]", _DUP_CODE)
+    assert poll_until(page, lambda: _dup_warn_visible(page), 6000), \
+        "手输编号后未出现判重提示（markManual 未接查重？）"
+
+
+def f7_3_warning_follows_current_value(page):
+    """提示随当前值变化：改成库里没有的编号后必须消失（防「提示常亮」）"""
+    _open_import_dialog(page)
+    page.fill("input[name=code]", _DUP_CODE)
+    assert poll_until(page, lambda: _dup_warn_visible(page), 6000), "前置：未出现判重提示"
+    page.fill("input[name=code]", "GB 99999-2099")
+    assert poll_until(page, lambda: not _dup_warn_visible(page), 6000), \
+        "改成库中不存在的编号后判重提示仍未消失（提示不随值变化＝形同虚设）"
+
+
+def f7_4_duplicate_submit_requires_confirmation(page):
+    """命中时提交要先确认：取消 → 不发请求；确认 → 请求带 dup_confirmed=true。
+
+    **upload 被桩掉**：真导入要走 OCR/解析/向量索引（重且依赖外部）。本用例验的是
+    前端契约与请求载荷（是否携带确认标记），不验导入本身。
+    """
+    _open_import_dialog(page)
+    sent = []
+    page.route("**/import/upload", lambda r: (
+        sent.append(r.request.post_data or ""),
+        r.fulfill(status=200, content_type="text/html",
+                  body='<div id="import-status">处理中...</div>'),
+    ))
+    try:
+        _set_file(page, _DUP_FILE)
+        assert poll_until(page, lambda: _dup_warn_visible(page), 6000), \
+            "前置：选文件后未出现判重提示"
+
+        # 1) 取消确认 → 不得发出请求
+        page.once("dialog", lambda d: d.dismiss())
+        page.click(".dialog-box--closable button[type=submit]")
+        page.wait_for_timeout(600)
+        assert not sent, "取消确认后仍发出了导入请求（判重被绕过）"
+
+        # 2) 确认 → 请求发出且带 dup_confirmed=true
+        page.once("dialog", lambda d: d.accept())
+        page.click(".dialog-box--closable button[type=submit]")
+        assert poll_until(page, lambda: len(sent) > 0, 6000), "确认后未发出导入请求"
+        body = sent[0]
+        assert 'name="dup_confirmed"' in body, f"请求未携带 dup_confirmed：{body[:400]!r}"
+        after = body.split('name="dup_confirmed"')[1][:60]
+        assert "true" in after, f"dup_confirmed 未置为 true：{after!r}"
+    finally:
+        page.unroute("**/import/upload")
+
+
+CASES["f7"] = [f7_1_select_file_shows_duplicate_warning,
+               f7_2_manual_typing_also_triggers_duplicate_check,
+               f7_3_warning_follows_current_value,
+               f7_4_duplicate_submit_requires_confirmation]
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "f1"
     with sync_playwright() as p:
