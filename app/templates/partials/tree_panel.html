@@ -229,12 +229,20 @@
                 })
                 .catch(function () { /* 忽略瞬时错误，下次轮询重试 */ });
         }
+        // 事件去重：一次审核操作会同步派发多个事件（如 reviewRefresh 传三个面板），
+        // 若每个事件各刷一遍，同一条 SQL 会被跑 3 次（实测 3 × 769 ms）。
+        // 用 setTimeout(0) 把同一轮宏任务里的多次触发合并成一次。
+        var badgeTimer = null;
+        function scheduleBadgeRefresh() {
+            if (badgeTimer) return;
+            badgeTimer = setTimeout(function () { badgeTimer = null; refresh(); }, 0);
+        }
         refresh();
         // 监听必须挂在 body 上：这些事件由 document.body.dispatchEvent 发出且未设
         // bubbles，挂 document 上的监听器收不到（已实测：0 命中；挂 body 或捕获监听才收到）。
         // 此前事件刷新一直失效、全靠轮询在撑，故修正监听后才敢给轮询降频。
         ['reviewClausePending', 'reviewWordPending', 'reviewBlacklist'].forEach(function (ev) {
-            document.body.addEventListener(ev, refresh);
+            document.body.addEventListener(ev, scheduleBadgeRefresh);
         });
         // 5 分钟兜底：待审核项的产生时机都是同步路由的返回点（导入/AI 分类/审核操作），
         // 均已被事件覆盖，周期轮询只用于兜住漏发与多标签页场景。

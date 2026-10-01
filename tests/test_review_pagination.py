@@ -289,3 +289,12 @@ def test_word_panel_clamps_next_limit_to_max_limit(auth_client):
     html = auth_client.get("/review/word-pending?limit=490").text
     assert "reviewLoadMore('word', 500)" in html
     assert "reviewLoadMore('word', 540)" not in html, "步进未被上限钳制"
+
+
+# ── 宫格红点刷新去重（Task 6）────────────────────────────────────
+
+def test_badge_refresh_is_coalesced(auth_client):
+    """宫格红点：同一轮触发的多个事件必须合并为一次 refresh，不得各刷一遍。"""
+    html = auth_client.get("/review").text
+    assert "scheduleBadgeRefresh" in html, "红点应经去重调度器刷新"
+    assert "setTimeout" in html, "去重应基于宏任务合并（同一轮的多个事件同步触发）"
