@@ -150,3 +150,45 @@ def test_word_pending_respects_limit(auth_client):
     resp = auth_client.get("/review/word-pending?limit=2")
     assert resp.status_code == 200
     assert resp.text.count('<tr id="word-group-') == 2
+
+
+# ── 刷新总控：懒加载 + 可见性门控（Task 4）────────────────────────
+
+def test_review_tabs_has_resident_refresh_controller(auth_client):
+    """三面板刷新总控必须常驻在 review_tabs.html（面板内联 script 每次 swap 会重定义）。"""
+    html = auth_client.get("/review").text
+    for fn in ("reviewLoad", "reviewEnsure", "reviewRefresh", "reviewSwitchTab", "reviewLoadMore"):
+        assert ("window.%s = function" % fn) in html, "缺少总控函数 %s" % fn
+    # 懒加载：面板容器不得再有 hx-trigger="load"（首屏只拉可见的 Tab1）
+    assert 'hx-trigger="load, reviewClausePending' not in html
+    assert 'hx-trigger="load, reviewWordPending' not in html
+    assert 'hx-trigger="load, reviewBlacklist' not in html
+
+
+def test_panels_call_refresh_controller_not_raw_events(auth_client):
+    """各操作回调必须走 reviewRefresh，不得再裸 dispatch 三个事件。"""
+    with get_db() as conn:
+        _seed_review_clause(conn)
+    clause_html = auth_client.get("/review/clause-pending").text
+    assert "reviewRefresh(" in clause_html
+    assert "refreshReviewPanels" not in clause_html, "旧聚合函数应已删除"
+
+    word_html = auth_client.get("/review/word-pending").text
+    assert "reviewRefresh(" in word_html
+    assert "dispatchEvent(new CustomEvent('reviewWordPending')" not in word_html
+
+
+def test_list_fallback_uses_refresh_controller(auth_client):
+    """低置信兜底块的操作回调同样走总控。
+
+    ⚠ 必须 seed：兜底块的 <script> 在 `{% if items %}` 内，空库时整块不渲染，
+    不 seed 的断言会在「无低置信待审项」占位文案上假失败（也会掩盖真实回归）。
+    """
+    with get_db() as conn:
+        cid = _seed_clause(conn)
+        bq.try_enqueue(conn, cid, "dim6", 0.0)
+        conn.execute("UPDATE classification_queue SET status='review' WHERE clause_id=?", (cid,))
+    html = auth_client.get("/review/list").text
+    assert "fallback-row-" in html, "前置：兜底块应已渲染（否则下面的断言无意义）"
+    assert "reviewRefresh(" in html
+    assert "dispatchEvent" not in html

@@ -86,11 +86,8 @@
 </div>
 
 <script>
-function refreshReviewPanels() {
-    document.body.dispatchEvent(new CustomEvent('reviewClausePending'));
-    document.body.dispatchEvent(new CustomEvent('reviewWordPending'));
-    document.body.dispatchEvent(new CustomEvent('reviewBlacklist'));
-}
+/* 刷新决策已上收到 review_tabs.html 的常驻总控（window.reviewRefresh）：
+   可见面板立即重拉、隐藏面板只置脏，避免「改 Tab2 连带重拉隐藏的 Tab1」。 */
 
 var removedChipIds = {};
 
@@ -110,7 +107,8 @@ function clauseConfirm(clauseId, dimension) {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ dimension: dimension, ids: rejected, action: 'approve' }),
     }).then(function (resp) {
-        if (resp.ok) refreshReviewPanels();
+        // 批准会回填条文（影响 Tab1）并产出黑名单条目（影响 Tab3），故三个面板都要标记刷新
+        if (resp.ok) window.reviewRefresh(['clause', 'word', 'blacklist']);
         else resp.text().then(function (t) { alert('操作失败：' + t); });
     }).catch(function (e) { alert('操作失败：' + e.message); });
 }
@@ -123,9 +121,11 @@ function toggleClauseEdit(clauseId, dimension) {
 }
 
 function cancelClauseEdit(clauseId, dimension) {
-    // 取消（查看态/编辑态共用）：仅重拉面板（读请求，无后端状态变更），
-    // 恢复初始全勾 chips、退出编辑态；本次去勾改动一并丢弃
-    refreshReviewPanels();
+    // 取消（查看态/编辑态共用）：仅重拉本面板（读请求，无后端状态变更），
+    // 恢复初始全勾 chips、退出编辑态；本次去勾改动一并丢弃。
+    // 此处必须用 reviewLoad（强制重拉）而非 reviewEnsure——面板已加载时
+    // ensure 不会发请求，编辑态就退不出去。
+    window.reviewLoad('clause');
 }
 
 function removeEditChip(btn) {
@@ -148,7 +148,8 @@ function saveClauseEdit(clauseId, dimension) {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ label_ids: labelIds, removed_label_ids: removedIds, new_label: newLabel || null, dimension: dimension }),
     }).then(function (resp) {
-        if (resp.ok) refreshReviewPanels();
+        // 只写分类列与词状态，不产生黑名单条目，故不含 blacklist（较原先刷三个面板收紧）
+        if (resp.ok) window.reviewRefresh(['clause', 'word']);
         else resp.text().then(function (t) { alert('保存失败：' + t); });
     }).catch(function (e) { alert('保存失败：' + e.message); });
 }

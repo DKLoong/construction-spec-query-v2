@@ -54,9 +54,9 @@
             body: JSON.stringify({ ids: ids, action: action }),
         }).then(function (resp) {
             if (resp.ok) {
-                document.body.dispatchEvent(new CustomEvent('reviewWordPending'));
-                document.body.dispatchEvent(new CustomEvent('reviewBlacklist'));
-                document.body.dispatchEvent(new CustomEvent('reviewClausePending'));
+                // 走常驻总控：可见面板立即重拉、隐藏面板只置脏；
+                // 事件派发仍由总控保留（宫格红点依赖）
+                window.reviewRefresh(['clause', 'word', 'blacklist']);
             } else {
                 resp.text().then(function (t) { alert('操作失败：' + t); });
             }

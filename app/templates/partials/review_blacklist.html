@@ -39,11 +39,8 @@
         var verb = action === 'restore' ? '恢复待审' : '批准';
         if (!confirm(verb + '该黑名单组合？')) return;
         fetch('/review/blacklist/' + pid + '/' + action, { method: 'POST' }).then(function (resp) {
-            if (resp.ok) {
-                document.body.dispatchEvent(new CustomEvent('reviewWordPending'));
-                document.body.dispatchEvent(new CustomEvent('reviewBlacklist'));
-                document.body.dispatchEvent(new CustomEvent('reviewClausePending'));
-            }
+            // 走常驻总控：可见面板立即重拉、隐藏面板只置脏
+            if (resp.ok) window.reviewRefresh(['clause', 'word', 'blacklist']);
         }).catch(function (e) { alert('操作失败：' + e.message); });
     }
     </script>

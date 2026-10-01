@@ -1,5 +1,6 @@
 <!-- /review 三 Tab 容器（条文待审 / 词面校核 / 黑名单） -->
-<div x-data="{ tab: 'clause' }" id="review-tabs">
+<div x-data="{ tab: 'clause' }" id="review-tabs"
+     x-init="$watch('tab', v => reviewSwitchTab(v))">
     <div role="tablist"
          style="display:flex;gap:0.5rem;margin-bottom:0.75rem;border-bottom:1px solid var(--pico-muted-border-color, #ddd);padding-bottom:0.5rem">
         <button type="button" @click="tab='clause'"
@@ -16,24 +17,84 @@
                 style="font-size:0.85rem">🚫 黑名单管理</button>
     </div>
 
-    <div x-show="tab==='clause'" id="clause-pending-list"
-         hx-get="/review/clause-pending"
-         hx-trigger="load, reviewClausePending from:body, reviewWordPending from:body, reviewBlacklist from:body"
-         hx-swap="innerHTML">
+    <div x-show="tab==='clause'" id="clause-pending-list">
         <p style="color:var(--pico-muted-color);padding:1rem">加载中...</p>
     </div>
 
-    <div x-show="tab==='word'" id="word-pending-list"
-         hx-get="/review/word-pending"
-         hx-trigger="load, reviewWordPending from:body"
-         hx-swap="innerHTML">
+    <div x-show="tab==='word'" id="word-pending-list">
         <p style="color:var(--pico-muted-color);padding:1rem">加载中...</p>
     </div>
 
-    <div x-show="tab==='blacklist'" id="blacklist-list"
-         hx-get="/review/blacklist"
-         hx-trigger="load, reviewBlacklist from:body"
-         hx-swap="innerHTML">
+    <div x-show="tab==='blacklist'" id="blacklist-list">
         <p style="color:var(--pico-muted-color);padding:1rem">加载中...</p>
     </div>
 </div>
+
+<script>
+/* 审核三面板的加载与刷新总控。
+   ⚠ 必须常驻在 review_tabs.html（不随面板 swap 消失）：面板自身的 <script> 每次被
+   HTMX 替换都会重新定义，无法承载跨面板状态（已加载标记、当前 Tab）。
+   背景：此前每个面板各自 hx-trigger="load, reviewXxx from:body"，且条文待审面板监听
+   全部三个事件——实测在「词面校核」点一次批准会连带重拉隐藏的条文待审全量
+   （服务端 3.3 s + 重建 55 521 个 DOM 节点）。 */
+(function () {
+    var PANES = {
+        clause:    { url: '/review/clause-pending', el: 'clause-pending-list', paged: true },
+        word:      { url: '/review/word-pending',   el: 'word-pending-list',   paged: true },
+        blacklist: { url: '/review/blacklist',      el: 'blacklist-list',      paged: false }
+    };
+    // 面板名 → 旧 DOM 事件名。宫格红点（tree_panel.html）监听这三个事件，
+    // 面板刷新虽已改由本总控接管，事件派发仍须保留，否则红点只剩 5 分钟兜底轮询。
+    var PANE_EVENT = {
+        clause: 'reviewClausePending',
+        word: 'reviewWordPending',
+        blacklist: 'reviewBlacklist'
+    };
+    var PAGE_SIZE = 50;
+
+    window.reviewTab = 'clause';
+    window.reviewPaneLimit = { clause: PAGE_SIZE, word: PAGE_SIZE };
+    window.reviewLoaded = { clause: false, word: false, blacklist: false };
+
+    window.reviewLoad = function (which) {
+        var cfg = PANES[which];
+        if (!cfg) return;
+        var url = cfg.url;
+        if (cfg.paged) url += '?limit=' + window.reviewPaneLimit[which];
+        window.reviewLoaded[which] = true;
+        htmx.ajax('GET', url, { target: '#' + cfg.el, swap: 'innerHTML' });
+    };
+
+    /* 懒加载：首次进入（或脏标记置位后切回）才真正请求 */
+    window.reviewEnsure = function (which) {
+        if (!window.reviewLoaded[which]) window.reviewLoad(which);
+    };
+
+    /* 操作后的刷新请求：可见的立即重拉；隐藏的**只置脏**，等切回该 Tab 时再拉。
+       这是消除「改 Tab2 连带重拉 Tab1」的关键——语义上 Tab1 确实需要更新
+       （Tab2 批准会回填条文），但没必要在用户看不见它的时候付这份代价。
+       ⚠ 面板刷新改由本函数接管后，仍须**照旧派发 DOM 事件**：宫格红点靠它即时刷新，
+       摘掉会让红点退化成 5 分钟才更新一次（Task 6 会给该监听加同轮去重）。 */
+    window.reviewRefresh = function (list) {
+        list.forEach(function (which) {
+            if (window.reviewTab === which) window.reviewLoad(which);
+            else window.reviewLoaded[which] = false;
+        });
+        list.forEach(function (which) {
+            document.body.dispatchEvent(new CustomEvent(PANE_EVENT[which]));
+        });
+    };
+
+    window.reviewSwitchTab = function (t) {
+        window.reviewTab = t;
+        window.reviewEnsure(t);
+    };
+
+    window.reviewLoadMore = function (which, nextLimit) {
+        window.reviewPaneLimit[which] = nextLimit;
+        window.reviewLoad(which);
+    };
+
+    window.reviewEnsure('clause');
+})();
+</script>

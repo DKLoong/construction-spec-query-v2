@@ -40,13 +40,13 @@
     async function confirmFallback(queueId) {
         try {
             var resp = await fetch('/review/' + queueId + '/confirm', { method: 'POST' });
-            if (resp.ok) { document.body.dispatchEvent(new CustomEvent('reviewClausePending')); }
+            if (resp.ok) { window.reviewRefresh(['clause']); }
         } catch (e) { alert('操作失败：' + e.message); }
     }
     async function rejectFallback(queueId) {
         try {
             var resp = await fetch('/review/' + queueId + '/reject', { method: 'POST' });
-            if (resp.ok) { document.body.dispatchEvent(new CustomEvent('reviewClausePending')); }
+            if (resp.ok) { window.reviewRefresh(['clause']); }
         } catch (e) { alert('操作失败：' + e.message); }
     }
     </script>
