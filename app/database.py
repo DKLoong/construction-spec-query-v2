@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS clauses (
     created_at      TEXT DEFAULT (datetime('now','localtime'))
 );
 
+-- 规范列表 LEFT JOIN / 条文列表 WHERE spec_id 都要按 spec_id 定位条文。
+-- 无此索引时 SQLite 靠 AUTOMATIC COVERING INDEX 临时兜底，每次查询重建（实测
+-- /specs/list 3.5 ms → 0.3 ms）。clauses 的其它列（parent_clause 等）不在本计划范围。
+CREATE INDEX IF NOT EXISTS idx_clauses_spec_id ON clauses(spec_id);
+
 -- FTS5 独立表：索引 jieba 预分词后的 search_text 与 breadcrumb 两列（rowid 即 clause id）。
 -- 不再是 external content 表——外部内容表只能索引 clauses 原列（存的必须是
 -- 原始文本供渲染），无法索引「分词后文本」，而 SQLite 触发器又不能调 Python，
@@ -105,6 +110,10 @@ CREATE TABLE IF NOT EXISTS classification_queue (
     status          TEXT DEFAULT 'pending',
     created_at      TEXT DEFAULT (datetime('now','localtime'))
 );
+-- 查询侧索引：Tab1 主表 / 兜底段的 EXISTS 子查询按 (clause_id, dimension, status)
+-- 逐行探测；无此索引时对 4138 个 pending 行全表扫本表（实测 375 ms → 19 ms）。
+CREATE INDEX IF NOT EXISTS idx_cq_clause_dim_status
+    ON classification_queue(clause_id, dimension, status);
 
 CREATE TABLE IF NOT EXISTS users (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,6 +188,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_pending_uniq
 -- 规则级 pending（clause_id IS NULL）同键唯一：存量碎片无来源条文，仅 pending 态互斥
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_pending_rule_key
     ON rule_pending(dimension, pattern, label) WHERE clause_id IS NULL AND status='pending';
+-- 查询侧索引：pending_counts 全驳段 / 兜底段的 NOT EXISTS 子查询按 clause_id 探测
+-- rule_pending；现有四个索引均以 (dimension, pattern…) 或 (status) 打头，帮不上
+-- （实测该段 280 ms → 0.3 ms）。
+CREATE INDEX IF NOT EXISTS idx_rp_clause_dim_status
+    ON rule_pending(clause_id, dimension, status);
 
 -- AI 问答会话与消息（用户可见的会话内容）
 -- 与 qa_request_logs 职责分离：后者是请求级埋点（调参用），本表是会话内容
@@ -420,7 +434,7 @@ def _migrate_rule_pending_clause_nullable(conn):
     """rule_pending.clause_id NOT NULL → 可空重建（规则级 pending 无来源条文为 NULL）。
 
     SQLite 不能 ALTER 列可空性，故：PRAGMA table_info 检测 notnull → DROP 旧索引名
-    → RENAME 旧表 → 按新 DDL 重建 → 拷贝全部列 → DROP 旧表 → 重建四索引。
+    → RENAME 旧表 → 按新 DDL 重建 → 拷贝全部列 → DROP 旧表 → 重建五索引。
     幂等：clause_id 已可空（notnull=0）直接跳过。
     """
     cols = conn.execute("PRAGMA table_info(rule_pending)").fetchall()
@@ -430,7 +444,8 @@ def _migrate_rule_pending_clause_nullable(conn):
     # RENAME 会把索引 tbl_name 一并指向新表名（索引名不变），故先 DROP 旧索引名，
     # 否则重建新表后 CREATE INDEX IF NOT EXISTS 会因旧名仍被占用而 no-op 挂到旧表。
     for idx in ("idx_rule_pending_key", "idx_rule_pending_status",
-                "idx_rule_pending_uniq", "idx_rule_pending_rule_key"):
+                "idx_rule_pending_uniq", "idx_rule_pending_rule_key",
+                "idx_rp_clause_dim_status"):
         conn.execute(f"DROP INDEX IF EXISTS {idx}")
     conn.execute("ALTER TABLE rule_pending RENAME TO rule_pending_old")
     conn.execute("""
@@ -459,6 +474,8 @@ def _migrate_rule_pending_clause_nullable(conn):
     conn.execute("CREATE UNIQUE INDEX idx_rule_pending_rule_key "
                  "ON rule_pending(dimension, pattern, label) "
                  "WHERE clause_id IS NULL AND status='pending'")
+    conn.execute("CREATE INDEX idx_rp_clause_dim_status "
+                 "ON rule_pending(clause_id, dimension, status)")
 
 
 def init_db():
