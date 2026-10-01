@@ -46,9 +46,15 @@
     <div style="display:flex;gap:0.6rem;align-items:center;justify-content:center;padding:0.6rem 0">
         <small style="color:var(--pico-muted-color)">已显示 {{ shown }} / 共 {{ total }} 条</small>
         {% if shown < total %}
+        {% if limit < max_limit %}
+        {# 步进上限与端点 Query(le=max_limit) 同源钳制，避免 limit=500 时再点出 550 触发 422 #}
         <button type="button" class="outline"
                 style="margin:0;font-size:0.8rem;padding:0.25rem 0.7rem"
-                onclick="reviewLoadMore('word', {{ limit + 50 }})">加载更多</button>
+                onclick="reviewLoadMore('word', {{ [limit + 50, max_limit] | min }})">加载更多</button>
+        {% else %}
+        {# 不静默隐藏：total 可能远大于上限，藏掉按钮会让人以为已经加载完 #}
+        <small style="color:var(--pico-muted-color)">已达单次加载上限 {{ max_limit }} 条，请先处理当前条目</small>
+        {% endif %}
         {% endif %}
     </div>
     <script>

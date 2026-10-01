@@ -78,9 +78,15 @@
            故会小于宫格红点的数字（红点含兜底）。去掉限定词两处数字看起来会自相矛盾。 #}
         <small style="color:var(--pico-muted-color)">主表已显示 {{ shown }} / 共 {{ total }} 条</small>
         {% if shown < total %}
+        {% if limit < max_limit %}
+        {# 步进上限与端点 Query(le=max_limit) 同源钳制，避免 limit=500 时再点出 550 触发 422 #}
         <button type="button" class="outline"
                 style="margin:0;font-size:0.8rem;padding:0.25rem 0.7rem"
-                onclick="reviewLoadMore('clause', {{ limit + 50 }})">加载更多</button>
+                onclick="reviewLoadMore('clause', {{ [limit + 50, max_limit] | min }})">加载更多</button>
+        {% else %}
+        {# 不静默隐藏：total 仍显示 1501，藏掉按钮会让人以为已经加载完 #}
+        <small style="color:var(--pico-muted-color)">已达单次加载上限 {{ max_limit }} 条，请先处理当前条目</small>
+        {% endif %}
         {% endif %}
     </div>
     {% endif %}

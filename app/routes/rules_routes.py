@@ -13,6 +13,11 @@ dim_labels = {
     "dim4": "所属专业", "dim5": "工程部位", "dim6": "材料/工艺"
 }
 
+# 审核列表单次可加载条数上限。分页语义是「取前 N 条」，N 越大 HTML 越大
+# （50 条 ≈ 427 KB，1501 条 ≈ 10 MB），故设上限保护；模板的「加载更多」步进
+# 必须一并受它约束，否则会出现「点了没反应」的 422 死路。
+REVIEW_PAGE_MAX = 500
+
 
 def _render_stats_oob():
     """渲染规则统计面板 HTML（带 hx-swap-oob，供响应内联使用）"""
@@ -529,18 +534,20 @@ async def batch_reject(request: Request, body: dict):
 async def review_word_pending(
     request: Request,
     dimension: str = "",
-    limit: int = Query(50, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=REVIEW_PAGE_MAX),
 ):
     """词面校核聚合（Tab2 数据源，供 Task5 UI 接）。
 
     limit 为**外部输入**（项目规则 1.1）：由 Query(ge/le) 收口范围，
     越界或非整数由 FastAPI 直接 422，不进业务逻辑。
+    max_limit 一并下发，供模板把「加载更多」的步进钳制在同一上限内。
     """
     from app.main import templates
     groups = rule_pending.pending_groups(dimension or None, limit)
     total = rule_pending.word_group_total(dimension or None)
     return templates.TemplateResponse(request, "partials/review_word_panel.html", {
         "groups": groups, "total": total, "limit": limit,
+        "max_limit": REVIEW_PAGE_MAX,
         "dimension": dimension, "dim_labels": dim_labels})
 
 
@@ -653,7 +660,7 @@ _DIM_COLUMN = {"dim4": "dim4_specialty", "dim5": "dim5_location",
 async def review_clause_pending(
     request: Request,
     dimension: str = "",
-    limit: int = Query(50, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=REVIEW_PAGE_MAX),
 ):
     """Tab1 条文待审：pending_clause_groups（条文多标签）+ 全标签已驳条文（D1）+ 低置信 queue 兜底。
 
@@ -681,6 +688,7 @@ async def review_clause_pending(
     total = rule_pending.clause_group_total(dimension or None)
     return templates.TemplateResponse(request, "partials/review_clause_panel.html", {
         "groups": groups, "items": items, "total": total, "limit": limit,
+        "max_limit": REVIEW_PAGE_MAX,
         "dimension": dimension, "dim_labels": dim_labels,
     })
 

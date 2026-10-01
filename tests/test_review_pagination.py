@@ -227,3 +227,65 @@ def test_word_panel_renders_load_more(auth_client):
     html = auth_client.get("/review/word-pending?limit=2").text
     assert "加载更多" in html
     assert "reviewLoadMore('word', 52)" in html
+
+
+# ── 单次加载上限：步进钳制 + 到顶提示（Task 5 修复轮 1）─────────────
+#
+# 缺陷：按钮写死 `limit + 50`，端点上限却是 500 → limit=500 时再点会发
+# `?limit=550` 触发 422，HTMX 对 4xx 不 swap，用户侧就是「点了没反应」。
+# 修法：上限定义为 `rules_routes.REVIEW_PAGE_MAX` 单一来源，端点 le 与模板
+# 下发的 max_limit 都取自它，模板用 min(limit+50, max_limit) 钳制步进。
+# 三个字面量 500 同时出现在端点校验（既有测试已钉 501→422）与模板渲染断言里，
+# 谁单方面改动都会让另一边红，即「同源」这一契约由测试锁定。
+
+def test_clause_panel_shows_cap_hint_instead_of_button_at_max_limit(auth_client):
+    """limit 到顶且仍未显示完时：不渲染「加载更多」，改提示已达上限（不得静默隐藏）。"""
+    with get_db() as conn:
+        for i in range(501):
+            _seed_review_clause(conn, f"GB{i}")
+    html = auth_client.get("/review/clause-pending?limit=500").text
+    assert "主表已显示 500 / 共 501 条" in html
+    assert "加载更多" not in html, "到顶后仍渲染按钮，再点即发 ?limit=550 → 422 死路"
+    assert "已达单次加载上限" in html and "500 条" in html
+    # 提示语给出的那个档位必须真能请求（否则提示本身就是死路提示）
+    assert auth_client.get("/review/clause-pending?limit=500").status_code == 200
+    assert auth_client.get("/review/clause-pending?limit=501").status_code == 422
+
+
+def test_clause_panel_clamps_next_limit_to_max_limit(auth_client):
+    """中间档：下一步被钳到上限 500，而不是 limit+50=540。
+
+    ⚠ 探针值必须选 limit>450：取 450 时 limit+50 恰好等于 500，改前的
+    「写死 limit+50」也会渲染出 500，本测试会**为错误的原因通过**。
+    """
+    with get_db() as conn:
+        for i in range(501):
+            _seed_review_clause(conn, f"GB{i}")
+    html = auth_client.get("/review/clause-pending?limit=490").text
+    assert "reviewLoadMore('clause', 500)" in html
+    assert "reviewLoadMore('clause', 540)" not in html, "步进未被上限钳制"
+
+
+def test_word_panel_shows_cap_hint_instead_of_button_at_max_limit(auth_client):
+    """Tab2 同一规则；且 Tab2 无低置信兜底块，提示不得带「主表」限定词。"""
+    with get_db() as conn:
+        c1 = _seed_clause(conn, "GB1")
+        # 词面组按 (dimension, pattern) 聚合，故同一条文塞 501 个不同 pattern 即 501 组
+        for i in range(501):
+            rp.insert_pending(conn, c1, "dim6", f"词{i}", f"词{i}", 0.9, "b1")
+    html = auth_client.get("/review/word-pending?limit=500").text
+    assert "已显示 500 / 共 501 条" in html
+    assert "加载更多" not in html
+    assert "已达单次加载上限" in html and "500 条" in html
+    assert "主表" not in html
+
+
+def test_word_panel_clamps_next_limit_to_max_limit(auth_client):
+    """Tab2 中间档同样被钳到 500（探针值同上取 limit>450 的理由）。"""
+    with get_db() as conn:
+        c1 = _seed_clause(conn, "GB1")
+        for i in range(501):
+            rp.insert_pending(conn, c1, "dim6", f"词{i}", f"词{i}", 0.9, "b1")
+    html = auth_client.get("/review/word-pending?limit=490").text
+    assert "reviewLoadMore('word', 500)" in html
+    assert "reviewLoadMore('word', 540)" not in html, "步进未被上限钳制"
