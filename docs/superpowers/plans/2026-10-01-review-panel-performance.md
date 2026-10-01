@@ -561,11 +561,15 @@ async def review_word_pending(
         "dimension": dimension, "dim_labels": dim_labels})
 ```
 
-在该文件顶部的 fastapi 导入中加入 `Query`（若尚无）：
+在该文件顶部的 fastapi 导入中追加 `Query`：
 
 ```python
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Request, Form, Query
 ```
+
+> ⚠ 现有导入是 `from fastapi import APIRouter, Request, Form`——**必须保留 `Form`**，
+> 只在末尾追加 `Query`。写成 `APIRouter, Query, Request` 会把 `Form` 删掉，
+> 导致同文件其它端点（如 `/lexicon/create` 式的 `Form(...)` 参数）在导入期直接报错。
 
 - [ ] **Step 4: 改 `review_clause_pending`**
 
