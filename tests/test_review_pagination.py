@@ -298,3 +298,18 @@ def test_badge_refresh_is_coalesced(auth_client):
     html = auth_client.get("/review").text
     assert "scheduleBadgeRefresh" in html, "红点应经去重调度器刷新"
     assert "setTimeout" in html, "去重应基于宏任务合并（同一轮的多个事件同步触发）"
+
+
+# ── 词库启停：行级替换，不整表重拉（Task 7）────────────────────────
+
+def test_lexicon_toggle_does_not_reload_whole_table(auth_client):
+    """启停按钮靠局部替换 tr 即可，不得再触发整表重拉。
+
+    lexicon_row.html 是独立模板，直接读文件断言比走 HTTP 更直接
+    （该行由多个端点共用，且需 kind/columns 上下文）。
+    """
+    from pathlib import Path
+    src = Path("app/templates/partials/lexicon_row.html").read_text(encoding="utf-8")
+    assert "hx-target=\"closest tr\"" in src, "启停应局部替换该行"
+    assert "lexiconUpdated" not in src, \
+        "启停不得再 dispatch lexiconUpdated（会整表重拉，覆盖刚完成的局部替换）"

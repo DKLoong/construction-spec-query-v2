@@ -6,9 +6,12 @@
     <td style="white-space:nowrap;text-align:left">
         <button class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem"
                 hx-get="/lexicon/{{ row.id }}/edit" hx-target="closest tr" hx-swap="outerHTML">编辑</button>
+        {# 启停靠行级局部替换即可：/lexicon/{id}/toggle 返回本模板（含最新 is_active）。
+           原先只挂 dispatch 没有 target —— 是整表重拉在真正干活；补上 target 后
+           dispatch 反而多余（会让刚完成的局部替换被整表重拉覆盖，Task 7）。 #}
         <button class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem"
                 hx-post="/lexicon/{{ row.id }}/toggle"
-                hx-on::after-request="document.body.dispatchEvent(new Event('lexiconUpdated'))">{{ '禁用' if row.is_active else '启用' }}</button>
+                hx-target="closest tr" hx-swap="outerHTML">{{ '禁用' if row.is_active else '启用' }}</button>
         <button class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem;color:#b00000"
                 hx-delete="/lexicon/{{ row.id }}"
                 hx-confirm="确定删除该词条？">删除</button>
