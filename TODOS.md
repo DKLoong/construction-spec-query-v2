@@ -473,3 +473,12 @@
   整表重拉」，已在本轮 Task 7 修掉——若将来新增词库行操作，**勿再叠加整表重拉**。
 - **关联**：`docs/superpowers/plans/2026-10-01-review-panel-performance.md`（分页模式可复用）。
 - **Blocked by**：无（触发式）。
+
+## T31 — Tab1 全驳（D1）行可能永远排不进首屏（触发式）
+
+- **What**：`/review/clause-pending` 的分页把 pending 段与全驳段串行拼接——`groups += rejected[:max(0, limit - len(groups))]`。pending 组数 ≥ limit 时，全驳（「词已驳回、请为条文输入新标签」）行拿不到任何额度，首屏不可见；用户须反复点「加载更多」直到 limit 超过 pending 总数才可能露出。
+- **Why**：D1 行是**人工待办**（候选词被全驳、需人工重新打标签），设计意图正是让它们留在主表而不是沉底。被「埋」等于待办丢失。
+- **触发条件**：生产库 `rejected_clause_groups()` 返回 **> 0**，且 `pending_clause_groups()` 组数 ≥ 首页 limit（默认 50）。当前（2026-10-01）全驳段为 **0 条**，故未修。
+- **修法方向**：两段不再串行拼额度，改为 SQL 层 `UNION` 后统一 `ORDER BY dimension, clause_no LIMIT ? OFFSET ?`；或给全驳段一个独立固定额度（与低置信兜底段的 50 条上限同形）。
+- **Context**：来源 Task 3 评审 Minor（`docs/superpowers/plans/2026-10-01-review-panel-performance.md` 的 Task 3）。另注：`total`（`clause_group_total`）**已含**全驳段，所以「主表已显示 X / 共 N 条」的 N 会把看不到的那部分也算进去。
+- **Blocked by**：无（触发式）。
