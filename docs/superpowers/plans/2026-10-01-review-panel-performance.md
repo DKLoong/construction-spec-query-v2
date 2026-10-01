@@ -970,7 +970,9 @@ def test_clause_panel_renders_load_more_when_truncated(auth_client):
     html = auth_client.get("/review/clause-pending?limit=50").text
     assert "加载更多" in html
     assert "reviewLoadMore('clause', 100)" in html
-    assert "已显示 50 / 共 55 条" in html
+    # 「主表」是必需的限定词：total 只含主表两段（pending+全驳），不含低置信兜底，
+    # 故会小于宫格红点（红点含兜底）。不加限定词用户会以为两处数字打架。
+    assert "主表已显示 50 / 共 55 条" in html
 
 
 def test_clause_panel_hides_load_more_when_complete(auth_client):
@@ -979,7 +981,7 @@ def test_clause_panel_hides_load_more_when_complete(auth_client):
         _seed_review_clause(conn)
     html = auth_client.get("/review/clause-pending?limit=50").text
     assert "加载更多" not in html
-    assert "已显示 1 / 共 1 条" in html
+    assert "主表已显示 1 / 共 1 条" in html
 
 
 def test_word_panel_renders_load_more(auth_client):
@@ -1011,7 +1013,9 @@ export PYTHONUTF8=1 && D:/Python/python.exe -m pytest tests/test_review_paginati
 
     {% set shown = groups|length %}
     <div style="display:flex;gap:0.6rem;align-items:center;justify-content:center;padding:0.6rem 0">
-        <small style="color:var(--pico-muted-color)">已显示 {{ shown }} / 共 {{ total }} 条</small>
+        {# 「主表」限定词不可省：total 只含主表两段（pending+全驳），不含下方低置信兜底块，
+           故会小于宫格红点的数字（红点含兜底）。去掉限定词两处数字看起来会自相矛盾。 #}
+        <small style="color:var(--pico-muted-color)">主表已显示 {{ shown }} / 共 {{ total }} 条</small>
         {% if shown < total %}
         <button type="button" class="outline"
                 style="margin:0;font-size:0.8rem;padding:0.25rem 0.7rem"
