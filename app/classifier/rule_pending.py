@@ -194,10 +194,12 @@ def decide_scope(conn, ids: list[int], action: str = "approve", expand: bool = T
     return {"approved": a, "rejected": r}
 
 
-def pending_groups(dimension: str | None = None) -> list[dict]:
+def pending_groups(dimension: str | None = None, limit: int | None = None) -> list[dict]:
     """Tab2 词面聚合：status='pending' 按 (dimension, pattern) 聚合。
 
     返回 [{dimension, pattern, clause_count, avg_conf, labels:[{id,label,ai_confidence,n}]}]。
+    limit=None 返回全量（向后兼容）；给定时在 SQL 层截断组数——被截断的组不进循环，
+    逐组查 labels 的 N+1 次数随之下降。
     """
     from app.database import get_db
     sql = ("SELECT dimension, pattern, COUNT(DISTINCT clause_id) AS clause_count, "
@@ -208,6 +210,9 @@ def pending_groups(dimension: str | None = None) -> list[dict]:
         sql += " AND dimension=?"
         args.append(dimension)
     sql += " GROUP BY dimension, pattern ORDER BY dimension, clause_count DESC, pattern"
+    if limit is not None:
+        sql += " LIMIT ?"
+        args.append(limit)
     with get_db() as conn:
         rows = conn.execute(sql, args).fetchall()
         groups = []
@@ -225,13 +230,17 @@ def pending_groups(dimension: str | None = None) -> list[dict]:
     return groups
 
 
-def pending_clause_groups(dimension: str | None = None) -> list[dict]:
+def pending_clause_groups(dimension: str | None = None,
+                          limit: int | None = None) -> list[dict]:
     """Tab1 条文多标签视图：status='pending' 按 (dimension, clause_id) 聚合，
     join clauses/specifications 带条文文本。
 
     仅返回存在 queue review 行的条文（C5/C17）：queue 终态(done/auto_adopted/rejected)
     或完全无 queue 行的 pending 条文都是死行/已定案，不进「条文待审」。真实主链
     insert_pending 必伴随 queue review。
+
+    limit=None 返回全量（向后兼容）；给定时在 SQL 层截断组数——被截断的组不进循环，
+    逐组查候选词的 N+1 次数随之下降。
 
     返回 [{dimension, clause_id, spec_code, clause_no, content,
            candidates:[{id, pattern, label, ai_confidence}]}]。
@@ -251,6 +260,9 @@ def pending_clause_groups(dimension: str | None = None) -> list[dict]:
         sql += " AND rp.dimension=?"
         args.append(dimension)
     sql += " GROUP BY rp.dimension, rp.clause_id ORDER BY rp.dimension, c.clause_no"
+    if limit is not None:
+        sql += " LIMIT ?"
+        args.append(limit)
     with get_db() as conn:
         rows = conn.execute(sql, args).fetchall()
         groups = []
@@ -268,10 +280,12 @@ def pending_clause_groups(dimension: str | None = None) -> list[dict]:
     return groups
 
 
-def rejected_clause_groups(dimension: str | None = None) -> list[dict]:
+def rejected_clause_groups(dimension: str | None = None,
+                           limit: int | None = None) -> list[dict]:
     """Tab1 全标签已驳条文视图：候选全 reject（无 pending）且 queue 仍 review 的条文。
 
     D1：驳回后条文仍在 Tab1 主表带「词已驳回」标记 + 行内编辑可用（不并入低置信兜底）。
+    limit=None 返回全量（向后兼容）；给定时在 SQL 层截断组数（同样省下逐组查被驳标签）。
     返回结构与 pending_clause_groups 一致（candidates 恒空），rejected_labels 携带被驳标签。
     """
     from app.database import get_db
@@ -293,6 +307,9 @@ def rejected_clause_groups(dimension: str | None = None) -> list[dict]:
         sql += " AND rp.dimension = ?"
         args.append(dimension)
     sql += " GROUP BY rp.dimension, rp.clause_id ORDER BY rp.dimension, c.clause_no"
+    if limit is not None:
+        sql += " LIMIT ?"
+        args.append(limit)
     with get_db() as conn:
         rows = conn.execute(sql, args).fetchall()
         groups = []
@@ -311,6 +328,69 @@ def rejected_clause_groups(dimension: str | None = None) -> list[dict]:
     return groups
 
 
+def _count_clause_main(conn, dimension: str | None = None) -> int:
+    """Tab1 主表段组数（谓词与 pending_clause_groups 逐字同口径）。"""
+    sql = ("SELECT COUNT(*) FROM ("
+           "  SELECT 1 FROM rule_pending rp "
+           "  JOIN clauses c ON c.id = rp.clause_id "
+           "  JOIN specifications s ON s.id = c.spec_id "
+           "  WHERE rp.status='pending' "
+           "  AND EXISTS ("
+           "    SELECT 1 FROM classification_queue q "
+           "    WHERE q.clause_id = rp.clause_id AND q.dimension = rp.dimension "
+           "    AND q.status = 'review')")
+    args: list = []
+    if dimension:
+        sql += " AND rp.dimension=?"
+        args.append(dimension)
+    sql += " GROUP BY rp.clause_id, rp.dimension)"
+    return conn.execute(sql, args).fetchone()[0]
+
+
+def _count_clause_rejected(conn, dimension: str | None = None) -> int:
+    """Tab1 全驳段组数（谓词与 rejected_clause_groups 逐字同口径）。"""
+    sql = ("SELECT COUNT(*) FROM ("
+           "  SELECT 1 FROM rule_pending rp "
+           "  JOIN clauses c ON c.id = rp.clause_id "
+           "  JOIN specifications s ON s.id = c.spec_id "
+           "  WHERE rp.status = 'rejected' "
+           "  AND NOT EXISTS ("
+           "    SELECT 1 FROM rule_pending p2 WHERE p2.clause_id = rp.clause_id "
+           "      AND p2.dimension = rp.dimension AND p2.status = 'pending') "
+           "  AND EXISTS ("
+           "    SELECT 1 FROM classification_queue q WHERE q.clause_id = rp.clause_id "
+           "      AND q.dimension = rp.dimension AND q.status = 'review')")
+    args: list = []
+    if dimension:
+        sql += " AND rp.dimension = ?"
+        args.append(dimension)
+    sql += " GROUP BY rp.clause_id, rp.dimension)"
+    return conn.execute(sql, args).fetchone()[0]
+
+
+def clause_group_total(dimension: str | None = None) -> int:
+    """Tab1 待审组数（主表段 + 全驳段），供分页显示「共 N 条」。
+
+    刻意只做纯 COUNT，不物化 group 对象——后者会带来逐组查候选词的 N+1。
+    """
+    from app.database import get_db
+    with get_db() as conn:
+        return _count_clause_main(conn, dimension) + _count_clause_rejected(conn, dimension)
+
+
+def word_group_total(dimension: str | None = None) -> int:
+    """Tab2 待校核词面组数，供分页显示「共 N 条」。"""
+    from app.database import get_db
+    sql = ("SELECT COUNT(*) FROM (SELECT 1 FROM rule_pending WHERE status='pending'")
+    args: list = []
+    if dimension:
+        sql += " AND dimension=?"
+        args.append(dimension)
+    sql += " GROUP BY dimension, pattern)"
+    with get_db() as conn:
+        return conn.execute(sql, args).fetchone()[0]
+
+
 def pending_counts() -> dict:
     """宫格「审核」红点计数（C16）：clause 与 Tab1 主表同口径。
 
@@ -321,37 +401,15 @@ def pending_counts() -> dict:
     - word   = 与 pending_groups 同口径（按 (dimension, pattern) 聚合的 pending 词面组数）。
 
     已确认(done)条文的残留 pending 词不计 clause。此处刻意只做单连接纯 COUNT，
-    谓词与三个 group 函数逐字同口径（绝不调用它们）：红点端点 /review/pending-count
-    被前端 30s 轮询，物化 group 对象会带来逐组查候选词的 N+1（项目规则 1.3）。
+    谓词与三个 group 函数逐字同口径（绝不调用 **group 物化函数**；只复用其 COUNT
+    helper）。红点端点 /review/pending-count 被前端事件驱动 + 5 分钟兜底刷新，
+    物化 group 对象会带来逐组查候选词的 N+1（项目规则 1.3）。
     """
     from app.database import get_db
     with get_db() as conn:
-        # 主表段：与 pending_clause_groups 同谓词（含两 JOIN，排除 clause_id 孤儿行）
-        n_clause = conn.execute(
-            "SELECT COUNT(*) FROM ("
-            "  SELECT 1 FROM rule_pending rp "
-            "  JOIN clauses c ON c.id = rp.clause_id "
-            "  JOIN specifications s ON s.id = c.spec_id "
-            "  WHERE rp.status='pending' "
-            "  AND EXISTS ("
-            "    SELECT 1 FROM classification_queue q "
-            "    WHERE q.clause_id = rp.clause_id AND q.dimension = rp.dimension "
-            "    AND q.status = 'review') "
-            "  GROUP BY rp.clause_id, rp.dimension)").fetchone()[0]
-        # 全驳段：与 rejected_clause_groups 同谓词（候选全 reject 且 queue 仍 review）
-        n_clause += conn.execute(
-            "SELECT COUNT(*) FROM ("
-            "  SELECT 1 FROM rule_pending rp "
-            "  JOIN clauses c ON c.id = rp.clause_id "
-            "  JOIN specifications s ON s.id = c.spec_id "
-            "  WHERE rp.status = 'rejected' "
-            "  AND NOT EXISTS ("
-            "    SELECT 1 FROM rule_pending p2 WHERE p2.clause_id = rp.clause_id "
-            "      AND p2.dimension = rp.dimension AND p2.status = 'pending') "
-            "  AND EXISTS ("
-            "    SELECT 1 FROM classification_queue q WHERE q.clause_id = rp.clause_id "
-            "      AND q.dimension = rp.dimension AND q.status = 'review') "
-            "  GROUP BY rp.clause_id, rp.dimension)").fetchone()[0]
+        # 主表段 / 全驳段：与 pending_clause_groups、rejected_clause_groups 同谓词，
+        # 由 clause_group_total 的两个 helper 提供（原为内联 SQL，分页需求出现后抽公共）。
+        n_clause = _count_clause_main(conn) + _count_clause_rejected(conn)
         # 兜底段：低置信 queue review 且无 pending/rejected 关联
         n_clause += conn.execute(
             "SELECT COUNT(*) FROM classification_queue q WHERE q.status='review' "

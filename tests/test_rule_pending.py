@@ -1251,6 +1251,16 @@ def test_init_db_migrates_rule_pending_clause_nullable(monkeypatch, tmp_path):
             "SELECT name FROM sqlite_master WHERE type='index' "
             "AND name='idx_rule_pending_rule_key'").fetchone()
         assert idx is not None
+        # 重建路径必须把 idx_rp_clause_dim_status 一并建回（DROP 元组 + 重建列表两处同步）：
+        # 只查「索引名存在」不够——RENAME 会把旧索引的 tbl_name 一起带到 rule_pending_old，
+        # 漏同步时它会随 DROP TABLE 消失或残留在旧表上，故断言索引挂在哪张表。
+        # 注：PRAGMA index_list 在 SQLite 3.50.4 不返回 tbl_name，配对信息取自 sqlite_master。
+        names = [r["name"] for r in conn.execute("PRAGMA index_list(rule_pending)")]
+        assert "idx_rp_clause_dim_status" in names
+        owner = conn.execute(
+            "SELECT tbl_name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_rp_clause_dim_status'").fetchone()
+        assert owner is not None and owner["tbl_name"] == "rule_pending"
 
 
 def test_insert_pending_rule_level_idempotent(monkeypatch, tmp_path):
