@@ -1522,30 +1522,50 @@ git commit -m "docs: 回填审核界面性能治理的实测数据"
 
 ### Task 9 Step 1
 
+> 采集条件（2026-10-01）：服务端走**真实库**（端口 8000，warm，5 次取最小）；浏览器走**隔离实例**
+> （`%TEMP%/spec_query_iso.db` 副本 + 端口 8011，Playwright + 系统 Chrome）。真实库规模与 Spec §2 一致
+> （`rule_pending` 4 996 / pending 4 138 / rejected 771 / `classification_queue` 4 625 / review 1 569 /
+> `clauses` 3 044 / 规范 5 本），故可直接与治理前对比。
+
 | 指标 | 治理前（Spec 第 2 节） | 治理后实测 |
 | --- | --- | --- |
-| Tab1 服务端耗时 | 1 452 ms | 待填 |
-| Tab1 HTML 体积 | 10.9 MB | 待填 |
-| Tab2 服务端耗时 | 41 ms | 待填 |
-| `pending-count` 耗时 | 769 ms | 待填 |
-| 首屏 DOM 节点数 | 81 780（三面板合计） | 待填 |
-| Tab1 确认一条的总耗时 | 约 2.4 s | 待填 |
-| Tab2 批准一条的总耗时 | 约 3.3 s | 待填 |
+| Tab1 服务端耗时 | 1 452 ms | **40.1 ms**（min/5；warm） |
+| Tab1 HTML 体积 | 10.9 MB | **427 988 B ≈ 418 KB** |
+| Tab2 服务端耗时 | 41 ms | **14.2 ms** / 116 583 B（≈114 KB，治理前 1.85 MB） |
+| `pending-count` 耗时 | 769 ms | **11.9 ms** / 27 B |
+| 首屏 DOM 节点数 | 81 780（三面板合计，**片段口径**） | **整页 3 126 节点**；其中 Tab1 面板**片段** 2 543（首屏只加载 Tab1；首跑整页 3 131） |
+| 首屏 `domContentLoadedEventEnd` | —（治理前仅记「953 ms 渲染」，口径不同） | **328.0 ms**（整页；首跑 389.2 ms） |
+| Tab1 确认一条的总耗时 | 约 2.4 s | **127.0 ms**（首跑 197.5 ms） |
+| Tab2 批准一条的总耗时 | 约 3.3 s | **130.7 ms**（首跑 141.3 ms）；**无 `clause-pending` 请求** |
+
+**请求序列（隔离实例实测，写操作真实落库）：**
+
+| 场景 | 实测序列（含状态码与相对时刻 ms） |
+| --- | --- |
+| 首屏 `/review` | `GET /review` → `GET /review/pending-count` → `GET /review/clause-pending?limit=50`（**只拉 Tab1**） |
+| Tab1 确认一条 | `POST /review/clause-pending/10215/decide`(200) → `GET /review/clause-pending?limit=50`(200) → `GET /review/pending-count`(200) **×1** |
+| Tab2 批准一条 | `POST /review/word-pending/decide`(200) → `GET /review/word-pending?limit=50`(200) → `GET /review/pending-count`(200) **×1**；**无 `clause-pending`** |
+
+> 「总耗时」口径 = 从点击到**最后一个响应返回**的挂钟时间（warm 第二次）。首跑数字一并列出以显示冷启动差异。
+> 浏览器侧已核对加载的真实样式表：`pico.min.css` / `pico.custom.css?v=1` / `app.css?v=33` / `katex.min.css`。
 
 ### Task 7 Step 5（词库）
 
 | 场景 | 请求序列 | 结论 |
 | --- | --- | --- |
-| 词库点「禁用」 | 待填 | 只有 `POST /lexicon/{id}/toggle`，无 `GET /lexicon/list` |
+| 词库点「禁用」 | `POST /lexicon/292/toggle`（且该行文案由「…启用…禁用」翻转为「…禁用…启用」） | 只有 `POST /lexicon/{id}/toggle`，**无** `GET /lexicon/list` ✅ |
 
 ### Task 8 Step 8（规范页）
 
+> 采集条件：隔离实例 8011，副本库插入至 **50 本**规范，1440×900 视口，整页 DCL 172.7 ms。
+
 | 指标 | 目标 | 实测 |
 | --- | --- | --- |
-| 滚动框高度 | ≈ 443 px（5 行） | 待填 |
-| 50 本规范 DOM 节点 | ≈ 1 077 | 待填 |
-| 点最后一行「查看条文」后面板是否在视口内 | 是 | 待填 |
-| 全选勾选数 = 全部规范数 | 是 | 待填 |
+| 滚动框高度 | ≈ 443 px（初稿）→ 校正为 17.5 rem = 252 px | **252 px**（`max-height:252px`，clientHeight 250，scrollHeight 1993） |
+| 可见行数 | 5 | **5**（表头 33.72 px + 行高 39.66 px，根字号 14.4 px） |
+| 50 本规范 DOM 节点 | ≈ 1 077（**片段口径**） | **列表片段**（`#specs-table` 宿主内）**1 072**；**整页** **1 651** |
+| 点最后一行「查看条文」后面板是否在视口内 | 是 | **是**（面板 top 234.1 px < 视口高 900 px，且面板有内容） |
+| 全选勾选数 = 全部规范数 | 是 | **50 = 50** ✅ |
 
 ---
 
