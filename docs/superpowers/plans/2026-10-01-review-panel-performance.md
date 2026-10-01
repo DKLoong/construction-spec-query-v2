@@ -1212,10 +1212,16 @@ git commit -m "perf: 词库启停改为纯行级替换，去掉整表重拉"
 
 ### Task 8: 规范页改为独立滚动框
 
+> **⚠️ 事后更正（2026-10-01，实施后补记）**：本节下面的代码块是**初次**写下的内容，其中两处已被实测推翻，实施时已改，阅读时以最终交付为准：
+> 1. `max-height` 由 `27.8rem` 改为 **`17.5rem`**（252px）——`27.8rem` 基于一组在**漏引 `pico.custom.css` 的自造 HTML 壳**里量出的错误尺寸（真实根字号 14.4px），实际只显示 9 行而非 5 行。真实实测见上方「实测尺寸」表。
+> 2. `base.html` 的版本号因此**升了两档**：`?v=31` → `?v=32`（首轮）→ **`?v=33`**（高度更正又改了 CSS）。下文凡写 `?v=32` 处，最终值均为 **`?v=33`**。
+>
+> 下面代码块中所有 `27.8rem` / `443px` / `?v=32` 的字样都保留为历史原貌，**不要照抄**。
+
 **Files:**
 - Modify: `app/templates/partials/specs_table.html`
 - Modify: `static/app.css`（新增 `.spec-table-wrapper`）
-- Modify: `app/templates/base.html`（`app.css?v=31` → `?v=32`）
+- Modify: `app/templates/base.html`（`app.css?v=31` → **最终 `?v=33`**，见下方更正注记）
 - Test: `tests/test_specs_scroll_panel.py`（新建）
 
 **Interfaces:**
@@ -1271,12 +1277,12 @@ def test_spec_table_is_wrapped_in_scroll_container():
 
 
 def test_scroll_container_height_fits_five_specs():
-    """滚动框高度按「表头 + 5 行」定（实测 443px ≈ 27.8rem）。"""
+    """滚动框高度按「表头 + 5 行」定（真实页面实测后取 252px = 17.5rem）。"""
     css = Path(CSS).read_text(encoding="utf-8")
     assert ".spec-table-wrapper" in css
     block = css.split(".spec-table-wrapper", 1)[1].split("}", 1)[0]
     assert "max-height" in block, "滚动框必须有 max-height"
-    assert "27.8rem" in block, "高度应为容纳 5 本规范的 27.8rem"
+    assert "17.5rem" in block, "高度应为容纳 5 本规范的 17.5rem"
 
 
 def test_select_all_declares_whole_table_scope():
