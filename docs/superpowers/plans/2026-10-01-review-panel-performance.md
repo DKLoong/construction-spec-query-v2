@@ -1482,8 +1482,24 @@ git commit -m "docs: 回填审核界面性能治理的实测数据"
 
 | 场景 | 请求序列 | 结论 |
 | --- | --- | --- |
-| 首屏 `/review` | 待填 | 只拉 Tab1 |
-| Tab2 点「批准」后 | 待填 | 不含 `clause-pending` |
+| 首屏 `/review` | `/review` → `/review/pending-count` → `/review/clause-pending?limit=50` | 只拉 Tab1 ✅ |
+| 切 Tab2 | 追加 `/review/word-pending?limit=50` | 懒加载 ✅ |
+| Tab2 点「批准」后 | `/review/word-pending/decide` → `/review/word-pending?limit=50` → `/review/pending-count` ×3 | 不含 `clause-pending` ✅ |
+
+**实测（2026-10-01，隔离实例 8011 + 真实库副本，Playwright 拦掉 decide 写请求）**
+
+| 指标 | 改前（旧模板） | 改后 |
+| --- | --- | --- |
+| 首屏请求 | `/review`、`/review/pending-count`、`/review/clause-pending`、`/review/word-pending`、`/review/blacklist`（三面板全量） | `/review`、`/review/pending-count`、`/review/clause-pending?limit=50` |
+| 首屏 DOM 节点数 | 7 456 | 3 128 |
+| Tab2 批准后的请求 | `…/decide`、`/review/clause-pending`（全量）、`/review/word-pending`（全量）、`/review/blacklist`（全量） | `…/decide`、`/review/word-pending?limit=50` |
+
+`/review/pending-count` 在批准后出现 **3 次**，即 `reviewRefresh` 仍照旧派发
+`reviewClausePending` / `reviewWordPending` / `reviewBlacklist` 三个 DOM 事件——
+宫格红点（`tree_panel.html`）即时刷新未被削弱。
+
+> 注：仓库快照给出的「3.3 s + 55 521 节点」是更重库态下的数字；本次隔离副本首屏全量为
+> 7 456 节点，量级差异来自待审数据条数，门控收益的方向与量级一致。
 
 ### Task 9 Step 1
 
