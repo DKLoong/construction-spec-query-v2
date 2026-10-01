@@ -17,12 +17,17 @@ def test_spec_table_is_wrapped_in_scroll_container():
 
 
 def test_scroll_container_height_fits_five_specs():
-    """滚动框高度按「表头 + 5 行」定（实测 443px ≈ 27.8rem）。"""
+    """滚动框高度按「表头 + 5 行」定。
+
+    实测（副本库 50 本，根字号 14.4px）：宽 ≥1280px 时表头 33.7px + 行高 39.2px，
+    完整 5 行需 229.5px；取 17.5rem = 252px 可完整显示 5 行并露出第 6 行上半。
+    行高随视口宽度浮动，固定高度无法在所有宽度下都恰好 5 行（1024px 下约 3 行）。
+    """
     css = Path(CSS).read_text(encoding="utf-8")
     assert ".spec-table-wrapper" in css
     block = css.split(".spec-table-wrapper", 1)[1].split("}", 1)[0]
     assert "max-height" in block, "滚动框必须有 max-height"
-    assert "27.8rem" in block, "高度应为容纳 5 本规范的 27.8rem"
+    assert "17.5rem" in block, "高度应为容纳 5 本规范的 17.5rem"
 
 
 def test_select_all_declares_whole_table_scope():

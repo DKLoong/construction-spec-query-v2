@@ -243,13 +243,21 @@
     max-height: 55vh; overflow: auto;
     border: 1px solid var(--pico-muted-border-color); border-radius: 4px;
 }
-/* 规范列表滚动框：固定容纳「表头 + 5 本规范」，避免长列表把
+/* 规范列表滚动框：目标「一屏约 5 本规范」，避免长列表把
    #spec-class-area / #clause-detail-area 推到屏幕外。
-   27.8rem 的来历：实测表头 72.5px + 每行 74.1px × 5 = 443px ≈ 27.8rem。
-   用限高滚动而非分页——分页会让「全选 + 批量重分类」出现跨页漏选；
-   实测 50 本全量仅 1077 个 DOM 节点 / 20ms，远轻于已在用的 887 条条文框。 */
+   高度来历（实测，非推算）——注意本库根字号是 14.4px 而非 16px
+   （pico.custom.css 设了 --pico-font-size: 90%），rem 换算必须按 14.4px 算：
+     宽 ≥1280px：表头 33.7px + 行高 39.2px → 完整 5 行需 229.5px
+     宽 1024px：表头 52.1px + 行高 54.1px → 完整 5 行需 322.4px（名称列换行撑高）
+   取 17.5rem = 252px：主流宽度（1366 / 1440 / 1920）下完整显示 5 行、
+   并露出第 6 行上半，兼作「还能继续滚」的视觉提示。
+   ⚠ 固有取舍：行高随视口宽度浮动，任何固定高度都**无法**在所有宽度下都恰好 5 行；
+   1024px 窄屏下同样高度只能显示约 3 行。
+   （本值原为 27.8rem，系按 16px/rem 误算成 443px，实际只有 400px 且显示 9 行，
+   已按上述实测更正。）
+   用限高滚动而非分页——分页会让「全选 + 批量重分类」出现跨页漏选。 */
 .spec-table-wrapper {
-    max-height: 27.8rem;
+    max-height: 17.5rem;
     overflow: auto;
     border: 1px solid var(--pico-muted-border-color);
     border-radius: 4px;
