@@ -1,5 +1,5 @@
 """分类规则管理 + 审核队列路由"""
-from fastapi import APIRouter, Request, Form
+from fastapi import APIRouter, Request, Form, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from app.database import get_db
 from app.models import ClassificationRuleCreate
@@ -526,12 +526,22 @@ async def batch_reject(request: Request, body: dict):
 
 
 @router.get("/review/word-pending")
-async def review_word_pending(request: Request, dimension: str = ""):
-    """词面校核聚合（Tab2 数据源，供 Task5 UI 接）"""
+async def review_word_pending(
+    request: Request,
+    dimension: str = "",
+    limit: int = Query(50, ge=1, le=500),
+):
+    """词面校核聚合（Tab2 数据源，供 Task5 UI 接）。
+
+    limit 为**外部输入**（项目规则 1.1）：由 Query(ge/le) 收口范围，
+    越界或非整数由 FastAPI 直接 422，不进业务逻辑。
+    """
     from app.main import templates
-    groups = rule_pending.pending_groups(dimension or None)
+    groups = rule_pending.pending_groups(dimension or None, limit)
+    total = rule_pending.word_group_total(dimension or None)
     return templates.TemplateResponse(request, "partials/review_word_panel.html", {
-        "groups": groups, "dimension": dimension, "dim_labels": dim_labels})
+        "groups": groups, "total": total, "limit": limit,
+        "dimension": dimension, "dim_labels": dim_labels})
 
 
 @router.post("/review/word-pending/decide")
@@ -640,10 +650,19 @@ _DIM_COLUMN = {"dim4": "dim4_specialty", "dim5": "dim5_location",
 
 
 @router.get("/review/clause-pending")
-async def review_clause_pending(request: Request, dimension: str = ""):
-    """Tab1 条文待审：pending_clause_groups（条文多标签）+ 全标签已驳条文（D1）+ 低置信 queue 兜底。"""
+async def review_clause_pending(
+    request: Request,
+    dimension: str = "",
+    limit: int = Query(50, ge=1, le=500),
+):
+    """Tab1 条文待审：pending_clause_groups（条文多标签）+ 全标签已驳条文（D1）+ 低置信 queue 兜底。
+
+    limit 只约束**主表两段**（pending + 全驳）的组数；低置信兜底块维持自身 LIMIT 50 不变。
+    故 total（主表段）与宫格红点（含兜底段）不等属预期，页面文案由 Task5 区分表述。
+    total 与 limit 无关，供前端显示「已显示 X / 共 N 条」。
+    """
     from app.main import templates
-    groups = rule_pending.pending_clause_groups(dimension or None)
+    groups = rule_pending.pending_clause_groups(dimension or None, limit)
     with get_db() as conn:
         # 单条聚合取全部 rejected 标签，按 (clause_id, dimension) 分组，避免逐条文查询（N+1）
         rej_rows = conn.execute(
@@ -656,9 +675,13 @@ async def review_clause_pending(request: Request, dimension: str = ""):
             g["rejected_labels"] = rej_map.get((g["clause_id"], g["dimension"]), [])
         items = _fetch_review_items(conn)
     # D1：候选全 reject（无 pending）的条文并入主表（带「词已驳回」标记 + 行内编辑），不进兜底块
-    groups += rule_pending.rejected_clause_groups(dimension or None)
+    # 剩余额度给全驳段，合并后最多 limit 条
+    rejected = rule_pending.rejected_clause_groups(dimension or None, limit)
+    groups += rejected[:max(0, limit - len(groups))]
+    total = rule_pending.clause_group_total(dimension or None)
     return templates.TemplateResponse(request, "partials/review_clause_panel.html", {
-        "groups": groups, "items": items, "dimension": dimension, "dim_labels": dim_labels,
+        "groups": groups, "items": items, "total": total, "limit": limit,
+        "dimension": dimension, "dim_labels": dim_labels,
     })
 
 

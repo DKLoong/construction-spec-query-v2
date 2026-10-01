@@ -106,3 +106,47 @@ def test_word_group_total_and_limit(monkeypatch, tmp_path):
     assert len(rp.pending_groups(None, limit=1)) == 1
     assert len(rp.pending_groups(None, limit=2)) == 2
     assert len(rp.pending_groups(None)) == 3
+
+
+# ── 路由接 limit 并下发 total（HTTP 契约）────────────────────────
+
+def test_clause_pending_respects_limit(auth_client):
+    """端点接 limit：只约束渲染条数。
+
+    ⚠ 此处**不**断言 total 文案——「已显示 X / 共 N 条」由 Task 5 的模板改动产生，
+    本 Task 时尚不存在。total 的**数值**正确性由 Task 2 的
+    `test_clause_group_total_counts_both_segments` 覆盖，**渲染**由 Task 5 覆盖。
+    """
+    with get_db() as conn:
+        for i in range(5):
+            _seed_review_clause(conn, f"GB{i}")
+    resp = auth_client.get("/review/clause-pending?limit=2")
+    assert resp.status_code == 200
+    assert resp.text.count("clause-row-") == 2, "limit=2 应只渲染 2 个条文卡片"
+
+
+def test_clause_pending_rejects_out_of_range_limit(auth_client):
+    """limit 是外部输入：越界必须被挡下（项目规则 1.1）。"""
+    assert auth_client.get("/review/clause-pending?limit=0").status_code == 422
+    assert auth_client.get("/review/clause-pending?limit=501").status_code == 422
+    assert auth_client.get("/review/clause-pending?limit=abc").status_code == 422
+
+
+def test_clause_pending_default_limit_is_50(auth_client):
+    """不传 limit 时默认 50（首屏不再全量渲染）。"""
+    with get_db() as conn:
+        for i in range(55):
+            _seed_review_clause(conn, f"GB{i}")
+    html = auth_client.get("/review/clause-pending").text
+    assert html.count("clause-row-") == 50
+
+
+def test_word_pending_respects_limit(auth_client):
+    """Tab2 同样受 limit 约束（total 文案断言见 Task 5，理由同上）。"""
+    with get_db() as conn:
+        c1 = _seed_clause(conn, "GB1")
+        for word in ["钢筋", "混凝土", "模板", "砂浆", "涂料"]:
+            rp.insert_pending(conn, c1, "dim6", word, word, 0.9, "b1")
+    resp = auth_client.get("/review/word-pending?limit=2")
+    assert resp.status_code == 200
+    assert resp.text.count('<tr id="word-group-') == 2
