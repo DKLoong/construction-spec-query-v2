@@ -155,7 +155,15 @@ def test_word_pending_respects_limit(auth_client):
 # ── 刷新总控：懒加载 + 可见性门控（Task 4）────────────────────────
 
 def test_review_tabs_has_resident_refresh_controller(auth_client):
-    """三面板刷新总控必须常驻在 review_tabs.html（面板内联 script 每次 swap 会重定义）。"""
+    """三面板刷新总控必须常驻在 review_tabs.html（面板内联 script 每次 swap 会重定义）。
+
+    除「函数是否存在」外，本用例还**钉住可见性门控的分支语义**：
+    操作后可见面板立即重拉、隐藏面板只置脏标记（等切回该 Tab 再拉）。
+    这是本项目的核心收益所在——此前每个面板各自 `hx-trigger="load, reviewXxx from:body"`，
+    在「词面校核」点一次批准会连带重拉隐藏的条文待审面板（服务端 3.3 s + 重建 55 521 个
+    DOM 节点）。若有人把门控反写成「恒拉」或「恒不拉」，行为即退化回 3.3 s 级联，
+    故此处必须让反写变红，否则这条收益没有回归网。
+    """
     html = auth_client.get("/review").text
     for fn in ("reviewLoad", "reviewEnsure", "reviewRefresh", "reviewSwitchTab", "reviewLoadMore"):
         assert ("window.%s = function" % fn) in html, "缺少总控函数 %s" % fn
@@ -163,6 +171,13 @@ def test_review_tabs_has_resident_refresh_controller(auth_client):
     assert 'hx-trigger="load, reviewClausePending' not in html
     assert 'hx-trigger="load, reviewWordPending' not in html
     assert 'hx-trigger="load, reviewBlacklist' not in html
+    # 门控语义（不只是符号存在）：可见才重拉、隐藏只置脏。
+    # 断言行内完整分支：比较运算符翻转（=== → !==）、两个分支互换、
+    # 或「只置脏」分支消失，本用例都必须变红。
+    assert "if (window.reviewTab === which) window.reviewLoad(which);" in html, \
+        "可见面板必须立即重拉（比较符翻转或缺分支即退化）"
+    assert "else window.reviewLoaded[which] = false;" in html, \
+        "隐藏面板必须只置脏、不得重拉（否则退回 3.3 s 级联）"
 
 
 def test_panels_call_refresh_controller_not_raw_events(auth_client):

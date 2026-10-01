@@ -7,8 +7,11 @@
         <button class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem"
                 hx-get="/lexicon/{{ row.id }}/edit" hx-target="closest tr" hx-swap="outerHTML">编辑</button>
         {# 启停靠行级局部替换即可：/lexicon/{id}/toggle 返回本模板（含最新 is_active）。
-           原先只挂 dispatch 没有 target —— 是整表重拉在真正干活；补上 target 后
-           dispatch 反而多余（会让刚完成的局部替换被整表重拉覆盖，Task 7）。 #}
+           原缺陷是**重复刷新**：行级替换本就生效（hx-target/hx-swap 一直继承自
+           lexicon_list.html 的 tbody），但按钮自身还派发了「词库已更新」事件，
+           而列表容器 #lexicon-table 正是监听该事件做整表重拉——刚完成的局部替换随即被
+           覆盖，纯属白工（词库 6000 条时单次重拉 497 ms / 4.8 MB）。
+           Task 7 的修法：摘掉这次多余的派发，并把本按钮的 target 显式写清。 #}
         <button class="outline" style="font-size:0.75rem;padding:0.1rem 0.4rem"
                 hx-post="/lexicon/{{ row.id }}/toggle"
                 hx-target="closest tr" hx-swap="outerHTML">{{ '禁用' if row.is_active else '启用' }}</button>
