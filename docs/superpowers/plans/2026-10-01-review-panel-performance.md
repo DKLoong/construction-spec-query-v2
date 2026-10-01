@@ -1463,9 +1463,16 @@ git commit -m "docs: 回填审核界面性能治理的实测数据"
 
 | 调用 | 实测耗时 |
 | --- | --- |
-| `pending_clause_groups(None)`（全量） | 待填 |
-| `pending_clause_groups(None, 50)` | 待填 |
-| `clause_group_total(None)` | 待填 |
+| `pending_clause_groups(None)`（全量） | 39.3 ms |
+| `pending_clause_groups(None, 50)` | 20.0 ms |
+| `clause_group_total(None)` | 7.4 ms |
+
+> 采集条件（2026-10-01，Task 2 执行时）：`data/spec_query.db` 副本（复制到临时目录后
+> `db.DATABASE_PATH` 指向副本），Task 1 三条索引已就位，每项 5 次取最小值。
+> 数据规模：主表组 1501、全驳段 0、`clause_group_total` 1501、词面组 1302、
+> `pending_counts()` = `{"clause": 1569, "word": 1302}`（1569 − 1501 = 68 为低置信兜底段）。
+> `limit=50` 相对全量省约 19 ms（49%，即被截断的 1451 组不再逐组查候选词）。
+> 补充：`word_group_total(None)` 实测 4.0 ms。
 
 ### Task 4 Step 9
 
