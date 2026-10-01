@@ -41,6 +41,16 @@
         {% endfor %}
         </tbody>
     </table>
+
+    {% set shown = groups|length %}
+    <div style="display:flex;gap:0.6rem;align-items:center;justify-content:center;padding:0.6rem 0">
+        <small style="color:var(--pico-muted-color)">已显示 {{ shown }} / 共 {{ total }} 条</small>
+        {% if shown < total %}
+        <button type="button" class="outline"
+                style="margin:0;font-size:0.8rem;padding:0.25rem 0.7rem"
+                onclick="reviewLoadMore('word', {{ limit + 50 }})">加载更多</button>
+        {% endif %}
+    </div>
     <script>
     function wordDecide(rowId, action) {
         var ids = Array.from(document.querySelectorAll('#' + rowId + ' .word-check:checked'))

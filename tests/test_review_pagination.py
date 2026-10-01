@@ -192,3 +192,38 @@ def test_list_fallback_uses_refresh_controller(auth_client):
     assert "fallback-row-" in html, "前置：兜底块应已渲染（否则下面的断言无意义）"
     assert "reviewRefresh(" in html
     assert "dispatchEvent" not in html
+
+
+# ── 分页 UI：加载更多 + 已显示/共 N 条（Task 5）────────────────────
+
+def test_clause_panel_renders_load_more_when_truncated(auth_client):
+    """有更多时渲染「加载更多」，并把下一页 limit 传给总控。"""
+    with get_db() as conn:
+        for i in range(55):
+            _seed_review_clause(conn, f"GB{i}")
+    html = auth_client.get("/review/clause-pending?limit=50").text
+    assert "加载更多" in html
+    assert "reviewLoadMore('clause', 100)" in html
+    # 「主表」是必需的限定词：total 只含主表两段（pending+全驳），不含低置信兜底，
+    # 故会小于宫格红点（红点含兜底）。不加限定词用户会以为两处数字打架。
+    assert "主表已显示 50 / 共 55 条" in html
+
+
+def test_clause_panel_hides_load_more_when_complete(auth_client):
+    """已全部显示时不渲染「加载更多」。"""
+    with get_db() as conn:
+        _seed_review_clause(conn)
+    html = auth_client.get("/review/clause-pending?limit=50").text
+    assert "加载更多" not in html
+    assert "主表已显示 1 / 共 1 条" in html
+
+
+def test_word_panel_renders_load_more(auth_client):
+    """Tab2 同样有分页控件。"""
+    with get_db() as conn:
+        c1 = _seed_clause(conn, "GB1")
+        for word in ["钢筋", "混凝土", "模板"]:
+            rp.insert_pending(conn, c1, "dim6", word, word, 0.9, "b1")
+    html = auth_client.get("/review/word-pending?limit=2").text
+    assert "加载更多" in html
+    assert "reviewLoadMore('word', 52)" in html
