@@ -4,6 +4,8 @@
     <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;line-height:1">
         <label style="font-size:0.75rem;display:flex;align-items:center;gap:0.3rem;margin:0;height:1.75rem;line-height:1">
             <input type="checkbox" id="spec-select-all" style="width:0.9rem;height:0.9rem;margin:0;flex:none"
+                   title="勾选范围为全表（含需滚动才能看到的规范）"
+                   aria-label="全选全部规范：勾选范围为全表"
                    onchange="toggleSpecAll(this)"> 全选
         </label>
         <select id="reclassify-scope" style="font-size:0.75rem;padding:0 0.3rem;width:auto;height:1.75rem;margin:0">
@@ -14,6 +16,8 @@
                 style="font-size:0.75rem;padding:0 0.6rem;height:1.75rem;margin:0;line-height:1"
                 onclick="specBatchReclassify()">🔄 重新分类所选</button>
     </div>
+    {# 仅表格进滚动框；上方工具栏（全选 + 重新分类所选）必须留在框外，否则会随列表滚走 #}
+    <div class="spec-table-wrapper">
     <table class="striped" style="font-size:0.85rem">
         <thead>
             <tr>
@@ -89,6 +93,8 @@
         {% endfor %}
         </tbody>
     </table>
+    </div>
+
     <script>
     function toggleSpecAll(el) {
         document.querySelectorAll('.spec-check').forEach(function (c) { c.checked = el.checked; });
@@ -122,6 +128,16 @@
             if (window.htmx) htmx.process(el);
         } catch (e) { alert('批量重分类失败：' + e.message); }
     }
+
+    // 面板（查看条文/分类）排在列表滚动框之后，规范多时可能在视口外。
+    // 填充完成后自动滚入视野，避免用户以为「点了没反应」。
+    document.body.addEventListener('htmx:afterSettle', function (evt) {
+        var t = evt.detail && evt.detail.target;
+        if (!t) return;
+        if (t.id === 'spec-class-area' || t.id === 'clause-detail-area') {
+            if (t.innerHTML.trim()) t.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    });
     </script>
 {% else %}
     <p style="color:var(--pico-muted-color);text-align:center;padding:2rem">暂无已导入的规范</p>

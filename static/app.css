@@ -243,6 +243,27 @@
     max-height: 55vh; overflow: auto;
     border: 1px solid var(--pico-muted-border-color); border-radius: 4px;
 }
+/* 规范列表滚动框：固定容纳「表头 + 5 本规范」，避免长列表把
+   #spec-class-area / #clause-detail-area 推到屏幕外。
+   27.8rem 的来历：实测表头 72.5px + 每行 74.1px × 5 = 443px ≈ 27.8rem。
+   用限高滚动而非分页——分页会让「全选 + 批量重分类」出现跨页漏选；
+   实测 50 本全量仅 1077 个 DOM 节点 / 20ms，远轻于已在用的 887 条条文框。 */
+.spec-table-wrapper {
+    max-height: 27.8rem;
+    overflow: auto;
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 4px;
+}
+.spec-table-wrapper table.striped {
+    margin-bottom: 0;
+}
+/* 滚动时表头保持可见 */
+.spec-table-wrapper thead th {
+    position: sticky;
+    top: 0;
+    background: var(--pico-background-color, #fff);
+    z-index: 1;
+}
 .clause-table {
     font-size: 0.8rem; width: 100%;
     border-collapse: separate; border-spacing: 0;
