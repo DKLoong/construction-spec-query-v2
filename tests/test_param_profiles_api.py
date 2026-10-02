@@ -25,8 +25,10 @@ def _get(key):
 def test_meta_and_default_profile(auth_client, monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path)
     meta = auth_client.get("/maintenance/params/meta").json()
-    assert [g["id"] for g in meta["groups"]] == ["classify", "search", "qa"]
+    assert [g["id"] for g in meta["groups"]] == ["classify", "search", "qa", "import"]
     assert len(meta["params"]) >= 20
+    assert {"import.task_ttl_terminal_min", "import.task_ttl_review_hours"} <= {
+        p["key"] for p in meta["params"]}
     profiles = auth_client.get("/maintenance/params/profiles").json()
     assert profiles[0]["id"] == 0
     assert profiles[0]["name"] == "默认方案" and profiles[0]["is_system"] is True
