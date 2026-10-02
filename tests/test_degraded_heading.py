@@ -129,12 +129,13 @@ def _run_import(monkeypatch, tmp_path, name: str, md: str):
     init_db()
 
     import app.routes.import_routes as ir
-    ir.progress_store[name] = {"status": "processing", "progress": 0}
+    from tests.conftest import seed_import_task
+    seed_import_task(name, status="processing", progress=0)
     ir._process_import_phase2(name, md, "某规范", "JTG TEST-2026",
                               str(tmp_path / f"{name}.md"), f"hash_{name}")
     with get_db() as conn:
         return [dict(r) for r in conn.execute(
-            "SELECT level, action FROM system_logs").fetchall()]
+            "SELECT level, action, detail FROM system_logs").fetchall()]
 
 
 def test_import_path_writes_warning_into_system_logs(monkeypatch, tmp_path):

@@ -14,6 +14,7 @@
 """
 from app.database import init_db
 from app.routes import import_routes as ir
+from tests.conftest import seed_import_task
 
 # 生成的条文条数：远大于批大小，才能把「逐条」与「分批」区分开
 _N_CLAUSES = 1000
@@ -68,14 +69,14 @@ def _run_import(monkeypatch, tmp_path, task_id):
     # 不加载真实 BGE 模型：只要维度一致即可，本测试关心的是写入次数
     monkeypatch.setattr("app.ai.embedding.embed_texts",
                         lambda texts: [[0.0] * 8 for _ in texts])
-    ir.progress_store[task_id] = {"status": "processing", "progress": 0, "owner": "t"}
+    seed_import_task(task_id, status="processing", progress=0, owner="t")
     try:
         ir._process_import_phase2(
             task_id, _many_clause_md(), "批量测试规范", "GB/T 99999-2020",
             str(tmp_path / "f.md"), "hash_batch", "现行", "",
         )
     finally:
-        ir.progress_store.pop(task_id, None)
+        ir.delete_task(task_id)
     return adds
 
 
@@ -117,14 +118,14 @@ def test_import_embed_text_carries_section_path(monkeypatch, tmp_path):
     monkeypatch.setattr(ir, "VectorStore", lambda: _TextVS())
     monkeypatch.setattr("app.ai.embedding.embed_texts",
                         lambda ts: [[0.0] * 8 for _ in ts])
-    ir.progress_store["bt000003"] = {"status": "processing", "progress": 0, "owner": "t"}
+    seed_import_task("bt000003", status="processing", progress=0, owner="t")
     try:
         ir._process_import_phase2(
             "bt000003", _SECTIONED_MD, "面包屑测试规范", "GB/T 88888-2020",
             str(tmp_path / "f3.md"), "hash_breadcrumb", "现行", "",
         )
     finally:
-        ir.progress_store.pop("bt000003", None)
+        ir.delete_task("bt000003")
 
     assert len(texts) == 1, f"应只导入 1 条条文，实际 {len(texts)}"
     assert texts[0] == (
@@ -165,14 +166,14 @@ def test_vector_write_covers_every_clause_exactly_once(monkeypatch, tmp_path):
     monkeypatch.setattr(ir, "VectorStore", lambda: _IdVS())
     monkeypatch.setattr("app.ai.embedding.embed_texts",
                         lambda texts: [[0.0] * 8 for _ in texts])
-    ir.progress_store["bt000002"] = {"status": "processing", "progress": 0, "owner": "t"}
+    seed_import_task("bt000002", status="processing", progress=0, owner="t")
     try:
         ir._process_import_phase2(
             "bt000002", _many_clause_md(), "批量测试规范", "GB/T 99999-2021",
             str(tmp_path / "f2.md"), "hash_batch2", "现行", "",
         )
     finally:
-        ir.progress_store.pop("bt000002", None)
+        ir.delete_task("bt000002")
 
     assert len(ids) == _N_CLAUSES, f"写入 {len(ids)} 行，应为 {_N_CLAUSES}"
     assert len(set(ids)) == _N_CLAUSES, "存在重复写入的 clause_id"

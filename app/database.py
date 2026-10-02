@@ -216,6 +216,23 @@ CREATE TABLE IF NOT EXISTS qa_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_qa_messages_session ON qa_messages(session_id, id);
+
+CREATE TABLE IF NOT EXISTS import_tasks (
+    task_id          TEXT PRIMARY KEY,
+    status           TEXT NOT NULL,        -- uploading/processing/review_needed/done/error
+    progress         INTEGER NOT NULL DEFAULT 0,
+    message          TEXT NOT NULL DEFAULT '',
+    owner            TEXT NOT NULL DEFAULT '',
+    updated_at       REAL NOT NULL,        -- epoch 秒；超期清理靠它算年龄
+    md_text          TEXT,                 -- Phase 1 产物：审查页与"待审查"复活的唯一来源
+    title            TEXT,
+    code             TEXT,
+    file_path        TEXT,
+    file_name        TEXT,
+    file_hash        TEXT,
+    spec_status      TEXT,
+    replaced_by_code TEXT
+);
 """
 
 TRIGGERS_SQL = """

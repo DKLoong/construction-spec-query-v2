@@ -12,14 +12,14 @@ md 30 万字符——即「大规范根本导不进来」。
 
 本文件锁定：md 走 **raw body**（无字段大小上限），同时保留原有守卫语义。
 """
-from app.routes.import_routes import progress_store
+from tests.conftest import import_task_row, seed_import_task
 
 # 单字段上限 1MB；取 1.5MB 复刻 CJJ 2-2008 的实测失败尺寸
 _OVER_LIMIT_BYTES = 1_500_000
 
 
 def _seed_task(task_id, **overrides):
-    """在 progress_store 里放一个待审查任务；默认状态为 review_needed"""
+    """登记一条待审查任务（落库）；默认状态为 review_needed"""
     task = {
         "status": "review_needed",
         "progress": 50,
@@ -35,8 +35,7 @@ def _seed_task(task_id, **overrides):
         "owner": "admin",
     }
     task.update(overrides)
-    progress_store[task_id] = task
-    return task
+    seed_import_task(task_id, **task)
 
 
 def _big_body(target_bytes=_OVER_LIMIT_BYTES):
@@ -76,9 +75,9 @@ def test_confirm_accepts_body_over_form_field_limit(auth_client, monkeypatch):
         )
         assert resp.status_code == 200, f"超限 md 被拒: {resp.status_code} {resp.text[:200]}"
         # 关键：整份 body 一字不差地到达服务端（未经表单解码变形）
-        assert progress_store[task_id]["md_text"] == body
+        assert import_task_row(task_id)["md_text"] == body
     finally:
-        progress_store.pop(task_id, None)
+        ir.delete_task(task_id)
 
 
 def test_confirm_empty_body_rejected(auth_client, monkeypatch):
@@ -88,7 +87,7 @@ def test_confirm_empty_body_rejected(auth_client, monkeypatch):
     called = []
     monkeypatch.setattr(ir, "_process_import_phase2", _phase2_stub(called))
     task_id = "cc000002"
-    task = _seed_task(task_id)
+    _seed_task(task_id)
 
     try:
         resp = auth_client.post(
@@ -98,9 +97,9 @@ def test_confirm_empty_body_rejected(auth_client, monkeypatch):
         )
         assert resp.status_code == 400
         assert called == [], "空 body 不应启动 Phase 2"
-        assert task["status"] == "review_needed", "空 body 不应改动任务状态"
+        assert import_task_row(task_id)["status"] == "review_needed", "空 body 不应改动任务状态"
     finally:
-        progress_store.pop(task_id, None)
+        ir.delete_task(task_id)
 
 
 def test_confirm_blank_body_rejected(auth_client, monkeypatch):
@@ -119,7 +118,7 @@ def test_confirm_blank_body_rejected(auth_client, monkeypatch):
         )
         assert resp.status_code == 400
     finally:
-        progress_store.pop(task_id, None)
+        ir.delete_task(task_id)
 
 
 def test_review_page_no_longer_posts_md_as_form_field(auth_client):
@@ -135,4 +134,5 @@ def test_review_page_no_longer_posts_md_as_form_field(auth_client):
         html = resp.text
         assert 'name="content"' not in html, "md 仍以表单字段回传，会再次撞 1MB 上限"
     finally:
-        progress_store.pop(task_id, None)
+        import app.routes.import_routes as ir
+        ir.delete_task(task_id)

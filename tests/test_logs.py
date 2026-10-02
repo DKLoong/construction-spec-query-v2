@@ -4,6 +4,7 @@ P3 日志管理：随 Task 递增覆盖 auth/import/spec/rule/review/classify �
 90 天保留清理、日志列表/导出/手动清理，QA 日志只读见 tests/test_logs_ui.py。
 """
 from app.database import init_db, get_db
+from tests.conftest import seed_import_task
 
 
 def _setup(monkeypatch, tmp_path, name="logs.db"):
@@ -144,12 +145,10 @@ def test_confirm_review_logs_info(auth_client, monkeypatch, tmp_path):
     import app.routes.import_routes as ir
     _setup(monkeypatch, tmp_path)
     tid = "aa000011"
-    ir.progress_store[tid] = {
-        "status": "review_needed", "progress": 50, "owner": "admin",
-        "md_text": "# x", "title": "测试规范", "code": "GB/T 1-2010",
-        "file_path": "x.md", "file_hash": "", "spec_status": "现行",
-        "replaced_by_code": "",
-    }
+    seed_import_task(tid, status= "review_needed", progress= 50, owner= "admin",
+        md_text= "# x", title= "测试规范", code= "GB/T 1-2010",
+        file_path= "x.md", file_hash= "", spec_status= "现行",
+        replaced_by_code= "")
     monkeypatch.setattr(ir, "_process_import_phase2", lambda *a, **k: None)
     try:
         resp = auth_client.post(
@@ -159,7 +158,7 @@ def test_confirm_review_logs_info(auth_client, monkeypatch, tmp_path):
         rows = _logs(action="审查确认继续导入", category="import")
         assert len(rows) == 1 and rows[0]["username"] == "admin"
     finally:
-        ir.progress_store.pop(tid, None)
+        ir.delete_task(tid)
 
 
 def test_cancel_review_logs_info(auth_client, monkeypatch, tmp_path):
@@ -167,14 +166,14 @@ def test_cancel_review_logs_info(auth_client, monkeypatch, tmp_path):
     import app.routes.import_routes as ir
     _setup(monkeypatch, tmp_path)
     tid = "bb000022"
-    ir.progress_store[tid] = {"status": "review_needed", "owner": "admin"}
+    seed_import_task(tid, status= "review_needed", owner= "admin")
     try:
         resp = auth_client.post(f"/import/review/{tid}/cancel")
         assert resp.status_code == 200
         rows = _logs(action="取消导入审查", category="import")
         assert len(rows) == 1 and rows[0]["username"] == "admin"
     finally:
-        ir.progress_store.pop(tid, None)
+        ir.delete_task(tid)
 
 
 def test_import_phase2_success_logs_info(monkeypatch, tmp_path):
@@ -191,7 +190,7 @@ def test_import_phase2_success_logs_info(monkeypatch, tmp_path):
         {"clause_no": "3.1.1", "title": "检验", "content": "进场钢筋应检验。",
          "is_non_clause": False, "parent_path": []}])
     tid = "cc000033"
-    ir.progress_store[tid] = {"owner": "admin"}
+    seed_import_task(tid, owner= "admin")
     try:
         ir._process_import_phase2(tid, "# GB", "测试规范", "GB/T 50000-2010",
                                   "none.md", "", "现行", "")
@@ -200,7 +199,7 @@ def test_import_phase2_success_logs_info(monkeypatch, tmp_path):
         assert rows[0]["level"] == "INFO"
         assert '"clause_count": 1' in rows[0]["detail"]
     finally:
-        ir.progress_store.pop(tid, None)
+        ir.delete_task(tid)
 
 
 def test_import_phase2_failure_logs_error(monkeypatch, tmp_path):
@@ -213,7 +212,7 @@ def test_import_phase2_failure_logs_error(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ir, "parse_markdown", _boom)
     tid = "dd000044"
-    ir.progress_store[tid] = {"owner": "system"}
+    seed_import_task(tid, owner= "system")
     try:
         ir._process_import_phase2(tid, "", "", "", "none.md")
         rows = _logs(action="导入失败", category="import")
@@ -221,7 +220,7 @@ def test_import_phase2_failure_logs_error(monkeypatch, tmp_path):
         assert rows[0]["level"] == "ERROR"
         assert "boom" in rows[0]["detail"]
     finally:
-        ir.progress_store.pop(tid, None)
+        ir.delete_task(tid)
 
 
 # ---------- spec / clause 埋点 ----------

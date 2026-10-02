@@ -1,15 +1,15 @@
-"""导入任务台账（progress_store）的生命周期：时限清理 + 并发取用守卫
+"""导入任务台账（import_tasks 表）的生命周期：时限清理 + 并发取用守卫
 
 两个真实缺陷：
 
-1. **无 TTL，只增不减**：任务进入 done/error 后条目永久驻留（只有取消会 pop）。
+1. **无 TTL，只增不减**：任务进入 done/error 后条目永久驻留（只有取消会删）。
 2. **取消与后台线程并发**：`cancel_review` 只在 `status == "done"` 时拒绝取消，
-   也就是说**允许取消 processing 中的任务** → 条目被 pop 时 Phase 1/2 线程还在跑，
-   它随后的 `progress_store[task_id]` 直接下标会抛 KeyError。这是真实窗口，不是理论风险。
+   也就是说**允许取消 processing 中的任务** → 条目被删时 Phase 1/2 线程还在跑，
+   它随后的状态写入必须安全地失败，而不是抛异常。这是真实窗口，不是理论风险。
 
 清理口径（用户裁定）：
-- done / error 超 `import.task_ttl_terminal_min` 分钟 → 只删内存条目；
-- review_needed 超 `import.task_ttl_review_hours` 小时 → 删内存条目**并删磁盘**
+- done / error 超 `import.task_ttl_terminal_min` 分钟 → 只删台账条目；
+- review_needed 超 `import.task_ttl_review_hours` 小时 → 删台账条目**并删磁盘**
   （原文件 + OCR 产物），等于「超过一天没审就算了」；
 - 运行中（uploading / processing）一律不碰。
 磁盘删除复用 `_cleanup_task_artifacts`，它自带「被 specifications 引用则不删」的保护。
@@ -19,12 +19,15 @@ import time
 import pytest
 
 from app.routes import import_routes as ir
+from tests.conftest import import_task_row
 
 
-@pytest.fixture(autouse=True)
-def _clean_store():
-    yield
-    ir.progress_store.clear()
+def _age_task(ir, task_id, age_s):
+    """把 updated_at 往回拨 age_s 秒（_update_task 会盖时间戳，只能在写入后改）"""
+    from app.database import get_db
+    with get_db() as conn:
+        conn.execute("UPDATE import_tasks SET updated_at = ? WHERE task_id = ?",
+                     (time.time() - age_s, task_id))
 
 
 # ═══════════════════════════════════════════
@@ -80,26 +83,27 @@ def test_get_task_returns_none_for_missing():
 
 
 def test_update_task_survives_cancelled_task():
-    """取消（pop）之后线程再写台账：不抛 KeyError，返回 False 让调用方收工
+    """取消（删行）之后线程再写台账：不抛异常，返回 False 让调用方收工
 
     这就是用户报的那条风险：cancel_review 不拒绝 processing 中的任务，
-    Phase 1/2 线程随后 `progress_store[task_id].update(...)` 直接下标即崩。
+    Phase 1/2 线程随后再写台账时会撞上一条已不存在的条目。
     """
-    ir.progress_store["t1"] = {"status": "processing", "progress": 10, "updated_at": time.time()}
+    ir.create_task("t1")
+    ir._update_task("t1", status="processing", progress=10)
     assert ir._update_task("t1", progress=20) is True
-    assert ir.progress_store["t1"]["progress"] == 20
+    assert import_task_row("t1")["progress"] == 20
 
-    ir.progress_store.pop("t1")           # 模拟取消/超时清理
+    ir.delete_task("t1")                                  # 模拟取消/超时清理
     assert ir._update_task("t1", progress=30) is False    # 不得抛异常
-    assert ir.progress_store.get("t1") is None
+    assert ir._get_task("t1") is None
 
 
 def test_update_task_stamps_updated_at():
     """每次更新都要盖时间戳——清理器全靠它算年龄"""
-    ir.progress_store["t2"] = {"status": "processing", "progress": 0}
+    ir.create_task("t2")
     before = time.time()
     ir._update_task("t2", progress=50)
-    assert ir.progress_store["t2"]["updated_at"] >= before
+    assert import_task_row("t2")["updated_at"] >= before
 
 
 # ═══════════════════════════════════════════
@@ -116,8 +120,13 @@ def _paths(tmp_path, monkeypatch):
     return up, out
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def _db(tmp_path, monkeypatch):
+    """台账已落库：每条用例换一个临时库
+
+    autouse 的理由不只是省参数——本文件所有用例都会碰到台账，忘了加参数就会打到
+    **真实** `data/spec_query.db`（conftest 的会话守卫不覆盖主库，属盲区）。
+    """
     from app.database import init_db
     monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "life.db"))
     init_db()
@@ -141,55 +150,62 @@ def _ttls(monkeypatch, terminal_s=TERM, review_s=REVIEW):
 
 
 def test_sweep_drops_expired_terminal_from_memory_only(monkeypatch, _paths, _db):
-    """终态超时：只删内存，磁盘产物必须留着"""
+    """终态超时：只删台账条目，磁盘产物必须留着"""
     up, out = _paths
     src = up / "aaaabbbb.pdf"
     src.write_bytes(b"x")
     (out / "aaaabbbb").mkdir()
     (out / "aaaabbbb" / "aaaabbbb.md").write_text("x", encoding="utf-8")
-    ir.progress_store["aaaabbbb"] = _task("done", age_s=TERM + 10)
+    ir.create_task("aaaabbbb")
+    ir._update_task("aaaabbbb", status="done")
+    _age_task(ir, "aaaabbbb", TERM + 10)
 
     _ttls(monkeypatch)
-    res = ir.sweep_progress_store(now=1000.0)
+    res = ir.sweep_progress_store(now=time.time())
 
     assert res == {"memory": 1, "disk": 0}
-    assert "aaaabbbb" not in ir.progress_store
+    assert ir._get_task("aaaabbbb") is None
     assert src.exists(), "终态清理不得删磁盘（已入库规范的源文件还要留给审查/追溯）"
     assert (out / "aaaabbbb").is_dir()
 
 
 def test_sweep_expired_review_deletes_memory_and_disk(monkeypatch, _paths, _db):
-    """待审查超时：内存与磁盘一起清"""
+    """待审查超时：台账条目与磁盘一起清"""
     up, out = _paths
     src = up / "ccccdddd.pdf"
     src.write_bytes(b"x")
     (out / "ccccdddd").mkdir()
-    ir.progress_store["ccccdddd"] = _task("review_needed", age_s=REVIEW + 10)
+    ir.create_task("ccccdddd")
+    ir._update_task("ccccdddd", status="review_needed")
+    _age_task(ir, "ccccdddd", REVIEW + 10)
 
     _ttls(monkeypatch)
-    res = ir.sweep_progress_store(now=1000.0)
+    res = ir.sweep_progress_store(now=time.time())
 
     assert res == {"memory": 1, "disk": 1}
-    assert "ccccdddd" not in ir.progress_store
+    assert ir._get_task("ccccdddd") is None
     assert not src.exists()
     assert not (out / "ccccdddd").exists()
 
 
 def test_sweep_skips_running_and_fresh(monkeypatch, _paths, _db):
     """运行中的、以及未超时的，一律不动"""
-    ir.progress_store["running1"] = _task("processing", age_s=99999)
-    ir.progress_store["fresh000"] = _task("done", age_s=1)
-    ir.progress_store["review01"] = _task("review_needed", age_s=1)
+    for task_id, status, age in (("running1", "processing", 99999),
+                                 ("fresh000", "done", 1),
+                                 ("review01", "review_needed", 1)):
+        ir.create_task(task_id)
+        ir._update_task(task_id, status=status)
+        _age_task(ir, task_id, age)
 
     _ttls(monkeypatch)
-    res = ir.sweep_progress_store(now=1000.0)
+    res = ir.sweep_progress_store(now=time.time())
 
     assert res == {"memory": 0, "disk": 0}
-    assert set(ir.progress_store) == {"running1", "fresh000", "review01"}
+    assert {t["task_id"] for t in ir.iter_tasks()} == {"running1", "fresh000", "review01"}
 
 
 def test_sweep_keeps_file_referenced_by_specifications(monkeypatch, _paths, _db):
-    """被 specifications 引用的源文件：内存条目照删，**磁盘文件不删**
+    """被 specifications 引用的源文件：台账条目照删，**磁盘文件不删**
 
     复用 _cleanup_task_artifacts 自带的保护，这条用例把它钉住——
     否则「超时连磁盘一起删」会误删已入库规范的原始文件。
@@ -204,22 +220,47 @@ def test_sweep_keeps_file_referenced_by_specifications(monkeypatch, _paths, _db)
                VALUES (?, ?, ?, ?)""",
             ("PROBE 1.0", "已入库规范", str(src), ""),
         )
-    ir.progress_store["eeeeffff"] = _task("review_needed", age_s=REVIEW + 10)
+    ir.create_task("eeeeffff")
+    ir._update_task("eeeeffff", status="review_needed")
+    _age_task(ir, "eeeeffff", REVIEW + 10)
 
     _ttls(monkeypatch)
-    res = ir.sweep_progress_store(now=1000.0)
+    res = ir.sweep_progress_store(now=time.time())
 
     assert res["memory"] == 1
-    assert "eeeeffff" not in ir.progress_store
+    assert ir._get_task("eeeeffff") is None
     assert src.exists(), "被 specifications 引用的源文件被误删了"
 
 
 def test_sweep_honors_param_ttls(monkeypatch, _paths, _db):
     """时限来自参数（不是写死的常量）：调大时限后同一批条目就不该被清"""
-    ir.progress_store["gggghhhh"] = _task("done", age_s=TERM + 10)
+    ir.create_task("gggghhhh")
+    ir._update_task("gggghhhh", status="done")
+    _age_task(ir, "gggghhhh", TERM + 10)
 
     _ttls(monkeypatch, terminal_s=99999)      # 把终态时限调到很大
-    res = ir.sweep_progress_store(now=1000.0)
+    res = ir.sweep_progress_store(now=time.time())
 
     assert res == {"memory": 0, "disk": 0}
-    assert "gggghhhh" in ir.progress_store
+    assert ir._get_task("gggghhhh") is not None
+
+
+def test_sweep_drops_row_from_store_not_just_cache(monkeypatch, _paths, _db):
+    """终态超时：删的是**库里的行**——另开连接读不到（不是只清了某层缓存）"""
+    import sqlite3
+    up, _ = _paths
+    src = up / "iiiijjjj.pdf"
+    src.write_bytes(b"x")
+    ir.create_task("iiiijjjj")
+    ir._update_task("iiiijjjj", status="done")
+    _age_task(ir, "iiiijjjj", TERM + 10)
+
+    _ttls(monkeypatch)
+    assert ir.sweep_progress_store(now=time.time()) == {"memory": 1, "disk": 0}
+
+    conn = sqlite3.connect(str(_db))
+    row = conn.execute("SELECT 1 FROM import_tasks WHERE task_id = ?",
+                       ("iiiijjjj",)).fetchone()
+    conn.close()
+    assert row is None, "行还在库里 → 说明只清了缓存层"
+    assert src.exists(), "终态清理不得删磁盘"

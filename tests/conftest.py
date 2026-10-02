@@ -151,6 +151,38 @@ def qa_db(tmp_path, monkeypatch):
     init_db()
 
 
+def seed_import_task(task_id: str, **fields) -> None:
+    """用落库接口登记一条既有台账条目——`progress_store[task_id] = {...}` 的替身。
+
+    台账已从模块级内存字典搬进 `import_tasks` 表，测试里凡是"先放一条任务再跑链路"
+    的夹具都得改走 `create_task` / `_update_task`：
+    - `owner` 由 `create_task` 落（不在 `_TASK_COLUMNS` 白名单里）；
+    - 其余字段走 `_update_task`，顺带盖上 `updated_at`。
+
+    ⚠ 调用前必须已把 `app.database.DATABASE_PATH` 指到临时库，否则会写进真实
+    `data/spec_query.db`（会话守卫不覆盖主库，属盲区）。
+    """
+    from app.routes import import_routes as ir
+
+    owner = fields.pop("owner", "")
+    ir.create_task(task_id, owner=owner)
+    if fields:
+        ir._update_task(task_id, **fields)
+
+
+def import_task_row(task_id: str) -> dict:
+    """取台账行并断言它存在——`_get_task` 的类型是 `dict | None`，直接下标 pyright 会报
+    `reportOptionalSubscript`（基线要求 0 error）。
+
+    断言失败信息比 `TypeError: 'NoneType' object is not subscriptable` 也更好读。
+    """
+    from app.routes import import_routes as ir
+
+    row = ir._get_task(task_id)
+    assert row is not None, f"台账里没有任务 {task_id}"
+    return row
+
+
 def setup_search_data(conn):
     """写入 3 条测试条文（共享 helper，供搜索相关测试使用），INSERT 带 search_text"""
     from app.search.tokenize import build_search_text

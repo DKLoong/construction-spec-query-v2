@@ -6,25 +6,16 @@
 1. 全局规则要求「接口返回格式必须统一，禁止成功/失败结构不一致」；
 2. 前端浮标只需一条逻辑：读 status 判终态、读 progress 画数字。
    若未知任务改回 404，客户端就得再写一条出错分支，且必然要处理
-   「服务重启后 progress_store 清空」这条**正常**路径（不是异常）。
+   「台账里没有这条任务（从未创建 / 已被超期清理）」这条**正常**路径（不是异常）。
 
 与同族的 `/import/progress/{task_id}`（HTML 片段）保持同一口径：
 未知任务 → `status="unknown"`，不抛 404。
 """
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def _clean_progress_store():
-    """progress_store 是模块级全局字典，用例之间必须隔离"""
-    yield
-    from app.routes import import_routes
-    import_routes.progress_store.clear()
+from tests.conftest import seed_import_task
 
 
 def _set_task(task_id, **fields):
-    from app.routes import import_routes
-    import_routes.progress_store[task_id] = fields
+    seed_import_task(task_id, **fields)
 
 
 def test_progress_json_shape_for_known_task(auth_client):
@@ -57,7 +48,7 @@ def test_progress_json_flags_review_needed(auth_client):
 
 
 def test_progress_json_unknown_task_keeps_shape(auth_client):
-    """未知任务（服务重启后 progress_store 清空）→ 仍 200 且形状不变"""
+    """未知任务（不存在或已被超期清理）→ 仍 200 且形状不变"""
     resp = auth_client.get("/import/progress/deadbeef/json")
 
     assert resp.status_code == 200

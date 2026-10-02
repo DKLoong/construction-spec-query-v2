@@ -2,6 +2,7 @@
 import pytest
 
 from app.database import get_db, init_db
+from tests.conftest import seed_import_task
 
 
 @pytest.fixture(autouse=True)
@@ -27,8 +28,8 @@ def test_import_phase2_writes_status(monkeypatch, tmp_path):
     monkeypatch.setattr("app.routes.import_routes.UPLOAD_DIR", str(tmp_path / "up"))
     init_db()
     import app.routes.import_routes as ir
-    ir.progress_store["task1"] = {"status": "processing", "progress": 0}  # phase2 内部 update 依赖
-    ir.progress_store["task1"]["md_text"] = "# 第1章\n5.1.1 条文内容测试\n"
+    seed_import_task("task1", status="processing", progress=0,
+                     md_text="# 第1章\n5.1.1 条文内容测试\n")
     from app.routes.import_routes import _process_import_phase2
     _process_import_phase2(
         "task1", "# 第1章\n5.1.1 条文内容测试\n", "混凝土规范", "GBT 50010-2010",
@@ -55,8 +56,8 @@ def test_import_reverse_link_obsolete_spec(monkeypatch, tmp_path):
             ("GB 50010-2011", "旧规范", "现行"),
         )
     import app.routes.import_routes as ir
-    ir.progress_store["task2"] = {"status": "processing", "progress": 0}
-    ir.progress_store["task2"]["md_text"] = "# 第1章\n5.1.1 新条文内容\n"
+    seed_import_task("task2", status="processing", progress=0,
+                     md_text="# 第1章\n5.1.1 新条文内容\n")
     from app.routes.import_routes import _process_import_phase2
     # 导入新规范 GB 50010-2015，界面校核出它替代 GB 50010-2011 → 传 replaced_by_code
     _process_import_phase2(
@@ -80,8 +81,8 @@ def test_import_reverse_link_ignores_self(monkeypatch, tmp_path):
     monkeypatch.setattr("app.routes.import_routes.UPLOAD_DIR", str(tmp_path / "up"))
     init_db()
     import app.routes.import_routes as ir
-    ir.progress_store["task3"] = {"status": "processing", "progress": 0}
-    ir.progress_store["task3"]["md_text"] = "# 第1章\n5.1.1 新条文内容\n"
+    seed_import_task("task3", status="processing", progress=0,
+                     md_text="# 第1章\n5.1.1 新条文内容\n")
     from app.routes.import_routes import _process_import_phase2
     # 同码重导：replaced_by_code 归一化后等于自身 code
     _process_import_phase2(
@@ -108,8 +109,8 @@ def test_import_obsolete_spec_persists_replaced_by_code(monkeypatch, tmp_path):
     monkeypatch.setattr("app.routes.import_routes.UPLOAD_DIR", str(tmp_path / "up"))
     init_db()
     import app.routes.import_routes as ir
-    ir.progress_store["task4"] = {"status": "processing", "progress": 0}
-    ir.progress_store["task4"]["md_text"] = "# 第1章\n5.1.1 旧条文内容\n"
+    seed_import_task("task4", status="processing", progress=0,
+                     md_text="# 第1章\n5.1.1 旧条文内容\n")
     from app.routes.import_routes import _process_import_phase2
     _process_import_phase2(
         "task4", "# 第1章\n5.1.1 旧条文内容\n", "钢筋机械连接技术规程", "JGJ 107-2010",

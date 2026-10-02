@@ -6,6 +6,7 @@
 本文件锁定：两条失败路径都必须在 system_logs 留下 WARN。
 """
 from app.database import get_db, init_db
+from tests.conftest import seed_import_task
 
 
 def _setup(monkeypatch, tmp_path, name):
@@ -28,7 +29,7 @@ def test_import_vector_store_failure_logs_warning(monkeypatch, tmp_path):
     """向量库连接失败：整批条文都不会有向量，必须留 WARN"""
     _setup(monkeypatch, tmp_path, "vw1")
     import app.routes.import_routes as ir
-    ir.progress_store["t1"] = {"status": "processing", "progress": 0}
+    seed_import_task("t1", status="processing", progress=0)
 
     def _boom(*args, **kwargs):
         raise RuntimeError("lance connect failed")
@@ -48,7 +49,7 @@ def test_import_embedding_failure_logs_warning(monkeypatch, tmp_path):
     """embedding 计算失败：同样只写内存进度、不留日志 → 必须补 WARN"""
     _setup(monkeypatch, tmp_path, "vw2")
     import app.routes.import_routes as ir
-    ir.progress_store["t2"] = {"status": "processing", "progress": 0}
+    seed_import_task("t2", status="processing", progress=0)
 
     class _FakeVS:
         """只用于让 vs is not None 成立；embedding 阶段先失败，不会走到建表"""

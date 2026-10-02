@@ -19,16 +19,27 @@ _N_CLAUSES = 1200
 _MAX_JUMP = 20
 
 
-class _Recorder(dict):
-    """记录每次 update 的 (progress, message)；供断言进度序列与文案"""
+def _spy_update_task(monkeypatch, sink: list[tuple]) -> None:
+    """包一层 `_update_task`：**先真正落库**，再记录合并后的 (progress, message)
 
-    def __init__(self, sink):
-        super().__init__()
-        self._sink = sink
+    台账已落库，不能再 monkeypatch 一个内存字典来观察进度。这里必须用**请求字段**
+    自己维护合并状态：Phase 2 的进度更新走的是外层事务里那条连接（`conn=conn`），
+    此时另开连接读到的仍是**未提交**前的旧行，读库里反而看不到新进度。
+    合并语义与旧替身一致（只改 message 的一次更新带着上一次的 progress）。
+    """
+    import app.routes.import_routes as ir
 
-    def update(self, *args, **kwargs):
-        super().update(*args, **kwargs)
-        self._sink.append((self.get("progress"), self.get("message", "")))
+    real = ir._update_task
+    state: dict = {}
+
+    def _spy(task_id, conn=None, **fields):
+        ok = real(task_id, conn=conn, **fields)
+        if ok:
+            state.update(fields)
+            sink.append((state.get("progress"), state.get("message", "")))
+        return ok
+
+    monkeypatch.setattr(ir, "_update_task", _spy)
 
 
 def _setup(monkeypatch, tmp_path):
@@ -72,7 +83,9 @@ def _run_phase2(monkeypatch, tmp_path, task_id):
     """跑一遍 Phase 2，返回记录的 (progress, message) 序列"""
     _setup(monkeypatch, tmp_path)
     sink: list[tuple] = []
-    monkeypatch.setattr(ir, "progress_store", {task_id: _Recorder(sink)})
+    from tests.conftest import seed_import_task
+    seed_import_task(task_id, status="processing", progress=0)
+    _spy_update_task(monkeypatch, sink)
     monkeypatch.setattr(ir, "VectorStore", lambda: _FakeVS([]))
     # 不加载真实 BGE 模型（约 29 秒）：本文件断言的是进度机制，不是模型行为
     monkeypatch.setattr("app.ai.embedding.get_model", lambda: object())

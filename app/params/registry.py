@@ -177,16 +177,16 @@ def _build_meta():
         "历史对话段的独立 token 预算，与「上下文 token 预算」（条文段）分开计。"
         "两段合计上界 = 本值 + 上下文 token 预算 + system prompt。"
         "0 = 不注入历史。", dtype="int"))
-    # ---- import：任务台账（progress_store）超期回收 ----
+    # ---- import：任务台账（import_tasks）超期回收 ----
     meta.append(_num(
         "import.task_ttl_terminal_min", "import", "已完成任务保留（分钟）",
         float(IMPORT_TASK_TTL_TERMINAL_MIN), 1, 1440, "1~1440",
-        "导入完成/失败的任务在内存台账里的保留时长，超时只清内存条目。"
+        "导入完成/失败的任务在台账里的保留时长，超时只删台账条目。"
         "任务状态页面与审查入口都依赖该条目，值太小会让刚导完就查不到进度。", dtype="int"))
     meta.append(_num(
         "import.task_ttl_review_hours", "import", "待审查任务保留（小时）",
         float(IMPORT_TASK_TTL_REVIEW_HOURS), 1, 720, "1~720",
-        "停在「待审查」的任务保留时长；超时不仅清内存台账，还会**删除磁盘上的原文件"
+        "停在「待审查」的任务保留时长；超时不仅删台账条目，还会**删除磁盘上的原文件"
         "与 OCR 产物**（等于放弃这次未完成的导入）。被已入库规范引用的文件不会删。",
         dtype="int"))
     return meta

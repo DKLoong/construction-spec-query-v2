@@ -1,5 +1,7 @@
 import pytest
 
+from tests.conftest import import_task_row, seed_import_task
+
 
 def test_import_page_protected(client):
     resp = client.get("/import", follow_redirects=False)
@@ -21,9 +23,7 @@ def _process_import_and_get_state(monkeypatch, tmp_path, task_id, force_ocr,
     from app.routes import import_routes
 
     # 模拟 upload 流程已创建的任务条目
-    import_routes.progress_store[task_id] = {
-        "status": "uploading", "progress": 0, "message": "正在上传...",
-    }
+    seed_import_task(task_id, status="uploading", progress=0, message="正在上传...")
     monkeypatch.setattr(import_routes, "is_scanned", lambda p: is_scanned_val)
 
     calls = {"ocr": 0, "extract": 0}
@@ -46,7 +46,7 @@ def _process_import_and_get_state(monkeypatch, tmp_path, task_id, force_ocr,
         )
 
     import_routes._process_import(task_id, str(pdf), "标题", "JGJ 107", force_ocr=force_ocr)
-    state = import_routes.progress_store[task_id]["status"]
+    state = import_task_row(task_id)["status"]
     return calls, state
 
 
@@ -84,9 +84,7 @@ def test_process_import_cleans_ocr_text_before_review(monkeypatch, tmp_path):
 
     from app.routes import import_routes
     task_id = "task-clean"
-    import_routes.progress_store[task_id] = {
-        "status": "uploading", "progress": 0,
-    }
+    seed_import_task(task_id, status="uploading", progress=0)
     monkeypatch.setattr(import_routes, "is_scanned", lambda p: True)
 
     class FakeOCRClient:
@@ -100,13 +98,13 @@ def test_process_import_cleans_ocr_text_before_review(monkeypatch, tmp_path):
     )
 
     import_routes._process_import(task_id, str(pdf), "标题", "GB 1234", force_ocr=False)
-    stored = import_routes.progress_store[task_id]["md_text"]
+    stored = import_task_row(task_id)["md_text"]
     assert "第 1 页" not in stored
     assert "12" not in stored
     assert "正文内容" in stored
     # `## 第1页` 结构分隔标记保留（供审查/封面过滤使用）
     assert "## 第1页" in stored
-    assert import_routes.progress_store[task_id]["status"] == "review_needed"
+    assert import_task_row(task_id)["status"] == "review_needed"
 
 
 def test_filter_cover_clauses_drops_cover_content():
@@ -201,13 +199,13 @@ def _drive_real_import(isolated_paths, monkeypatch, md_text: str,
     monkeypatch.setattr("app.ai.embedding.get_model", lambda: object())
     monkeypatch.setattr("app.ai.embedding.embed_texts",
                         lambda texts: [[0.0] * 8 for _ in texts])
-    ir.progress_store[task_id] = {"status": "processing", "progress": 0, "owner": "t"}
+    seed_import_task(task_id, status="processing", progress=0, owner="t")
     try:
         ir._process_import(task_id, str(md_path), "祖先链测试规范", "GB/T 11111-2020")
-        state = dict(ir.progress_store[task_id])
+        state = dict(import_task_row(task_id))
         assert state["status"] == "done", f"导入未完成：{state}"
     finally:
-        ir.progress_store.pop(task_id, None)
+        ir.delete_task(task_id)
 
     with get_db() as conn:
         return {r["clause_no"]: dict(r) for r in conn.execute(
@@ -450,14 +448,6 @@ def test_copy_ocr_images_no_imgs_dir(tmp_path):
 # 取消导入（cancel review）
 # ═══════════════════════════════════════════
 
-@pytest.fixture(autouse=True)
-def _clean_progress_store():
-    """每个测试结束后清理 progress_store（模块级全局字典，避免串扰）"""
-    yield
-    from app.routes import import_routes
-    import_routes.progress_store.clear()
-
-
 def _setup_cancel_env(monkeypatch, tmp_path, task_id):
     """把 UPLOAD_DIR / OUTPUT_DIR 指到临时目录，返回 (upload_dir, output_dir)"""
     from app.routes import import_routes
@@ -485,11 +475,9 @@ def test_cancel_review_cleans_files_and_progress(monkeypatch, tmp_path, auth_cli
     (out_task / "imgs").mkdir(parents=True)
     (out_task / "imgs" / "a.jpg").write_bytes(b"img-a")
     (out_task / f"{task_id}.md").write_text("# OCR 结果", encoding="utf-8")
-    # 内存任务（审查待确认状态）
-    import_routes.progress_store[task_id] = {
-        "status": "review_needed",
-        "file_path": str(upload_dir / f"{task_id}.pdf"),
-    }
+    # 台账任务（审查待确认状态）
+    seed_import_task(task_id, status="review_needed",
+                     file_path=str(upload_dir / f"{task_id}.pdf"))
 
     resp = auth_client.post(f"/import/review/{task_id}/cancel")
 
@@ -497,7 +485,7 @@ def test_cancel_review_cleans_files_and_progress(monkeypatch, tmp_path, auth_cli
     assert resp.headers.get("HX-Redirect") == "/"
     assert not upload_dir.joinpath(f"{task_id}.pdf").exists()
     assert not out_task.exists()
-    assert task_id not in import_routes.progress_store
+    assert import_routes._get_task(task_id) is None
 
 
 def test_cancel_review_invalid_task_id_rejected(monkeypatch, tmp_path, auth_client):
@@ -513,7 +501,7 @@ def test_cancel_review_invalid_task_id_rejected(monkeypatch, tmp_path, auth_clie
 
 
 def test_cancel_review_idempotent_with_stale_files(monkeypatch, tmp_path, auth_client):
-    """任务不存在（服务重启后 progress_store 清空）但磁盘有残留 → 仍清理（幂等）"""
+    """任务不存在（从未创建 / 已被超期清理）但磁盘有残留 → 仍清理（幂等）"""
     task_id = "a1b2c3d4"
     upload_dir, output_dir = _setup_cancel_env(monkeypatch, tmp_path, task_id)
     upload_dir.joinpath(f"{task_id}.pdf").write_bytes(b"%PDF")
@@ -521,7 +509,7 @@ def test_cancel_review_idempotent_with_stale_files(monkeypatch, tmp_path, auth_c
     out_task.mkdir()
 
     from app.routes import import_routes
-    import_routes.progress_store.pop(task_id, None)  # 模拟服务重启
+    import_routes.delete_task(task_id)  # 模拟台账里没有这条
 
     resp = auth_client.post(f"/import/review/{task_id}/cancel")
 
@@ -536,13 +524,13 @@ def test_cancel_review_without_files_is_noop(monkeypatch, tmp_path, auth_client)
 
     task_id = "a1b2c3d4"
     _setup_cancel_env(monkeypatch, tmp_path, task_id)
-    import_routes.progress_store[task_id] = {"status": "review_needed"}
+    seed_import_task(task_id, status="review_needed")
 
     resp = auth_client.post(f"/import/review/{task_id}/cancel")
 
     assert resp.status_code == 200
     assert resp.headers.get("HX-Redirect") == "/"
-    assert task_id not in import_routes.progress_store
+    assert import_routes._get_task(task_id) is None
 
 
 def test_cancel_review_rejects_other_owner(monkeypatch, tmp_path, auth_client):
@@ -552,17 +540,14 @@ def test_cancel_review_rejects_other_owner(monkeypatch, tmp_path, auth_client):
     task_id = "a1b2c3d4"
     upload_dir, output_dir = _setup_cancel_env(monkeypatch, tmp_path, task_id)
     upload_dir.joinpath(f"{task_id}.pdf").write_bytes(b"%PDF")
-    import_routes.progress_store[task_id] = {
-        "status": "review_needed",
-        "owner": "someone_else",
-        "file_path": str(upload_dir / f"{task_id}.pdf"),
-    }
+    seed_import_task(task_id, status="review_needed", owner="someone_else",
+                     file_path=str(upload_dir / f"{task_id}.pdf"))
 
     resp = auth_client.post(f"/import/review/{task_id}/cancel")
 
     assert resp.status_code == 403
     assert upload_dir.joinpath(f"{task_id}.pdf").exists()
-    assert task_id in import_routes.progress_store
+    assert import_routes._get_task(task_id) is not None
 
 
 def test_cancel_review_rejects_done_status(monkeypatch, tmp_path, auth_client):
@@ -572,11 +557,8 @@ def test_cancel_review_rejects_done_status(monkeypatch, tmp_path, auth_client):
     task_id = "a1b2c3d4"
     upload_dir, output_dir = _setup_cancel_env(monkeypatch, tmp_path, task_id)
     upload_dir.joinpath(f"{task_id}.pdf").write_bytes(b"%PDF")
-    import_routes.progress_store[task_id] = {
-        "status": "done",
-        "owner": "admin",
-        "file_path": str(upload_dir / f"{task_id}.pdf"),
-    }
+    seed_import_task(task_id, status="done", owner="admin",
+                     file_path=str(upload_dir / f"{task_id}.pdf"))
 
     resp = auth_client.post(f"/import/review/{task_id}/cancel")
 
@@ -602,13 +584,13 @@ def test_cancel_review_skips_db_referenced_output_dir(monkeypatch, tmp_path, aut
             "INSERT INTO specifications (code, title, output_dir) VALUES (?, ?, ?)",
             ("a1b2c3d4", "八位hex编号规范", str(out_task)),
         )
-    import_routes.progress_store[task_id] = {"status": "review_needed", "owner": "admin"}
+    seed_import_task(task_id, status="review_needed", owner="admin")
 
     resp = auth_client.post(f"/import/review/{task_id}/cancel")
 
     assert resp.status_code == 200
     assert out_task.exists(), "被 DB 引用的 output_dir 不应被删除"
-    assert task_id not in import_routes.progress_store
+    assert import_routes._get_task(task_id) is None
 
 
 # ═══════════════════════════════════════════

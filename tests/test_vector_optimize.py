@@ -16,6 +16,7 @@ from pathlib import Path
 
 from app.database import get_db, init_db
 from tests.conftest import setup_search_data
+from tests.conftest import seed_import_task
 
 _LOGGER_NAME = "app.search.vector_search"
 
@@ -160,13 +161,13 @@ def test_import_compacts_after_all_vector_writes(monkeypatch, tmp_path):
     monkeypatch.setattr(ir, "VectorStore", lambda: _VS())
     monkeypatch.setattr("app.ai.embedding.embed_texts",
                         lambda texts: [[0.0] * 8 for _ in texts])
-    ir.progress_store["opt000001"] = {"status": "processing", "progress": 0, "owner": "t"}
+    seed_import_task("opt000001", status="processing", progress=0, owner="t")
     try:
         ir._process_import_phase2(
             "opt000001", "# 第1章\n5.1.1 条文内容测试。\n", "压实测试规范",
             "GB/T 55555-2020", str(tmp_path / "f.md"), "hash_opt", "现行", "")
     finally:
-        ir.progress_store.pop("opt000001", None)
+        ir.delete_task("opt000001")
 
     assert events and events[-1][0] == "optimize", \
         f"导入收尾未压实（或压实不在写入之后）: {events}"

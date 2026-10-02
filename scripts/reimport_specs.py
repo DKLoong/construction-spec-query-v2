@@ -128,7 +128,8 @@ def main() -> int:
         print(f"  已删除旧规范行与 {deleted} 条条文")
 
         import app.routes.import_routes as ir
-        ir.progress_store[task_id] = {"status": "processing", "progress": 0}
+        ir.create_task(task_id)
+        ir._update_task(task_id, status="processing", progress=0)
         md_text = _read_md(md_path)
         expected = _expected_count(md_text)
         ir._process_import_phase2(
@@ -136,7 +137,7 @@ def main() -> int:
             spec["source_path"], spec["file_hash"] or "",
             spec["status"] or "现行", spec["replaced_by_code"] or "",
         )
-        state = ir.progress_store.get(task_id, {})
+        state = ir._get_task(task_id) or {}
         print(f"  进度: {state.get('status')} / {state.get('message')}")
 
         # 自校验：库内条数必须等于导入前算出的预期值。**只信库、不信进度文案**

@@ -92,11 +92,11 @@ def _startup_log_cleanup():
 
 
 def _startup_import_sweeper():
-    """后台常驻线程：周期性回收超期的导入任务台账（progress_store）
+    """后台常驻线程：周期性回收超期的导入任务台账（import_tasks 表）
 
-    台账是纯内存字典，原先**无 TTL**：任务进入 done/error 后条目永久驻留（只有
-    用户主动取消才 pop），长期运行只增不减；停在 review_needed 的条目还额外绑着
-    磁盘上的原文件与 OCR 产物（单份可达 68MB）。
+    台账原先**无 TTL**：任务进入 done/error 后条目永久驻留（只有用户主动取消才删），
+    长期运行只增不减；落库（import_tasks）之后这条依然成立——表同样只增不减。
+    停在 review_needed 的条目还额外绑着磁盘上的原文件与 OCR 产物（单份可达 68MB）。
     时限与口径见 import_routes.sweep_progress_store，两档时限均可在参数设置页调整。
     """
     import threading

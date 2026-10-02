@@ -13,6 +13,7 @@ LanceDB 的向量写入不在事务里（向量在 commit 之前就已写入）�
 """
 from app.database import init_db
 from app.routes import import_routes as ir
+from tests.conftest import import_task_row, seed_import_task
 
 
 def _setup(monkeypatch, tmp_path):
@@ -40,14 +41,14 @@ def test_failure_message_says_incomplete_and_must_rerun(monkeypatch, tmp_path):
     """失败文案：必须同时含「未完成」与「重跑」两个语义，且保留原始原因"""
     _setup(monkeypatch, tmp_path)
     _fail_after_spec_insert(monkeypatch)
-    ir.progress_store["fw000001"] = {"status": "processing", "progress": 70, "owner": "t"}
+    seed_import_task("fw000001", status="processing", progress=70, owner="t")
     try:
         ir._process_import_phase2(
             "fw000001", "# 第1章\n5.1.1 条文内容测试。\n", "失败措辞测试规范",
             "GB/T 66666-2020", str(tmp_path / "f.md"), "hash_fw", "现行", "")
-        entry = dict(ir.progress_store["fw000001"])
+        entry = dict(import_task_row("fw000001"))
     finally:
-        ir.progress_store.pop("fw000001", None)
+        ir.delete_task("fw000001")
 
     assert entry["status"] == "error", f"失败任务的 status 应为 error: {entry}"
     msg = entry["message"]
@@ -66,8 +67,7 @@ def test_rendered_error_paragraph_keeps_the_failure_prefix(auth_client, monkeypa
     判断这是失败还是提示），而没有别的用例会报警（R36）。
     """
     msg = "本次未完成，请重跑：database is locked"
-    monkeypatch.setattr(ir, "progress_store",
-                        {"fw000002": {"status": "error", "progress": 0, "message": msg}})
+    seed_import_task("fw000002", status="error", progress=0, message=msg)
 
     resp = auth_client.get("/import/progress/fw000002")
 

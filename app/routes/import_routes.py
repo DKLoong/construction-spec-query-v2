@@ -2,6 +2,7 @@ import hashlib
 import html
 import logging
 import re
+import sqlite3
 import time
 import unicodedata
 import uuid
@@ -24,7 +25,6 @@ from app.search.chunking import build_embed_chunks
 from app.routes.spec_routes import SPEC_STATUS_ALLOWED
 
 router = APIRouter()
-progress_store = {}
 
 logger = logging.getLogger(__name__)
 
@@ -32,29 +32,79 @@ logger = logging.getLogger(__name__)
 REPLACED_BY_CODE_MAX_LEN = 100
 
 
-def _get_task(task_id: str):
+# 台账可写列的单一来源：列名要拼进 SET 子句，故必须白名单校验
+# （既防注入，也防字段名打错后静默写不进去）
+_TASK_COLUMNS = frozenset({
+    "status", "progress", "message", "md_text", "title", "code",
+    "file_path", "file_name", "file_hash", "spec_status", "replaced_by_code",
+})
+
+
+def create_task(task_id: str, owner: str = "") -> None:
+    """登记一条导入任务（初始 uploading）"""
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO import_tasks (task_id, status, progress, message, owner, updated_at) "
+            "VALUES (?, 'uploading', 0, '正在上传...', ?, ?)",
+            (task_id, owner, time.time()),
+        )
+
+
+def _get_task(task_id: str) -> dict | None:
     """取任务台账条目；不存在返回 None。
 
-    台账取用一律走本函数与 `_update_task`，**不要**直接 `progress_store[task_id]`：
-    `cancel_review` 只在 `status == "done"` 时拒绝取消，也就是说**允许取消
-    processing 中的任务** —— 条目被 pop 时 Phase 1/2 线程仍在跑，随后的直接下标
-    会让那个线程抛 KeyError 崩掉（真实并发窗口，非常理论风险）。
+    台账取用一律走本函数与 `_update_task`。`cancel_review` 只在 `status == "done"`
+    时拒绝取消，也就是**允许取消 processing 中的任务** —— 该任务随后的状态写入必须
+    安全地失败，而不是抛异常。
+
+    返回**普通 dict**：调用方大量使用 `task.get(...)`，而 `sqlite3.Row` 没有 `.get`。
     """
-    return progress_store.get(task_id)
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM import_tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+    return dict(row) if row is not None else None
 
 
-def _update_task(task_id: str, **fields) -> bool:
-    """安全更新台账条目；任务已被取消/清理时返回 False（调用方据此提前收工）。
+def _update_task(task_id: str, conn: sqlite3.Connection | None = None, **fields) -> bool:
+    """安全更新台账条目；任务不存在时返回 False（调用方据此提前收工）。
 
-    顺带盖 `updated_at`：超期清理全靠它算年龄，散落在各处的 update 调用容易漏盖，
-    集中在这里盖一次。
+    顺带盖 `updated_at`：超期清理全靠它算年龄。
+
+    ⚠ **只写传入的字段**，绝不"读全行 → 合并 → 整行写回"：OCR 期间 progress_cb 会
+    反复只更新 message，整行写回会把 md_text（实测最大 460 KB）每次重写一遍。
+
+    ⚠ **`conn` 只在「调用方已持有未提交写事务」时必须传入**（Phase 2 的条文插入 →
+    向量阶段之间正是这种情形）。`import_tasks` 与 `specifications`/`clauses` 同库，
+    SQLite 同一时刻只允许一个写者：此时另开连接会被写锁挡住，抛
+    `sqlite3.OperationalError: database is locked`。传入外层连接让这次 UPDATE 并入
+    外层事务（由调用方负责 commit），既不再撞锁，也不改变事务边界与回滚语义。
     """
-    task = progress_store.get(task_id)
-    if task is None:
-        return False
-    fields["updated_at"] = time.time()
-    task.update(fields)
-    return True
+    unknown = set(fields) - _TASK_COLUMNS
+    if unknown:
+        raise ValueError(f"未知台账字段: {sorted(unknown)}")
+    values = dict(fields)
+    values["updated_at"] = time.time()
+    assignments = ", ".join(f"{col} = ?" for col in values)   # 列名已过白名单
+    sql = f"UPDATE import_tasks SET {assignments} WHERE task_id = ?"
+    params = (*values.values(), task_id)
+    if conn is not None:
+        return conn.execute(sql, params).rowcount > 0
+    with get_db() as db:
+        return db.execute(sql, params).rowcount > 0
+
+
+def delete_task(task_id: str) -> None:
+    """删除台账条目（幂等：不存在也无妨）"""
+    with get_db() as conn:
+        conn.execute("DELETE FROM import_tasks WHERE task_id = ?", (task_id,))
+
+
+def iter_tasks() -> list[dict]:
+    """列出全部台账条目（供超期清理遍历）"""
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM import_tasks").fetchall()
+    return [dict(r) for r in rows]
 
 
 def _task_ttl_seconds() -> tuple[float, float]:
@@ -94,8 +144,8 @@ def sweep_progress_store(now: float | None = None, *, delete_disk: bool = True) 
     ttl_terminal_s, ttl_review_s = _task_ttl_seconds()
     now = time.time() if now is None else now
     dropped = cleaned = 0
-    # 先固化键集再删：边遍历边 pop 会 RuntimeError，也避免受并发改动影响
-    for task_id, task in list(progress_store.items()):
+    for task in iter_tasks():
+        task_id = task["task_id"]
         action = _task_disposition(task, now, ttl_terminal_s, ttl_review_s)
         if action == "keep":
             continue
@@ -104,9 +154,9 @@ def sweep_progress_store(now: float | None = None, *, delete_disk: bool = True) 
                 _cleanup_task_artifacts(task_id)
                 cleaned += 1
             except Exception as e:
-                # 磁盘清理失败不得拦住内存清理，否则该条目会永远清不掉
+                # 磁盘清理失败不得拦住删行，否则该条目会永远清不掉
                 logger.warning("超期待审查任务的磁盘清理失败 task=%s: %s", task_id, e)
-        progress_store.pop(task_id, None)
+        delete_task(task_id)
         dropped += 1
         logger.info("导入任务台账超期清理 task=%s status=%s action=%s",
                     task_id, task.get("status"), action)
@@ -519,7 +569,7 @@ async def upload_file(
     # 疑似重复（同编号/同名称但**文件不同**）：警告 + 可确认继续。
     # 不做硬拒绝 —— 用更清晰的文件重导同一本是合法需求（用户 2026-09-30 就做过一次），
     # 硬拒绝会逼用户先删旧规范（实测删一条 887 条的规范约 10 分钟）才能重导。
-    # 放在这里（file_hash 检查之后、progress_store 注册之前）：同文件仍走上面那条更硬的
+    # 放在这里（file_hash 检查之后、台账登记之前）：同文件仍走上面那条更硬的
     # 文案；未确认时不创建任务、不落盘。
     # `_dup_text` 兜住非字符串：真实 HTTP 下 FastAPI 恒给 str，但端点被**直接调用**时
     # （测试里有这种用法）拿到的是 `Form()` 声明对象，直接 .strip() 会 AttributeError
@@ -540,18 +590,13 @@ async def upload_file(
 
     task_id = uuid.uuid4().hex[:8]
     # 记录属主：取消/确认仅限本人（防御越权删除他人任务）
-    progress_store[task_id] = {
-        "status": "uploading", "progress": 0, "message": "正在上传...",
-        "owner": getattr(request.state, "username", ""),
-        # 台账超期清理靠它算年龄（后续每次 _update_task 都会刷新）
-        "updated_at": time.time(),
-    }
+    create_task(task_id, owner=getattr(request.state, "username", ""))
 
     # filename 为库声明中的可选字段（`str | None`）：经 HTTP 由 Starlette 的
     # MultiPartParser 构造时恒为 str（无 filename= 的 part 会被当成普通表单字段而
     # 非 UploadFile），但直接依赖库声明之外的形态不严谨 —— 按全局规则 1.1 校验外部输入。
     if not file.filename:
-        progress_store.pop(task_id, None)
+        delete_task(task_id)
         return HTMLResponse(
             '<div id="import-status" style="color:#c00;font-weight:bold">'
             "❌ 缺少文件名，无法识别文件类型</div>", status_code=400)
@@ -579,7 +624,7 @@ async def upload_file(
 
 @router.get("/import/progress/{task_id}")
 async def get_progress(request: Request, task_id: str):
-    p = progress_store.get(task_id, {"status": "unknown", "progress": 0, "message": "未知任务"})
+    p = _get_task(task_id) or {"status": "unknown", "progress": 0, "message": "未知任务"}
     from app.main import templates
     return templates.TemplateResponse(request, "partials/import_progress.html", {
         "task_id": task_id, "progress": p,
@@ -593,10 +638,10 @@ async def get_progress_json(task_id: str):
     为什么另立端点而不复用 HTML 片段：浮标只要数字，HTML 得先解析才能取百分比；
     且导入弹窗仍在用 HTML 端点，两处共用同一响应会互相牵制。
 
-    未知任务（服务重启后 progress_store 清空）同样返回 200 而非 404 ——
+    未知任务（不存在或已被超期清理）同样返回 200 而非 404 ——
     契约与同族 HTML 端点一致，客户端少一条出错分支。
     """
-    p = progress_store.get(task_id, {"status": "unknown", "progress": 0, "message": "未知任务"})
+    p = _get_task(task_id) or {"status": "unknown", "progress": 0, "message": "未知任务"}
     return JSONResponse({
         "status": p.get("status", "unknown"),
         "progress": p.get("progress", 0),
@@ -912,12 +957,13 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 n_vec = len(embedding_records)
                 # 模型首次加载约 30 秒，是本流程最长的单点停顿。若与编码合并为一步，
                 # 进度条会静止半分钟——单列一档，用户才知道在等什么。
-                _update_task(task_id, 
+                # conn=conn：此刻 conn 仍持有条文插入的写事务，另开连接会撞写锁
+                _update_task(task_id, conn=conn,
                     progress=80, message="正在加载向量模型（首次约 30 秒）…")
                 if get_model() is None:
                     raise RuntimeError("Embedding 模型不可用")
 
-                _update_task(task_id, 
+                _update_task(task_id, conn=conn,
                     progress=84, message=f"正在生成向量（{n_vec} 块）…")
                 texts = [r["text"] for r in embedding_records]
                 embeddings = embed_texts(texts)
@@ -956,7 +1002,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                         return
                     vs._get_table().add(records[start:start + VECTOR_WRITE_BATCH])
                     done = min(start + VECTOR_WRITE_BATCH, total)
-                    _update_task(task_id, 
+                    _update_task(task_id, conn=conn,
                         progress=90 + int(9 * done / total),
                         message=f"正在写入向量索引（{done}/{total}）…")
 
@@ -964,14 +1010,14 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 # rows=73 / version=173）。压实失败只记 WARNING——见 VectorStore.optimize，
                 # 它绝不抛异常，故不会把已入库的导入判成失败。只换文案不动 progress
                 # （上一档已是 99，写回固定值反而像故障）。
-                _update_task(task_id, message="正在压实向量表…")
+                _update_task(task_id, conn=conn, message="正在压实向量表…")
                 vs.optimize()
             except Exception as e:
                 # 不影响导入完成，但绝不静默：进度 message 随任务结束即消失，
                 # 故同时收集告警，commit 后落 system_logs（否则向量缺失无从追查）。
                 # 只改文案、不动 progress——此处进度可能已推进到 90+，写回固定值
                 # 会造成进度回退，反而更像故障。
-                _update_task(task_id, 
+                _update_task(task_id, conn=conn,
                     message=f"向量索引部分失败: {str(e)}"
                 )
                 vector_warn = f"向量索引写入失败，部分条文缺索引: {e}"
@@ -984,14 +1030,14 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                    detail=json_detail({"spec_id": spec_id, "code": code,
                                        "clause_count": len(clauses_data),
                                        "replaced_by_code": replaced_by_code}),
-                   username=progress_store.get(task_id, {}).get("owner", "system"))
+                   username=(_get_task(task_id) or {}).get("owner", "system"))
         if vector_warn:
             # 向量阶段失败在此统一落 WARN：条文已入库但索引不全，
             # 维护页会显示「缺失向量索引」，这条日志是唯一的追查线索
             log_action("import", "WARN", "向量索引未完整写入",
                        detail=json_detail({"code": code, "reason": vector_warn,
                                            "clause_count": len(embedding_records)}),
-                       username=progress_store.get(task_id, {}).get("owner", "system"))
+                       username=(_get_task(task_id) or {}).get("owner", "system"))
         if degraded_rows:
             # 结构标题降级同理（见 Step 2 的收集点）：条文已入库、不影响可用性，
             # 但那些标题的正文挂在**上一条**名下 —— 这条 WARN 是用户唯一的追查线索。
@@ -1003,7 +1049,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                            "rows": len(degraded_rows),
                            "samples": [f"L{n} {t[:60]}" for n, t, _ in degraded_rows[:5]],
                        }),
-                       username=progress_store.get(task_id, {}).get("owner", "system"))
+                       username=(_get_task(task_id) or {}).get("owner", "system"))
 
         _update_task(task_id, 
             status="done", progress=100,
@@ -1027,7 +1073,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         )
         log_action("import", "ERROR", "导入失败",
                    detail=json_detail({"task_id": task_id, "code": code, "error": str(e)}),
-                   username=progress_store.get(task_id, {}).get("owner", "system"))
+                   username=(_get_task(task_id) or {}).get("owner", "system"))
     finally:
         if conn:
             try:
@@ -1043,7 +1089,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 @router.get("/import/review/{task_id}")
 async def review_page(request: Request, task_id: str):
     """OCR 审查页"""
-    task = progress_store.get(task_id)
+    task = _get_task(task_id)
     if not task or task.get("status") != "review_needed":
         from app.main import templates
         return templates.TemplateResponse(request, "base.html", {
@@ -1064,7 +1110,7 @@ async def review_page(request: Request, task_id: str):
 @router.get("/import/review/{task_id}/content")
 async def review_content(request: Request, task_id: str):
     """获取 OCR 原始文本"""
-    task = progress_store.get(task_id)
+    task = _get_task(task_id)
     if not task or "md_text" not in task:
         return JSONResponse({"detail": "任务不存在或已过期"}, status_code=404)
     return {"content": task["md_text"], "file_name": task.get("file_name", "")}
@@ -1106,7 +1152,7 @@ async def confirm_review(
     即触发（JGJ 107-2016 的 5.7 万字符则正常），是「大规范根本导不进来」的堵点。
     raw body 无此限制。回归测试见 tests/test_confirm_transport.py。
     """
-    task = progress_store.get(task_id)
+    task = _get_task(task_id)
     if not task:
         return HTMLResponse("<p style='color:red'>任务不存在或已过期</p>")
 
@@ -1138,9 +1184,9 @@ async def confirm_review(
     status = task.get("spec_status", "现行")
     replaced_by_code = task.get("replaced_by_code", "")
 
-    # 更新为审查后的文本
-    task["md_text"] = content
-    task.update(status="processing", progress=55, message="审查完成，正在继续导入...")
+    # 更新为审查后的文本（落库：`_get_task` 返回的是行副本，就地赋值不会持久化）
+    _update_task(task_id, md_text=content, status="processing", progress=55,
+                 message="审查完成，正在继续导入...")
 
     # 启动 Phase 2（不再跨线程传递 conn，Phase 2 自己创建连接）
     background_tasks.add_task(
@@ -1162,15 +1208,15 @@ async def cancel_review(request: Request, task_id: str):
     """取消审查：清理磁盘残留并移除任务，返回主界面
 
     清理 uploads/{task_id}.{ext}（原始上传文件）与 outputs/{task_id}/（OCR 结果
-    目录，含 imgs/ 已下载图片）。任务不存在时仍执行磁盘清理——服务重启后
-    progress_store 被清空但磁盘残留仍在，幂等清理兜底；但被 specifications
+    目录，含 imgs/ 已下载图片）。任务不存在时仍执行磁盘清理（幂等兜底：台账条目
+    可能已被超期清理，而磁盘残留仍在）；但被 specifications
     引用的路径一律不删（防误删已入库规范数据）。
     """
     # 校验 task_id 为 uuid4().hex[:8] 格式，防止目录拼接越权
     if not re.fullmatch(r"[0-9a-f]{8}", task_id):
         return JSONResponse({"detail": "任务ID非法"}, status_code=404)
 
-    task = progress_store.get(task_id)
+    task = _get_task(task_id)
     username = getattr(request.state, "username", "")
 
     if task is not None:
@@ -1183,8 +1229,8 @@ async def cancel_review(request: Request, task_id: str):
 
     _cleanup_task_artifacts(task_id)
 
-    # 移除内存任务（幂等：不存在也无妨）
-    progress_store.pop(task_id, None)
+    # 移除台账条目（幂等：不存在也无妨）
+    delete_task(task_id)
     log_action("import", "INFO", "取消导入审查",
                detail=json_detail({"task_id": task_id}),
                username=username)

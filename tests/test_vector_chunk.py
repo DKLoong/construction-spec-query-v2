@@ -168,12 +168,13 @@ def _run_import_records(isolated_paths, monkeypatch, md_text: str) -> list[dict]
     monkeypatch.setattr("app.ai.embedding.get_model", lambda: object())
     monkeypatch.setattr("app.ai.embedding.embed_texts",
                         lambda texts: [[0.0] * 8 for _ in texts])
-    ir.progress_store["chunk001"] = {"status": "processing", "progress": 0, "owner": "t"}
+    from tests.conftest import seed_import_task
+    seed_import_task("chunk001", status="processing", progress=0, owner="t")
     try:
         ir._process_import_phase2("chunk001", md_text, "切块测试规范", "GB/T 77777-2020",
                                   str(isolated_paths / "f.md"), "hash_chunk", "现行", "")
     finally:
-        ir.progress_store.pop("chunk001", None)
+        ir.delete_task("chunk001")
     with get_db() as conn:
         ids = {r["clause_no"]: r["id"]
                for r in conn.execute("SELECT id, clause_no FROM clauses")}

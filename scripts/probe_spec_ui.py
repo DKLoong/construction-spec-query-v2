@@ -729,7 +729,7 @@ CASES["f7"] = [f7_1_select_file_shows_duplicate_warning,
 # ═══════════════════════════════════════════
 # 背景：导入进度原本只活在**当前文档**的 DOM 里（#import-status 的 hx-get 轮询）。
 # 弹窗用 x-show，所以关弹窗不销毁 DOM、轮询照跑——「关掉还能回来看」因此成立；
-# 但一旦整页跳转，文档销毁、task_id 无处可寻：服务端 progress_store 还在，
+# 但一旦整页跳转，文档销毁、task_id 无处可寻：服务端台账（import_tasks）还在，
 # 客户端却再没有把手，于是「导入期间不能干别的事」。
 # 修复：base.html 全局加载 import-tracker.js，用 sessionStorage 记住 task_id，
 # 在任意页面恢复为常驻小浮标。
@@ -823,7 +823,7 @@ def f8_3_terminal_state_clears_floater_and_task(page):
 
 
 def f8_4_unknown_task_clears_floater(page):
-    """未知任务（服务重启后 progress_store 清空）属**正常**路径：浮标须自清
+    """未知任务（不存在或已被超期清理）属**正常**路径：浮标须自清
 
     否则每次开页面都会拉起一个永远 0% 的浮标，并无限轮询一个不存在的任务。
     """
