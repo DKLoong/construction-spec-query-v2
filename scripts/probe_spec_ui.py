@@ -1092,6 +1092,117 @@ def f10_1_confirm_scrolls_to_bottom_before_request(page):
 CASES["f10"] = [f10_1_confirm_scrolls_to_bottom_before_request]
 
 
+# ═══════════════════════════════════════════
+# f11：审查页搜索不得摧毁预览（高亮必须在已渲染的 DOM 上做）
+# ═══════════════════════════════════════════
+# 旧实现 `_highlightInPreview()`：把**整份 Markdown 做 HTML 转义**、插 <mark>、
+# 再喂回渲染器重渲染。而 OCR 的表格是**原始 HTML**（<table rowspan=…>），
+# 那一刀转义会把 <table> 打回 &lt;table&gt; 字面文本 —— 也就是搜索框里每敲一个
+# 字符，预览里的表格就塌一次。附带代价：每敲一键整篇重渲染（大规范 46 万字符会卡）。
+#
+# 用例把夹具内容直接写进编辑器（走真实 input 事件 → Alpine x-model → updatePreview），
+# 而不是依赖上传的 PDF 里恰好有什么 —— 文本层 PDF 抽出的是纯文本，本就没有表格。
+# 上传那一步只是为了拿到一个能打开审查页的真实任务。
+
+_TABLE_MD = (
+    "## 7.5.2 水准测量\n\n"
+    '<table><tr><td rowspan="2">控制等级</td><td>1000</td></tr>'
+    "<tr><td>2000</td></tr></table>\n\n"
+    "钢尺量距相对误差 1.10~1.25。\n"
+)
+_SEARCH_BOX = ".review-toolbar input[type=search]"
+_REPLACE_BOX = ".review-toolbar input[type=text]"
+
+
+def _open_review_with_content(page, md, wait_selector="#review-preview table"):
+    """造一个待审查任务 → 打开审查页 → 把编辑器内容换成 md → 确认夹具已渲染
+
+    wait_selector 由调用方给出「这个夹具应该渲染出什么」：等它出现才说明
+    编辑器内容真的进了渲染管线，否则后续断言是在空页面上做（前置不成立须报错，
+    不能静默空跑）。
+    """
+    task_id = _make_review_task(page, "PROBE-SEARCH 1.0", "探针搜索用规范")
+    page.goto(f"{BASE}/import/review/{task_id}")
+    page.wait_for_selector(".review-editor", timeout=15000)
+    page.fill(".review-editor", md)
+    assert poll_until(page, lambda: page.locator(wait_selector).count() > 0, 8000), \
+        f"前置不成立：夹具内容未在预览里渲染出 {wait_selector}"
+    return task_id
+
+
+def f11_1_search_keeps_preview_tables_and_adds_marks(page):
+    """搜索后：表格还在，且预览里有高亮
+
+    修好之前这里会失败在第一条断言上——表格被整篇转义打成字面文本。
+    """
+    _open_review_with_content(page, _TABLE_MD)
+
+    page.fill(_SEARCH_BOX, "1000")
+
+    assert poll_until(page, lambda: page.locator(
+        "#review-preview mark.search-highlight").count() >= 1, 5000), "搜索后预览里没有高亮"
+    assert page.locator("#review-preview table").count() == 1, \
+        "搜索后预览里的表格没了：整篇 HTML 转义把 <table> 打成了字面文本"
+    assert page.locator("#review-preview mark.search-highlight").first.inner_text().strip() == "1000"
+
+
+def f11_2_clearing_query_keeps_tables(page):
+    """清空搜索框：高亮撤掉，但表格仍是表格（不得借"恢复渲染"顺手重渲染一遍）"""
+    _open_review_with_content(page, _TABLE_MD)
+    page.fill(_SEARCH_BOX, "1000")
+    assert poll_until(page, lambda: page.locator(
+        "#review-preview mark.search-highlight").count() >= 1, 5000), "前置：未出现高亮"
+
+    page.fill(_SEARCH_BOX, "")
+
+    assert poll_until(page, lambda: page.locator(
+        "#review-preview mark.search-highlight").count() == 0, 5000), "清空后高亮未撤掉"
+    assert page.locator("#review-preview table").count() == 1, "清空搜索后表格没了"
+
+
+def f11_3_replace_all_treats_replacement_literally(page):
+    """「替换为」里的 $& / $1 必须按**字面**插入，不能被当成 JS 替换模式
+
+    `String.replace(re, this.replaceText)` 会把替换串里的 `$&` 解释为"整个匹配"，
+    于是用户输入 `$&X` 会插进「甲X」这种意料之外的内容。
+    """
+    _open_review_with_content(page, "甲种材料与乙种材料\n", wait_selector="#review-preview p")
+    page.fill(_SEARCH_BOX, "甲")
+    page.fill(_REPLACE_BOX, "$&X")
+    page.click("button:has-text('全部替换')")
+
+    val = page.input_value(".review-editor")
+    assert "$&X" in val, f"替换值被当成替换模式展开：{val!r}"
+
+
+def f11_4_next_prev_keep_counter_and_table(page):
+    """上一个/下一个仍按源码偏移定位（计数更新），且不破坏预览
+
+    这两个动作原先会顺带重渲染预览；改成 DOM 高亮后它们只滚动编辑框、不重渲染，
+    顺带也去掉了「重复高亮会把 <mark> 再包一层」的隐患。这条把它们钉住，
+    免得日后改高亮时顺手改坏翻页。
+    """
+    _open_review_with_content(page, _TABLE_MD)          # 表格单元格：1000 / 2000
+    page.fill(_SEARCH_BOX, "00")                        # 两处命中
+    info = page.locator(".review-toolbar small").first
+    assert poll_until(page, lambda: "2 个匹配" in info.inner_text(), 5000), \
+        f"匹配计数不对：{info.inner_text()!r}"
+
+    page.click("button:has-text('下一个')")
+
+    assert poll_until(page, lambda: info.inner_text().strip() == "1/2", 5000), \
+        f"翻页计数未更新：{info.inner_text()!r}"
+    assert page.locator("#review-preview table").count() == 1, "翻页把预览里的表格弄丢了"
+    assert page.locator("#review-preview mark.search-highlight").count() >= 2, \
+        "翻页后高亮数量不对（全部匹配应保持高亮）"
+
+
+CASES["f11"] = [f11_1_search_keeps_preview_tables_and_adds_marks,
+                f11_2_clearing_query_keeps_tables,
+                f11_3_replace_all_treats_replacement_literally,
+                f11_4_next_prev_keep_counter_and_table]
+
+
 CASES["f8"] = [f8_1_floater_survives_navigation,
                f8_2_review_needed_offers_entry_and_keeps_task,
                f8_3_terminal_state_clears_floater_and_task,

@@ -93,16 +93,23 @@ document.addEventListener('alpine:init', () => {
             return '/import/review/' + window.location.pathname.split('/').pop() + '/';
         },
 
+        // 搜索词 → 正则（转义元字符）。单一来源：匹配计数、预览高亮、全部替换共用，
+        // 避免三处各写一份转义而口径漂移。
+        _queryRegex(flags) {
+            const escaped = (this.searchQuery || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return new RegExp(escaped, flags);
+        },
+
         findMatches() {
             this.matches = [];
             this.currentMatchIdx = -1;
+            this.clearHighlight();          // 先撤旧高亮（纯 DOM 操作，不重渲染）
             if (!this.searchQuery || !this.mdContent) {
                 this.hasMatches = false;
                 this.matchInfo = '';
                 return;
             }
-            const escaped = this.searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const regex = new RegExp(escaped, 'gi');
+            const regex = this._queryRegex('gi');
             let m;
             while ((m = regex.exec(this.mdContent)) !== null) {
                 this.matches.push({ index: m.index, length: m[0].length });
@@ -111,25 +118,65 @@ document.addEventListener('alpine:init', () => {
             this.matchInfo = this.matches.length > 0
                 ? `${this.matches.length} 个匹配`
                 : '无匹配';
-            this._highlightInPreview();
+            this.highlightInPreview();
         },
 
-        _highlightInPreview() {
-            if (!this.searchQuery) {
-                this.updatePreview();
-                return;
+        // 撤掉预览里的高亮：把 <mark> 换回文本节点并合并相邻文本节点
+        clearHighlight() {
+            const root = document.getElementById('review-preview');
+            if (!root) return;
+            for (const mark of root.querySelectorAll('mark.search-highlight')) {
+                const parent = mark.parentNode;
+                if (!parent) continue;
+                parent.replaceChild(document.createTextNode(mark.textContent), mark);
+                parent.normalize();   // 不合并的话反复搜索会攒下一堆碎片文本节点
             }
-            const escaped = this.searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const regex = new RegExp(`(${escaped})`, 'gi');
-            let html = (this.mdContent || '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-            html = html.replace(regex, '<mark class="search-highlight">$1</mark>');
-            try {
-                this.renderedHtml = window.mdRender.renderHtml(html, this._reviewBase());
-            } catch (e) {
-                this.renderedHtml = html;
+        },
+
+        // 高亮必须在**已渲染的 DOM** 上做，绝不能改 Markdown 再重渲染。
+        // 旧实现把整份 Markdown 做 HTML 转义、插 <mark>、再喂回渲染器：而 OCR 的表格
+        // 是**原始 HTML**，那一刀转义会把 <table> 打回 &lt;table&gt; 字面文本 ——
+        // 于是搜索框里每敲一个字符，预览里的表格就塌一次（实测复现）。
+        // 附带收益：不再每敲一键整篇重渲染（CJJ 2-2008 有 46 万字符）。
+        //
+        // 只处理文本节点、不跨元素边界：跨 <strong> 或跨单元格的匹配不高亮，但
+        // **匹配计数照旧按源码统计**（findMatches），两者互不影响。
+        // 全部匹配统一高亮，不做"当前项"的精确对位——那需要维护一张
+        // 「源码偏移 ↔ DOM 文本节点」映射表，收益不抵复杂度；上一个/下一个
+        // 仍按源码偏移滚动编辑框，预览由已有的比例同步滚动带过去。
+        highlightInPreview() {
+            const root = document.getElementById('review-preview');
+            if (!root || !this.searchQuery) return;
+            const probe = this._queryRegex('i');    // 不带 g：test() 不会推进 lastIndex
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            const hits = [];
+            let node;
+            while ((node = walker.nextNode())) {
+                if (node.nodeValue && probe.test(node.nodeValue)) hits.push(node);
+            }
+            for (const textNode of hits) {
+                const text = textNode.nodeValue;
+                const rx = this._queryRegex('gi');
+                const frag = document.createDocumentFragment();
+                let last = 0;
+                let m;
+                // 按 exec 逐段切分，不用 split：split 只在正则**带捕获组**时才把命中片段
+                // 一并返回，靠它区分"命中片段/间隔文本"会随正则写法静默错位（踩过）
+                while ((m = rx.exec(text)) !== null) {
+                    if (m[0] === '') { rx.lastIndex++; continue; }   // 防零宽匹配死循环
+                    if (m.index > last) {
+                        frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+                    }
+                    const mark = document.createElement('mark');
+                    mark.className = 'search-highlight';
+                    mark.textContent = m[0];
+                    frag.appendChild(mark);
+                    last = m.index + m[0].length;
+                }
+                if (last < text.length) {
+                    frag.appendChild(document.createTextNode(text.slice(last)));
+                }
+                textNode.parentNode.replaceChild(frag, textNode);
             }
         },
 
@@ -138,8 +185,8 @@ document.addEventListener('alpine:init', () => {
             this.currentMatchIdx = this.currentMatchIdx <= 0
                 ? this.matches.length - 1
                 : this.currentMatchIdx - 1;
+            // 不再重复高亮：高亮对全部匹配一视同仁，重复调用会把已包好的 <mark> 再包一层
             this._scrollToMatch();
-            this._highlightInPreview();
         },
 
         nextMatch() {
@@ -148,7 +195,6 @@ document.addEventListener('alpine:init', () => {
                 ? 0
                 : this.currentMatchIdx + 1;
             this._scrollToMatch();
-            this._highlightInPreview();
         },
 
         _scrollToMatch() {
@@ -179,9 +225,9 @@ document.addEventListener('alpine:init', () => {
 
         replaceAll() {
             if (!this.hasMatches) return;
-            const escaped = this.searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const regex = new RegExp(escaped, 'gi');
-            this.mdContent = this.mdContent.replace(regex, this.replaceText);
+            // 用**函数式**替换值：字符串替换值里的 `$&` / `$1` 会被 JS 当成替换模式
+            // 展开（用户输入 "$&X" 会插进「甲X」这种意料之外的内容）
+            this.mdContent = this.mdContent.replace(this._queryRegex('gi'), () => this.replaceText);
             this.updatePreview();
             this.findMatches();
         },
