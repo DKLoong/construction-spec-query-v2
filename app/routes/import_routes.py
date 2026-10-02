@@ -107,6 +107,28 @@ def iter_tasks() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def heal_interrupted_tasks() -> int:
+    """启动自愈：把已随进程消失的 running 态任务标为 error，返回影响行数。
+
+    `uploading` / `processing` 的后台线程随进程死亡，任务不可能再推进；标成 error
+    才能让用户看到明确结论，而不是一个永远转圈的"进行中"。
+
+    **只动这两态**：`review_needed` / `done` / `error` 一律不动。待审查任务因此天然
+    复活——它的正文与所需字段都在行里，审查页照旧可用。
+
+    **顺带刷新 `updated_at`**：不刷的话，一个中断很久的任务在重启瞬间就满足终态 TTL
+    被清理器立刻删掉，用户刚看到提示、转身条目已消失。
+    """
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE import_tasks SET status = 'error', progress = 0, "
+            "message = '服务重启导致本次导入中断，请重新导入', updated_at = ? "
+            "WHERE status IN ('uploading', 'processing')",
+            (time.time(),),
+        )
+        return cur.rowcount
+
+
 def _task_ttl_seconds() -> tuple[float, float]:
     """返回 (终态时限, 待审查时限)，单位秒。时限来自参数注册表，不写死。"""
     from app.params.registry import get_param_int

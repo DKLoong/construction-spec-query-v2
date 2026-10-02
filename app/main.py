@@ -120,6 +120,18 @@ def _startup_import_sweeper():
 def startup():
     setup_logging()  # 先接日志桥，后续启动步骤的告警才能进 system_logs
     init_db()
+    # 自愈必须**同步**执行、且排在 init_db() 之后、开始接受请求之前：
+    # 异步会让请求读到仍标 processing 的僵尸任务
+    from app.routes.import_routes import heal_interrupted_tasks
+    try:
+        healed = heal_interrupted_tasks()
+    except Exception as e:
+        # 自愈失败不得阻止应用启动：它紧跟 init_db()，表必然已存在，
+        # 异常只可能来自真正的 DB 故障——而那种情况 init_db() 已经先抛了
+        logger.warning("启动自愈失败（不阻止启动）: %s", e)
+    else:
+        if healed:
+            logger.warning("启动自愈：%d 个导入任务因服务重启被中断，已标记为需重跑", healed)
     _startup_log_cleanup()
     _startup_import_sweeper()
     _startup_vector_sync()
