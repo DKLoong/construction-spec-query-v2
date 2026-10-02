@@ -68,14 +68,16 @@
             <td>{{ s.created_at[:10] if s.created_at else '-' }}</td>
             <td>
                 <div style="display:flex;gap:0.25rem">
-                    <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                    <button class="outline spec-panel-btn" style="font-size:0.75rem;padding:0.15rem 0.4rem"
                             hx-get="/specs/{{ s.id }}/clauses"
+                            hx-indicator="this" hx-disabled-elt="this"
                             hx-target="#clause-detail-area"
                             hx-swap="innerHTML">
                         查看条文
                     </button>
-                    <button class="outline" style="font-size:0.75rem;padding:0.15rem 0.4rem"
+                    <button class="outline spec-panel-btn" style="font-size:0.75rem;padding:0.15rem 0.4rem"
                             hx-get="/specs/{{ s.id }}/edit-class"
+                            hx-indicator="this" hx-disabled-elt="this"
                             hx-target="#spec-class-area"
                             hx-swap="innerHTML">
                         📋 分类
@@ -131,11 +133,18 @@
 
     // 面板（查看条文/分类）排在列表滚动框之后，规范多时可能在视口外。
     // 填充完成后自动滚入视野，避免用户以为「点了没反应」。
+    //
+    // behavior 用 'auto'（瞬时）而**不是** 'smooth'：2026-10-02 在 1366×768 上实测
+    // 「点击 → 滚动稳定」共约 1990 ms，其中 smooth 的启动就占 318 ms；而位置在
+    // afterSettle 时已经稳定，平滑滚动没有任何信息价值，只是把「到位」又推迟三分之一秒。
+    // 那 1990 ms 的真正大头（1288 ms）发生在本行**之前**——浏览器同步布局 4.1 MB 的
+    // 条文表格把主线程堵住，afterSettle 只能排在它后面。与滚动策略无关，治本要减少
+    // 面板行数（见 TODOS T32）。
     document.body.addEventListener('htmx:afterSettle', function (evt) {
         var t = evt.detail && evt.detail.target;
         if (!t) return;
         if (t.id === 'spec-class-area' || t.id === 'clause-detail-area') {
-            if (t.innerHTML.trim()) t.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (t.innerHTML.trim()) t.scrollIntoView({ behavior: 'auto', block: 'start' });
         }
     });
     </script>

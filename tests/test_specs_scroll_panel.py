@@ -55,3 +55,36 @@ def test_panel_areas_follow_the_spec_table_host():
     host_at = src.index('id="specs-table"')
     assert src.index('id="spec-class-area"') > host_at
     assert src.index('id="clause-detail-area"') > host_at
+
+
+def test_scroll_uses_instant_behavior_not_smooth():
+    """自动滚入视野必须是瞬时（'auto'），不得用 'smooth'。
+
+    实测（2026-10-02，1366×768，CJJ 2-2008 887 条）：「点击 → 滚动稳定」约 1990 ms，
+    其中 smooth 的启动占 318 ms，而位置在 afterSettle 时已稳定——平滑滚动只是把
+    「到位」又推迟了三分之一秒，没有任何信息价值。
+    """
+    src = Path(TEMPLATE).read_text(encoding="utf-8")
+    assert "scrollIntoView({ behavior: 'auto', block: 'start' })" in src, \
+        "自动滚动应使用瞬时 behavior:'auto'"
+    assert "behavior: 'smooth'" not in src, \
+        "不得回退到 smooth——它会额外增加约 318ms 的启动延迟"
+
+
+def test_panel_buttons_declare_busy_state():
+    """「查看条文」/「📋 分类」必须挂忙碌态：htmx 指示元素 + 禁用 + 对应样式。
+
+    没有它，点击后到面板出现之间（实测最长约 2 s，主线程被 4.1 MB 表格的同步布局堵住）
+    界面毫无反馈，用户会以为没点上。
+    """
+    src = Path(TEMPLATE).read_text(encoding="utf-8")
+    # 两个按钮各一份（查看条文 / 分类），故至少出现两次
+    assert src.count('class="outline spec-panel-btn"') == 2, \
+        "两个面板按钮都应带 spec-panel-btn 类"
+    assert src.count('hx-indicator="this"') == 2, "两个按钮都应指定 htmx 指示元素"
+    assert src.count('hx-disabled-elt="this"') == 2, "两个按钮都应在请求期间禁用"
+
+    css = Path(CSS).read_text(encoding="utf-8")
+    assert ".spec-panel-btn.htmx-request" in css, "缺少忙碌态样式"
+    assert "prefers-reduced-motion" in css.split(".spec-panel-btn", 1)[1], \
+        "忙碌态转圈必须尊重减少动效偏好"

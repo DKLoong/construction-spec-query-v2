@@ -272,6 +272,35 @@
     background: var(--pico-background-color, #fff);
     z-index: 1;
 }
+
+/* ── 规范行「查看条文」/「📋 分类」的忙碌态（白色蒙版 + 转圈 + 禁用）──
+   为什么需要：/specs/{id}/clauses 要一次性渲染整本规范，实测最大一本 887 条 =
+   4.1 MB HTML，浏览器同步布局要 ~1.3 s；期间界面若毫无反馈，用户会以为没点上。
+   htmx 在请求期间给 hx-indicator 指定的元素加 .htmx-request，结束自动摘掉，
+   故蒙版生命周期正好覆盖加载过程，无需额外 JS。hx-disabled-elt 同时置 disabled 防重复点。
+   范式与 rules_list.html 的「🤖 运行 AI 分类」一致（含 prefers-reduced-motion 分支）。 */
+.spec-panel-btn { position:relative; }
+/* color:transparent 让文字给转圈让位；文字仍留在可访问性树里。
+   !important 必需——按钮的非类样式会压过普通类规则。 */
+.spec-panel-btn.htmx-request { cursor:progress; color:transparent !important; }
+/* 白色蒙版：盖住按钮底色与文字，明确表示「正在加载」而非仅仅「不可用」 */
+.spec-panel-btn.htmx-request::after {
+    content:''; position:absolute; inset:0; border-radius:inherit;
+    background:rgba(255,255,255,0.8);
+}
+/* 蒙版之上的转圈。尺寸按按钮字号（0.75rem）缩放，避免 1rem 的圈盖住整个小按钮 */
+.spec-panel-btn.htmx-request::before {
+    content:''; position:absolute; top:50%; left:50%;
+    width:0.7rem; height:0.7rem; margin:-0.35rem 0 0 -0.35rem;
+    border:2px solid rgba(0,0,0,0.15);
+    border-top-color:var(--pico-primary, #0172ad);
+    border-radius:50%; z-index:1;
+    animation:spec-panel-spin 0.7s linear infinite;
+}
+@keyframes spec-panel-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+    .spec-panel-btn.htmx-request::before { animation:none; }
+}
 .clause-table {
     font-size: 0.8rem; width: 100%;
     border-collapse: separate; border-spacing: 0;

@@ -482,3 +482,13 @@
 - **修法方向**：两段不再串行拼额度，改为 SQL 层 `UNION` 后统一 `ORDER BY dimension, clause_no LIMIT ? OFFSET ?`；或给全驳段一个独立固定额度（与低置信兜底段的 50 条上限同形）。
 - **Context**：来源 Task 3 评审 Minor（`docs/superpowers/plans/2026-10-01-review-panel-performance.md` 的 Task 3）。另注：`total`（`clause_group_total`）**已含**全驳段，所以「主表已显示 X / 共 N 条」的 N 会把看不到的那部分也算进去。
 - **Blocked by**：无（触发式）。
+
+## T32 — 条文面板一次渲染整本规范，主线程被堵约 1.3 s（触发式）
+
+- **What**：`/specs/{id}/clauses` 无条件返回整本规范的全部条文，最大一本（CJJ 2-2008）**887 条 = 4.1 MB HTML**。浏览器插入后的**同步布局**把主线程堵住约 1.3 s，导致挂在 `htmx:afterSettle` 上的自动滚动要排队等待。
+- **Why**：2026-10-02 实测「点击查看条文 → 滚动稳定」共约 1990 ms，逐段切开为：请求+网络 237 ms → DOM 插入 62 ms → **同步布局 1288 ms** → smooth 启动 318 ms → 滚动 90 ms。只有 318 ms 是滚动策略问题（已改为瞬时 `auto` 修掉），其余 1288 ms 与滚动无关。
+- **已做的缓解（非治本）**：`behavior:'smooth'` → `'auto'`（省 318 ms）；两个面板按钮加忙碌态（`hx-indicator` + 白蒙版 + 转圈），让 2 秒等待期间界面有反馈而非「点了没反应」。
+- **修法方向**：给条文面板做分页或虚拟滚动（与审核页 `2026-10-01-review-panel-performance` 同一套模式），把一次渲染的行数压到几十行。注意条文框是 `max-height:55vh` 的独立滚动容器，且既有「编辑页返回恢复 scrollTop」的逻辑（`specs_list.html`）依赖当前 DOM 结构，改动需一并复核。
+- **触发条件**：单本规范的条文数使主线程阻塞超过约 0.5 s（按本次实测的斜率，887 条约 1.3 s，即约 **350 条**起就可感知）。或用户直接反馈条文框打开慢。
+- **关联**：本次修复的代码注释（`specs_table.html` 的 `scrollIntoView` 段）与测试 `tests/test_specs_scroll_panel.py::test_scroll_uses_instant_behavior_not_smooth` 都指向本条目。
+- **Blocked by**：无（触发式）。
