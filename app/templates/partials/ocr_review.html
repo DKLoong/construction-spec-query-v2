@@ -192,6 +192,18 @@ document.addEventListener('alpine:init', () => {
             if (this.submitting) return;
             this.submitting = true;
             this.submitError = '';
+            // 先把结果区滚到底，再发请求：进度/结果渲染在双栏**下方**，视口不够高时
+            // 落在折叠线以下，会让人以为「点了没反应」而误判。
+            // 必须**瞬时**：平滑滚动要到请求期间才到位，等于把误判窗口又留了出来
+            // （与本仓「自动滚动改瞬时」的既定口径一致）。
+            // 用「找最近的真正可滚动祖先」而不是 scrollIntoView：后者只把**元素底边**
+            // 对齐视口底边，元素下方的容器内边距仍露不出来（实测差约 20px）。
+            // 注意 window 不是滚动容器（.app-layout 为 100vh + overflow:hidden，
+            // 审查页里滚动的是 .center-panel-v2），故不能直接 window.scrollTo。
+            const resultBox = document.getElementById('review-result');
+            for (let s = resultBox && resultBox.parentElement; s; s = s.parentElement) {
+                if (s.scrollHeight > s.clientHeight) { s.scrollTop = s.scrollHeight; break; }
+            }
             const taskId = window.location.pathname.split('/').pop();
             try {
                 const resp = await fetch(`/import/review/${taskId}/confirm`, {

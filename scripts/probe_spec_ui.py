@@ -870,6 +870,36 @@ def _make_text_pdf(path):
     doc.close()
 
 
+def _upload_probe_pdf(page, code, title):
+    """经导入弹窗**真实**上传一份带文本层的极小 PDF（Phase 1 会停在 review_needed）
+
+    抽成公用：f8_6（验响应头接线）与 f10（验审查页滚动）都要先造一个真实待审查任务。
+    非文本层 PDF 会触发真实 OCR 请求，探针不能碰——见 _make_text_pdf 的说明。
+    """
+    import tempfile
+    from pathlib import Path as _Path
+    tmp_pdf = _Path(tempfile.mkdtemp()) / f"{code.replace(' ', '-')}.pdf"
+    _make_text_pdf(str(tmp_pdf))
+    _open_import_dialog(page)
+    page.set_input_files("input[name=file]", str(tmp_pdf))
+    page.fill("input[name=code]", code)
+    page.fill("input[name=title]", title)
+    page.click(".dialog-box--closable button[type=submit]")
+    # 这一步即「响应头 X-Import-Task-Id → import-tracker → sessionStorage」整条接线
+    assert poll_until(page, lambda: page.evaluate(
+        "() => !!sessionStorage.getItem('importTaskId')"), 15000), \
+        "上传后任务号未落到 sessionStorage（响应头 X-Import-Task-Id 未接通？）"
+    return page.evaluate("() => sessionStorage.getItem('importTaskId')")
+
+
+def _wait_review_needed(page):
+    """切页等任务停在「待审查」（浮标文案即状态机的对外表现）"""
+    page.goto(f"{BASE}/specs")
+    assert _wait_floater(page), "真实任务切页后浮标未出现"
+    assert poll_until(page, lambda: _floater_has(page, "待审查"), 15000), \
+        f"真实任务未停在待审查：{page.locator(FLOATER).inner_text()!r}"
+
+
 def f8_6_real_upload_seeds_tracker_and_survives_navigation(page):
     """**真实链路**（不桩任何东西）：上传 PDF → 任务号落到 sessionStorage → 切页后浮标仍在
 
@@ -877,27 +907,10 @@ def f8_6_real_upload_seeds_tracker_and_survives_navigation(page):
     —— 「响应头 X-Import-Task-Id → sessionStorage → 浮标」这条接线整段没被走过。
     本条补齐这一段，也顺带验收「任何 PDF 都停在 review_needed」这个前提。
     """
-    import tempfile
-    from pathlib import Path as _Path
-    tmp_pdf = _Path(tempfile.mkdtemp()) / "探针验收-1.0.pdf"
-    _make_text_pdf(str(tmp_pdf))
     try:
-        _open_import_dialog(page)
-        page.set_input_files("input[name=file]", str(tmp_pdf))
-        page.fill("input[name=code]", "PROBE 1.0")
-        page.fill("input[name=title]", "探针验收规范")
-        page.click(".dialog-box--closable button[type=submit]")
-
-        # 要验的接线：任务号经响应头交给跨页追踪器（而非只在当前 DOM 里）
-        assert poll_until(page, lambda: page.evaluate(
-            "() => !!sessionStorage.getItem('importTaskId')"), 15000), \
-            "上传后任务号未落到 sessionStorage（响应头 X-Import-Task-Id 未接通？）"
-
+        _upload_probe_pdf(page, "PROBE 1.0", "探针验收规范")
         # 切页：真实任务的进度必须还能看见。整页跳转会重建 JS，弹窗让位状态随之复位
-        page.goto(f"{BASE}/specs")
-        assert _wait_floater(page), "真实任务切页后浮标未出现"
-        assert poll_until(page, lambda: _floater_has(page, "待审查"), 15000), \
-            f"真实任务未停在待审查：{page.locator(FLOATER).inner_text()!r}"
+        _wait_review_needed(page)
         assert page.locator(f'{FLOATER} a[href*="/import/review/"]').count() == 1, \
             f"待审查浮标缺少入口：{page.locator(FLOATER).inner_text()!r}"
     finally:
@@ -981,6 +994,102 @@ CASES["f9"] = [f9_1_range_tildes_stay_literal,
                f9_2_real_strikethrough_still_works,
                f9_3_html_table_untouched,
                f9_4_sentinel_never_leaks_and_katex_still_runs]
+
+
+# ═══════════════════════════════════════════
+# f10：审查页「确认并继续导入」后立即滚到底
+# ═══════════════════════════════════════════
+# 需求原话：滚动动作要排在进度条加载**之前**，避免内容展示不全造成误判。
+# 所以这是**顺序**断言，不是「最终滚到底了没」——后者在响应返回后才滚动也照样满足。
+# 做法：在页面里挂钩 window.fetch，记录「发出 /confirm 请求那一刻」的滚动位置，
+# 与响应快慢无关，也不需要 sleep 去赌时序。
+#
+# ⚠ 滚动容器是 `.center-panel-v2`，**不是 window**：`.app-layout` 是
+# `height:100vh; overflow:hidden`，window 永不滚动（scrollY 恒为 0）。
+# 断言错对象会得到一个永远"通过"的空转用例。
+
+def _make_review_task(page, code, title):
+    """造一个真实待审查任务并回到干净状态，返回 task_id"""
+    task_id = _upload_probe_pdf(page, code, title)
+    _wait_review_needed(page)
+    page.evaluate("() => sessionStorage.removeItem('importTaskId')")
+    return task_id
+
+
+def _hook_confirm_scroll(page):
+    """记录 /confirm 请求**发出那一刻**滚动容器底边的位置"""
+    page.evaluate("""
+        () => {
+          const orig = window.fetch;
+          window.__confirmAt = null;
+          window.__confirmMax = null;
+          window.fetch = function (url, opts) {
+            if (String(url).includes('/confirm') && window.__confirmAt === null) {
+              const s = document.querySelector('.center-panel-v2');
+              window.__confirmAt = s ? s.scrollTop + s.clientHeight : -1;
+              window.__confirmMax = s ? s.scrollHeight : -1;
+            }
+            return orig.apply(this, arguments);
+          };
+        }
+    """)
+
+
+def _click_confirm_programmatically(page):
+    """程序化点击「确认并继续导入」
+
+    ⚠ **不能用 page.click**：真实鼠标点击会先把按钮 focus 进视口，
+    浏览器那次自动滚动会把容器带到接近底端，于是「滚动排在请求之前」这条断言
+    会在**未实现任何滚动逻辑**时也通过（实测踩过：假绿）。程序化 click 不触发
+    focus 滚动，测到的才是被测代码自己的行为。
+    """
+    page.evaluate("""
+        () => {
+          const b = [...document.querySelectorAll('button')]
+            .find(x => x.textContent.includes('确认并继续导入'));
+          if (!b) throw new Error('未找到确认按钮');
+          b.click();
+        }
+    """)
+
+
+def f10_1_confirm_scrolls_to_bottom_before_request(page):
+    """点「确认并继续导入」：请求发出时滚动容器已在底端（即滚动排在请求之前）
+
+    隐含要求：滚动必须是**瞬时**的。若实现改用 smooth，滚动位置在请求发出时尚未到位，
+    本条即失败——这与本仓「自动滚动改瞬时」的既定口径一致。
+    """
+    task_id = _make_review_task(page, "PROBE-SCROLL 1.0", "探针滚动用规范")
+    route_pat = f"**/import/review/{task_id}/confirm"
+    try:
+        # 视口压小，确保容器必定溢出——否则断言在"本来就全看得见"时无意义
+        page.set_viewport_size({"width": 1280, "height": 520})
+        page.goto(f"{BASE}/import/review/{task_id}")
+        page.wait_for_selector(".review-panels", timeout=15000)
+        geo = page.evaluate("""
+            () => { const s = document.querySelector('.center-panel-v2');
+                    return { sh: s.scrollHeight, ch: s.clientHeight, sy: s.scrollTop }; }
+        """)
+        assert geo["sh"] > geo["ch"], f"前置不成立：审查页未溢出，断言会空转 {geo}"
+        assert geo["sy"] == 0, f"前置不成立：初始不在顶部 {geo}"
+
+        _hook_confirm_scroll(page)
+        page.route(route_pat, lambda route: route.fulfill(
+            status=200, content_type="text/html", body="<p>审查完成，正在继续导入...</p>"))
+        _click_confirm_programmatically(page)
+        assert poll_until(page, lambda: page.evaluate("() => window.__confirmAt !== null"),
+                          8000), "未观察到 /confirm 请求发出"
+
+        at = page.evaluate("() => window.__confirmAt")
+        mx = page.evaluate("() => window.__confirmMax")
+        assert at >= mx - 5, \
+            f"请求发出时容器底边({at})不在底端({mx})：滚动被排在了请求之后"
+    finally:
+        page.unroute(route_pat)
+        page.set_viewport_size({"width": 1600, "height": 900})
+
+
+CASES["f10"] = [f10_1_confirm_scrolls_to_bottom_before_request]
 
 
 CASES["f8"] = [f8_1_floater_survives_navigation,
