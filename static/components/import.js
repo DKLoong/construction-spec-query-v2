@@ -32,6 +32,8 @@ document.addEventListener('alpine:init', () => {
             this.contentEdited = false;
             this.duplicates = [];
             this.dupConfirmed = false;
+            // 弹窗内已有进度 → 让全局浮标让位（见 import-tracker.js）
+            if (window.ImportTracker) window.ImportTracker.setDialogOpen(true);
         },
         // 关闭弹窗。导入进行中先确认：任务跑在服务端后台（与浏览器无关），关掉不会中断，
         // 但进度就看不见了 —— 误触会让人以为任务丢了。
@@ -42,6 +44,8 @@ document.addEventListener('alpine:init', () => {
                 '导入正在后台进行，关闭弹窗不会中断任务，可再次打开本弹窗查看进度。确定关闭？'
             )) return;
             this.open = false;
+            // 弹窗收起 → 浮标接管（任务仍在跑，跨页也能看见）
+            if (window.ImportTracker) window.ImportTracker.setDialogOpen(false);
         },
 
         // 用户手动编辑输入框：同步 Alpine 状态，并作废上一轮校核结论。
@@ -170,6 +174,10 @@ document.addEventListener('alpine:init', () => {
             try {
                 const resp = await fetch('/import/upload', { method: 'POST', body: formData });
                 const html = await resp.text();
+                // 任务号由响应头下发（而非从 HTML 片段里正则抠）→ 交给跨页追踪器，
+                // 这样用户切到别的页面也能看到进度；非任务响应（判重拦截/即时错误）无此头
+                const taskId = resp.headers.get('X-Import-Task-Id');
+                if (taskId && window.ImportTracker) window.ImportTracker.start(taskId);
                 const resultEl = document.getElementById('import-result');
                 resultEl.innerHTML = html;
                 // 让 htmx 扫描新插入的元素，启动轮询

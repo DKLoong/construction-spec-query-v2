@@ -478,8 +478,11 @@ async def upload_file(
                                    "filename": file.filename, "status": status,
                                    "replaced_by_code": replaced_by_code}),
                username=getattr(request.state, "username", ""))
+    # 任务号走响应头下发（而非让前端从 HTML 片段里正则抠）：import-tracker.js 需要它
+    # 才能跨页恢复进度。非任务响应（判重拦截/即时错误）不带此头，前端据此不启动追踪。
     return HTMLResponse(
-        f'<div id="import-status" hx-get="/import/progress/{task_id}" hx-trigger="every 2s" hx-swap="outerHTML">处理中...</div>'
+        f'<div id="import-status" hx-get="/import/progress/{task_id}" hx-trigger="every 2s" hx-swap="outerHTML">处理中...</div>',
+        headers={"X-Import-Task-Id": task_id},
     )
 
 
@@ -489,6 +492,25 @@ async def get_progress(request: Request, task_id: str):
     from app.main import templates
     return templates.TemplateResponse(request, "partials/import_progress.html", {
         "task_id": task_id, "progress": p,
+    })
+
+
+@router.get("/import/progress/{task_id}/json")
+async def get_progress_json(task_id: str):
+    """进度 JSON（跨页浮标用）。形状恒定：进行中/终态/未知都返回同一组键。
+
+    为什么另立端点而不复用 HTML 片段：浮标只要数字，HTML 得先解析才能取百分比；
+    且导入弹窗仍在用 HTML 端点，两处共用同一响应会互相牵制。
+
+    未知任务（服务重启后 progress_store 清空）同样返回 200 而非 404 ——
+    契约与同族 HTML 端点一致，客户端少一条出错分支。
+    """
+    p = progress_store.get(task_id, {"status": "unknown", "progress": 0, "message": "未知任务"})
+    return JSONResponse({
+        "status": p.get("status", "unknown"),
+        "progress": p.get("progress", 0),
+        "message": p.get("message", ""),
+        "needs_review": p.get("status") == "review_needed",
     })
 
 

@@ -27,6 +27,7 @@ D:/Python/python.exe scripts/probe_spec_ui.py f1   # f1|f2|f3|f4|f5|f6
 用法（单组）：
   D:/Python/python.exe scripts/probe_spec_ui.py f1
 """
+import json
 import os
 import sys
 
@@ -714,6 +715,201 @@ CASES["f7"] = [f7_1_select_file_shows_duplicate_warning,
                f7_2_manual_typing_also_triggers_duplicate_check,
                f7_3_warning_follows_current_value,
                f7_4_duplicate_submit_requires_confirmation]
+
+
+# ═══════════════════════════════════════════
+# f8：导入进度跨页恢复（常驻小浮标）
+# ═══════════════════════════════════════════
+# 背景：导入进度原本只活在**当前文档**的 DOM 里（#import-status 的 hx-get 轮询）。
+# 弹窗用 x-show，所以关弹窗不销毁 DOM、轮询照跑——「关掉还能回来看」因此成立；
+# 但一旦整页跳转，文档销毁、task_id 无处可寻：服务端 progress_store 还在，
+# 客户端却再没有把手，于是「导入期间不能干别的事」。
+# 修复：base.html 全局加载 import-tracker.js，用 sessionStorage 记住 task_id，
+# 在任意页面恢复为常驻小浮标。
+#
+# ⚠ 用例一律用 page.route 桩掉 /json 端点。真实导入是分钟级且依赖 OCR/向量模型，
+# 无法在用例里稳定制造「进行中」那一瞬间；而被测对象本就是浮标的状态机。
+# 桩掉后四个状态可确定性驱动。四条用例全部以「跨页」为现场（先落到 /specs 预置
+# task_id，再跳到别页），因为跨页恢复正是本组的主题。
+
+FLOATER = "#import-floater"
+TASK_KEY = "importTaskId"
+_JSON_ROUTE = "**/import/progress/*/json"
+
+
+def _stub_import_progress(page, payload):
+    page.route(_JSON_ROUTE, lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps(payload)))
+
+
+def _seed_task(page, task_id="deadbeef"):
+    """预置 sessionStorage 里的 task_id —— 等价于「上传成功后用户切走」的现场
+
+    必须落在**另一个**页面上再断言：要验的正是跨页恢复。
+    """
+    page.goto(f"{BASE}/specs")
+    page.evaluate("(id) => sessionStorage.setItem('importTaskId', id)", task_id)
+    page.goto(f"{BASE}/rules")
+
+
+def _wait_floater(page, timeout_ms=8000):
+    return poll_until(page, lambda: page.locator(FLOATER).count() > 0, timeout_ms)
+
+
+def _wait_floater_gone(page, timeout_ms=8000):
+    return poll_until(page, lambda: page.locator(FLOATER).count() == 0, timeout_ms)
+
+
+def f8_1_floater_survives_navigation(page):
+    """进行中：切页后浮标仍在并显示实时百分比（二次切页也要在）"""
+    _stub_import_progress(page, {"status": "processing", "progress": 45,
+                                 "message": "正在生成向量...", "needs_review": False})
+    try:
+        _seed_task(page)
+        assert _wait_floater(page), "切页后未出现导入进度浮标"
+        text = page.locator(FLOATER).inner_text()
+        assert "45" in text, f"浮标未显示百分比：{text!r}"
+        # 再切一次：这才是「导入期间不能干别的事」的原痛点，一次切页不足以证明可反复
+        page.goto(f"{BASE}/review")
+        assert _wait_floater(page), "二次切页后浮标丢失"
+        assert "45" in page.locator(FLOATER).inner_text()
+    finally:
+        page.unroute(_JSON_ROUTE)
+
+
+def f8_2_review_needed_offers_entry_and_keeps_task(page):
+    """待审查：浮标给出「去审查」入口，且不清 task_id（否则入口转瞬即逝）
+
+    审查页只在 task 仍是 review_needed 时可进入，用户切走后若没有这个入口，
+    那次导入的成果就没人知道去哪找。
+    """
+    _stub_import_progress(page, {"status": "review_needed", "progress": 50,
+                                 "message": "等待审查", "needs_review": True})
+    try:
+        _seed_task(page)
+        assert _wait_floater(page), "待审查时未出现浮标"
+        assert page.locator(f'{FLOATER} a[href*="/import/review/deadbeef"]').count() == 1, \
+            f"浮标缺少去审查入口：{page.locator(FLOATER).inner_text()!r}"
+        assert page.evaluate(f"() => sessionStorage.getItem('{TASK_KEY}')") == "deadbeef", \
+            "待审查时被清掉 task_id：切页后入口会消失"
+    finally:
+        page.unroute(_JSON_ROUTE)
+
+
+def f8_3_terminal_state_clears_floater_and_task(page):
+    """终态 done：撤下浮标并清 task_id（不清的话每个页面都会重新拉起浮标）"""
+    _stub_import_progress(page, {"status": "done", "progress": 100,
+                                 "message": "导入完成", "needs_review": False})
+    try:
+        _seed_task(page)
+        assert _wait_floater_gone(page), "终态后浮标未撤下"
+        assert page.evaluate(f"() => sessionStorage.getItem('{TASK_KEY}')") is None, \
+            "终态后未清 task_id"
+    finally:
+        page.unroute(_JSON_ROUTE)
+
+
+def f8_4_unknown_task_clears_floater(page):
+    """未知任务（服务重启后 progress_store 清空）属**正常**路径：浮标须自清
+
+    否则每次开页面都会拉起一个永远 0% 的浮标，并无限轮询一个不存在的任务。
+    """
+    _stub_import_progress(page, {"status": "unknown", "progress": 0,
+                                 "message": "未知任务", "needs_review": False})
+    try:
+        _seed_task(page)
+        assert _wait_floater_gone(page), "未知任务时浮标未自清"
+        assert page.evaluate(f"() => sessionStorage.getItem('{TASK_KEY}')") is None, \
+            "未知任务时未清 task_id"
+    finally:
+        page.unroute(_JSON_ROUTE)
+
+
+def f8_5_floater_yields_to_open_import_dialog(page):
+    """导入弹窗打开时浮标让位（弹窗内已有进度），关闭后恢复
+
+    同屏两份进度会让人以为是两个任务；让位同时也省掉一条重复轮询。
+    """
+    _stub_import_progress(page, {"status": "processing", "progress": 45,
+                                 "message": "正在生成向量...", "needs_review": False})
+    try:
+        _seed_task(page)
+        assert _wait_floater(page), "前置：切页后浮标未出现"
+
+        page.click("button:has-text('导入规范')")
+        assert poll_until(page, lambda: page.locator(FLOATER).count() == 0, 6000), \
+            "导入弹窗打开后浮标未让位"
+
+        page.click(".dialog-box--closable .dialog-close")
+        assert _wait_floater(page), "弹窗关闭后浮标未恢复"
+    finally:
+        page.unroute(_JSON_ROUTE)
+
+
+def _floater_has(page, needle):
+    return page.locator(FLOATER).count() > 0 and needle in page.locator(FLOATER).inner_text()
+
+
+def _make_text_pdf(path):
+    """造一份带**文本层**的极小 PDF
+
+    ⚠ 必须是文本层而非扫描件：`is_scanned()` 以「提取文本 < 100 字符」判定，
+    扫描件会走 OCR 分支（真实 API 请求，探针不能碰）；文本层则走 extract_text，
+    Phase 1 直接停在 review_needed，且不进 Phase 2（不写库、不生成向量）。
+    """
+    import fitz
+    doc = fitz.open()
+    page = doc.new_page()
+    text = ("1 总则\n"
+            "1.0.1 本规范用于探针验收，不得作为工程依据。\n"
+            "1.0.2 混凝土施工应符合设计要求，钢筋进场时应按标准检验。\n"
+            "1.0.3 本条文字用于确保提取出的文本层超过一百个字符，"
+            "从而被判定为非扫描件，走 extract_text 而不触发 OCR 请求。\n")
+    page.insert_text((72, 72), text, fontsize=10)
+    doc.save(path)
+    doc.close()
+
+
+def f8_6_real_upload_seeds_tracker_and_survives_navigation(page):
+    """**真实链路**（不桩任何东西）：上传 PDF → 任务号落到 sessionStorage → 切页后浮标仍在
+
+    前五条用例都桩掉了 /json 端点：它们能证明浮标状态机正确，却**证明不了它真的会被启动**
+    —— 「响应头 X-Import-Task-Id → sessionStorage → 浮标」这条接线整段没被走过。
+    本条补齐这一段，也顺带验收「任何 PDF 都停在 review_needed」这个前提。
+    """
+    import tempfile
+    from pathlib import Path as _Path
+    tmp_pdf = _Path(tempfile.mkdtemp()) / "探针验收-1.0.pdf"
+    _make_text_pdf(str(tmp_pdf))
+    try:
+        _open_import_dialog(page)
+        page.set_input_files("input[name=file]", str(tmp_pdf))
+        page.fill("input[name=code]", "PROBE 1.0")
+        page.fill("input[name=title]", "探针验收规范")
+        page.click(".dialog-box--closable button[type=submit]")
+
+        # 要验的接线：任务号经响应头交给跨页追踪器（而非只在当前 DOM 里）
+        assert poll_until(page, lambda: page.evaluate(
+            "() => !!sessionStorage.getItem('importTaskId')"), 15000), \
+            "上传后任务号未落到 sessionStorage（响应头 X-Import-Task-Id 未接通？）"
+
+        # 切页：真实任务的进度必须还能看见。整页跳转会重建 JS，弹窗让位状态随之复位
+        page.goto(f"{BASE}/specs")
+        assert _wait_floater(page), "真实任务切页后浮标未出现"
+        assert poll_until(page, lambda: _floater_has(page, "待审查"), 15000), \
+            f"真实任务未停在待审查：{page.locator(FLOATER).inner_text()!r}"
+        assert page.locator(f'{FLOATER} a[href*="/import/review/"]').count() == 1, \
+            f"待审查浮标缺少入口：{page.locator(FLOATER).inner_text()!r}"
+    finally:
+        page.evaluate("() => sessionStorage.removeItem('importTaskId')")
+
+
+CASES["f8"] = [f8_1_floater_survives_navigation,
+               f8_2_review_needed_offers_entry_and_keeps_task,
+               f8_3_terminal_state_clears_floater_and_task,
+               f8_4_unknown_task_clears_floater,
+               f8_5_floater_yields_to_open_import_dialog,
+               f8_6_real_upload_seeds_tracker_and_survives_navigation]
 
 
 if __name__ == "__main__":
