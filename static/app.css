@@ -785,3 +785,28 @@
 }
 .import-floater__link { text-decoration: none; color: inherit; }
 .import-floater__link:hover .import-floater__title { text-decoration: underline; }
+/* 导入中状态的浮标本体是按钮（点它开导入弹窗看详情）。Pico 会给 button 加内边距与
+   下边距，这里整体归零，否则会把浮标撑高、和「待审查」状态的链接态看起来不是一套。 */
+.import-floater__btn {
+    display: flex; flex-direction: column; gap: 0.1rem;
+    margin: 0; padding: 0; border: 0; background: none;
+    color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.import-floater__btn:hover .import-floater__title { text-decoration: underline; }
+/* 转圈：OCR 阶段的百分比会长时间停在同一个数不动（OCR 客户端只在排队重试时
+   回消息、从不回百分比），静态数字读起来像"卡死"。有动就是在跑。 */
+.import-floater__spin {
+    display: inline-block;
+    width: 0.62rem; height: 0.62rem;
+    margin-right: 0.25rem;
+    border: 2px solid var(--pico-muted-border-color);
+    border-top-color: var(--pico-primary-background);
+    border-radius: 50%;
+    vertical-align: -1px;
+    animation: import-floater-spin 0.9s linear infinite;
+}
+@keyframes import-floater-spin { to { transform: rotate(360deg); } }
+/* 前庭敏感/省电偏好下停掉动画（改用静态圆点，不丢信息） */
+@media (prefers-reduced-motion: reduce) {
+    .import-floater__spin { animation: none; }
+}

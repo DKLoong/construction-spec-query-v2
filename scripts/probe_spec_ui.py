@@ -739,6 +739,12 @@ CASES["f7"] = [f7_1_select_file_shows_duplicate_warning,
 # 桩掉后四个状态可确定性驱动。四条用例全部以「跨页」为现场（先落到 /specs 预置
 # task_id，再跳到别页），因为跨页恢复正是本组的主题。
 
+# 导入弹窗与其内进度落点的选择器。
+# ⚠ 不能用 .dialog-overlay：规则页的新建/编辑弹窗共用该类，strict 模式会因 3 个匹配报错；
+# 裸 #import-result 在语料库页也存在。
+_IMPORT_DIALOG = ".dialog-box--closable"
+_IMPORT_RESULT = ".dialog-box--closable #import-result"
+_IMPORT_STATUS = "#import-status"
 FLOATER = "#import-floater"
 TASK_KEY = "importTaskId"
 _JSON_ROUTE = "**/import/progress/*/json"
@@ -920,6 +926,14 @@ def f8_6_real_upload_seeds_tracker_and_survives_navigation(page):
         _wait_review_needed(page)
         assert page.locator(f'{FLOATER} a[href*="/import/review/"]').count() == 1, \
             f"待审查浮标缺少入口：{page.locator(FLOATER).inner_text()!r}"
+
+        # 切页后再点「导入规范」：弹窗必须把这个**真实**任务的进度恢复出来。
+        # 这正是用户报的原始路径（中途退出 → 切页 → 再点导入），走真实端点不桩任何东西。
+        page.click("button:has-text('导入规范')")
+        assert poll_until(page, lambda: page.locator(_IMPORT_STATUS).count() > 0, 8000), \
+            "切页后打开弹窗未恢复真实任务的进度"
+        assert page.locator(f'{_IMPORT_RESULT} a[href*="/import/review/"]').count() == 1, \
+            "恢复出来的待审查进度缺少去审查入口"
     finally:
         page.evaluate("() => sessionStorage.removeItem('importTaskId')")
 
@@ -1210,12 +1224,95 @@ CASES["f11"] = [f11_1_search_keeps_preview_tables_and_adds_marks,
                 f11_4_next_prev_keep_counter_and_table]
 
 
+def _stub_progress_processing(page, pct=45, msg="正在 OCR 识别..."):
+    _stub_import_progress(page, {"status": "processing", "progress": pct,
+                                 "message": msg, "needs_review": False})
+
+
+def f8_7_clicking_floater_opens_import_dialog(page):
+    """点浮标（导入中状态）→ 打开导入弹窗并显示该任务进度
+
+    用户原话：「点击浮窗无响应，没有进入导入界面」。浮标在导入中状态原先是个纯
+    <span>，不可点 —— 而它恰恰是用户唯一的进度线索，必须给出去处。
+    """
+    _stub_progress_processing(page)
+    try:
+        _seed_task(page)
+        assert _wait_floater(page), "前置：浮标未出现"
+        page.click(FLOATER)
+        assert poll_until(page, lambda: page.locator(_IMPORT_DIALOG).is_visible(), 5000), \
+            "点浮标未打开导入弹窗"
+        assert poll_until(page, lambda: page.locator(_IMPORT_STATUS).count() > 0, 8000), \
+            "弹窗打开了但里面没有该任务的进度"
+    finally:
+        page.unroute(_JSON_ROUTE)
+
+
+def _stub_progress_fragment(page, task_id, pct, message="正在 OCR 识别…"):
+    """桩掉进度 **HTML 片段**端点（/import/progress/{id}）
+
+    恢复进弹窗走的是这个端点，不是 /json —— 两者都要桩，否则未桩的那个打到真实服务
+    会返回「未知任务」，用例就变成了在验服务端的"任务不存在"分支（实测踩到）。
+    """
+    body = (f'<div id="import-status" hx-get="/import/progress/{task_id}"'
+            f' hx-trigger="every 2s" hx-swap="outerHTML"><p>{message}（{pct}%）</p></div>')
+    page.route(f"**/import/progress/{task_id}",
+               lambda r: r.fulfill(status=200, content_type="text/html", body=body))
+
+
+def f8_8_opening_dialog_resumes_running_task(page):
+    """切页后点「导入规范」→ 弹窗恢复进行中任务的进度，且**重新挂上轮询**
+
+    这才是「中途退出导入界面 → 切页 → 再点导入」的原始路径：整页跳转销毁了弹窗里
+    原有的 #import-status，不恢复的话用户只看到一个空表单，以为任务丢了。
+
+    断言落在**行为**上（恢复出来的节点带着正确的 hx-get/hx-trigger，即轮询会继续），
+    而不是"片段里出现某个数字"——后者验的是夹具自己写的字符串。
+    """
+    _stub_progress_processing(page)
+    _stub_progress_fragment(page, "deadbeef", 45)
+    try:
+        _seed_task(page)
+        assert _wait_floater(page), "前置：浮标未出现"
+        page.click("button:has-text('导入规范')")
+        node = page.locator(_IMPORT_STATUS)
+        assert poll_until(page, lambda: node.count() > 0, 8000), \
+            "打开弹窗后未恢复进行中任务的进度"
+        assert node.get_attribute("hx-get") == "/import/progress/deadbeef", \
+            f"恢复出来的节点指向错误的端点：{node.get_attribute('hx-get')!r}"
+        assert node.get_attribute("hx-trigger") == "every 2s", "恢复出来的节点不会再轮询"
+        assert "正在 OCR" in page.locator(_IMPORT_RESULT).inner_text(), "恢复的片段没落进弹窗"
+    finally:
+        page.unroute(_JSON_ROUTE)
+        page.unroute("**/import/progress/deadbeef")
+
+
+def f8_9_open_import_query_param_opens_dialog(page):
+    """/?open_import=1 自动打开弹窗
+
+    审查页隐藏了左栏（hide_tree），那里没有导入弹窗可点 → 浮标只能跳回首页再打开，
+    本条覆盖该回退路径。
+    """
+    _stub_progress_processing(page)
+    try:
+        page.goto(f"{BASE}/specs")
+        page.evaluate("(id) => sessionStorage.setItem('importTaskId', id)", "deadbeef")
+        page.goto(f"{BASE}/?open_import=1")
+        assert poll_until(page, lambda: page.locator(_IMPORT_DIALOG).is_visible(), 6000), \
+            "带 open_import=1 打开首页未自动弹出导入弹窗"
+    finally:
+        page.unroute(_JSON_ROUTE)
+
+
 CASES["f8"] = [f8_1_floater_survives_navigation,
                f8_2_review_needed_offers_entry_and_keeps_task,
                f8_3_terminal_state_clears_floater_and_task,
                f8_4_unknown_task_clears_floater,
                f8_5_floater_yields_to_open_import_dialog,
-               f8_6_real_upload_seeds_tracker_and_survives_navigation]
+               f8_6_real_upload_seeds_tracker_and_survives_navigation,
+               f8_7_clicking_floater_opens_import_dialog,
+               f8_8_opening_dialog_resumes_running_task,
+               f8_9_open_import_query_param_opens_dialog]
 
 
 if __name__ == "__main__":

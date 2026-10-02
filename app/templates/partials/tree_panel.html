@@ -50,7 +50,10 @@
 
     <!-- 导入按钮 -->
     <div style="margin-bottom: 0.5rem;" x-data="importDialog()">
-        <button class="contrast" style="width: 100%;" @click="openDialog()">📥 导入规范</button>
+        {# data-import-dialog-trigger：给全局浮标一个稳定的抓手（import-tracker.js 的
+           openImportUI 靠它直接开弹窗；没有它的页面——如隐藏左栏的审查页——才跳回首页） #}
+        <button class="contrast" style="width: 100%;" data-import-dialog-trigger
+                @click="openDialog()">📥 导入规范</button>
         <!-- 导入对话框 -->
         {# 关闭方式：**只留右上角 ×**。原「点击遮罩外部关闭」太易误触 —— 关掉后进度不可见，
            会让人以为导入任务丢了（任务其实在服务端后台继续）。#}

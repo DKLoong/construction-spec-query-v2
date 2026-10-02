@@ -25,6 +25,14 @@ document.addEventListener('alpine:init', () => {
             window.addEventListener('import-finished', () => {
                 this.uploading = false;
             });
+            // 浮标在审查页等没有本弹窗的页面会跳回 /?open_import=1 来打开进度；
+            // 参数随即从地址栏抹掉，免得之后刷新页面反复弹出。
+            if (new URLSearchParams(location.search).get('open_import') === '1') {
+                this.openDialog();
+                try {
+                    history.replaceState(null, '', location.pathname);
+                } catch (e) { /* 不支持就算了，留着参数无副作用 */ }
+            }
         },
         openDialog() {
             this.open = true;
@@ -32,8 +40,13 @@ document.addEventListener('alpine:init', () => {
             this.contentEdited = false;
             this.duplicates = [];
             this.dupConfirmed = false;
-            // 弹窗内已有进度 → 让全局浮标让位（见 import-tracker.js）
-            if (window.ImportTracker) window.ImportTracker.setDialogOpen(true);
+            if (window.ImportTracker) {
+                // 弹窗内已有进度 → 让全局浮标让位（见 import-tracker.js）
+                window.ImportTracker.setDialogOpen(true);
+                // 整页跳转销毁了弹窗里原有的 #import-status → 把进行中任务的进度
+                // 重新拉回来，否则「切页后再点导入」只看到空表单，以为任务丢了
+                window.ImportTracker.resumeInto(document.getElementById('import-result'));
+            }
         },
         // 关闭弹窗。导入进行中先确认：任务跑在服务端后台（与浏览器无关），关掉不会中断，
         // 但进度就看不见了 —— 误触会让人以为任务丢了。

@@ -59,8 +59,16 @@
         var pct = Number(p && p.progress);
         if (!isFinite(pct)) pct = 0;
         pct = Math.max(0, Math.min(100, Math.round(pct)));
-        render('<span class="import-floater__title">📥 导入中 ' + pct + '%</span>'
-            + '<span class="import-floater__msg">' + esc(p && p.message) + '</span>');
+        // 做成**可点**：它是用户此刻唯一的进度线索，必须给出去处（打开导入弹窗看详情）。
+        // 转圈动画是为了回答"到底还在跑吗"——OCR 阶段的百分比会长时间停在 20 不动
+        // （OCR 客户端只在排队重试时回消息，从不回百分比），静止的浮标读起来像卡死。
+        // 用原生 onclick 而非框架绑定：本节点由 JS 动态创建，没有框架上下文。
+        render('<button type="button" class="import-floater__btn"'
+            + ' onclick="ImportTracker.openImportUI()">'
+            + '<span class="import-floater__title"><span class="import-floater__spin"></span>'
+            + '📥 导入中 ' + pct + '%</span>'
+            + '<span class="import-floater__msg">' + esc(p && p.message) + '</span>'
+            + '</button>');
     }
 
     // 待审查：给出口，且**保留** task_id —— 浮标本身就是那个入口
@@ -110,6 +118,36 @@
     window.ImportTracker = {
         // 导入任务启动时调用（import.js 从上传响应的 X-Import-Task-Id 头取到）
         start: function (id) { if (!id) return; setTask(id); start(); },
+
+        // 打开导入弹窗看详情。带导入弹窗的页面（左栏 tree_panel 在）直接点它；
+        // 审查页隐藏了左栏（hide_tree）没有这个按钮 → 跳回首页带参数自动打开。
+        openImportUI: function () {
+            var trigger = document.querySelector('[data-import-dialog-trigger]');
+            if (trigger) { trigger.click(); return; }
+            location.href = '/?open_import=1';
+        },
+
+        // 把进行中任务的进度片段恢复进导入弹窗。
+        // 为什么需要：整页跳转会销毁弹窗 DOM 里原有的 #import-status（HTMX 轮询随之
+        // 消失）。不恢复的话，用户「中途退出 → 切页 → 再点导入」只看到一个空表单，
+        // 于是以为任务丢了——而任务其实还在服务端跑着。
+        resumeInto: function (el) {
+            var id = getTask();
+            if (!el || !id) return;
+            if (el.querySelector('#import-status')) {   // 已有进度节点（同页关而复开）
+                if (window.htmx) window.htmx.process(el);
+                return;
+            }
+            fetch('/import/progress/' + encodeURIComponent(id))
+                .then(function (r) { return r.ok ? r.text() : ''; })
+                .then(function (html) {
+                    if (!html) return;
+                    el.innerHTML = html;
+                    // 片段自带 hx-get/hx-trigger，需 htmx 处理新节点才会开始轮询
+                    if (window.htmx) window.htmx.process(el);
+                })
+                .catch(function () { /* 拉取失败就留空，浮标仍在提示 */ });
+        },
         stop: function () { stop(); remove(); },
         setDialogOpen: function (open) {
             dialogOpen = !!open;
