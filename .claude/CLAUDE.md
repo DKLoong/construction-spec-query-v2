@@ -79,7 +79,16 @@ async with async_playwright() as p:
    故**判据不是「netstat 无输出」，而是「没有 uvicorn/spawn_main 的活进程」**：
    `wmic process where "name='python.exe'" get ProcessId,CommandLine` → 其中不含 uvicorn/spawn_main。
    （注意 `wmic` 的 CommandLine 会**折行**，用 `| grep` 会漏，建议 `wmic ... /format:csv` 或在 Python 里解析。）
-3. **启动**：`D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload`（后台）
+3. **启动**：`D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-dir app`（后台）
+
+   ⚠️ **`--reload-dir app` 不是可选项，务必带上**：`--reload` 默认监视**整个工作目录**下
+   的 `*.py`，因此写 `scripts/`、`tests/`、`.verify/` 里的脚本也会重启 worker。
+   实测（2026-10-02）：用户在 15:54 导入了一本规范，OCR 于 15:59 完成并停在「待审查」；
+   而我在 16:02:54 与 16:03:39 创建 `.verify/*.py` 探针脚本，两次把 worker 重启 →
+   `progress_store`（模块级内存字典）被清空 → 那个任务的进度与审查入口**静默消失**
+   （16:02 查还是 `review_needed`，16:03 已变 `unknown`），用户的分钟级 OCR 成果报废。
+   限定 `--reload-dir app` 后仍能热重载应用代码（含 `app/templates`，但模板不是 `.py`、
+   本就不触发重载），而编辑脚本不会再误伤在跑的导入任务。
 4. **复验唯一监听**：**以活进程数为准，不数 netstat 行数** ——
    `tasklist` / `wmic` 确认为**活**的监听进程应**恰好 1 个**（其命令行是 uvicorn）。
    ⚠️ 此时 `netstat` 可能显示 **2 行**（1 活 + 1 幽灵），**不是**双监听：实测过这一情形
