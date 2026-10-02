@@ -138,7 +138,7 @@ def _task_ttl_seconds() -> tuple[float, float]:
 
 
 def _task_disposition(task: dict, now: float, ttl_terminal_s: float, ttl_review_s: float) -> str:
-    """决定一条台账条目的去向：keep / drop_memory / drop_memory_and_disk
+    """决定一条台账条目的去向：keep / drop_row / drop_row_and_disk
 
     纯函数，便于穷举各种 (状态, 年龄) 组合而无需真跑清理。
     """
@@ -151,15 +151,15 @@ def _task_disposition(task: dict, now: float, ttl_terminal_s: float, ttl_review_
         return "keep"                      # 算不出年龄的东西不动
     age = now - updated
     if status == "review_needed":
-        return "drop_memory_and_disk" if age > ttl_review_s else "keep"
-    return "drop_memory" if age > ttl_terminal_s else "keep"
+        return "drop_row_and_disk" if age > ttl_review_s else "keep"
+    return "drop_row" if age > ttl_terminal_s else "keep"
 
 
 def sweep_progress_store(now: float | None = None, *, delete_disk: bool = True) -> dict:
-    """清扫超期台账条目，返回 `{"memory": 删掉几条, "disk": 清掉几份磁盘产物}`。
+    """清扫超期台账条目，返回 `{"rows": 删掉几行, "disk": 清掉几份磁盘产物}`。
 
-    - done/error 超终态时限 → 只删内存条目（磁盘留着：可能仍被 specifications 引用）；
-    - review_needed 超待审查时限 → 删内存条目并清磁盘产物，复用
+    - done/error 超终态时限 → 只删台账行（磁盘留着：可能仍被 specifications 引用）；
+    - review_needed 超待审查时限 → 删台账行并清磁盘产物，复用
       `_cleanup_task_artifacts`（它自带「被 specifications 引用则不删」的保护）；
     - 运行中一律不碰。
     """
@@ -171,7 +171,7 @@ def sweep_progress_store(now: float | None = None, *, delete_disk: bool = True) 
         action = _task_disposition(task, now, ttl_terminal_s, ttl_review_s)
         if action == "keep":
             continue
-        if action == "drop_memory_and_disk" and delete_disk:
+        if action == "drop_row_and_disk" and delete_disk:
             try:
                 _cleanup_task_artifacts(task_id)
                 cleaned += 1
@@ -182,7 +182,7 @@ def sweep_progress_store(now: float | None = None, *, delete_disk: bool = True) 
         dropped += 1
         logger.info("导入任务台账超期清理 task=%s status=%s action=%s",
                     task_id, task.get("status"), action)
-    return {"memory": dropped, "disk": cleaned}
+    return {"rows": dropped, "disk": cleaned}
 
 # 向量索引分批写入的批大小：兼顾「批量语义」（勿退回逐条 add）与「写入进度可观测」
 VECTOR_WRITE_BATCH = 500

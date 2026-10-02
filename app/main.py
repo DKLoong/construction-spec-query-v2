@@ -106,9 +106,9 @@ def _startup_import_sweeper():
         while True:
             try:
                 res = sweep_progress_store()
-                if res["memory"]:
-                    logger.info("导入任务台账回收：内存 %d 条、磁盘 %d 份",
-                                res["memory"], res["disk"])
+                if res["rows"]:
+                    logger.info("导入任务台账回收：%d 行、磁盘 %d 份",
+                                res["rows"], res["disk"])
             except Exception as e:
                 # 单轮失败不能终止线程（否则之后再也不清理）
                 logger.warning("导入任务台账回收失败: %s", e)

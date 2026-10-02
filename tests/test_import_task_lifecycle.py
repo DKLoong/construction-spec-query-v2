@@ -53,15 +53,15 @@ def test_disposition_keeps_running_tasks():
 def test_disposition_terminal_state_uses_terminal_ttl():
     """done/error：未超时保留，超时只删内存（磁盘留着，已入库规范的源文件还有用）"""
     assert ir._task_disposition(_task("done", age_s=TERM - 1), 1000.0, TERM, REVIEW) == "keep"
-    assert ir._task_disposition(_task("done", age_s=TERM + 1), 1000.0, TERM, REVIEW) == "drop_memory"
-    assert ir._task_disposition(_task("error", age_s=TERM + 1), 1000.0, TERM, REVIEW) == "drop_memory"
+    assert ir._task_disposition(_task("done", age_s=TERM + 1), 1000.0, TERM, REVIEW) == "drop_row"
+    assert ir._task_disposition(_task("error", age_s=TERM + 1), 1000.0, TERM, REVIEW) == "drop_row"
 
 
 def test_disposition_review_needed_drops_disk_too():
     """review_needed：超时连磁盘一起删（用户裁定「超过一天没审就算了」）"""
     assert ir._task_disposition(_task("review_needed", age_s=REVIEW - 1), 1000.0, TERM, REVIEW) == "keep"
     assert ir._task_disposition(
-        _task("review_needed", age_s=REVIEW + 1), 1000.0, TERM, REVIEW) == "drop_memory_and_disk"
+        _task("review_needed", age_s=REVIEW + 1), 1000.0, TERM, REVIEW) == "drop_row_and_disk"
 
 
 def test_disposition_unknown_status_is_kept():
@@ -163,7 +163,7 @@ def test_sweep_drops_expired_terminal_from_memory_only(monkeypatch, _paths, _db)
     _ttls(monkeypatch)
     res = ir.sweep_progress_store(now=time.time())
 
-    assert res == {"memory": 1, "disk": 0}
+    assert res == {"rows": 1, "disk": 0}
     assert ir._get_task("aaaabbbb") is None
     assert src.exists(), "终态清理不得删磁盘（已入库规范的源文件还要留给审查/追溯）"
     assert (out / "aaaabbbb").is_dir()
@@ -182,7 +182,7 @@ def test_sweep_expired_review_deletes_memory_and_disk(monkeypatch, _paths, _db):
     _ttls(monkeypatch)
     res = ir.sweep_progress_store(now=time.time())
 
-    assert res == {"memory": 1, "disk": 1}
+    assert res == {"rows": 1, "disk": 1}
     assert ir._get_task("ccccdddd") is None
     assert not src.exists()
     assert not (out / "ccccdddd").exists()
@@ -200,7 +200,7 @@ def test_sweep_skips_running_and_fresh(monkeypatch, _paths, _db):
     _ttls(monkeypatch)
     res = ir.sweep_progress_store(now=time.time())
 
-    assert res == {"memory": 0, "disk": 0}
+    assert res == {"rows": 0, "disk": 0}
     assert {t["task_id"] for t in ir.iter_tasks()} == {"running1", "fresh000", "review01"}
 
 
@@ -227,7 +227,7 @@ def test_sweep_keeps_file_referenced_by_specifications(monkeypatch, _paths, _db)
     _ttls(monkeypatch)
     res = ir.sweep_progress_store(now=time.time())
 
-    assert res["memory"] == 1
+    assert res["rows"] == 1
     assert ir._get_task("eeeeffff") is None
     assert src.exists(), "被 specifications 引用的源文件被误删了"
 
@@ -241,7 +241,7 @@ def test_sweep_honors_param_ttls(monkeypatch, _paths, _db):
     _ttls(monkeypatch, terminal_s=99999)      # 把终态时限调到很大
     res = ir.sweep_progress_store(now=time.time())
 
-    assert res == {"memory": 0, "disk": 0}
+    assert res == {"rows": 0, "disk": 0}
     assert ir._get_task("gggghhhh") is not None
 
 
@@ -256,7 +256,7 @@ def test_sweep_drops_row_from_store_not_just_cache(monkeypatch, _paths, _db):
     _age_task(ir, "iiiijjjj", TERM + 10)
 
     _ttls(monkeypatch)
-    assert ir.sweep_progress_store(now=time.time()) == {"memory": 1, "disk": 0}
+    assert ir.sweep_progress_store(now=time.time()) == {"rows": 1, "disk": 0}
 
     conn = sqlite3.connect(str(_db))
     row = conn.execute("SELECT 1 FROM import_tasks WHERE task_id = ?",
