@@ -15,6 +15,25 @@
         });
     }
 
+    // 规范正文里的 `~` 是**区间号**（5~10~20、1.10~1.25、6~8），不是删除线定界符。
+    // 但 marked v15 的 GFM del 规则写作 `(~~?)` —— 第二个波浪线**可选**，
+    // 于是单个 ~ 成对出现就被吃成 <del>（实测库内 153 条 content 含 ~，11 条会画线）。
+    //
+    // 处理：把**孤立**的 ~（非 ~~ 删除线的成员）先换成私有区哨兵交给 marked，
+    // 渲染后再还原；`~~…~~` 因此照旧工作。
+    // 为什么不用反斜杠转义（`\~`）：marked 对**原始 HTML 块**（PaddleOCR 的 <table>）
+    // 整体透传、不做行内解析，`\~` 会原样留在表格里显示成「\~」。
+    var TILDE_SENTINEL = String.fromCharCode(0xE000);   // 私有区字符，正文不会出现
+    var LONE_TILDE = /(?<!~)~(?![~])/g;
+
+    function protectTildes(md) {
+        return String(md == null ? '' : md).replace(LONE_TILDE, TILDE_SENTINEL);
+    }
+
+    function restoreTildes(html) {
+        return String(html == null ? '' : html).split(TILDE_SENTINEL).join('~');
+    }
+
     // 改写相对图片路径 imgs/xxx → baseUrl + imgs/xxx
     function rewriteImg(md, baseUrl) {
         if (!baseUrl) return md;
@@ -55,7 +74,7 @@
         // PaddleOCR 输出的表格单元格内用字面 \n（反斜杠+n 两字符）表示换行。
         // 必须替换为 <br> 而非真实换行——HTML 单元格内的真实换行会被浏览器
         // 空白折叠成空格，无法达到换行效果。
-        let raw = fixOrphanSup(rewriteImg(md || '', baseUrl)).replace(/\\n/g, '<br>');
+        let raw = fixOrphanSup(rewriteImg(protectTildes(md), baseUrl)).replace(/\\n/g, '<br>');
         // 兼容标准 LaTeX 行内公式 \(...\)：marked 会把 \( 当转义吃掉反斜杠，
         // 故在 marked 之前统一转换为 $...$（KaTeX 只认 $ 定界符）
         raw = raw.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
@@ -68,7 +87,9 @@
         if (window.DOMPurify) {
             html = window.DOMPurify.sanitize(html);
         }
-        el.innerHTML = html;
+        // 还原哨兵必须早于 katexize：KaTeX 拿到哨兵会渲染失败，
+        // 且它若进入公式文本，还原后再扫描就晚了（katexize 已把公式换成 DOM 节点）
+        el.innerHTML = restoreTildes(html);
         katexize(el);
     }
 
@@ -110,6 +131,8 @@
     window.mdRender = {
         fixOrphanSup: fixOrphanSup,
         rewriteImg: rewriteImg,
+        protectTildes: protectTildes,
+        restoreTildes: restoreTildes,
         katexize: katexize,
         renderInto: renderInto,
         renderHtml: renderHtml,

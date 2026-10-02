@@ -904,6 +904,85 @@ def f8_6_real_upload_seeds_tracker_and_survives_navigation(page):
         page.evaluate("() => sessionStorage.removeItem('importTaskId')")
 
 
+# ═══════════════════════════════════════════
+# f9：`~` 不得被当成删除线（规范正文里的区间号）
+# ═══════════════════════════════════════════
+# 背景：marked v15 的 GFM del 规则写作 `(~~?)` —— 第二个波浪线**可选**，
+# 于是「单个 ~」成对出现就被吃成 <del>。规范正文里 ~ 是区间号
+# （5~10~20、1.10~1.25），库内 153 条 content 含 ~，实测 11 条真会画出删除线。
+# 而 PaddleOCR 的表格是原始 HTML，被 marked 整体透传、内部不解析行内 Markdown，
+# 所以只有**正文段落**里的 ~ 会中招（CJJ1 的 ~ 全在表内，故它只在审查页现形）。
+#
+# 断言方式：直接调用**生产函数** window.mdRender.renderHtml（真实 md-render.js、
+# 真实浏览器），而不是断言源码里有没有某个字符串——后者判不了行为。
+# 也不依赖「副本库里恰好哪条条文含 ~」，故不会随数据漂移。
+
+_SENTINEL = "\ue000"          # 私有区哨兵：修复用它对孤立 ~ 做占位
+
+
+def _render(page, md):
+    """在真实页面上跑一遍生产渲染管线，取渲染后的 HTML 与纯文本"""
+    return page.evaluate("""
+        (md) => {
+          const el = document.createElement('div');
+          el.innerHTML = window.mdRender.renderHtml(md, '');
+          return { html: el.innerHTML, text: el.textContent };
+        }
+    """, md)
+
+
+def f9_1_range_tildes_stay_literal(page):
+    """区间号不得被吃成删除线（单区间成对 / 同段多区间）"""
+    page.goto(f"{BASE}/specs")        # 任意页面即可：base.html 全局加载 md-render.js
+
+    r = _render(page, "钢筋直径 5~10~20 mm")
+    assert "<del>" not in r["html"], f"单个 ~ 成对仍被渲染成删除线：{r['html']!r}"
+    assert "5~10~20" in r["text"], f"区间号被改写：{r['text']!r}"
+
+    r2 = _render(page, "1 混凝土配合比宜为 1.10~1.25，水胶比 0.4~0.6。")
+    assert "<del>" not in r2["html"], f"同段多个区间仍被吃：{r2['html']!r}"
+    assert "1.10~1.25" in r2["text"] and "0.4~0.6" in r2["text"], r2["text"]
+
+
+def f9_2_real_strikethrough_still_works(page):
+    """真删除线 ~~…~~ 必须照旧（修复不得连坐误伤）"""
+    page.goto(f"{BASE}/specs")
+    r = _render(page, "~~这一段是删除线~~")
+    assert "<del>" in r["html"], f"~~…~~ 不再渲染成删除线：{r['html']!r}"
+    assert "删除线" in r["text"]
+
+
+def f9_3_html_table_untouched(page):
+    """OCR 的 HTML 表格必须原样保留：表格结构与其内部的 ~ 都不得被改"""
+    page.goto(f"{BASE}/specs")
+    r = _render(page, '<table><tr><td>5~10~20</td><td rowspan="2">x</td></tr></table>')
+    assert "<table" in r["html"], f"HTML 表格被破坏：{r['html']!r}"
+    assert 'rowspan="2"' in r["html"], f"表格属性被破坏：{r['html']!r}"
+    assert "<del>" not in r["html"]
+    assert "5~10~20" in r["text"]
+
+
+def f9_4_sentinel_never_leaks_and_katex_still_runs(page):
+    """哨兵必须还原干净，且公式内的 ~ 不影响 KaTeX
+
+    还原必须发生在 katexize **之前**——否则 KaTeX 看到的是哨兵而不是 ~，
+    公式会渲染失败（这是本修复最容易写错的一处顺序约束）。
+    """
+    page.goto(f"{BASE}/specs")
+    r = _render(page, "电阻 $a~b$ 与区间 5~10~20 mm")
+
+    assert _SENTINEL not in r["html"], f"哨兵字符泄漏到页面：{r['html']!r}"
+    assert _SENTINEL not in r["text"], f"哨兵字符泄漏到文本：{r['text']!r}"
+    assert "katex" in r["html"], f"公式未渲染（KaTeX 未运行）：{r['html']!r}"
+    assert "katex-error" not in r["html"], f"公式渲染报错：{r['html']!r}"
+
+
+CASES["f9"] = [f9_1_range_tildes_stay_literal,
+               f9_2_real_strikethrough_still_works,
+               f9_3_html_table_untouched,
+               f9_4_sentinel_never_leaks_and_katex_still_runs]
+
+
 CASES["f8"] = [f8_1_floater_survives_navigation,
                f8_2_review_needed_offers_entry_and_keeps_task,
                f8_3_terminal_state_clears_floater_and_task,
