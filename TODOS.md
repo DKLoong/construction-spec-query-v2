@@ -492,3 +492,23 @@
 - **触发条件**：单本规范的条文数使主线程阻塞超过约 0.5 s（按本次实测的斜率，887 条约 1.3 s，即约 **350 条**起就可感知）。或用户直接反馈条文框打开慢。
 - **关联**：本次修复的代码注释（`specs_table.html` 的 `scrollIntoView` 段）与测试 `tests/test_specs_scroll_panel.py::test_scroll_uses_instant_behavior_not_smooth` 都指向本条目。
 - **Blocked by**：无（触发式）。
+
+## T33 — 导入取消信号（进程内集合）的三处已知限制（触发式）
+
+- **What**：台账落库（2026-10-02）后，取消 `processing` 中的导入改走**进程内集合** `_cancelled_tasks`（Phase 2 持有未提交写事务期间同库写不进去，无法靠改库传达取消）。它留下三处限制：
+  1. **回收路径不完整**：① 信号在 Phase 2 的 `finally` `discard` **之后**才到达（cancel 读状态与发信号之间的窗口跨过 commit）；② Phase 1 末段登记而 Phase 2 从未启动时，Phase 1 无 `discard`。**修法方向**：给 Phase 1 的 finally 补 `discard`，并让 signal 的处置统一走一个"登记即钩住回收"的入口。
+  2. **分类阶段无检查点**：检查点落在 Phase 2 入口与向量分批循环，`parse_markdown` + 分类期间点取消要等到下一个检查点才生效（正确性不受影响，只是响应延迟）。
+  3. **取消事件不进日志管理界面**：`processing` 分支刻意不调 `log_action`（会撞写锁），只走 `logger.info` → 只进文件日志，`system_logs` 里看不到。**修法方向**：在 `_cancel_cleanup`（rollback 之后、锁已释放）补一条 `log_action`。
+- **Why**：限制 1 的后果是"泄漏项在 task_id 复用时误伤新任务"——概率约为 N/2³²（uuid4 hex[:8]），当前可忽略；限制 3 的后果是**用户在日志界面查不到自己点过的取消**，属可观测性缺口。
+- **触发条件**：限制 1 —— **task_id 生成策略改为可预测/递增时必须立刻重估**（届时碰撞概率不再可忽略）；限制 3 —— 需要从日志界面追查一次"取消为什么没生效"；限制 2 —— 用户反馈"点了取消还是跑完了"。
+- **Context**：来源 `docs/superpowers/plans/2026-10-02-import-task-persistence.md` 的最终整支终审（Important I-1 修复）与其后的限定复验（新增 Minor M-16）。成因见 `app/routes/import_routes.py` 里 `_cancelled_tasks` 段落的注释。另有既有设计限制 R13：多实例共享库时自愈会误标在跑任务（见 T34）。
+- **Blocked by**：无（触发式）。
+
+## T34 — 探针隔离配方的库副本不是 WAL 完整快照（触发式）
+
+- **What**：探针/验收配方用 `cp data/spec_query.db data/_probe_spec.db` 取副本库。**实测（2026-10-02）副本缺真实库当时仍在 `-wal` 里的 `system_logs` 两行**——`cp` 只拷主库文件，未合并 WAL。
+- **Why**：现有用例读的是 `specifications`/`clauses`，未受影响；但**任何依赖"最近写入的行"的用例或验收**（刚导入的规范、刚写的日志、刚建的台账行）会**静默看不到**，属于本仓反复踩过的"假红/假绿"同族风险。
+- **修法方向**：配方改用 sqlite3 的 `.backup`（或先 `PRAGMA wal_checkpoint(TRUNCATE)` 再拷）。落点：`scripts/probe_spec_ui.py` 顶部配方注释 + `docs/superpowers/plans/*` 里沿用该配方的步骤。
+- **触发条件**：出现第一条依赖"最新写入行"的探针用例/验收；或探针结果与实时库不一致而被排查。
+- **Context**：来源 `2026-10-02-import-task-persistence` 的 Task 5 报告（实施者实测发现）。另注：开发服务的启动命令应带 `--reload-dir app`（已入 `CLAUDE.md` §三）——否则编辑 `scripts/`、`tests/` 下的 `.py` 会重启 worker，正在跑的导入会被自愈标为需重跑。
+- **Blocked by**：无（触发式）。
