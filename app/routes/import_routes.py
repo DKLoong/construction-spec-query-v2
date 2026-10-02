@@ -100,6 +100,60 @@ def delete_task(task_id: str) -> None:
         conn.execute("DELETE FROM import_tasks WHERE task_id = ?", (task_id,))
 
 
+# ═══════════════════════════════════════════
+# 进程内取消信号（processing 态取消的传达通道）
+#
+# 背景：cancel_review 允许取消 processing 中的任务，但 Phase 2 从 INSERT 条文到
+# commit 之间一直持有未提交写事务（实测约 10 秒）。此窗口内同库写不进去 ——
+# cancel_review 若此刻 delete_task（另开连接写库）会撞写锁，busy_timeout=5000 到期
+# 抛 `database is locked` → 端点 500；先删磁盘又会让仍在跑的 Phase 2 commit 后发现
+# 源文件/OCR 目录已被删。所以取消对 processing 态只能靠**不依赖库**的信号传达，
+# 由 Phase 2（或 Phase 1 OCR 返回后）在下一个检查点收工、rollback（锁释放）之后再
+# 删行 + 清磁盘。
+#
+# ⚠ 本集合是**进程内**的：跨进程（多实例共享同一库）不生效 —— 本仓已知限制
+# （账本 Ruling R13：单实例部署，多实例共享库不在设计范围）。
+# ═══════════════════════════════════════════
+_cancelled_tasks: set[str] = set()
+
+
+def mark_cancelled(task_id: str) -> None:
+    """登记进程内取消信号（幂等）。"""
+    _cancelled_tasks.add(task_id)
+
+
+def is_cancelled(task_id: str) -> bool:
+    """任务是否已被取消（进程内信号）。"""
+    return task_id in _cancelled_tasks
+
+
+def _task_aborted(task_id: str) -> bool:
+    """取消守卫的统一判断：已取消（进程内信号）或台账行已不存在（超期清理/他处删除）。
+
+    行不存在的判据走 `_get_task`（读已提交快照）：Phase 2 自己持有的未提交事务里
+    那行**仍然在**，所以「行被删」这条在 Phase 2 事务期间永远看不到 —— 这正是必须
+    引入进程内信号的原因（见 `_cancelled_tasks` 顶部注释）。
+    """
+    return is_cancelled(task_id) or _get_task(task_id) is None
+
+
+def _cancel_cleanup(task_id: str, conn: sqlite3.Connection | None = None) -> None:
+    """取消收尾：回滚未提交事务（若有）→ 删台账行 → 清磁盘产物。
+
+    顺序敏感：必须先 rollback 释放写锁，delete_task（另开连接写库）才不会撞锁；
+    _cleanup_task_artifacts 内部先读 specifications（回滚后本导入的未提交行已消失，
+    不会误判「被引用」而保住本导入自己的产物）。收尾后丢弃信号，防集合无界增长。
+    """
+    if conn is not None:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    _cleanup_task_artifacts(task_id)
+    delete_task(task_id)
+    _cancelled_tasks.discard(task_id)
+
+
 def iter_tasks() -> list[dict]:
     """列出全部台账条目（供超期清理遍历）"""
     with get_db() as conn:
@@ -729,6 +783,14 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
         # 保守清洗（OCR/extract 通用）：删除页码行、纯数字行、OCR 失败标记、重复页眉
         md_text = clean_ocr_text(md_text)
 
+        # 取消守卫（OCR 返回之后、写 review_needed 之前）：processing 态的取消只发
+        # 进程内信号、不删行不删盘（见 cancel_review），若这里直接写 review_needed，
+        # 被取消的任务会「复活」成待审查。此时 Phase 1 未持有未提交写事务，可安全收尾。
+        if is_cancelled(task_id):
+            logger.info("导入任务在 OCR 阶段被取消，收尾 task=%s", task_id)
+            _cancel_cleanup(task_id)
+            return
+
         # PDF 文件：保存 OCR/extract 结果，暂停等待人工审查
         # 取用守卫：任务若已被取消/清理（cancel_review 允许取消 processing 中的任务），
         # 这里返回 False，直接收工，不再往一个不存在的槽位写
@@ -820,8 +882,11 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
 
         # 取消守卫：任务可能在 Phase 1 / 审查等待期间被取消或超期清理。
         # 此时不该再往下做解析/分类/索引——那是在为一份已被放弃的导入干活。
-        if not _update_task(task_id, progress=60, message="正在解析条文..."):
+        # 已取消（进程内信号）或行不存在（_update_task 返回 False）都收工；
+        # 此处 conn 尚无未提交写事务，可直接删行 + 清磁盘。
+        if is_cancelled(task_id) or not _update_task(task_id, progress=60, message="正在解析条文..."):
             logger.info("导入任务已取消或超时清理，跳过 Phase 2 task=%s", task_id)
+            _cancel_cleanup(task_id, conn)
             return
 
         # Step 2: 解析条文 + 过滤封面/出版信息页脏数据
@@ -1018,9 +1083,12 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 for start in range(0, total, VECTOR_WRITE_BATCH):
                     # 长循环里的取消守卫：上万条要写多个批次，中途被取消就停手。
                     # 必须在这里守：LanceDB 写入不在 SQLite 事务内，多写的部分
-                    # 不会被 rollback 回收。
-                    if _get_task(task_id) is None:
+                    # 不会被 rollback 回收（取消后残留的部分向量是已知限制）。
+                    # 已取消（进程内信号）或行不存在都要停；停手后回滚 SQLite 事务
+                    # （释放写锁）再删行 + 清磁盘。
+                    if _task_aborted(task_id):
                         logger.info("导入任务已取消/超时清理，中止向量写入 task=%s", task_id)
+                        _cancel_cleanup(task_id, conn)
                         return
                     vs._get_table().add(records[start:start + VECTOR_WRITE_BATCH])
                     done = min(start + VECTOR_WRITE_BATCH, total)
@@ -1044,6 +1112,14 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 )
                 vector_warn = f"向量索引写入失败，部分条文缺索引: {e}"
 
+        # 取消守卫（commit 前最后一道）：向量阶段可能在「无 embedding_records」时被
+        # 整体跳过（vs 为 None 或没有条文需要向量化），或取消发生在 optimize 期间 ——
+        # 这两种情形都到不了上面的向量循环守卫，必须在这里再查一次，否则被取消的
+        # 导入会照常 commit 出 specifications/clauses 行。
+        if is_cancelled(task_id):
+            logger.info("导入任务已被取消，回滚已写入的条文 task=%s", task_id)
+            _cancel_cleanup(task_id, conn)
+            return
         conn.execute("UPDATE specifications SET clause_count = ? WHERE id = ?",
                     (len(clauses_data), spec_id))
         conn.commit()
@@ -1097,6 +1173,10 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                    detail=json_detail({"task_id": task_id, "code": code, "error": str(e)}),
                    username=(_get_task(task_id) or {}).get("owner", "system"))
     finally:
+        # 无论走哪个出口（正常完成 / 异常 / 取消检查点 return），本任务的取消信号
+        # 都不再需要：正常完成与异常都已是终态，取消检查点已由 _cancel_cleanup 收尾。
+        # 这里兜底丢弃，防 post-commit 窗口（cancel 晚于 commit 到达）泄漏信号。
+        _cancelled_tasks.discard(task_id)
         if conn:
             try:
                 conn.close()
@@ -1248,6 +1328,19 @@ async def cancel_review(request: Request, task_id: str):
         # 已完成导入不可取消（避免删除已入库规范的源文件/输出目录）
         if task.get("status") == "done":
             return JSONResponse({"detail": "导入已完成，无法取消"}, status_code=409)
+        if task.get("status") == "processing":
+            # Phase 2 可能正持有未提交写事务（specifications/clauses 插入到 commit
+            # 之间），此刻动库会撞写锁（delete_task 另开连接，busy_timeout=5000 到期
+            # 抛 database is locked → 端点 500），先删磁盘又会让仍在跑的 Phase 2 在
+            # commit 后发现源文件/OCR 目录已消失。故只发**进程内**取消信号并立刻返回，
+            # 由 Phase 2（或 Phase 1 OCR 返回后）在下一个检查点收工、rollback（锁释放）
+            # 之后再删行 + 清磁盘。信号是进程内的，跨进程（多实例共享库）不生效 ——
+            # 本仓已知限制（账本 Ruling R13）。⚠ 此处不能埋点 log_action（它自开连接
+            # 写 system_logs，会撞同一把写锁阻塞 5 秒），改用模块 logger（WARNING+ 才
+            # 落 system_logs，INFO 只进文件日志，不碰库）。
+            mark_cancelled(task_id)
+            logger.info("取消导入（processing 中，发进程内取消信号）task=%s", task_id)
+            return HTMLResponse("", headers={"HX-Redirect": "/"})
 
     _cleanup_task_artifacts(task_id)
 
