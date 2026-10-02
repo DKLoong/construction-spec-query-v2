@@ -251,6 +251,154 @@ error 分支 + 浮标与弹窗的 error 文案）。
 **回归范围**：`tests/test_import*.py`、`tests/test_ocr_review.py`、`tests/test_param*.py`
 全量 + 探针 f7/f8/f10/f11（f8 与弹窗/浮标强相关）。
 
+### 6.2.1 实测记录（2026-10-02，Task 4）
+
+**口径**：全程只用隔离实例（`data/_probe_spec.db` 副本 + `_probe_uploads` /
+`_probe_outputs` / `_probe_lance` + 端口 8123），真实库 `data/spec_query.db`、
+`data/uploads`、`data/outputs`、`lance_db` 一个字节未写。8000 端口的开发服务未动。
+
+现场：先跑探针 `f8`（9/9 passed）留下一个真实 `review_needed` 任务（`edc3cdbd`），
+再手工塞入僵尸任务 `dead0001`（`status='processing'`, `progress=20`）。
+
+#### ① 重启前基线
+
+```
+$ curl -s -b <cookie> http://127.0.0.1:8123/import/progress/edc3cdbd/json
+{"status":"review_needed","progress":50,"message":"OCR 完成，请审查识别结果","needs_review":true}
+
+$ curl -s -b <cookie> http://127.0.0.1:8123/import/progress/dead0001/json
+{"status":"processing","progress":20,"message":"正在 OCR 识别...","needs_review":false}
+```
+
+#### ② 读点延迟实测（§6.1「落库后读点是否变慢」）
+
+连打 20 次 `GET /import/progress/edc3cdbd/json`，`curl -w "%{time_total}"` 原始值（秒）：
+
+```
+0.005184 0.006392 0.003700 0.005108 0.004140 0.005728 0.005017 0.004054 0.004540
+0.004322 0.004497 0.004175 0.005233 0.004348 0.004262 0.004906 0.004406 0.004803
+0.004518 0.004073
+```
+
+聚合：**平均 4.7 ms**（n=20），最小 3.7 ms，最大 6.4 ms。轮询间隔 2000 ms，
+远小于该值 ⇒ 风险项「落库后读点变慢」不成立（主键点查如期为毫秒级）。
+
+#### ③ Phase 2 进度冻结窗口实测（控制者裁定 R7）
+
+背景：Phase 2 的进度写入并入外层写事务（`task-1-review.md` I-1），commit 之前对
+HTTP 端点不可见，用户会看到进度条停在某一档不动、直到整段跑完跳到 100。
+本项把该窗口的真实长度量出来。
+
+夹具：1200 条 `.md`（每行带时间戳使 `file_hash` 每次不同），解析结果 1200 条条文
+（离线校验：`parsed clauses: 1200`），跨 3 个向量写入批次（`VECTOR_WRITE_BATCH=500`）。
+采样脚本 `.superpowers/sdd/2026-10-02-import-task-persistence/task-4-measure-phase2-visibility.py`
+每 0.5 s 采样一次，遇终态自停。
+
+完整原始输出：
+
+```
+模态：processing → done；共 21 次采样 / 2 个可见档位
+
+    首见(s)    持续(s)  progress  状态 / message
+     0.03     9.87        70  processing / 正在分类 1200 条条文...
+    10.43     0.00       100  done / 导入完成：1200 条条文已解析，0 个维度已分类
+
+最长一次「同一个数不动」：9.87s（progress=70，message='正在分类 1200 条条文...'）
+向量阶段（progress>=70）最长的冻结档：9.87s
+
+终态：status=done progress=100
+```
+
+**结论数字：最长一次「同一个数不动」= 9.87 秒，发生在 progress=70 档。** 全程只
+出现 2 个可见档位（70 → 100），80 / 84 / 90–99 四个档位一次都没露面 —— 冻结现象与
+I-1 的描述完全一致。
+
+**条件说明（不得当成推算值）**：本次实测的 embedding 模型是**热**的（应用启动时
+`_startup_warmup_embedding` 已预热，同实例此前也跑过导入），故 9.87 s **不含**模型
+首次加载。设计文档估算冷启动加载约 30 s；该数字是估算，未在本次实测中测到，不得
+与本处的 9.87 s 相加或并列当实测值。
+
+**采样脚本的一处环境适配（不改脚本语义）**：Windows 下 curl 的 cookie jar 写作
+`#HttpOnly_<domain>\t…\taccess_token\t<token>`（行首带 `#`、行尾 CRLF），而脚本的
+解析器只认「不以 `#` 开头且第 6 列恰为 `access_token`」的行 ⇒ 首次运行时它从未取到
+token，被 `AuthMiddleware` 重定向到登录页，300 s 空采样后以「没有采到任何样本」退出
+（**该次无效，未写入本记录**）。改为喂入一份去掉 `#HttpOnly_` 前缀、行尾换 LF 的
+同内容 cookie 文件后即正常工作；上面的数字来自修正后的那次运行。
+
+#### ④ 真停服务再启（按项目 CLAUDE.md §三 顺序）
+
+杀进程前：
+
+```
+$ netstat -ano | grep ':8123' | grep LISTENING
+  TCP    127.0.0.1:8123         0.0.0.0:0              LISTENING       836
+$ taskkill //F //PID 836
+成功: 已终止 PID 为 836 的进程。
+$ netstat -ano | grep ':8123' | grep LISTENING     # 无输出
+```
+
+`wmic … CommandLine` 核查：8123 无 `uvicorn`/`spawn_main` 活进程（同期存活的只有
+8000 端口的开发服务 `12888` 及其 worker），判定端口确实干净后，以相同四条环境变量重启。
+重启日志（`.verify/_probe_uvicorn.log`）：
+
+```
+WARNING [app.main] 启动自愈：1 个导入任务因服务重启被中断，已标记为需重跑
+INFO:     Application startup complete.
+```
+
+自愈 WARN 排在 `Application startup complete` **之前**，符合「同步执行、开始接受请求
+之前完成」的设计要求（4.3 关键设计点）。
+
+#### ⑤ 重启后逐条核对
+
+```
+① 待审查任务仍在（期望 review_needed / needs_review=true）
+$ curl -s -b <cookie> http://127.0.0.1:8123/import/progress/edc3cdbd/json
+{"status":"review_needed","progress":50,"message":"OCR 完成，请审查识别结果","needs_review":true}
+
+② 审查页与正文（期望 200 且返回正文）
+$ curl -s -b <cookie> -o /dev/null -w "review_page:%{http_code}\n" http://127.0.0.1:8123/import/review/edc3cdbd
+review_page:200
+$ curl -s -b <cookie> http://127.0.0.1:8123/import/review/edc3cdbd/content
+{"content":"1 ··\n1.0.1 ···················\n1.0.2 ·······················…"}   # HTTP 200，content 130 字符
+（"·" 是探针 PDF 用默认字体写入中文、PyMuPDF 无法编码所致，与本次验收无关；要点是正文非空且可取）
+
+③ 僵尸任务被自愈为 error，文案正确
+$ curl -s -b <cookie> http://127.0.0.1:8123/import/progress/dead0001/json
+{"status":"error","progress":0,"message":"服务重启导致本次导入中断，请重新导入","needs_review":false}
+
+④ 启动日志有自愈 WARN（见 ④ 节的日志行）
+```
+
+**浏览器侧补验**（Playwright，`channel="chrome"`，headless）：登录 → 预置
+`sessionStorage.importTaskId=edc3cdbd` → 回首页，读到的浮标与入口为：
+
+```
+浮标文案 = '📝 待审查点击继续审查'
+浮标「去审查」入口 href = '/import/review/edc3cdbd'
+点击后 URL = http://127.0.0.1:8123/import/review/edc3cdbd
+审查页条目数 = 1
+BROWSER_CHECK_PASS
+```
+
+即重启后待审查任务在浮标上**仍可见、仍可一键进入审查页**。
+
+> 注：简报设想的是「点浮标 → 弹窗里有『去审查』入口」，但实测 `review_needed` 态的
+> 浮标是**直达链接**（`a.import-floater__link` → `/import/review/{id}`，文案
+> 「📝 待审查 / 点击继续审查」），一步到位、不经弹窗；「点浮标开导入弹窗」是
+> `processing` 态的形态（由探针 f8_7 覆盖）。故本处按真实契约断言直达链接可点、能进审查页。
+
+#### ⑥ 收尾
+
+```
+$ taskkill //F //PID 24096            # 成功: 已终止 PID 为 24096 的进程。
+$ netstat -ano | grep ':8123' | grep LISTENING      # 无输出
+$ wmic … python.exe CommandLine → 8123 残留：无；存活 uvicorn/spawn_main 仅 8000 的开发服务(12888)与其 worker
+$ rm -rf data/_probe_spec.db data/_probe_uploads data/_probe_outputs data/_probe_lance data/_probe_phase2.md
+$ rm -f  .verify/_cookie.txt .verify/_probe_uvicorn.log .verify/_cookie_lf.txt .verify/_latency_raw.txt .verify/_freeze_raw.txt .verify/_probe_browser_check.py
+$ ls -d data/_probe_*  →  无
+```
+
 ---
 
 ## 七、附：开发期 `--reload` 误伤
