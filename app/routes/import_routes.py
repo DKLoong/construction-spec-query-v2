@@ -1,6 +1,8 @@
 import hashlib
 import html
+import logging
 import re
+import time
 import unicodedata
 import uuid
 from pathlib import Path
@@ -24,11 +26,98 @@ from app.routes.spec_routes import SPEC_STATUS_ALLOWED
 router = APIRouter()
 progress_store = {}
 
+logger = logging.getLogger(__name__)
+
 # replaced_by_code 长度上限（防超长输入污染 DB / 前端渲染）
 REPLACED_BY_CODE_MAX_LEN = 100
 
+
+def _get_task(task_id: str):
+    """取任务台账条目；不存在返回 None。
+
+    台账取用一律走本函数与 `_update_task`，**不要**直接 `progress_store[task_id]`：
+    `cancel_review` 只在 `status == "done"` 时拒绝取消，也就是说**允许取消
+    processing 中的任务** —— 条目被 pop 时 Phase 1/2 线程仍在跑，随后的直接下标
+    会让那个线程抛 KeyError 崩掉（真实并发窗口，非常理论风险）。
+    """
+    return progress_store.get(task_id)
+
+
+def _update_task(task_id: str, **fields) -> bool:
+    """安全更新台账条目；任务已被取消/清理时返回 False（调用方据此提前收工）。
+
+    顺带盖 `updated_at`：超期清理全靠它算年龄，散落在各处的 update 调用容易漏盖，
+    集中在这里盖一次。
+    """
+    task = progress_store.get(task_id)
+    if task is None:
+        return False
+    fields["updated_at"] = time.time()
+    task.update(fields)
+    return True
+
+
+def _task_ttl_seconds() -> tuple[float, float]:
+    """返回 (终态时限, 待审查时限)，单位秒。时限来自参数注册表，不写死。"""
+    from app.params.registry import get_param_int
+    terminal_min = max(1, get_param_int("import.task_ttl_terminal_min"))
+    review_hours = max(1, get_param_int("import.task_ttl_review_hours"))
+    return terminal_min * 60.0, review_hours * 3600.0
+
+
+def _task_disposition(task: dict, now: float, ttl_terminal_s: float, ttl_review_s: float) -> str:
+    """决定一条台账条目的去向：keep / drop_memory / drop_memory_and_disk
+
+    纯函数，便于穷举各种 (状态, 年龄) 组合而无需真跑清理。
+    """
+    status = task.get("status")
+    if status not in ("done", "error", "review_needed"):
+        # 运行中（uploading/processing）与任何未知态一律保留：宁可留着也不误删
+        return "keep"
+    updated = task.get("updated_at")
+    if not isinstance(updated, (int, float)):
+        return "keep"                      # 算不出年龄的东西不动
+    age = now - updated
+    if status == "review_needed":
+        return "drop_memory_and_disk" if age > ttl_review_s else "keep"
+    return "drop_memory" if age > ttl_terminal_s else "keep"
+
+
+def sweep_progress_store(now: float | None = None, *, delete_disk: bool = True) -> dict:
+    """清扫超期台账条目，返回 `{"memory": 删掉几条, "disk": 清掉几份磁盘产物}`。
+
+    - done/error 超终态时限 → 只删内存条目（磁盘留着：可能仍被 specifications 引用）；
+    - review_needed 超待审查时限 → 删内存条目并清磁盘产物，复用
+      `_cleanup_task_artifacts`（它自带「被 specifications 引用则不删」的保护）；
+    - 运行中一律不碰。
+    """
+    ttl_terminal_s, ttl_review_s = _task_ttl_seconds()
+    now = time.time() if now is None else now
+    dropped = cleaned = 0
+    # 先固化键集再删：边遍历边 pop 会 RuntimeError，也避免受并发改动影响
+    for task_id, task in list(progress_store.items()):
+        action = _task_disposition(task, now, ttl_terminal_s, ttl_review_s)
+        if action == "keep":
+            continue
+        if action == "drop_memory_and_disk" and delete_disk:
+            try:
+                _cleanup_task_artifacts(task_id)
+                cleaned += 1
+            except Exception as e:
+                # 磁盘清理失败不得拦住内存清理，否则该条目会永远清不掉
+                logger.warning("超期待审查任务的磁盘清理失败 task=%s: %s", task_id, e)
+        progress_store.pop(task_id, None)
+        dropped += 1
+        logger.info("导入任务台账超期清理 task=%s status=%s action=%s",
+                    task_id, task.get("status"), action)
+    return {"memory": dropped, "disk": cleaned}
+
 # 向量索引分批写入的批大小：兼顾「批量语义」（勿退回逐条 add）与「写入进度可观测」
 VECTOR_WRITE_BATCH = 500
+
+# 台账超期回收的巡检间隔（秒）。不需要很密：两档时限以分钟/小时计，
+# 巡检只负责「到点发现」，晚几十秒无影响。
+IMPORT_SWEEP_INTERVAL_S = 300
 
 
 def _sanitize_status(status: str) -> str:
@@ -454,6 +543,8 @@ async def upload_file(
     progress_store[task_id] = {
         "status": "uploading", "progress": 0, "message": "正在上传...",
         "owner": getattr(request.state, "username", ""),
+        # 台账超期清理靠它算年龄（后续每次 _update_task 都会刷新）
+        "updated_at": time.time(),
     }
 
     # filename 为库声明中的可选字段（`str | None`）：经 HTTP 由 Starlette 的
@@ -531,7 +622,7 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
         conn = get_connection()
         path = Path(file_path)
         ext = path.suffix.lower()
-        progress_store[task_id].update(status="processing", progress=10, message="正在提取文本...")
+        _update_task(task_id, status="processing", progress=10, message="正在提取文本...")
 
         # Step 1: 获取 MD 文本
         if ext == ".md":
@@ -543,12 +634,12 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
             return
         elif ext == ".pdf":
             if force_ocr or is_scanned(file_path):
-                progress_store[task_id].update(progress=20, message="正在 OCR 识别...")
+                _update_task(task_id, progress=20, message="正在 OCR 识别...")
                 from app.ocr.paddle_api import create_ocr_client
                 try:
                     api = create_ocr_client()
                 except RuntimeError as e:
-                    progress_store[task_id].update(
+                    _update_task(task_id, 
                         status="error", progress=0,
                         message=str(e)
                     )
@@ -556,7 +647,7 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
                 # 透传 OCR 等待/重试提示到进度 UI（如「队列繁忙，正在自动重试…」）
                 if hasattr(api, "progress_cb"):
                     def _ocr_progress(msg: str, _tid: str = task_id) -> None:
-                        progress_store[_tid].update(message=msg)
+                        _update_task(_tid, message=msg)
                     # 动态可选属性（仅 PaddleVLClient 支持）→ 用 setattr，
                     # 而非在 OCRClient 协议里声明成所有实现者的硬要求
                     setattr(api, "progress_cb", _ocr_progress)
@@ -565,35 +656,32 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
             else:
                 md_text = extract_text(file_path)
         else:
-            progress_store[task_id].update(status="error", message=f"仅支持 .md/.pdf（当前为 {ext or '无扩展名'}）")
+            _update_task(task_id, status="error", message=f"仅支持 .md/.pdf（当前为 {ext or '无扩展名'}）")
             return
 
         # 保守清洗（OCR/extract 通用）：删除页码行、纯数字行、OCR 失败标记、重复页眉
         md_text = clean_ocr_text(md_text)
 
         # PDF 文件：保存 OCR/extract 结果，暂停等待人工审查
-        progress_store[task_id]["md_text"] = md_text
-        progress_store[task_id]["title"] = title
-        progress_store[task_id]["code"] = code
-        progress_store[task_id]["file_path"] = file_path
-        progress_store[task_id]["file_name"] = path.name
-        progress_store[task_id]["file_hash"] = file_hash
-        # 表单传入的规范状态/被替代编号（用 spec_status 键，避免与任务处理状态 status 冲突）
-        progress_store[task_id]["spec_status"] = status
-        progress_store[task_id]["replaced_by_code"] = replaced_by_code
-
-        progress_store[task_id].update(
+        # 取用守卫：任务若已被取消/清理（cancel_review 允许取消 processing 中的任务），
+        # 这里返回 False，直接收工，不再往一个不存在的槽位写
+        if not _update_task(
+            task_id,
+            md_text=md_text, title=title, code=code, file_path=file_path,
+            file_name=path.name, file_hash=file_hash,
+            # 表单传入的规范状态/被替代编号（用 spec_status 键，避免与任务处理状态 status 冲突）
+            spec_status=status, replaced_by_code=replaced_by_code,
             status="review_needed", progress=50,
             message="OCR 完成，请审查识别结果",
-        )
-        return
+        ):
+            return
     except Exception as e:
         if conn:
             try:
                 conn.rollback()
             except Exception:
                 pass
-        progress_store[task_id].update(status="error", progress=0, message=str(e))
+        _update_task(task_id, status="error", progress=0, message=str(e))
     finally:
         if conn:
             try:
@@ -663,7 +751,11 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         from app.database import get_connection
         conn = get_connection()
 
-        progress_store[task_id].update(progress=60, message="正在解析条文...")
+        # 取消守卫：任务可能在 Phase 1 / 审查等待期间被取消或超期清理。
+        # 此时不该再往下做解析/分类/索引——那是在为一份已被放弃的导入干活。
+        if not _update_task(task_id, progress=60, message="正在解析条文..."):
+            logger.info("导入任务已取消或超时清理，跳过 Phase 2 task=%s", task_id)
+            return
 
         # Step 2: 解析条文 + 过滤封面/出版信息页脏数据
         clauses_data = _filter_cover_clauses(parse_markdown(md_text))
@@ -679,7 +771,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         dim1_nature = detect_nature(code)
         dim1_industry = detect_industry(code)
 
-        progress_store[task_id].update(progress=70, message=f"正在分类 {len(clauses_data)} 条条文...")
+        _update_task(task_id, progress=70, message=f"正在分类 {len(clauses_data)} 条条文...")
 
         # Step 4: 加载分类规则
         rules_rows = conn.execute(
@@ -820,12 +912,12 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 n_vec = len(embedding_records)
                 # 模型首次加载约 30 秒，是本流程最长的单点停顿。若与编码合并为一步，
                 # 进度条会静止半分钟——单列一档，用户才知道在等什么。
-                progress_store[task_id].update(
+                _update_task(task_id, 
                     progress=80, message="正在加载向量模型（首次约 30 秒）…")
                 if get_model() is None:
                     raise RuntimeError("Embedding 模型不可用")
 
-                progress_store[task_id].update(
+                _update_task(task_id, 
                     progress=84, message=f"正在生成向量（{n_vec} 块）…")
                 texts = [r["text"] for r in embedding_records]
                 embeddings = embed_texts(texts)
@@ -856,9 +948,15 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 # 回归测试：tests/test_import_vector_batch.py
                 total = len(records)
                 for start in range(0, total, VECTOR_WRITE_BATCH):
+                    # 长循环里的取消守卫：上万条要写多个批次，中途被取消就停手。
+                    # 必须在这里守：LanceDB 写入不在 SQLite 事务内，多写的部分
+                    # 不会被 rollback 回收。
+                    if _get_task(task_id) is None:
+                        logger.info("导入任务已取消/超时清理，中止向量写入 task=%s", task_id)
+                        return
                     vs._get_table().add(records[start:start + VECTOR_WRITE_BATCH])
                     done = min(start + VECTOR_WRITE_BATCH, total)
-                    progress_store[task_id].update(
+                    _update_task(task_id, 
                         progress=90 + int(9 * done / total),
                         message=f"正在写入向量索引（{done}/{total}）…")
 
@@ -866,14 +964,14 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                 # rows=73 / version=173）。压实失败只记 WARNING——见 VectorStore.optimize，
                 # 它绝不抛异常，故不会把已入库的导入判成失败。只换文案不动 progress
                 # （上一档已是 99，写回固定值反而像故障）。
-                progress_store[task_id].update(message="正在压实向量表…")
+                _update_task(task_id, message="正在压实向量表…")
                 vs.optimize()
             except Exception as e:
                 # 不影响导入完成，但绝不静默：进度 message 随任务结束即消失，
                 # 故同时收集告警，commit 后落 system_logs（否则向量缺失无从追查）。
                 # 只改文案、不动 progress——此处进度可能已推进到 90+，写回固定值
                 # 会造成进度回退，反而更像故障。
-                progress_store[task_id].update(
+                _update_task(task_id, 
                     message=f"向量索引部分失败: {str(e)}"
                 )
                 vector_warn = f"向量索引写入失败，部分条文缺索引: {e}"
@@ -907,7 +1005,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
                        }),
                        username=progress_store.get(task_id, {}).get("owner", "system"))
 
-        progress_store[task_id].update(
+        _update_task(task_id, 
             status="done", progress=100,
             message=f"导入完成：{len(clauses_data)} 条条文已解析，{classified_count} 个维度已分类"
         )
@@ -923,7 +1021,7 @@ def _process_import_phase2(task_id: str, md_text: str, title: str, code: str,
         # 以为这是一次可以忽略的偶发错误。
         # 不加「导入失败」前缀：import_progress.html 的 error 分支已渲染
         # 「导入失败: {{ message }}」（且第 14 行另有一处裸渲染），带了会重复。
-        progress_store[task_id].update(
+        _update_task(task_id, 
             status="error", progress=0,
             message=f"本次未完成，请重跑：{e}",
         )

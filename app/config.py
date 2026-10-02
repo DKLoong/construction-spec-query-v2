@@ -79,6 +79,14 @@ CHUNK_CHAR_FLOOR = 128
 LOG_RETENTION_DAYS = 90        # system_logs 默认保留天数
 LOG_CLEAN_BATCH = 500          # 清理每批删除上限（防长事务）
 
+# ── 导入任务台账（progress_store）保留时限 ──
+# 台账是纯内存结构，无 TTL 会只增不减；且 review_needed 条目还绑着磁盘上的
+# 原文件与 OCR 产物（单份可达 68MB），故超期要连磁盘一起回收。
+# 两值均可在「参数设置」页调整（registry 的 import.* 组）；口径见
+# app/routes/import_routes.sweep_progress_store。
+IMPORT_TASK_TTL_TERMINAL_MIN = 30   # done/error 条目在内存里的保留时长（分钟）——只删内存
+IMPORT_TASK_TTL_REVIEW_HOURS = 24   # review_needed 保留时长（小时）——超时连磁盘产物一起清
+
 # ── QA 模块配置默认值（DB settings 的 qa.* 键可覆盖；app/qa/config.py 读取）──
 QA_CONFIG_DEFAULTS: dict = {
     # 检索

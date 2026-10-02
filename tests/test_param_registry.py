@@ -22,14 +22,16 @@ def _set_setting(key, value):
             (key, str(value)))
 
 
-def test_meta_covers_three_groups_and_fields():
-    assert [g["id"] for g in registry.PARAM_GROUPS] == ["classify", "search", "qa"]
+def test_meta_covers_all_groups_and_fields():
+    """分组清单 + 每组代表性键 + 全部键都在已知分组前缀下（新增分组须同时补这里）"""
+    assert [g["id"] for g in registry.PARAM_GROUPS] == ["classify", "search", "qa", "import"]
     keys = [m["key"] for m in registry.PARAM_META]
     assert "classify.ai_confidence_threshold" in keys
     assert "classify.threshold.dim1" in keys and "classify.threshold.dim6" in keys
     assert "search.vector_l2_threshold" in keys and "search.rrf_k" in keys
     assert "qa.rerank.min_score" in keys
-    assert all(k.startswith(("classify.", "search.", "qa.")) for k in keys)
+    assert "import.task_ttl_terminal_min" in keys and "import.task_ttl_review_hours" in keys
+    assert all(k.startswith(("classify.", "search.", "qa.", "import.")) for k in keys)
     for m in registry.PARAM_META:
         assert m["label"] and m["placeholder"] and m.get("help")
         assert m["type"] in ("int", "float", "str")

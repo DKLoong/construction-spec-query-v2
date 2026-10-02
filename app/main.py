@@ -1,4 +1,6 @@
 ﻿import logging
+import time
+
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -89,10 +91,37 @@ def _startup_log_cleanup():
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _startup_import_sweeper():
+    """后台常驻线程：周期性回收超期的导入任务台账（progress_store）
+
+    台账是纯内存字典，原先**无 TTL**：任务进入 done/error 后条目永久驻留（只有
+    用户主动取消才 pop），长期运行只增不减；停在 review_needed 的条目还额外绑着
+    磁盘上的原文件与 OCR 产物（单份可达 68MB）。
+    时限与口径见 import_routes.sweep_progress_store，两档时限均可在参数设置页调整。
+    """
+    import threading
+
+    def _run():
+        from app.routes.import_routes import sweep_progress_store, IMPORT_SWEEP_INTERVAL_S
+        while True:
+            try:
+                res = sweep_progress_store()
+                if res["memory"]:
+                    logger.info("导入任务台账回收：内存 %d 条、磁盘 %d 份",
+                                res["memory"], res["disk"])
+            except Exception as e:
+                # 单轮失败不能终止线程（否则之后再也不清理）
+                logger.warning("导入任务台账回收失败: %s", e)
+            time.sleep(IMPORT_SWEEP_INTERVAL_S)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def startup():
     setup_logging()  # 先接日志桥，后续启动步骤的告警才能进 system_logs
     init_db()
     _startup_log_cleanup()
+    _startup_import_sweeper()
     _startup_vector_sync()
     _startup_warmup_embedding()
     _startup_fts_optimize()
