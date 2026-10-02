@@ -10,9 +10,15 @@
 ```bash
 cd /d/CC-Workspace/construction-spec-query-v2
 cp data/spec_query.db data/_probe_spec.db          # 副本库，**不要**在 dev 库上跑
-export DATABASE_PATH="$PWD/data/_probe_spec.db"    # 只走环境变量，禁止改源码常量
+# ⚠ 四条路径全都要隔离，不能只改 DATABASE_PATH：f8/f10/f11 会**真实上传**文件，
+#   只隔离库的话原文件会写进真实 data/uploads、OCR 产物写进真实 data/outputs
+#   （与 tests/conftest.py::isolated_paths 的 C-4 同一个坑，那边记的是 patch 模块名）
+export DATABASE_PATH="$PWD/data/_probe_spec.db"
+export UPLOAD_DIR="$PWD/data/_probe_uploads"
+export OUTPUT_DIR="$PWD/data/_probe_outputs"
+export LANCE_DB_PATH="$PWD/data/_probe_lance"
 D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8123 &   # 不加 --reload
-D:/Python/python.exe scripts/probe_spec_ui.py f1   # f1|f2|f3|f4|f5|f6
+D:/Python/python.exe scripts/probe_spec_ui.py f1   # f1…f11，分组见 CASES
 ```
 
 **前置要点**：
@@ -20,7 +26,8 @@ D:/Python/python.exe scripts/probe_spec_ui.py f1   # f1|f2|f3|f4|f5|f6
   默认取 `scripts/create_admin.py` 的默认账号）。
 - **用例自带前置**：不依赖副本库里手工点过的状态；条文数从页面上现数，不写死。
 - 改静态 js/css 后，跑之前确认 `base.html` 的 `?v=N` 已递增（缓存会让探针读到旧文件）。
-- 跑完清理：杀掉 8123 进程、删除 `data/_probe_spec.db`。
+- 跑完清理：杀掉 8123 进程，并删除 `data/_probe_spec.db` 与
+  `data/_probe_uploads` / `data/_probe_outputs` / `data/_probe_lance` 四个隔离目录。
 - **视口宽度会影响结论**（见 memory: ui-isolated-verification）：默认 1600×900，
   窄视口相关用例请自行在用例内 resize 并在 finally 还原。
 
