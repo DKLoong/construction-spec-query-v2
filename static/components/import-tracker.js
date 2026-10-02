@@ -2,7 +2,7 @@
 //
 // 背景：导入进度原来只活在**当前文档**的 DOM 里（#import-status 的 hx-get 轮询）。
 // 导入弹窗用 x-show，所以关掉弹窗不销毁 DOM、轮询照跑 —— 「关掉还能回来看进度」
-// 因此成立；但一旦整页跳转，文档销毁、task_id 无处可寻：服务端 progress_store
+// 因此成立；但一旦整页跳转，文档销毁、task_id 无处可寻：服务端台账（import_tasks 表）
 // 还在，客户端却再没有把手，于是实际体验是「导入期间不能干别的事」。
 //
 // 本脚本把 task_id 存 sessionStorage（切页/返回均不丢，per-tab，与 rebuild.js 同口径），
@@ -89,7 +89,7 @@
             stop(); clearTask(); remove();
             toast('导入失败：' + ((p && p.message) || ''));
         } else if (st === 'unknown') {
-            // 服务重启后 progress_store 清空 —— 属**正常**路径，自清而不是永久轮询
+            // 未知任务 = 台账里不存在或已被超期清理 —— 属**正常**路径，自清而不是永久轮询
             stop(); clearTask(); remove();
         } else if (st === 'review_needed') {
             stop();                       // 不再轮询，但保留 task_id

@@ -1213,7 +1213,7 @@ async def review_page(request: Request, task_id: str):
 async def review_content(request: Request, task_id: str):
     """获取 OCR 原始文本"""
     task = _get_task(task_id)
-    if not task or "md_text" not in task:
+    if not task or task.get("md_text") is None:
         return JSONResponse({"detail": "任务不存在或已过期"}, status_code=404)
     return {"content": task["md_text"], "file_name": task.get("file_name", "")}
 
