@@ -45,7 +45,11 @@
             </button>
         </div>
     </div>
-    <div id="review-result" style="margin-top:0.5rem">
+    {# 结果区**预留高度**（.review-result-slot：实测真实进度片段 83px）：
+       进度片段是轮询每 2s 换进来的，若结果区高度随内容增长，它的底边会重新落到折叠线
+       以下（真实流程实测被裁 25px ⇒「刷新行」看不见）。先预留出足够高度 ⇒ **布局高度
+       全程不变** ⇒ 点击时滚到底一次即可，之后进度条与刷新行都在预留区里原位显现。 #}
+    <div id="review-result" class="review-result-slot" style="margin-top:0.5rem">
         <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
     </div>
 </div>
@@ -77,6 +81,15 @@ document.addEventListener('alpine:init', () => {
             } catch (e) {
                 this.mdContent = '(加载失败)';
             }
+        },
+
+        // 结果区所在的滚动容器（审查页里是 .center-panel-v2；window 不滚动）
+        _resultScroller() {
+            const box = document.getElementById('review-result');
+            for (let s = box && box.parentElement; s; s = s.parentElement) {
+                if (s.scrollHeight > s.clientHeight) return s;
+            }
+            return null;
         },
 
         updatePreview() {
@@ -246,10 +259,11 @@ document.addEventListener('alpine:init', () => {
             // 对齐视口底边，元素下方的容器内边距仍露不出来（实测差约 20px）。
             // 注意 window 不是滚动容器（.app-layout 为 100vh + overflow:hidden，
             // 审查页里滚动的是 .center-panel-v2），故不能直接 window.scrollTo。
-            const resultBox = document.getElementById('review-result');
-            for (let s = resultBox && resultBox.parentElement; s; s = s.parentElement) {
-                if (s.scrollHeight > s.clientHeight) { s.scrollTop = s.scrollHeight; break; }
-            }
+            //
+            // **只需滚这一次**：结果区已由 `.review-result-slot` 预留出进度片段的高度，
+            // 于是插入响应、以及之后每 2s 轮询换入片段都不会改变布局高度 ⇒ 这里的滚动
+            // 定位一次即可长期成立（无需插入后再滚、也无需监听 htmx 事件）。
+            this.scrollToResult();
             const taskId = window.location.pathname.split('/').pop();
             try {
                 const resp = await fetch(`/import/review/${taskId}/confirm`, {
@@ -272,6 +286,12 @@ document.addEventListener('alpine:init', () => {
             } finally {
                 this.submitting = false;
             }
+        },
+
+        // 把结果区所在的滚动容器推到底（见 confirmImport 的两处调用点与 watchProgressAutoScroll）
+        scrollToResult() {
+            const s = this._resultScroller();
+            if (s) s.scrollTop = s.scrollHeight;
         },
 
         syncScroll(event) {

@@ -1110,7 +1110,156 @@ def f10_1_confirm_scrolls_to_bottom_before_request(page):
         page.set_viewport_size({"width": 1600, "height": 900})
 
 
-CASES["f10"] = [f10_1_confirm_scrolls_to_bottom_before_request]
+def f10_2_confirm_keeps_progress_fully_visible(page):
+    """确认后插入的进度区必须**整体**落在视口内（而不是只露出上半截）
+
+    用户实测：滚动确实发生了，但只到"进度条上半部分"，下半部分与后续提示行被折叠线挡住，
+    仍需手动滚。**根因**：滚动发生在**响应插入之前**——那一刻 #review-result 还是空的，
+    滚到的是旧内容的底部；响应插入后容器变高、而 scrollTop 没跟着走，新内容就落在
+    折叠线以下。即「滚动排在进度条加载之前」这条字面要求，与「让用户看见进度」这个
+    真实目的相冲突 —— 两者都要做：点击时先滚（即时反馈），**插入后再滚一次**（保证可见）。
+
+    断言的是**几何**（进度区底边 ≤ 滚动容器底边），不是"滚动函数被调用了"。
+    """
+    task_id = _make_review_task(page, "PROBE-SCROLL2 1.0", "探针滚动用规范")
+    route_pat = f"**/import/review/{task_id}/confirm"
+    frag_pat = f"**/import/progress/{task_id}"
+    try:
+        page.set_viewport_size({"width": 1280, "height": 520})
+        page.goto(f"{BASE}/import/review/{task_id}")
+        page.wait_for_selector(".review-panels", timeout=15000)
+        geo = page.evaluate("""() => { const s = document.querySelector('.center-panel-v2');
+                                   return {sh: s.scrollHeight, ch: s.clientHeight}; }""")
+        assert geo["sh"] > geo["ch"], f"前置不成立：审查页未溢出，断言会空转 {geo}"
+        # 前置：结果区必须**已预留**高度（.review-result-slot ≥ 80px）。
+        # 这条钉住的是设计决策本身——把预留样式删掉，本用例就会红，而不是静默退化。
+        slot_h = page.evaluate("() => Math.round(document.getElementById('review-result').getBoundingClientRect().height)")
+        assert slot_h >= 80, f"结果区未预留高度（当前 {slot_h}px），进度片段换入后必然被裁"
+
+        # 高度**确定**的进度片段（便于对几何下断言），并把它同时挂到轮询端点上，
+        # 免得 2s 后的真轮询把高度换掉、测量对象中途变样
+        # 高度取**实测真实值**：真实 done 态片段 83px（见 .review-result-slot 的注释）
+        body = (f'<div id="import-status" hx-get="/import/progress/{task_id}"'
+                f' hx-trigger="every 2s" hx-swap="outerHTML" style="height:83px">'
+                f'<p>审查完成，正在继续导入...</p></div>')
+        page.route(route_pat, lambda r: r.fulfill(status=200, content_type="text/html", body=body))
+        page.route(frag_pat, lambda r: r.fulfill(status=200, content_type="text/html", body=body))
+        _click_confirm_programmatically(page)
+
+        node = page.locator("#import-status")
+        assert poll_until(page, lambda: node.count() > 0, 8000), "进度片段未插入"
+        page.wait_for_timeout(400)          # 等插入后的布局稳定
+
+        sc = page.locator(".center-panel-v2").bounding_box()
+        nb = node.bounding_box()
+        assert nb["y"] >= sc["y"] - 1, f"进度区顶部被裁：node={nb} scroller={sc}"
+        assert nb["y"] + nb["height"] <= sc["y"] + sc["height"] + 1, (
+            f"进度区底部被裁（用户报的『只露出上半截』）："
+            f"进度区底={nb['y'] + nb['height']:.0f} 视口底={sc['y'] + sc['height']:.0f}")
+    finally:
+        page.unroute(route_pat)
+        page.unroute(frag_pat)
+        page.set_viewport_size({"width": 1600, "height": 900})
+
+
+def f10_3_poll_swap_keeps_grown_fragment_visible(page):
+    """轮询换入**更高**的进度片段后，整块仍要可见（不能只露上半截）
+
+    这是用户原话里「刷新行仍被隐藏」的那一刻，与 f10_2 是**两个不同时刻**：
+    f10_2 = 确认响应插入（此刻插入的是 processing 片段）；
+    本条 = 约 2s 后轮询把片段换成终态片段（多一行「导入完成！刷新页面…」⇒ 变高）。
+    真实流程实测：后者底边被裁 25px，正是那一行被挡住。
+
+    修法要点：换入前若**已在底部**（跟随态）则换完贴回底部；用户主动往上滚过就不打扰。
+    """
+    task_id = _make_review_task(page, "PROBE-SCROLL3 1.0", "探针滚动用规范")
+    confirm_pat = f"**/import/review/{task_id}/confirm"
+    frag_pat = f"**/import/progress/{task_id}"
+    try:
+        page.set_viewport_size({"width": 1280, "height": 520})
+        page.goto(f"{BASE}/import/review/{task_id}")
+        page.wait_for_selector(".review-panels", timeout=15000)
+        assert page.evaluate("""() => { const s = document.querySelector('.center-panel-v2');
+                                         return s.scrollHeight > s.clientHeight; }"""), \
+            "前置不成立：审查页未溢出，断言会空转"
+
+        # 确认时回**较矮**的片段；轮询回**更高**的终态片段（多出"刷新页面"那一行）
+        # 贴合真实：确认响应是**一行提示**（实测 22px），轮询换入的是**真实进度片段**
+        # （实测 83px，三段式进度条 + 提示行 + 「刷新页面」行）
+        short_body = (f'<div id="import-status" hx-get="/import/progress/{task_id}"'
+                      f' hx-trigger="every 2s" hx-swap="outerHTML" style="height:22px">'
+                      f'<p>审查完成，正在继续导入...</p></div>')
+        tall_body = ('<div id="import-status" style="height:83px">'
+                     '<p>导入完成！<a href="/">刷新页面</a>查看新导入的规范。</p></div>')
+        page.route(confirm_pat, lambda r: r.fulfill(status=200, content_type="text/html", body=short_body))
+        page.route(frag_pat, lambda r: r.fulfill(status=200, content_type="text/html", body=tall_body))
+
+        _click_confirm_programmatically(page)
+
+        def _swapped():
+            n = page.locator(_IMPORT_STATUS)
+            return n.count() > 0 and "刷新页面" in n.inner_text()
+
+        assert poll_until(page, _swapped, 12000), "轮询未换入更高的终态片段"
+        page.wait_for_timeout(300)          # 等布局稳定
+
+        sc = page.locator(".center-panel-v2").bounding_box()
+        nb = page.locator(_IMPORT_STATUS).bounding_box()
+        assert nb["y"] + nb["height"] <= sc["y"] + sc["height"] + 1, (
+            f"轮询换入更高的片段后底部被裁（用户报的『刷新行被隐藏』）："
+            f"底={nb['y'] + nb['height']:.0f} 视口底={sc['y'] + sc['height']:.0f}")
+    finally:
+        page.unroute(confirm_pat)
+        page.unroute(frag_pat)
+        page.set_viewport_size({"width": 1600, "height": 900})
+
+
+def f10_4_poll_swap_does_not_yank_user_back(page):
+    """用户主动上滚看内容后，轮询不得把他拽回底部
+
+    「跟随底部」只应发生在用户本来就在底部时。否则 Phase 2 那 10 秒里每次轮询都把人
+    拽回去 —— 比原来的问题更烦人。这条钉住 watchProgressAutoScroll 里那个
+    beforeSwap 取的跟随判定。
+    """
+    task_id = _make_review_task(page, "PROBE-SCROLL4 1.0", "探针滚动用规范")
+    confirm_pat = f"**/import/review/{task_id}/confirm"
+    frag_pat = f"**/import/progress/{task_id}"
+    try:
+        page.set_viewport_size({"width": 1280, "height": 520})
+        page.goto(f"{BASE}/import/review/{task_id}")
+        page.wait_for_selector(".review-panels", timeout=15000)
+
+        short_body = (f'<div id="import-status" hx-get="/import/progress/{task_id}"'
+                      f' hx-trigger="every 2s" hx-swap="outerHTML" style="height:22px">'
+                      f'<p>审查完成，正在继续导入...</p></div>')
+        tall_body = ('<div id="import-status" style="height:83px">'
+                     '<p>导入完成！<a href="/">刷新页面</a>查看新导入的规范。</p></div>')
+        page.route(confirm_pat, lambda r: r.fulfill(status=200, content_type="text/html", body=short_body))
+        page.route(frag_pat, lambda r: r.fulfill(status=200, content_type="text/html", body=tall_body))
+
+        _click_confirm_programmatically(page)
+        assert poll_until(page, lambda: page.locator(_IMPORT_STATUS).count() > 0, 8000), \
+            "前置：进度片段未插入"
+
+        # 用户主动上滚（模拟"想看上面的审查内容"），并等轮询换入更高的片段
+        page.evaluate("""() => { document.querySelector('.center-panel-v2').scrollTop = 0; }""")
+        page.wait_for_timeout(300)
+        assert poll_until(page, lambda: "刷新页面" in page.locator(_IMPORT_STATUS).inner_text(), 12000), \
+            "轮询未换入更高的片段"
+        page.wait_for_timeout(600)          # 给 afterSettle 的滚动（若有）留出时间
+
+        top = page.evaluate("() => Math.round(document.querySelector('.center-panel-v2').scrollTop)")
+        assert top <= 4, f"用户上滚后被轮询拽回了底部：scrollTop={top}（应保持 ≈0）"
+    finally:
+        page.unroute(confirm_pat)
+        page.unroute(frag_pat)
+        page.set_viewport_size({"width": 1600, "height": 900})
+
+
+CASES["f10"] = [f10_1_confirm_scrolls_to_bottom_before_request,
+                f10_2_confirm_keeps_progress_fully_visible,
+                f10_3_poll_swap_keeps_grown_fragment_visible,
+                f10_4_poll_swap_does_not_yank_user_back]
 
 
 # ═══════════════════════════════════════════
