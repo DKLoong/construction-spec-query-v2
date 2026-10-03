@@ -57,21 +57,21 @@ def test_panel_areas_follow_the_spec_table_host():
     assert src.index('id="clause-detail-area"') > host_at
 
 
-def test_scroll_fires_before_request_not_after_load():
-    """自动滚入视野必须挂在**请求发出前**，不得等加载完。
+def test_scroll_registered_on_both_request_and_settle():
+    """滚动必须**同时**挂在 beforeRequest 与 afterSettle 上，缺一会漏场景。
 
-    挂 afterSettle 会让用户盯着没反应的界面等整本规范渲染完（实测 ~1.5 s，主线程
-    被 4.1 MB 表格的同步布局堵住，见 TODOS T32）才看到滚动。面板排在列表之后，
-    其顶部位置在内容插入前后不变，故提前滚过去的落点同样准确。
+    - 只挂 afterSettle：用户要盯着没反应的界面等整本规范渲染完（实测 ~1.5 s，
+      主线程被 4.1 MB 表格的同步布局堵住，见 TODOS T32）才看到滚动。
+    - 只挂 beforeRequest：**刷新后的首次点击不会滚**——那一刻面板还是空的（高度 0），
+      页面总高恰好等于视口高，maxScroll = 0，没有任何滚动空间，scrollIntoView 是
+      空操作；等内容把页面撑开时该代码早已执行完，表现为「首次不滚、之后才滚」。
+    两者配合：前者负责「有空间时立刻到位」，后者负责「首次撑开后补滚」。
     """
     src = Path(TEMPLATE).read_text(encoding="utf-8")
-    scroll_at = src.index("scrollIntoView")
-    # 该 handler 必须注册在 beforeRequest 上
-    assert "addEventListener('htmx:beforeRequest'" in src[:scroll_at], \
-        "滚动应挂在 htmx:beforeRequest（请求发出前）"
-    assert "addEventListener('htmx:afterSettle'" not in src, \
-        "不得回退到 afterSettle——那要等内容加载完才滚"
-    # 且必须是瞬时，不是平滑
+    assert "addEventListener('htmx:beforeRequest', scrollPanelIntoView)" in src, \
+        "滚动应在请求发出时触发（页面已够高时立刻到位）"
+    assert "addEventListener('htmx:afterSettle', scrollPanelIntoView)" in src, \
+        "滚动还须在 settle 后补一次（首次点击时页面才被撑开，此时才有滚动空间）"
     assert "scrollIntoView({ behavior: 'auto', block: 'start' })" in src, \
         "自动滚动应使用瞬时 behavior:'auto'"
     assert "behavior: 'smooth'" not in src, \
