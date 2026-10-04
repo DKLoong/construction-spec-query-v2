@@ -18,7 +18,7 @@ from app.parser.spec_prefix import (
     detect_hierarchy, detect_nature, detect_industry, normalize_spec_code, PREFIX_WHITELIST,
 )
 from app.ocr.pdf_extract import extract_text, is_scanned
-from app.ocr.layout import finalize_layout
+from app.ocr.layout import finalize_layout, load_layout
 from app.classifier.rule_engine import classify_clause, should_use_ai
 from app.classifier.batch_queue import try_enqueue
 from app.search.vector_search import VectorStore
@@ -1239,6 +1239,63 @@ async def review_content(request: Request, task_id: str):
     if not task or task.get("md_text") is None:
         return JSONResponse({"detail": "任务不存在或已过期"}, status_code=404)
     return {"content": task["md_text"], "file_name": task.get("file_name", "")}
+
+
+@router.get("/import/review/{task_id}/layout")
+async def review_layout(task_id: str):
+    """把 P0 落下的版面块（含条文号）下发给审查页（**只读**，spec §7）。
+
+    没有 layout.json（老任务 / `.md` / 非扫描件 / 其他 OCR 后端）⇒ 404，
+    前端据此退回现有源码审查页（spec §13）。
+    """
+    if not re.fullmatch(r"[0-9a-f]{8}", task_id):
+        return JSONResponse({"detail": "任务ID非法"}, status_code=404)
+    layout = load_layout(Path(OUTPUT_DIR) / task_id)
+    if layout is None:
+        return JSONResponse({"detail": "无版面数据"}, status_code=404)
+    return {
+        "blocks": layout.get("blocks") or [],
+        "pages": layout.get("pages") or [],
+        "stats": layout.get("stats") or {},
+    }
+
+
+@router.get("/import/review/{task_id}/page/{page_no}.png")
+async def review_page_image(task_id: str, page_no: int, scale: float = 1.5):
+    """渲染原 PDF 的某一页为 PNG（spec §6.1）。
+
+    `scale` 是**外部输入**：必须限幅（全局规则 §1.1）—— 否则 200 倍缩放能把
+    PyMuPDF 渲染成一堵墙，把服务端内存吃光。
+    """
+    import fitz
+    from fastapi.responses import FileResponse
+
+    if not re.fullmatch(r"[0-9a-f]{8}", task_id):
+        return JSONResponse({"detail": "任务ID非法"}, status_code=404)
+    if not 0.25 <= scale <= 3.0:
+        return JSONResponse({"detail": "scale 需在 [0.25, 3.0]"}, status_code=422)
+
+    task = _get_task(task_id)
+    src = (task or {}).get("file_path") or ""
+    src_path = Path(src)
+    if not src or not src_path.is_file():
+        return JSONResponse({"detail": "原始文件不存在"}, status_code=404)
+
+    try:
+        with fitz.open(str(src_path)) as doc:
+            if not 1 <= page_no <= len(doc):
+                return JSONResponse({"detail": "页号越界"}, status_code=404)
+            out_dir = Path(OUTPUT_DIR) / task_id / "_pages"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            png = out_dir / f"{page_no}@{scale:.2f}.png"
+            if not png.is_file():
+                pix = doc[page_no - 1].get_pixmap(matrix=fitz.Matrix(scale, scale))
+                pix.save(str(png))
+    except (OSError, RuntimeError) as e:
+        logger.warning("页图渲染失败 task=%s page=%s: %s", task_id, page_no, e)
+        return JSONResponse({"detail": "页图渲染失败"}, status_code=500)
+
+    return FileResponse(str(png), media_type="image/png")
 
 
 @router.get("/import/review/{task_id}/imgs/{filename}")
