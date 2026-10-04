@@ -203,6 +203,18 @@ def _drive_real_import(isolated_paths, monkeypatch, md_text: str,
     try:
         ir._process_import(task_id, str(md_path), "祖先链测试规范", "GB/T 11111-2020")
         state = dict(import_task_row(task_id))
+        # ⚠️ `.md` 上传现在**停在待审查**（spec §20）—— 不再直进 Phase 2。
+        # 真实用户点「确认并继续导入」时，`confirm_review` 会以**审查后的正文**
+        # 启动 Phase 2（不再清洗）。此处照它的做法把流程走完，使 helper 的语义
+        # （走真实导入路径 → 条文入库）保持不变。
+        assert state["status"] == "review_needed", \
+            f"`.md` 应停在待审查，实为 {state['status']!r}"
+        ir._process_import_phase2(
+            task_id, state["md_text"], state.get("title") or "", state.get("code") or "",
+            str(md_path), state.get("file_hash") or "",
+            state.get("spec_status") or "现行", state.get("replaced_by_code") or "",
+        )
+        state = dict(import_task_row(task_id))
         assert state["status"] == "done", f"导入未完成：{state}"
     finally:
         ir.delete_task(task_id)
@@ -644,3 +656,39 @@ def test_imported_section_path_keeps_source_spacing_while_breadcrumb_is_normaliz
     assert rows["1.0.1"]["breadcrumb"].split()[:1] == ["1"]
     assert " ".join(rows["6.1.1"]["breadcrumb"].split()).startswith("6 钢筋"), \
         f"编号与节名之间的空白不应被折叠: {rows['6.1.1']['breadcrumb']!r}"
+
+
+def test_md_upload_pauses_for_review(auth_client, monkeypatch, tmp_path):
+    """★ `.md` 上传必须**停在待审查**（spec §20）。
+
+    此前 `.md` 分支是「读文件 → clean_ocr_text → **直接 `_process_import_phase2`**」，
+    **完全没有人工审查环节**；改为停在 `review_needed`，复用现有源码审查页。
+
+    隔离：四个路径常量都绑定在**消费方模块**的命名空间里（`from app.config import X`
+    在导入时即绑定），必须按消费方模块名 patch，patch `app.config.*` 无效。
+    """
+    monkeypatch.setattr("app.database.DATABASE_PATH", str(tmp_path / "md_review.db"))
+    monkeypatch.setattr("app.search.vector_search.LANCE_DB_PATH", str(tmp_path / "lance"))
+    monkeypatch.setattr("app.routes.import_routes.UPLOAD_DIR", str(tmp_path / "up"))
+    monkeypatch.setattr("app.routes.import_routes.OUTPUT_DIR", str(tmp_path / "out"))
+    for n in ("lance", "up", "out"):
+        (tmp_path / n).mkdir(parents=True, exist_ok=True)
+    from app.database import init_db, get_db
+    init_db()
+
+    import io
+    md = "# 测试规范\n\n## 1 总则\n\n### 1.1 一般规定\n\n混凝土施工应满足设计要求。\n"
+    resp = auth_client.post(
+        "/import/upload",
+        files={"file": ("t.md", io.BytesIO(md.encode("utf-8")), "text/markdown")},
+        data={"code": "T 1-2024", "title": "测试规范"},
+    )
+    assert resp.status_code == 200
+    task_id = resp.headers.get("X-Import-Task-Id")
+    assert task_id, "上传响应必须带任务号（前端跨页追踪依赖它）"
+
+    with get_db() as conn:
+        row = conn.execute("SELECT status FROM import_tasks WHERE task_id=?", (task_id,)).fetchone()
+    assert row is not None, "台账里应有该任务"
+    assert row["status"] == "review_needed", \
+        f"`.md` 上传应停在待审查（此前是直进 Phase 2），实为 {row['status']!r}"

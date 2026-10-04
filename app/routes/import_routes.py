@@ -749,10 +749,17 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
         # Step 1: 获取 MD 文本
         if ext == ".md":
             md_text = path.read_text(encoding="utf-8")
-            # 保守清洗（删除页码行/纯数字行/OCR失败标记/重复页眉），再进入 Phase 2
+            # ⚠️ **先清洗再审查**：否则用户在审查页改好的内容，提交后**又会被清洗一遍**
             md_text = clean_ocr_text(md_text)
-            # MD 文件直接继续 Phase 2（同一线程内安全）
-            _process_import_phase2(task_id, md_text, title, code, file_path, file_hash, status, replaced_by_code)
+            # 停在待审查（走源码审查页：左 md 源码 / 右预览，spec §20）。
+            # 提交后由 confirm_review 启动 Phase 2 —— **不再在这里直接跑**。
+            _update_task(
+                task_id,
+                md_text=md_text, title=title, code=code, file_path=file_path,
+                file_name=path.name, file_hash=file_hash,
+                spec_status=status, replaced_by_code=replaced_by_code,
+                status="review_needed", progress=50, message="MD 文件待审查，请确认内容",
+            )
             return
         elif ext == ".pdf":
             if force_ocr or is_scanned(file_path):
@@ -1208,6 +1215,14 @@ async def review_page(request: Request, task_id: str):
         })
 
     from app.main import templates
+    # 入口分派：**单一判据 = 文件名扩展名**（spec §20.2），不另加状态字段。
+    #   `.md`   → 源码审查页（左 md 源码 / 右预览）
+    #   其他    → 版面块审查页（左原文件 / 右块编辑，**P1 交付**）
+    # ⚠️ P0 阶段**两个分支暂用同一模板**：`ocr_review_blocks.html` 尚未创建，
+    #    提前指向不存在的模板会让 OCR 审查页 500。P1 只需把下面 center_content 改成：
+    #       ("partials/ocr_review.html"
+    #        if str(task.get("file_name") or "").lower().endswith(".md")
+    #        else "partials/ocr_review_blocks.html")
     return templates.TemplateResponse(request, "base.html", {
         "left_content": "partials/tree_panel.html",
         "center_content": "partials/ocr_review.html",
