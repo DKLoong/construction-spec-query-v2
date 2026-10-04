@@ -13,11 +13,14 @@
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import logging
 import re
 from pathlib import Path
+
+from app.parser.md_parser import _Decision, parse_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -489,3 +492,58 @@ def finalize_layout(output_dir: str | Path, base_text: str,
         logger.warning("layout 锚定失败（不影响导入；**保留 %s 便于排查**）: %s",
                        LAYOUT_RAW_FILENAME, e)
         return None
+
+
+# ═══════════════════════════════════════════════════════════
+# 块 → 条文号（spec §11）
+# ═══════════════════════════════════════════════════════════
+
+def align_clauses(md_text: str, blocks: list[dict]) -> tuple[list[dict], dict]:
+    """给每个块标出它所属的**条文号**（spec §11）；返回 `(blocks, stats)`。
+
+    **为什么用 `parse_markdown` 的诊断钩子而不是自己扫编号**：
+    自己实现一遍编号匹配 = 本仓反复警告的「**第二把尺子**」。parser 的判据
+    （R14 兄弟表决、内节点判据、同号重复拒绝、目次过滤…）复杂且会演进；
+    私有的第二套判据一旦漂移就**静默错标**，而错标比不标更坏。
+
+    `_decisions` 是 parser **自己**逐行输出的判定，且其 `line` 与锚定的
+    `start_line` **同一坐标系**（都是 `md_text.split("\\n")` 的下标）——
+    故对齐退化为一次二分查找。
+
+    - 规则：块所属条文 = **起始行 ≤ 块起始行** 的**最后一个** `kind == "cand"` 行
+    - 前导块（第一个候选行之前）与未锚定块 ⇒ `None`（spec §11.2：**不猜**）
+    - **纯函数**：不改传入的块（返回新 dict）
+    - 只读 `_decisions`，**不碰 parser 的判定逻辑**
+    """
+    decisions: list[_Decision] = []
+    parse_markdown(md_text, _decisions=decisions)
+
+    cand_at: dict[int, str] = {
+        d.line: d.clause_no for d in decisions
+        if d.kind == "cand" and d.clause_no
+    }
+    starts = sorted(cand_at)
+
+    out: list[dict] = []
+    labeled = unlabeled = 0
+    seen: set[str] = set()
+    for b in blocks:
+        s = b.get("start_line")
+        clause: str | None = None
+        if s is not None and starts:
+            i = bisect.bisect_right(starts, s) - 1
+            if i >= 0:
+                clause = cand_at[starts[i]]
+        if clause is None:
+            unlabeled += 1
+        else:
+            labeled += 1
+            seen.add(clause)
+        out.append({**b, "clause_no": clause})
+
+    return out, {
+        "blocks": len(blocks),
+        "labeled": labeled,
+        "unlabeled": unlabeled,
+        "distinct_clauses": len(seen),
+    }
