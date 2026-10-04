@@ -1216,18 +1216,15 @@ async def review_page(request: Request, task_id: str):
 
     from app.main import templates
     # 入口分派：**单一判据 = 文件名扩展名**（spec §20.2），不另加状态字段。
-    #   `.md`   → 源码审查页（左 md 源码 / 右预览）
-    #   其他    → 版面块审查页（左原文件 / 右块编辑，**P1 交付**）
-    # ⚠️ P0 阶段**两个分支暂用同一模板**：`ocr_review_blocks.html` 尚未创建，
-    #    提前指向不存在的模板会让 OCR 审查页 500。P1 只需把下面 center_content 改成：
-    #       ("partials/ocr_review.html"
-    #        if str(task.get("file_name") or "").lower().endswith(".md")
-    #        else "partials/ocr_review_blocks.html")
+    #   `.md` → 源码审查页（左 md 源码 / 右预览）—— **这一支不要动**
+    #   其他  → 版面块审查页（左原文件 / 右块列表）；该页**自带**无 layout 的降级提示
+    is_md = str(task.get("file_name") or "").lower().endswith(".md")
     return templates.TemplateResponse(request, "base.html", {
         "left_content": "partials/tree_panel.html",
-        "center_content": "partials/ocr_review.html",
+        "center_content": ("partials/ocr_review.html" if is_md
+                           else "partials/ocr_review_blocks.html"),
         "task_id": task_id,
-        # 审查页隐藏左侧分类树，页面两栏全宽显示（编辑 | 预览）
+        # 审查页隐藏左侧分类树，页面两栏全宽显示
         "hide_tree": True,
     })
 

@@ -883,18 +883,32 @@ def _make_text_pdf(path):
     doc.close()
 
 
-def _upload_probe_pdf(page, code, title):
-    """经导入弹窗**真实**上传一份带文本层的极小 PDF（Phase 1 会停在 review_needed）
+def _upload_probe_file(page, code, title, ext=".pdf"):
+    """经导入弹窗**真实**上传一份极小文件（Phase 1 都会停在 review_needed）。
 
-    抽成公用：f8_6（验响应头接线）与 f10（验审查页滚动）都要先造一个真实待审查任务。
-    非文本层 PDF 会触发真实 OCR 请求，探针不能碰——见 _make_text_pdf 的说明。
+    ⚠️ **扩展名决定进哪个审查页**（P1 的入口分派，spec §20.2）：
+      - `.pdf` ⇒ **版面块审查页**（左原文件 / 右块列表）。用文本层 PDF，
+        `is_scanned()` 为假 ⇒ 走 `extract_text`，**不触发 OCR**。
+      - `.md`  ⇒ **源码审查页**（左 md 源码 / 右预览）。
+    故：验源码页（搜索/滚动/确认）用 `.md`；验版面块页用 `.pdf`。
     """
     import tempfile
     from pathlib import Path as _Path
-    tmp_pdf = _Path(tempfile.mkdtemp()) / f"{code.replace(' ', '-')}.pdf"
-    _make_text_pdf(str(tmp_pdf))
+    stem = code.replace(" ", "-")
+    tmp_dir = _Path(tempfile.mkdtemp())
+    if ext == ".md":
+        src = tmp_dir / f"{stem}.md"
+        src.write_text(
+            "# 探针验收规范\n\n## 1 总则\n\n### 1.1 一般规定\n\n"
+            "混凝土施工应符合设计要求，钢筋进场时应按标准检验。\n\n"
+            "### 1.2 材料\n\n1.0.2 本条文字用于让源码审查页有足够内容可滚动与搜索。\n\n"
+            "1.0.3 第二段用于验证多段渲染与替换。\n",
+            encoding="utf-8")
+    else:
+        src = tmp_dir / f"{stem}.pdf"
+        _make_text_pdf(str(src))
     _open_import_dialog(page)
-    page.set_input_files("input[name=file]", str(tmp_pdf))
+    page.set_input_files("input[name=file]", str(src))
     page.fill("input[name=code]", code)
     page.fill("input[name=title]", title)
     page.click(".dialog-box--closable button[type=submit]")
@@ -903,6 +917,11 @@ def _upload_probe_pdf(page, code, title):
         "() => !!sessionStorage.getItem('importTaskId')"), 15000), \
         "上传后任务号未落到 sessionStorage（响应头 X-Import-Task-Id 未接通？）"
     return page.evaluate("() => sessionStorage.getItem('importTaskId')")
+
+
+def _upload_probe_pdf(page, code, title):
+    """兼容旧调用（f8_6 验响应头接线）—— 等价于上传文本层 PDF"""
+    return _upload_probe_file(page, code, title, ext=".pdf")
 
 
 def _wait_review_needed(page):
@@ -1029,9 +1048,13 @@ CASES["f9"] = [f9_1_range_tildes_stay_literal,
 # `height:100vh; overflow:hidden`，window 永不滚动（scrollY 恒为 0）。
 # 断言错对象会得到一个永远"通过"的空转用例。
 
-def _make_review_task(page, code, title):
-    """造一个真实待审查任务并回到干净状态，返回 task_id"""
-    task_id = _upload_probe_pdf(page, code, title)
+def _make_review_task(page, code, title, ext=".md"):
+    """造一个真实待审查任务并回到干净状态，返回 task_id。
+
+    ⚠️ **默认 `.md`**：调用方（f10 滚动 / f11 搜索）验的都是**源码审查页**，
+    而 `.md` 正是该页的入口（spec §20.2）。验**版面块页**的 f12 显式传 `ext=".pdf"`。
+    """
+    task_id = _upload_probe_file(page, code, title, ext=ext)
     _wait_review_needed(page)
     page.evaluate("() => sessionStorage.removeItem('importTaskId')")
     return task_id
@@ -1462,6 +1485,203 @@ CASES["f8"] = [f8_1_floater_survives_navigation,
                f8_7_clicking_floater_opens_import_dialog,
                f8_8_opening_dialog_resumes_running_task,
                f8_9_open_import_query_param_opens_dialog]
+
+
+# ═══════════════════════════════════════════
+# f12：版面块审查页（P1 只读对照）
+# ═══════════════════════════════════════════
+#
+# ⚠️ `.md` / 非扫描件走 extract_text，**不产生 layout.json**（P0 的产物覆盖边界表），
+#    而 `_make_review_task` 上传的正是文本 PDF ⇒ 天生没有 layout。
+#    探针**不调 OCR**：用 `_make_review_task` 造真任务，再把参考夹具改写成它的
+#    `md_text` + `layout.json`，并让原文件变成 2 页（使跨页联动可验）。
+#    页尺寸取**夹具真实的 pages**（否则 bbox 落在图外，高亮框画不出来）。
+#    夹具在 data/_ocr_reference/，不入库；缺则整组跳过。
+
+_RVB = ".rvb-root"
+# 取 10 页：前两页只有 11 个块（封面 + 编制名单），样本太小验不出列表行为；
+# 10 页约 110 块（实测 57 页 650 块，约 11.4 块/页）。
+_RVB_PAGES = 10
+
+
+def _rvb_make_pdf(path, pages):
+    """按给定页尺寸造多页文本 PDF（≥100 字符 ⇒ 非扫描件 ⇒ 不触发 OCR）"""
+    import fitz
+    doc = fitz.open()
+    for p in pages:
+        doc.new_page(width=p["width"], height=p["height"]).insert_text(
+            (72, 100), f"Probe page {p['index']} " + "x" * 200, fontsize=10)
+    doc.save(str(path))
+    doc.close()
+
+
+def _rvb_seed(page, suffix):
+    """造一个**带 layout.json** 的待审查任务并打开审查页；前置不成立返回 None。"""
+    import json as _json
+    from pathlib import Path as _Path
+
+    # 本探针其余各组只驱动浏览器、从不 import 项目模块；f12 要写 layout.json，
+    # 故须自行把仓库根加进 sys.path（探针是以脚本方式跑的，没有包上下文）。
+    _root = str(_Path(__file__).resolve().parent.parent)
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+
+    from app.config import OUTPUT_DIR, UPLOAD_DIR
+    from app.database import get_db
+    from app.ocr.layout import (align_clauses, anchor_blocks, base_sha256,
+                                extract_layout, save_layout)
+
+    ref = _Path(__file__).resolve().parent.parent / "data" / "_ocr_reference"
+    if not (ref / "raw.jsonl").is_file():
+        return None
+
+    md = (ref / "reference.md").read_text(encoding="utf-8")
+    lay = extract_layout([_json.loads(l) for l in
+                          (ref / "raw.jsonl").read_text(encoding="utf-8").split("\n")
+                          if l.strip()])
+    pages = [p for p in lay["pages"] if p["index"] <= _RVB_PAGES]
+    anchored, _ = anchor_blocks(md, lay["blocks"])
+    aligned, _ = align_clauses(md, anchored)
+    aligned = [b for b in aligned if (b.get("page") or 1) <= _RVB_PAGES]
+
+    task_id = _make_review_task(page, f"PROBE-RVB {suffix}", f"探针块审查 {suffix}",
+                                ext=".pdf")
+    # 原文件换成 2 页（页尺寸与 layout.pages 一致，否则 page/2.png 404 或框画歪）
+    _rvb_make_pdf(_Path(UPLOAD_DIR) / f"{task_id}.pdf", pages)
+    with get_db() as conn:
+        conn.execute("UPDATE import_tasks SET md_text=?, file_name=? WHERE task_id=?",
+                     (md, "probe_block.pdf", task_id))
+
+    out = _Path(OUTPUT_DIR) / task_id
+    out.mkdir(parents=True, exist_ok=True)
+    save_layout({
+        "version": 1,
+        "pages": pages,
+        "blocks": aligned,
+        "base_sha256": base_sha256(md),
+        "stats": {"anchorable": len(aligned), "anchored": len(aligned), "missed": 0},
+    }, out)
+
+    page.goto(f"{BASE}/import/review/{task_id}")
+    assert poll_until(page, lambda: page.locator(_RVB).count() > 0, 10000), \
+        "审查页未渲染出版面块组件（组件或端点有问题）"
+    assert poll_until(page, lambda: page.locator(".rvb-block").count() > 0, 10000), \
+        "块列表为空"
+    return task_id
+
+
+def f12_1_left_shows_page_image(page):
+    """左栏渲染出页图，且尺寸为正（**前置**：没有图后面全是空跑）"""
+    assert _rvb_seed(page, "1") is not None, "前置不成立：缺少参考夹具"
+    img = page.locator(".rvb-img").first
+    assert img.count() == 1, "左栏没有页图"
+    box = img.bounding_box()
+    assert box and box["width"] > 50 and box["height"] > 50, f"页图尺寸异常：{box}"
+
+
+def f12_2_zoom_modes_change_zoom_and_reset_returns_to_fit(page):
+    """4 档缩放各生效；**「重置」回到适应宽度**（不是刷新 —— spec §6.2 明确）"""
+    assert _rvb_seed(page, "2") is not None, "前置不成立"
+    fit_w = page.evaluate("() => document.querySelector('.rvb-canvas').offsetWidth")
+    page.click("button:has-text('200%')")
+    assert poll_until(page, lambda: page.evaluate(
+        "() => document.querySelector('.rvb-canvas').offsetWidth") > fit_w * 1.5, 5000), \
+        "点 200% 后画布没变宽"
+    w200 = page.evaluate("() => document.querySelector('.rvb-canvas').offsetWidth")
+    page.click("button:has-text('重置')")
+    assert poll_until(page, lambda: abs(page.evaluate(
+        "() => document.querySelector('.rvb-canvas').offsetWidth") - fit_w) < 5, 5000), \
+        f"「重置」未回到适应宽度（200% 时 {w200}，fit {fit_w}）"
+
+
+def f12_3_right_lists_blocks_with_type_and_clause(page):
+    """右栏列出块、每块有**类型标签**；有归属的块标出**条文号**"""
+    assert _rvb_seed(page, "3") is not None, "前置不成立"
+    n = page.locator(".rvb-block").count()
+    assert n > 50, f"块列表条数异常：{n}"
+    assert page.locator(".rvb-block .rvb-tag").count() == n, "有块缺类型标签"
+    # ⚠️ 必须按**可见性**数：`.rvb-clause` 用 x-show 控制 ⇒ 元素**永远在 DOM 里**，
+    #    只数存在性会恒等于块数（空转恒绿，本仓 memory 记载过的陷阱）。
+    labeled = page.locator(".rvb-block .rvb-clause:visible").count()
+    assert 0 < labeled < n, f"条文号呈现异常：{labeled}/{n}（应「部分有、部分无」）"
+
+
+def f12_4_clicking_block_highlights_it_on_the_left(page):
+    """★ 双向联动（右→左）：点右栏块 ⇒ 右栏高亮 + 左栏出现**唯一**对应高亮框"""
+    assert _rvb_seed(page, "4") is not None, "前置不成立"
+    target = page.evaluate("""() => {
+        const els = [...document.querySelectorAll('.rvb-block')];
+        return els.findIndex(el => {
+            const un = el.querySelector('.rvb-unlocated');
+            return !un || getComputedStyle(un).display === 'none';
+        });
+    }""")
+    assert target >= 0, "找不到**未标**「原文件未定位」的块"
+    page.locator(".rvb-block").nth(target).click()
+
+    assert poll_until(page, lambda: page.locator(".rvb-block--on").count() == 1, 5000), \
+        "点块后右栏没有高亮"
+    assert poll_until(page, lambda: page.locator(".rvb-box--on").count() == 1, 5000), \
+        "点块后左栏没有对应高亮框"
+
+
+def f12_5_clicking_box_scrolls_right_panel_to_that_block(page):
+    """★ 双向联动（左→右）：点左栏框 ⇒ 右栏滚到该块并高亮。两侧体验**统一**。"""
+    assert _rvb_seed(page, "5") is not None, "前置不成立"
+    n = page.locator(".rvb-block").count()
+    page.locator(".rvb-block").nth(n - 1).click()      # 先把右栏滚下去
+    page.locator(".rvb-box").first.click()             # 再点左栏第一个框
+    assert poll_until(page, lambda: page.evaluate("""() => {
+        const on = document.querySelector('.rvb-block--on');
+        if (!on) return false;
+        const list = document.querySelector('.rvb-blocks');
+        return on.offsetTop >= list.scrollTop - 5
+            && on.offsetTop + on.offsetHeight <= list.scrollTop + list.clientHeight + 5;
+    }"""), 5000), "点左栏框后，右栏未把对应块滚进视野"
+
+
+def f12_6_unlocated_block_is_shown_and_labelled_not_hidden(page):
+    """★ **未定位块必须显示且明说**（P0 实测：table/chart 各 1 个锚不上）。
+
+    静默隐藏会让用户以为"这块不存在"；标出来他才知道要去原文件里手动核。
+    """
+    assert _rvb_seed(page, "6") is not None, "前置不成立"
+    # ⚠️ 同上：按**可见性**数，只数存在性恒为块数（空转）
+    assert page.locator(".rvb-unlocated:visible").count() >= 1, \
+        "夹具里应有未定位的块（table/chart），却一个都没**可见地**标出"
+    idx = page.evaluate("""() => {
+        const els = [...document.querySelectorAll('.rvb-block')];
+        return els.findIndex(el => {
+            const un = el.querySelector('.rvb-unlocated');
+            return un && getComputedStyle(un).display !== 'none';
+        });
+    }""")
+    assert idx >= 0, "找不到可见地标了「原文件未定位」的块"
+    body = page.locator(".rvb-block").nth(idx).locator(".rvb-block-bd").inner_text()
+    assert body.strip(), "未定位块的内容是空的 —— 应照常渲染，只是不画框"
+
+
+def f12_7_review_page_falls_back_when_no_layout(page):
+    """★ 降级：没有 layout.json 时**不能崩**（spec §13）。
+
+    用 `.pdf`（文本 PDF 走 `extract_text`）⇒ 会被分派到**版面块页**，
+    但**天生没有 layout**，正是本用例要的现场。
+    """
+    task_id = _make_review_task(page, "PROBE-RVB 7", "探针无版面数据", ext=".pdf")
+    page.goto(f"{BASE}/import/review/{task_id}")
+    ok = poll_until(page, lambda: (
+        page.locator(".rvb-error").count() > 0
+        or page.locator(".review-editor").count() > 0), 10000)
+    assert ok, "无 layout 时审查页既没提示也没回退 —— 直接崩了"
+
+
+CASES["f12"] = [f12_1_left_shows_page_image,
+                f12_2_zoom_modes_change_zoom_and_reset_returns_to_fit,
+                f12_3_right_lists_blocks_with_type_and_clause,
+                f12_4_clicking_block_highlights_it_on_the_left,
+                f12_5_clicking_box_scrolls_right_panel_to_that_block,
+                f12_6_unlocated_block_is_shown_and_labelled_not_hidden,
+                f12_7_review_page_falls_back_when_no_layout]
 
 
 if __name__ == "__main__":
