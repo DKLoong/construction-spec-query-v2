@@ -10,8 +10,8 @@
 
 用户在导入流程的原设想中提了两条（编号沿用其原始清单的第 3、4 项）：
 
-> 3. `upload` 文件夹里是有原文件的，审查时**对照原文件的准确度是最高的**，所以是否应该改成左侧栏为原文件查看，右侧栏为 OCR 解析后的预览栏，编辑和预览操作都在预览栏完成。
-> 4. OCR 审查时，对**表格内图片的修改十分不方便**，能否参考 paddle 网页导入审核，在预览栏支持表格编辑（插入行列、删除行列、合并行列）。
+> **3.** `upload` 文件夹里是有原文件的，审查时**对照原文件的准确度是最高的**，所以是否应该改成左侧栏为原文件查看，右侧栏为 OCR 解析后的预览栏，编辑和预览操作都在预览栏完成。
+> **4.** OCR 审查时，对**表格内图片的修改十分不方便**，能否参考 paddle 网页导入审核，在预览栏支持表格编辑（插入行列、删除行列、合并行列）。
 
 用户随后提供了 6 张 Paddle 网页端的实际截图作为交互参照，并明确裁定：
 
@@ -27,7 +27,7 @@
 ### 2.1 做
 
 | # | 能力 |
-|---|---|
+| --- | --- |
 | S1 | 左栏：原文件（PDF）逐页查看 + 缩放（4 档）+ 放大后拖动 + **版面块高亮框** |
 | S2 | 右栏：按**版面块**列表现渲染，块类型标签，块角标**条文号** |
 | S3 | 文本类块：就地富文本编辑（B / I / 删除线）+ 取消 / 保存 |
@@ -41,7 +41,7 @@
 ### 2.2 不做（明确排除，含理由）
 
 | 不做 | 理由 |
-|---|---|
+| --- | --- |
 | 块级增删 / 合并 / 拆分（新增块、删除整块） | 用户未提；OCR 错误的修正点在块**内部**与表格**结构**，不在块之间。Paddle 亦无此能力；YAGNI |
 | 表内「插入/删除**单元格**」 | **用户明确改为「合并/拆分单元格」** |
 | 左右栏之间的**连线** | 成本高（两个独立滚动容器持续同步）、视觉负收益（一条条文常对应多个块，多对多会糊）；Paddle 本身也没做，它用的就是双向高亮 |
@@ -55,7 +55,7 @@
 ### 3.1 数据侧
 
 | 事实 | 证据 |
-|---|---|
+| --- | --- |
 | 原文件在 `data/uploads/{task_id}{ext}` | `import_routes.py:681` |
 | OCR 产物在 `data/outputs/{task_id}/{task_id}.md` + `imgs/` | `config.py:19`、实测目录 |
 | `md_text` 中的表格**本就是内联 HTML** | 真实产物 `<table>` 7~262 处（`8376e02c` = 262） |
@@ -67,7 +67,7 @@
 
 ### 3.2 OCR 响应结构（单页真实调用实测，2026-10-04）
 
-```
+```text
 JSONL 行数 = 1（一行 = 一个文档）
 record.result.layoutParsingResults[]        ← 一页一个元素
   [i].prunedResult
@@ -101,7 +101,7 @@ record.result.layoutParsingResults[]        ← 一页一个元素
 `markdown.text` 是 `parsing_res_list` 的**拼装产物**。实测对照：
 
 | `parsing_res_list` | `markdown.text` |
-|---|---|
+| --- | --- |
 | `[0] paragraph_title` / `"目次"` | `## 目次` ← **`## ` 前缀由 `paragraph_title` 生成** |
 | `[1] content` / `"前言.....4  \n1 总则.....6  …"` | `前言.....4    \n1 总则.....6    …` |
 | `[2] number` / `"第5页"` | **不出现** ← 在 `markdown_ignore_labels` 中被排除 |
@@ -131,7 +131,7 @@ record.result.layoutParsingResults[]        ← 一页一个元素
 
 ## 4. 总体架构与数据流
 
-```
+```text
 导入上传
    └─ OCR（PaddleOCR-VL）
         ├─ outputs/{task_id}/{task_id}.md      ← 现状：仅此
@@ -198,7 +198,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 ### 6.2 缩放（4 档）与拖动
 
 | 档位 | 说明 |
-|---|---|
+| --- | --- |
 | **适应宽度** | 默认；由容器宽 ÷ 页宽算出倍数 |
 | 100% / 150% / 200% | 固定档 |
 
@@ -223,7 +223,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 ### 7.2 块类型 → 中文标签映射
 
 | `block_label` | 中文 |
-|---|---|
+| --- | --- |
 | `doc_title` | 文档标题 |
 | `paragraph_title` | 段落标题 |
 | `content` | 正文 |
@@ -245,7 +245,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 
 ### 8.1 通用交互（照搬 Paddle 范式）
 
-```
+```text
 悬停/聚焦块 → 蓝框 + 类型标签 + 右侧浮出「复制 / 纠正」
 点「纠正」  → 该块就地可编辑 + 工具条 + 「取消 / 保存」
 ```
@@ -260,7 +260,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 **序列化映射（写死，避免二义）**：
 
 | 富文本 | Markdown |
-|---|---|
+| --- | --- |
 | 粗体 | `**…**` |
 | 斜体 | `*…*` |
 | 删除线 | `~~…~~` —— **必须成对输出** |
@@ -272,7 +272,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 工具条：`B` / `I` / `S` / 表格 / 合并 / 公式 / 插入行 / 删除行 / 插入列 / 删除列
 
 | 操作 | 语义 |
-|---|---|
+| --- | --- |
 | 插入/删除行列 | 常规 |
 | **合并单元格** | 设置 `colspan/rowspan`；**前端留一份快照**，**会话内可无损撤销** |
 | **拆分单元格** | 按 `colspan/rowspan` 拆出**空白**格，恢复行列布局 |
@@ -290,7 +290,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 ### 8.4 图片块
 
 | 操作 | 说明 |
-|---|---|
+| --- | --- |
 | **替换** | 三个入口、一个落点（见下） |
 | **删除** | **仅解除文档引用**（不删文件）—— 保留会话内撤回能力 |
 | **裁剪** | 前端 canvas 裁切 → **另存为新文件** |
@@ -300,7 +300,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 **替换的三个入口**（用户原提两种，实测二者是同一个 `paste` 处理器；补一个更可靠的）：
 
 | 入口 | 覆盖场景 | 可靠性 |
-|---|---|---|
+| --- | --- | --- |
 | **拖拽文件到块上**（drag & drop） | 替代"复制文件再粘贴" | 高 |
 | **粘贴**（`paste` 事件读 `clipboardData.items`） | 截图、复制的位图 | 中 |
 | **点击 → 选文件** | 兜底 | 最高 |
@@ -313,7 +313,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 ### 8.5 公式块
 
 | 场景 | 形态 |
-|---|---|
+| --- | --- |
 | **正文公式** | **就地展开**：`LaTeX` 标题 + 输入框 + 「公式预览」+ 取消/保存 |
 | **表格内公式** | **弹窗**（格太小）同款内容 |
 
@@ -326,7 +326,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 ## 9. 双向联动（用户要求两侧体验统一）
 
 | 操作 | 结果 |
-|---|---|
+| --- | --- |
 | 点右栏某块 | 左栏滚到该块 bbox 所在页并高亮 |
 | 点左栏某框/区域 | 右栏滚到该块并高亮 |
 
@@ -347,9 +347,10 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 
 ### 10.2 ⚠️ 已知不逐字节相等 ⇒ 必须定归一化判据
 
-| | `block_content` | `markdown.text` |
-|---|---|---|
-| 同一行行尾 | `.....4␣␣`（2 空格） | `.....4␣␣␣␣`（4 空格） |
+同一行行尾的空白数量不同：
+
+- `block_content`：`.....4␣␣`（**2 空格**）
+- `markdown.text`：`.....4␣␣␣␣`（**4 空格**）
 
 ⇒ **归一化判据（建议）**：去行尾空白后逐行相等。
 
@@ -357,7 +358,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 
 实现第一步先做「**未编辑即往返**」对拍：
 
-```
+```text
 拼装(原 layout.json 的 blocks) ≡ 原 md_text   （按 §10.2 归一化）
 ```
 
@@ -373,7 +374,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 **为什么安全**：
 
 | 关注点 | 影响 |
-|---|---|
+| --- | --- |
 | `parse_markdown` 切分 | **零变化** —— `<br>` 在同一逻辑行内，**不新增行**（**真实换行**才会新增行、才可能改变切分） |
 | 渲染结果 | **零变化** —— 渲染时本来就把 `\n` 转 `<br>`，只是提前做了 |
 | 幂等 | ✅ 渲染层再转一次是 no-op |
@@ -400,7 +401,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 ### 11.2 无归属清单（明确不标）
 
 | 块 | 原因 |
-|---|---|
+| --- | --- |
 | 目次块 | 被 `parse_markdown` 的 `discard_section` **整段丢弃** |
 | `number`（页号）块 | 在 `markdown_ignore_labels` 中 |
 | 首个候选行之前的前导块 | 变成**孤儿隐藏块**（`is_non_clause=True`） |
@@ -417,7 +418,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 现工具栏绑在 textarea 的 `mdContent` + 源码偏移上；块编辑后**没有"源码"**，必须改造：
 
 | 能力 | 新实现 |
-|---|---|
+| --- | --- |
 | 匹配计数 | 跨所有块的 `block_content` 统计 |
 | 高亮 | **复用 `highlightInPreview` 的 DOM 层高亮**（走文本节点，不重渲染） |
 | 上一个/下一个 | 滚动到命中块并高亮 |
@@ -430,7 +431,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 ## 13. 失效与降级
 
 | 情形 | 行为 |
-|---|---|
+| --- | --- |
 | `layout.json` 缺失（老任务 / 落盘失败） | 审查页**降级为现有纯预览**（无左栏画框、无块编辑），不报错、不阻塞 |
 | 块无条文归属 | 不显示条文号（§11.2） |
 | 拼装对拍不通过 | **阻断**：不得放行编辑功能（§10.3） |
@@ -442,7 +443,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 ## 14. 安全
 
 | 项 | 要求 |
-|---|---|
+| --- | --- |
 | 签名凭据 | `layout.json` 必须**剔除** `inputImage` / `preprocessedImages` / `outputImages`（§5.2） |
 | 路径穿越 | 页图端点与图片上传端点：`task_id` 校验 8 位 hex，`filename` 取 `Path().name` |
 | 上传校验 | 图片类型白名单（png/jpg/webp）+ 大小上限（全局规则 §1.1） |
@@ -456,7 +457,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 ### 15.1 后端
 
 | 测试 | 内容 |
-|---|---|
+| --- | --- |
 | 拼装往返对拍 | §10.3，用真实产物夹具，**最高优先级** |
 | 对齐算法 | 「已对齐 / 未对齐」块数在合理范围；无归属清单逐项覆盖 |
 | `layout.json` 落盘 | 结构正确 + **签名字段被剔除**（断言不含 `authorization`） |
@@ -486,7 +487,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 ## 16. 未决与风险
 
 | # | 项 | 处置 |
-|---|---|---|
+| --- | --- | --- |
 | R1 | 公式块的 `block_label` 名未实测 | 实现第一步用含公式的页确认（§7.2） |
 | R2 | 拼装规则可能仍有非空白差异 | §10.3 往返对拍先跑通再动其它 |
 | R3 | `format_block_content` 参数取值 | 本仓 settings 实测为 `false`，用户所见网页为 `true`。它影响 `block_content` 是否自带 markdown 标记 ⇒ **实现前先定死**，并纳入往返对拍 |
@@ -513,7 +514,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 本设计含 9 项能力 + 一次页面重写，规模远超单个实施计划。**强制按下列分期推进，每期独立可验收**：
 
 | 期 | 内容 | 出口判据 |
-|---|---|---|
+| --- | --- | --- |
 | **P0 地基** | `layout.json` 落盘（含脱敏）· label→前缀映射实测 · **拼装规则 + 往返对拍** | **对拍在真实产物上通过**。不通过则**后续全部不得开工** |
 | **P1 只读对照** | 左栏页图 + 4 档缩放 + 拖动 + 高亮框；右栏块列表 + 类型标签 + **条文号对齐**；**双向联动** | 两侧点选可互相定位；老任务正常降级 |
 | **P2 初次可编辑** | 文本块就地编辑 + 通用「取消/保存」+ **提交链路（序列化 → raw body）** | 编辑后导入结果与手改 md 等价；往返对拍仍通过 |
@@ -529,7 +530,7 @@ OCR 响应的 `outputImages.layout_det_res` / `inputImage` / `preprocessedImages
 审查页的「删除图片」只解除引用（§8.4），**文件回收不在本设计内**。经核实，图片残留实际落在**两个不同目录**，需要**两种不同处置**：
 
 | # | 残留 | 位置 | 核实到的事实 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | A | **整份任务残留** | `outputs/{task_id}/`（.md + imgs/） | **导入成功后无人清理**。实测 `data/outputs/` 有 **47** 个目录，而 `uploads/` 只有 **26** 个 PDF ⇒ 约 21 个是陈旧任务目录 |
 | B | **长期目录里的未引用图** | `outputs/{code}/imgs/` | `_copy_ocr_images` 用 `shutil.copytree` **全量复制**（`import_routes.py:838`），**未引用的图也一并进了长期目录** |
 
