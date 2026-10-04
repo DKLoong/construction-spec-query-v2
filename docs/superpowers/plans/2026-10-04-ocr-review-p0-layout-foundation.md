@@ -24,6 +24,19 @@
 6. 每个 Task 结束跑**增量测试** + `pyright`，**不得新增 error**，再提交。
 7. **提交时逐个 `git add <文件>`，不得用 `git add .`**（工作区可能有他人改动）。
 8. 参考夹具放 `data/_ocr_reference/`；`data/` 已在 `.gitignore:11`，**夹具不入库**。
+9. **pyright 用 npm 全局二进制**：`pyright <显式路径>`。
+   ⚠️ **不得写成 `python -m pyright`** —— 本机实测报 `No module named pyright`（2026-10-04 复核：`pyright --version` → 1.1.410；`D:/Python/python.exe -m pyright` → 报错）。`pytest` 仍可走 `python -m pytest`。
+
+## 产物覆盖边界（写清，免得读者以为 layout 普遍存在）
+
+`layout.json` **只在 PaddleOCR-VL 后端产生**。以下路径**永远没有 layout**，审查页会**静默失去块编辑与左栏对照**（按 spec §13 降级为纯预览，不报错）：
+
+| 路径 | 有无 layout | 原因 |
+| --- | --- | --- |
+| `.pdf` + PaddleOCR-VL 后端（扫描件或 `force_ocr`） | ✅ 有 | 走 `PaddleVLClient._download_markdown` |
+| `.pdf` + `accurate-basic` / `custom` 后端 | ❌ 无 | 这两个客户端**自己写 md**，没有 `_download_markdown`（`paddle_api.py:99` / `:574`） |
+| `.pdf` **非扫描件** | ❌ 无 | `is_scanned()` 为假 ⇒ 走 `extract_text()`，**连 OCR 都不跑** |
+| `.md` 上传 | ❌ 无 | 直读文件，不经过 OCR（该入口另走源码审查页，见 spec §7） |
 
 ---
 
@@ -272,6 +285,25 @@ def test_extract_layout_drops_signed_urls():
         assert key not in dumped
 
 
+def test_extract_layout_page_index_is_flat_across_records():
+    """★ 页码 = 跨 record 的**扁平累计序号**，不是 record 下标。
+
+    构造「一条 record 含 2 个 layoutParsingResults（2 页）」—— 这是 record 下标写法
+    **唯一会错**的形态，也正是本机 1 页探针**测不出来**的形态。故用合成用例把不变量钉住。
+    """
+    def _page(tag, gid):
+        return {"prunedResult": {"width": 10, "height": 20, "parsing_res_list": [
+            {"block_label": "content", "block_content": tag, "block_bbox": [0, 0, 1, 1],
+             "block_order": 1, "global_block_id": gid}]}}
+
+    rec = {"result": {"layoutParsingResults": [_page("p1", 0), _page("p2", 1)]}}
+    layout = extract_layout([rec, rec])
+
+    assert [p["index"] for p in layout["pages"]] == [1, 2, 3, 4], \
+        "页码应为跨 record 的扁平累计序号；用 record 下标会让第 2..N 页撞号"
+    assert [b["page"] for b in layout["blocks"]] == [1, 2, 3, 4]
+
+
 def test_save_then_load_roundtrip(tmp_path):
     """落盘再读回内容一致，且文件名固定"""
     layout = {"version": 1,
@@ -292,6 +324,13 @@ def test_load_layout_corrupt_returns_none(tmp_path):
     """损坏 json 返回 None 且不抛 —— 审查页不得因夹具损坏而 500"""
     (tmp_path / LAYOUT_FILENAME).write_text("{ not json", encoding="utf-8")
     assert load_layout(tmp_path) is None
+
+
+def test_load_layout_non_dict_returns_none(tmp_path):
+    """顶层不是 dict（合法 JSON 但结构不符）同样返回 None —— 钉住实现里的 isinstance 分支"""
+    for bad in ("[1, 2]", '"str"', "null"):
+        (tmp_path / LAYOUT_FILENAME).write_text(bad, encoding="utf-8")
+        assert load_layout(tmp_path) is None, f"{bad} 应返回 None"
 
 
 def test_save_layout_leaves_no_tmp_file(tmp_path):
@@ -357,12 +396,18 @@ def extract_layout(records: list[dict]) -> dict:
     pages: list[dict] = []
     blocks: list[dict] = []
 
-    for page_idx, rec in enumerate(records, start=1):
+    # ⚠️ 页码必须是**跨 record 的扁平累计序号**，**不能**用 `enumerate(records)` 的下标：
+    # 一条 record 可能含多个 `layoutParsingResults`（一页一个元素），用 record 下标会让
+    # 同一 record 的第 2..N 页**全部拿到同一个页号** ⇒ 左栏高亮定位到错页，且完全静默。
+    # （本机 1 页探针测不出这个形态，故由合成用例把不变量钉住。）
+    page_no = 0
+    for rec in records:
         results = (rec.get("result") or {}).get("layoutParsingResults") or []
         for lp in results:
+            page_no += 1
             pr = lp.get("prunedResult") or {}
             pages.append({
-                "index": page_idx,
+                "index": page_no,
                 "width": pr.get("width"),
                 "height": pr.get("height"),
             })
@@ -370,7 +415,7 @@ def extract_layout(records: list[dict]) -> dict:
                 blocks.append({
                     "label": b.get("block_label") or "",
                     "content": b.get("block_content") or "",
-                    "page": page_idx,
+                    "page": page_no,
                     "bbox": b.get("block_bbox"),
                     "order": b.get("block_order"),
                     "global_block_id": b.get("global_block_id"),
@@ -414,7 +459,7 @@ Expected: PASS（若夹具缺失则 2 个 `needs_ref` 用例 SKIPPED —— 其�
 - [ ] **Step 5: pyright + 提交**
 
 ```bash
-D:/Python/python.exe -m pyright app/ocr/layout.py tests/test_ocr_layout.py
+pyright app/ocr/layout.py tests/test_ocr_layout.py
 git add app/ocr/layout.py tests/test_ocr_layout.py
 git commit -m "feat: OCR layout 的提取、脱敏、落盘与读取"
 ```
@@ -526,6 +571,29 @@ def test_assembly_orders_by_global_block_id_and_prefixes_titles():
          "order": 1, "global_block_id": 0},
     ]
     assert assemble_markdown(blocks) == "## 目次\n\n前言"
+
+
+def test_assembly_degrades_as_a_whole_when_any_block_lacks_gid():
+    """★ 只要有块缺 `global_block_id`，**整体**退化为 `(page, order)` —— 绝不混用两种键。
+
+    混用会把缺 gid 的块推到极端：本条里 FIRST 的退化键是 `1*100000+1=100001`，
+    而 SECOND 的 gid 是 99 ⇒ 99 < 100001 ⇒ **SECOND 会排到前面**（错）。
+    整体退化后按 (page, order) ⇒ (1,1) < (2,1) ⇒ FIRST 在前（对）。
+    """
+    blocks = [
+        {"label": "content", "content": "FIRST", "page": 1, "bbox": [0, 0, 1, 1],
+         "order": 1, "global_block_id": None},
+        {"label": "content", "content": "SECOND", "page": 2, "bbox": [0, 0, 1, 1],
+         "order": 1, "global_block_id": 99},
+    ]
+    assert assemble_markdown(blocks) == "FIRST\n\nSECOND"
+    # 反向输入同样成立 —— 证明不是"碰巧输入有序"
+    assert assemble_markdown(list(reversed(blocks))) == "FIRST\n\nSECOND"
+
+
+def test_assembly_empty_input():
+    """空输入边界：返回空串（P1 会拿它做"无块"判据）"""
+    assert assemble_markdown([]) == ""
 ```
 
 - [ ] **Step 2: 跑测试确认失败，并**实测**出完整前缀映射**
@@ -563,17 +631,20 @@ LABEL_PREFIX: dict[str, str] = {
 }
 
 
-def _sort_key(b: dict) -> int:
-    """阅读顺序主键：优先 `global_block_id`，缺失时退化为页内 `order`。
+def _sorted_blocks(blocks: list[dict]) -> list[dict]:
+    """按阅读顺序排序。
 
     实测：**被忽略的 `number` 块的 `block_order` 为 null**，故不能单拿 order 排序。
     `global_block_id` 逐块递增，是更可靠的主序。
+
+    ⚠️ **键必须落在同一空间**：**不能**"有 gid 用 gid、没有用 `page*100000+order`" ——
+    两种键混进同一个整数空间，会把缺 gid 的块**系统性推到某个极端**，顺序静默出错
+    （gid=99 与 page*100000+order=100001 是可比较的）。故**只要有一个块缺 gid，整体退化**。
     """
-    gid = b.get("global_block_id")
-    if gid is not None:
-        return gid
-    # 退化路径：页号 * 大常数 + 页内序（保住跨页先后，不至于乱序）
-    return (b.get("page") or 0) * 100_000 + (b.get("order") or 0)
+    if all(b.get("global_block_id") is not None for b in blocks):
+        return sorted(blocks, key=lambda b: b["global_block_id"])
+    logger.warning("部分块缺 global_block_id，整体退化为 (page, order) 排序")
+    return sorted(blocks, key=lambda b: (b.get("page") or 0, b.get("order") or 0))
 
 
 def assemble_markdown(blocks: list[dict]) -> str:
@@ -586,7 +657,7 @@ def assemble_markdown(blocks: list[dict]) -> str:
     切分前提一致：**编号行独立成行**（拼装产出的文本会原样喂给 parse_markdown）。
     """
     parts: list[str] = []
-    for b in sorted(blocks, key=_sort_key):
+    for b in _sorted_blocks(blocks):
         if (b.get("label") or "") in IGNORE_LABELS:
             continue
         parts.append(LABEL_PREFIX.get(b.get("label") or "", "") + (b.get("content") or ""))
@@ -603,7 +674,7 @@ Expected: PASS（缺夹具时 2 个 `needs_ref` SKIPPED，合成用例必须 PAS
 - [ ] **Step 5: pyright + 提交**
 
 ```bash
-D:/Python/python.exe -m pyright app/ocr/layout.py tests/test_layout_assembly.py
+pyright app/ocr/layout.py tests/test_layout_assembly.py
 git add app/ocr/layout.py tests/test_layout_assembly.py
 git commit -m "feat: 版面块→markdown 拼装规则与往返对拍（P0 门禁）"
 ```
@@ -652,6 +723,22 @@ def test_save_layout_safely_writes_when_possible(tmp_path):
             {"block_label": "content", "block_content": "x", "block_bbox": [0, 0, 1, 1],
              "block_order": 1, "global_block_id": 0}]}}]}}], str(tmp_path))
     assert mod.load_layout(tmp_path)["blocks"][0]["content"] == "x"
+
+
+def test_save_layout_safely_skips_when_blocks_empty(tmp_path):
+    """★ 空 blocks **不落盘**。
+
+    否则会产出「**有 layout 但 0 块**」的文件，审查页据此渲染**一张空白页** ——
+    绕过了 spec §13 的降级契约（该契约的前提是"**没有** layout"）。
+    """
+    import app.ocr.layout as mod
+
+    # 响应里没有 parsing_res_list ⇒ 提取出的 blocks 为空
+    mod.save_layout_safely(
+        [{"result": {"layoutParsingResults": [{"prunedResult": {"width": 10, "height": 20}}]}}],
+        str(tmp_path),
+    )
+    assert not (tmp_path / mod.LAYOUT_FILENAME).exists(), "空 blocks 不该产生 layout.json"
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -669,12 +756,26 @@ def save_layout_safely(records: list[dict], output_dir: str | None) -> None:
 
     layout 是审查页的**可选增强**：没有它，审查页退化为纯预览（spec §13）。
     因此它的落盘失败绝不该中断导入 —— 那会为了一个附属功能丢掉主流程。
+
+    ⚠️ **blocks 为空时不落盘**。空 blocks 会产出一个「**有 layout 但 0 块**」的文件，
+    而审查页会据此渲染**一张空白页** —— 这**绕过了** spec §13 的降级契约
+    （那条契约的前提是"没有 layout"）。空即视为无，让它走降级。
+
+    ⚠️ 异常**必须收窄**（全局规则 §1.2：禁止无差别捕获）。这里覆盖真实失败集：
+    磁盘/权限（OSError）、响应结构异常（KeyError/TypeError/ValueError）。
     """
     if not output_dir:
         return
     try:
-        save_layout(extract_layout(records), output_dir)
-    except Exception as e:  # 兜底：附属功能失败不得影响主流程
+        layout = extract_layout(records)
+        if not layout["blocks"]:
+            logger.warning(
+                "layout 为空（响应可能不含 parsing_res_list），不落盘以免审查页渲染空白页: %s",
+                output_dir,
+            )
+            return
+        save_layout(layout, output_dir)
+    except (OSError, KeyError, TypeError, ValueError) as e:
         logger.warning("layout.json 落盘失败（不影响导入）: %s", e)
 ```
 
@@ -811,7 +912,7 @@ Expected: 首次运行打印 `共检查 0 份` + 那句 `⚠️ 没有可校验�
 - [ ] **Step 9: pyright + 提交**
 
 ```bash
-D:/Python/python.exe -m pyright app/ocr/layout.py app/ocr/paddle_api.py scripts/verify_layout_roundtrip.py tests/test_ocr_layout.py
+pyright app/ocr/layout.py app/ocr/paddle_api.py scripts/verify_layout_roundtrip.py tests/test_ocr_layout.py
 git add app/ocr/layout.py app/ocr/paddle_api.py scripts/verify_layout_roundtrip.py tests/test_ocr_layout.py
 git commit -m "feat: 导入时旁路落盘 layout.json，并加 P0 往返对拍验收脚本"
 ```
@@ -828,3 +929,67 @@ git commit -m "feat: 导入时旁路落盘 layout.json，并加 P0 往返对拍�
 - [ ] 增量测试 + `pyright` 无新增 error
 
 > **任一条不满足 ⇒ 不得进入 P1**（spec §18：拼装规则一旦有偏差，P2 之后所有编辑都会以「静默改写 `md_text`」的形式污染导入结果）。
+
+---
+
+## Decision ledger（/plan-eng-review 2026-10-04）
+
+### R1: 评审发现整改范围
+Finding: A1 页码索引 · A2 覆盖边界 · A3 空 blocks · Q1 排序键 · Q2 异常范围 · T1–T5 · F1 pyright 调用
+Plan baseline: 原计划的实现与验证步骤
+Runtime evidence: 实测 `pyright --version` → 1.1.410，`D:/Python/python.exe -m pyright` → `No module named pyright`；实测 `_download_markdown` 仅存在于 `PaddleVLClient`
+Question D1: 哪些采纳进 P0 计划
+State: approved
+Actual answer: 全选（A1 / A2 / A3+Q1+Q2 / T1–T5）
+Accepted scope: 已全部改入计划正文
+History: —
+
+### R2: `.md` 上传的审查入口
+Finding: 用户提出 —— 保留现有「左 md 源码 / 右预览」设计作为 `.md` 审查页
+Plan baseline: spec §2.2 未涵盖此入口
+Runtime evidence: `_process_import` 的 `.md` 分支直进 Phase 2（`import_routes.py:749-755`），无 review 环节；`test_upload_markdown` 只断言上传响应，改流程不破
+Question D2: Include / Defer / Hold
+State: approved
+Actual answer: Include
+Accepted scope: spec 新增 §20（入口分派 / 清洗次序 / 图片 404 / 与 B 组同批）
+
+### R3: P0 的形态（Outside Voice #6）
+Finding: 重建整篇 `markdown.text` 是反推一个未公开渲染器
+Plan baseline: 拼装规则（`LABEL_PREFIX` + `IGNORE_LABELS`）+ 往返对拍
+Runtime evidence: API 已产出规范 `markdown.text`（Task 1 夹具将证实）；见下方 Outside Voice 原文
+Question D3: span 方案 / 保持现方案 / 先量命中率
+State: approved
+Actual answer: **改为 span 方案**
+Accepted scope: **本计划正文须按 span 方案重写** —— 当前正文章节（Task 1–4、拼装规则、往返对拍、P0 出口判据）**均为旧方案，待重写**；Outside Voice 的 #1–#5 一并并入重写范围
+
+**Approval readiness: PASS** — R1 (D1 全选) / R2 (D2 Include) / R3 (D3 span)
+
+### Outside Voice 发现的处置
+
+| # | Outside Voice 发现 | 处置 |
+| --- | --- | --- |
+| 1 | 对拍对象不是审查页真正使用的文本（`clean_ocr_text`） | **成立**。⇒ 并入 R3 重写（span 方案以原始 `markdown.text` 为真源，天然绕开） |
+| 2 | P0 门禁 fail-open（`skipif` / `checked==0` 返回 0） | **成立**。⇒ 并入重写：`checked == 0` 必须非零退出；补**可入库的合成黄金夹具** |
+| 3 | 拼装规则未绑定实际 OCR 参数 | **成立**。⇒ 并入重写；`layout.json` 须记录生效参数 |
+| 4 | 夹具落盘签名凭据（与全局约束 4 自相矛盾） | **成立，且是本文自相矛盾**。⇒ 并入重写：**内存中判存、落盘前脱敏** |
+| 5 | `load_layout` / `save_layout_safely` 契约未被真正覆盖；`test_save_layout_safely_swallows_errors` **空转** | **成立**（空 records ⇒ 在调用被 monkeypatch 的 `save_layout` 前已 return）⇒ 并入重写 |
+| 6 | 整体重建 `markdown.text` 过度耦合，建议 span 方案 | **采纳** ⇒ R3 |
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Outside Review | `/plan-eng-review` → Codex | Independent 2nd opinion | 1 | completed | 6 findings |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES OPEN | 11 issues, 1 critical gap |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **OUTSIDE COVERAGE:** provider=codex, phase=plan-review, **completed**（stdin 喂入，全文未截断）。6 条发现，其中 #6 触发架构改向。
+- **VERDICT:** ENG REVIEW 未 CLEAR（11 issues / 1 critical gap，整改已全部采纳但**计划正文尚未按 span 方案重写**）— **eng review required**（重写后需复验）。
+  - 问题分解：Architecture 3（A1/A2/A3）· Code Quality 2（Q1/Q2）· Performance 1（P3，附录）· Test gaps 5（T1–T5）。另有 1 处事实纠错（F1，不计数）。
+  - **critical gap = A3**：空 blocks 落盘 ⇒ 审查页**静默渲染空白页**，既无测试也无错误处理。
+
+NO UNRESOLVED DECISIONS
