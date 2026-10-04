@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -190,3 +191,220 @@ def load_layout(output_dir: str | Path) -> dict | None:
         logger.warning("layout.json schema 不符（按缺失处理）: %s", path)
         return None
     return data
+
+
+# ═══════════════════════════════════════════════════════════
+# 锚定与拼接（计划 Task 3）
+# ═══════════════════════════════════════════════════════════
+
+_LEADING_HASH = re.compile(r"^(#{1,6}\s+)")
+_WRAPPING = re.compile(r"^(<\w+[^>]*>)(.*)(</\w+>)$")
+
+
+def _split_affixes(line: str) -> tuple[str, str, str]:
+    """把一行的「内容」与「前后缀」拆开：返回 `(内容, 前缀, 后缀)`。
+
+    两条**实测**来源（见计划 §0 与 Task 3 Step 5 的诊断）：
+    - `## 目次` → `("目次", "## ", "")` —— 标题型块
+    - `<div style="text-align: center;">图 8.0.2 (mm)</div>`
+      → `("图 8.0.2 (mm)", "<div …>", "</div>")` —— markdown 给**居中图题**包的壳
+
+    前后缀会**记进 span**，供 `splice` 原样保留。少了它：
+    - 编辑标题会丢 `## ` ⇒ 改变 `parse_markdown` 的**标题型判定**
+    - 编辑图题会丢居中 div ⇒ 图注**变左对齐**（正是审查页要修的那类问题）
+    """
+    s = line.strip()
+    m = _WRAPPING.match(s)
+    if m:
+        return m.group(2).strip(), m.group(1), m.group(3)
+    m = _LEADING_HASH.match(s)
+    if m:
+        return s[m.end():].strip(), m.group(1), ""
+    return s.rstrip(), "", ""
+
+
+def _norm(line: str) -> str:
+    """归一化之一：**去行尾空白**。
+
+    实测差异：`block_content` 是 `.....4␣␣`，`markdown.text` 是 `.....4␣␣␣␣`。
+    """
+    return line.rstrip()
+
+
+def _find_candidates(lines: list[str], content: str, start: int,
+                     max_gap: int = 2, limit: int = 2) -> list[tuple[int, int, str, str]]:
+    """在 `lines[start:]` 里找 `content` 的候选区间，最多收 `limit` 个。
+
+    **四条归一化**（每条都由真机实测逼出，见计划 §0 与 Task 3 Step 5 的诊断）：
+    1. **去行尾空白**（`_norm`）
+    2. **首行允许原文多一个 `#` 前缀**（记进 prefix，供 splice 保留）
+    3. **块内行之间容忍 ≤`max_gap` 个空行** —— 实测：`markdown.text` 把块内每行
+       渲染成**独立段落**；只容忍连续行的旧规则在完整文档上漏掉 **52** 个块
+    4. **首行允许被 HTML 标签整行包裹**（记进 prefix/suffix）—— 实测：`markdown.text`
+       把居中图题写成 `<div style="text-align: center;">图 8.0.2 (mm)</div>`，
+       不剥则 **9 个 `figure_title` 全部锚不上**，图题在审查页将**不可编辑**
+
+    返回 `[(start_line, end_line, prefix, suffix)]`（半开区间）。收 2 个是为了让
+    调用方能报出「重复候选」这个诊断指标，但**不据此拒绝锚定**（顺序本身消解重复）。
+    """
+    want = [_norm(x) for x in content.split("\n")]
+    while want and not want[-1]:
+        want.pop()
+    if not want:
+        return []
+
+    out: list[tuple[int, int, str, str]] = []
+    n_lines = len(lines)
+    for i in range(start, n_lines):
+        inner, prefix, suffix = _split_affixes(lines[i])
+        if inner != want[0] and _norm(lines[i]) != want[0]:
+            continue
+
+        if len(want) == 1:
+            out.append((i, i + 1, prefix, suffix))
+        else:
+            j, ok = i + 1, True
+            for k in range(1, len(want)):
+                skipped = 0
+                while j < n_lines and not _norm(lines[j]):
+                    skipped += 1
+                    j += 1
+                    if skipped > max_gap:
+                        break
+                if skipped > max_gap or j >= n_lines or _norm(lines[j]) != want[k]:
+                    ok = False
+                    break
+                if k == len(want) - 1:
+                    out.append((i, j + 1, prefix, suffix))
+                j += 1
+            if not ok:
+                continue
+
+        if len(out) >= limit:
+            return out
+    return out
+
+
+def _sorted_blocks_with_index(blocks: list[dict]) -> list[dict]:
+    """按阅读顺序排序，并把**原下标**带进结果（`edits` 用的就是它）。
+
+    实测：被忽略的 `number` 块的 `block_order` 为 **null**，不能单拿 order 排序；
+    `global_block_id` 实测**全序单调**（文档级全局值），是可靠主序。
+    ⚠️ **键必须落在同一空间**：不能"有 gid 用 gid、没有用 page*100000+order" ——
+    混用会把缺 gid 的块推到极端。故**只要有一个块缺 gid，整体退化**为 (page, order)。
+    """
+    tagged = [{"idx": i, **b} for i, b in enumerate(blocks)]
+    if all(t.get("global_block_id") is not None for t in tagged):
+        tagged.sort(key=lambda t: int(t["global_block_id"]))
+    else:
+        logger.warning("部分块缺 global_block_id，整体退化为 (page, order) 排序")
+        tagged.sort(key=lambda t: (t.get("page") or 0, t.get("order") or 0))
+    return tagged
+
+
+def anchor_blocks(base_text: str, blocks: list[dict],
+                  ignore_labels=None) -> tuple[list[dict], dict]:
+    """把块锚定到**基准文本的行区间**；返回 `(带 span 的 blocks, 统计)`。
+
+    - 区间以**行号**表达（半开 `[start_line, end_line)`），并记录被剥掉的 `prefix`
+    - **贪心 + 游标**：按阅读顺序取**首个**候选 —— 顺序本身消解重复，故「内容出现
+      两次」**不是**歧义（这是对计划原稿的设计纠正，见 `tests/test_layout_anchor.py` 顶部）
+    - **游标可信度**：某个可锚定块漏锚 ⇒ 游标不动、标记 `stale`；此后**第一个**成功
+      锚定记入 `stale_anchors` 并清除 `stale`。这才是错位风险的真实指标 ——
+      比"多候选即拒绝"更准：只惩罚真实风险，不惩罚合法重复
+    - **豁免类**（`classify_labels` 判定的 `not_in_markdown` 或空内容）**不计入 missed**
+    - **未锚定不抛**，全部记进 `stats`，由调用方判阈值
+    """
+    cls = classify_labels(blocks, ignore_labels)
+    anchorable = set(cls["anchorable"])
+    lines = base_text.split("\n")
+
+    cursor = 0
+    anchored = missed = repeat_candidates = stale_anchors = 0
+    stale = False
+    residual: list[tuple[int, str, str]] = []
+    out: list[dict] = []
+
+    for entry in _sorted_blocks_with_index(blocks):
+        idx = entry["idx"]
+        blk = {k: v for k, v in entry.items() if k != "idx"}
+
+        if idx not in anchorable:
+            out.append({**blk, "start_line": None, "end_line": None,
+                        "prefix": "", "suffix": ""})
+            continue
+
+        cands = _find_candidates(lines, blk.get("content") or "", cursor)
+        if not cands:
+            missed += 1
+            stale = True                     # 游标停在原地；其后锚定不可信
+            residual.append((idx, blk.get("label") or "",
+                             (blk.get("content") or "").split("\n")[0][:48]))
+            out.append({**blk, "start_line": None, "end_line": None,
+                        "prefix": "", "suffix": ""})
+            continue
+
+        if len(cands) > 1:
+            repeat_candidates += 1           # 诊断指标：不据此拒绝
+        if stale:
+            stale_anchors += 1
+            stale = False                    # 第一个成功锚定重新确立位置
+
+        s, e, prefix, suffix = cands[0]
+        cursor = e
+        anchored += 1
+        out.append({**blk, "start_line": s, "end_line": e,
+                    "prefix": prefix, "suffix": suffix})
+
+    return out, {
+        "total": len(blocks),
+        "exempt": len(cls["exempt"]),
+        "anchorable": len(anchorable),
+        "anchored": anchored,
+        "missed": missed,
+        "stale_anchors": stale_anchors,
+        "repeat_candidates": repeat_candidates,
+        "residual_miss": residual,
+        "not_in_markdown": cls["not_in_markdown"],
+    }
+
+
+def splice(base_text: str, blocks: list[dict], edits: dict[int, str]) -> str:
+    """按区间拼回文本：**只替换 `edits` 里的块**，其余区间原样取回原行。
+
+    - `edits` 的键是 `blocks` 的**下标**（与 `anchor_blocks` 返回的列表同序）
+    - 编辑块时**保留其 `prefix` / `suffix`**：否则改标题会丢 `## `（改变
+      `parse_markdown` 的标题型判定），改图题会丢 `<div style="text-align:center">`
+      （图注变左对齐）
+    - **区间重叠 ⇒ 抛 `ValueError`**：静默跳过 = 用户那次编辑被悄悄丢掉，比报错坏得多
+
+    ⚠️ 这是本方案的地基：`edits` 为空时等价于 `base_text` 本身（**逐字节**），
+    因为未编辑区间是**原样取回原行**而不是"重新生成" —— 故"往返保真"无需证明。
+    """
+    lines = base_text.split("\n")
+    ops = sorted(
+        ((b["start_line"], b["end_line"], b.get("prefix") or "", b.get("suffix") or "",
+          edits.get(i))
+         for i, b in enumerate(blocks) if b.get("start_line") is not None),
+        key=lambda t: t[0],
+    )
+
+    out: list[str] = []
+    cursor = 0
+    for s, e, prefix, suffix, new in ops:
+        if s < cursor:
+            # 区间重叠是编程错误（anchor_blocks 的游标保证单调，不该出现）。
+            # **必须显式失败**：静默跳过 = 用户那次编辑被悄悄丢掉，比报错坏得多。
+            raise ValueError(f"layout 区间重叠：[{s}, {e}) 与游标 {cursor}")
+        out.extend(lines[cursor:s])
+        if new is None:
+            out.extend(lines[s:e])           # 未编辑 ⇒ 原行原样
+        else:
+            # 保留前后缀；用户文本**原样写出**（不 rstrip，免得吃掉用户有意输入的
+            # markdown 硬换行尾空格）
+            new_lines = new.split("\n")
+            first = prefix + (new_lines[0] if new_lines else "") + suffix
+            out.extend([first, *new_lines[1:]])
+        cursor = e
+    out.extend(lines[cursor:])
+    return "\n".join(out)

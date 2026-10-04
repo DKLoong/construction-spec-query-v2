@@ -24,10 +24,12 @@
 | `global_block_id` | **全序单调**（各页最小 `0,6,11,13,16,18,21,23,28,48…`） | **文档级全局值**，不是页内局部值 ⇒ 按 gid 排序成立 |
 | `clean_ocr_text` 影响 | **删 0 行 / 0 字符**（两次实测一致） | `markdownIgnoreLabels` 已把页眉/页脚/页码排除在 `markdown.text` 之外 ⇒ **清洗无事可做** |
 | 标签词表 | `text`477 · `paragraph_title`47 · `number`57 · `content`4 · `display_formula`21 · `formula_number`21 · `image`9 · `figure_title`9 · `vision_footnote`3 · `table`1 · `chart`1 | **词表不可硬编码假设**：同一后端两次跑出 `content` 与 `text` 两种正文标签 |
-| **锚定归一化** | 旧规则（仅去行尾空白 + 首行 `#`）：**541/593 命中，52 未命中** | 缺一条关键规则 → 见下 |
-| **关键缺口** | `markdown.text` 把块内**每行渲染成独立段落**（行间插空行），`block_content` 里是单 `\n` | 补「**行间容忍空行**」后：**552/593**，未命中 41 |
+| **锚定归一化①** | 旧规则（仅去行尾空白 + 首行 `#`）：**541/593 命中，52 未命中** | 缺关键规则 → 见下 |
+| **归一化②：行间空行** | `markdown.text` 把块内**每行渲染成独立段落**（行间插空行），`block_content` 里是单 `\n` | 补「**行间容忍空行**」后：**552/593**，未命中 41 |
 | **未命中的构成** | 41 = `formula_number` 21 + `image` 9（**内容为空、本就不进 markdown**）+ **残留 11** | 门禁**不能一刀切** `missed==0`；须**分类豁免 + 残留逐条有解释** |
-| **唯一性** | 6 页子集 0 歧义；**完整 57 页 15 个歧义候选** | 子集样本太小 ⇒ **必须做唯一性校验** |
+| **归一化③：HTML 整行包裹** | 实测残留 11 全为 `figure_title`9 + `table`1 + `chart`1；图题在 markdown 里是 `<div style="text-align: center;">图 8.0.2 (mm)</div>` | 补「**剥整行包裹标签并记前后缀**」后：**561/563**，未命中 **2（0.36%）**。⚠️ **前后缀必须记进 span**，否则编辑图题会丢掉居中 div |
+| **残留 2 条的成因** | `table`：markdown 版 `<table border=1 style='…'>` 与 `block_content` 的 `<table><tr>…` **属性不同**；`chart`：表示**根本不同**（HTML 表 vs 管道表） | 属「**表示形态不同**」，**不是漏了规则** ⇒ 作为**已知残留**保留，由 2% 阈值门禁 |
+| **重复候选** | 6 页子集 0；**完整 57 页 15 个** | 子集样本太小会骗人。**但重复本身不是错**（阅读顺序即消解）⇒ 只作**诊断**，不作门禁 |
 | **锚定耗时** | 650 块 / 1244 行：旧规则 9 ms，新规则 **68 ms** | 性能**不是瓶颈**；门禁阈值可设 2000 ms |
 
 ⚠️ **未实测、不得假设的**：残留 11 个未命中的**成因**（Task 3 Step 5 专门诊断）；`image` 块在**其他文档**是否带 `![](imgs/…)` 引用。
@@ -601,6 +603,17 @@ git commit -m "feat: layout 提取/脱敏/标签分类/schema 校验与落盘读
 
 - [ ] **Step 1: 写失败测试**
 
+> ⚠️ **本步的代码已在实现时被 TDD 修正**，下方清单与最终交付的
+> `tests/test_layout_anchor.py` **有两处语义差异**，以**文件为准**：
+>
+> 1. **删掉「内容出现两次 ⇒ 判歧义、拒绝锚定」** —— 它与「两个同内容块按序出现 ⇒
+>    都能锚定」**逻辑冲突**。按阅读顺序贪心取首候选**本来就是对的**（顺序消解重复）。
+>    改为：`repeat_candidates` 只作**诊断**。
+> 2. **新增第 3 条归一化**（HTML 整行包裹）+ **`stale_anchors` 降级为诊断**（它是
+>    `missed == 0` 的更严重述，不是独立信号）。门禁改为**残留率 ≤ 2%**（与验收脚本同一阈值）。
+>
+> 实跑结果：**17 passed**，真实夹具 **561/563 已锚定、残留 2（0.36%）**。
+
 创建 `tests/test_layout_anchor.py`：
 
 ```python
@@ -999,11 +1012,20 @@ print('可锚定',st['anchorable'],'已锚定',st['anchored'],'未命中',st['mi
 for i,lab,head in st['residual_miss'][:15]: print(f'  [{i}] {lab}: {head!r}')
 "
 ```
-Expected: 打印残留未命中清单。**逐条判断成因**（内容被重排？被合并进别的块？渲染形态不同？），
-并把结论**写回本步**（下面留空行供填写）：
+Expected: 打印残留未命中清单。**逐条判断成因**，并把结论写回本步：
 
-- 残留成因 1：
-- 残留成因 2：
+- ~~残留成因 1：~~ **已完成（2026-10-04 实测）**
+- 残留 **2** 条（占可锚定 563 的 **0.36%**），标签分布 `{'table': 1, 'chart': 1}`：
+  - **`table` ×1** —— markdown 版是 `<table border=1 style='margin: auto; word-wrap: break-word;'>`，
+    而 `block_content` 是 `<table><tr><td>…`：**标签属性不同**（同结构、异属性）
+  - **`chart` ×1** —— markdown 把它渲染成 **HTML 表格**（`<table><thead><tr><th …>Feature</th>…`），
+    而 `block_content` 是 **管道表** `Feature | Diameter (mm)`：**表示根本不同**
+  - ⇒ 两条都属「**表示形态不同**」，**不是漏了归一化规则**。作为**已知残留**保留，
+    由 2% 阈值门禁兜住（`tests/test_layout_anchor.py::test_anchor_real_fixture_gate` 已固化）
+
+> ⚠️ 诊断中还发现**第 3 条归一化**：`figure_title` 在 markdown 里被
+> `<div style="text-align: center;">…</div>` **整行包裹**（9 条全中）。不剥则图题
+> **不可编辑**；剥了但**不记前后缀**则编辑后**丢居中**。二者都已在实现里处理。
 
 > ⚠️ **不得为了凑 `missed == 0` 而放宽归一化**。若残留确有正当成因（如某类块本就不进
 > markdown），应加入**豁免名单并给出实测理由**；否则它是真缺陷，必须报告。
@@ -1489,9 +1511,9 @@ git commit -m "feat: .md 上传走源码审查页（入口分派按扩展名）"
 - [ ] `test_splice_with_no_edits_is_byte_identical` **PASS** —— 不编辑即逐字节相等
 - [ ] `test_splice_preserves_hash_prefix_when_editing_a_title` **PASS** —— 改标题不丢 `## `
 - [ ] `test_splice_raises_on_overlapping_spans` **PASS** —— 重叠显式失败，不静默丢编辑
-- [ ] `test_anchor_records_ambiguity_and_refuses_to_guess` **PASS** —— 歧义拒绝锚定
+- [ ] `test_anchor_tolerates_html_wrapper_on_first_line` **PASS** —— 剥包裹且**前后缀保留**
 - [ ] **真实夹具**上 `REQUIRE_LAYOUT_FIXTURE=1 … pytest tests/test_layout_anchor.py` 全 **PASS（非 SKIPPED）**
-- [ ] Task 3 Step 5 的**残留未命中逐条有成因**（写回该步），且**未放宽归一化凑数**
+- [ ] Task 3 Step 5 的**残留未命中逐条有成因**（已填：`table` 属性不同 / `chart` 表示不同），且**未放宽归一化凑数**
 - [ ] 提取结构**不含**签名凭据（合成 + 真实两条断言 PASS）；夹具落盘**已脱敏**
 - [ ] `layout.json` 记录 `base_sha256` 与 `ocr_params`
 - [ ] 锚定耗时 ≤ 2000 ms（1000 块量级）
