@@ -827,3 +827,37 @@
          此时需手动滚动。属可接受的边缘情形（正常态与终态已全覆盖）。 */
     min-height: 8rem;
 }
+
+/* ── OCR 审查页（版面块 · P1 只读对照）────────────────────────────
+   左栏原文件（页图 + 高亮框） / 右栏版面块列表。
+   高亮框用**百分比**定位（见 review-blocks.js 的 boxStyle），
+   故缩放时框自动跟随，不需要任何重算。 */
+.rvb-root { height: 100%; display: flex; flex-direction: column; }
+.rvb-error { padding: 1rem; }
+.rvb-panes { display: flex; gap: 12px; flex: 1; min-height: 0; }
+.rvb-left, .rvb-right { flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; }
+.rvb-bar { display: flex; gap: 8px; align-items: baseline; justify-content: space-between;
+           font-size: 0.8rem; color: var(--pico-muted-color); }
+.rvb-zoom { display: flex; gap: 6px; align-items: center; padding: 4px 0; flex-wrap: wrap; }
+.rvb-zoom button { margin: 0; font-size: 0.78rem; padding: 2px 8px; }
+.rvb-zoom .rvb-on { border-color: var(--pico-primary); color: var(--pico-primary); }
+.rvb-viewport { flex: 1; overflow: auto; border: 1px solid var(--pico-muted-border-color);
+                position: relative; cursor: grab; }
+.rvb-viewport:active { cursor: grabbing; }
+.rvb-canvas { position: relative; margin: 0 auto; }
+.rvb-img { display: block; width: 100%; user-select: none; }
+.rvb-box { position: absolute; border: 1.5px solid #4c8bf5; background: rgba(76, 139, 245, .12);
+           cursor: pointer; }
+.rvb-box--on { border-color: #e8710a; background: rgba(232, 113, 10, .20); }
+.rvb-blocks { flex: 1; overflow: auto; padding-right: 4px; }
+.rvb-block { border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
+             padding: 6px 10px; margin-bottom: 8px; cursor: pointer; }
+.rvb-block--on { border-color: #e8710a; box-shadow: 0 0 0 1px #e8710a inset; }
+.rvb-block-hd { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+                font-size: 0.75rem; color: var(--pico-muted-color); }
+.rvb-tag { background: var(--pico-muted-border-color); border-radius: 3px; padding: 0 6px; }
+.rvb-clause { color: var(--pico-primary); font-weight: 600; }
+.rvb-unlocated { color: #c08552; }
+.rvb-page { margin-left: auto; }
+.rvb-block-bd { font-size: 0.9rem; }
+.rvb-block-bd table { width: auto; max-width: 100%; }

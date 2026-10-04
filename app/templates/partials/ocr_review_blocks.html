@@ -1,0 +1,69 @@
+<!-- OCR 审查页（版面块 · P1 只读对照）
+     左栏原文件（页图 + 高亮框） / 右栏版面块列表。
+     编辑能力是 P2 的事；本期**只读**，无任何写路径。 -->
+<div x-data="reviewBlocks()" x-init="init()" class="rvb-root">
+
+    <!-- 降级：没有 layout.json 时给出明确出口，而不是空白或崩溃（spec §13） -->
+    <div class="rvb-error" x-show="error" x-cloak>
+        <p x-text="error" style="color:#c00"></p>
+        <p><a href="/">← 返回主界面</a></p>
+    </div>
+
+    <div class="rvb-panes" x-show="!error" x-cloak>
+        <!-- ══ 左栏：原文件 ══ -->
+        <section class="rvb-left">
+            <header class="rvb-bar">
+                <span class="rvb-file" x-text="fileName || '原文件'"></span>
+                <span class="rvb-pageinfo" x-text="curPage + ' / ' + pages.length"></span>
+            </header>
+            <!-- 缩放 4 档 + 重置（spec §6.2；「重置」= 回适应宽度，**不是刷新**） -->
+            <div class="rvb-zoom">
+                <button type="button" class="outline" @click="setScaleMode('fit')"
+                        :class="scaleMode === 'fit' && 'rvb-on'">适应宽度</button>
+                <button type="button" class="outline" @click="setScaleMode(1.0)"
+                        :class="scaleMode === 1 && 'rvb-on'">100%</button>
+                <button type="button" class="outline" @click="setScaleMode(1.5)"
+                        :class="scaleMode === 1.5 && 'rvb-on'">150%</button>
+                <button type="button" class="outline" @click="setScaleMode(2.0)"
+                        :class="scaleMode === 2 && 'rvb-on'">200%</button>
+                <button type="button" class="secondary outline" @click="resetZoom()"
+                        title="缩放恢复「适应宽度」">重置</button>
+            </div>
+            <div class="rvb-viewport" x-ref="vp" @mousedown="startPan($event)">
+                <div class="rvb-canvas" :style="canvasStyle()">
+                    <img class="rvb-img" :src="pageUrl(curPage)" @load="onImgLoad()"
+                         alt="原文件页图" draggable="false">
+                    <!-- 高亮框：bbox 按百分比定位 ⇒ 缩放自动跟随（spec §6.3）
+                         未定位的块（start_line 为空）不画框 -->
+                    <template x-for="b in blocksOnPage()" :key="'hl' + b.__i">
+                        <div class="rvb-box" x-show="hasSpan(b)"
+                             :class="activeIdx === b.__i && 'rvb-box--on'"
+                             :style="boxStyle(b)"
+                             @click.stop="focusBlock(b.__i)"></div>
+                    </template>
+                </div>
+            </div>
+        </section>
+
+        <!-- ══ 右栏：版面块列表 ══ -->
+        <section class="rvb-right">
+            <div class="rvb-blocks" x-ref="list">
+                <template x-for="(b, i) in blocks" :key="'bk' + i">
+                    <article class="rvb-block" :class="activeIdx === i && 'rvb-block--on'"
+                             :data-block-idx="i" @click="focusBlock(i)">
+                        <header class="rvb-block-hd">
+                            <span class="rvb-tag" x-text="labelZh(b.label)"></span>
+                            <!-- 条文号：无归属则不标（spec §11.2） -->
+                            <span class="rvb-clause" x-show="b.clause_no" x-text="b.clause_no"></span>
+                            <!-- ⚠️ 未定位必须**明说**（静默隐藏会让人以为这块不存在） -->
+                            <span class="rvb-unlocated" x-show="!hasSpan(b)"
+                                  title="该块在 markdown 中的表示与原文件不同，无法定位到页上区域">原文件未定位</span>
+                            <span class="rvb-page" x-text="'p' + b.page"></span>
+                        </header>
+                        <div class="rvb-block-bd" x-html="renderBlock(b)"></div>
+                    </article>
+                </template>
+            </div>
+        </section>
+    </div>
+</div>
