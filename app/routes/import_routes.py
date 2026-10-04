@@ -18,6 +18,7 @@ from app.parser.spec_prefix import (
     detect_hierarchy, detect_nature, detect_industry, normalize_spec_code, PREFIX_WHITELIST,
 )
 from app.ocr.pdf_extract import extract_text, is_scanned
+from app.ocr.layout import finalize_layout
 from app.classifier.rule_engine import classify_clause, should_use_ai
 from app.classifier.batch_queue import try_enqueue
 from app.search.vector_search import VectorStore
@@ -782,6 +783,13 @@ def _process_import(task_id: str, file_path: str, title: str, code: str,
 
         # 保守清洗（OCR/extract 通用）：删除页码行、纯数字行、OCR 失败标记、重复页眉
         md_text = clean_ocr_text(md_text)
+
+        # 锚定版面块到**审查页实际使用的这份文本**，落 layout.json（两阶段的第二阶段）。
+        # 没有 layout.raw.json 时（.md / 非扫描件 / 其他 OCR 后端）直接返回 None。
+        # 实测：clean_ocr_text 对 markdown.text 删 0 行（markdownIgnoreLabels 已排除
+        # 页眉/页脚/页码），故此处取清洗后文本与取清洗前等价；放在这里是**就近取用**。
+        # 失败只记 WARN，不影响导入（spec §5.3）。
+        finalize_layout(Path(OUTPUT_DIR) / task_id, md_text)
 
         # 取消守卫（OCR 返回之后、写 review_needed 之前）：processing 态的取消只发
         # 进程内信号、不删行不删盘（见 cancel_review），若这里直接写 review_needed，

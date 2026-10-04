@@ -11,8 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from app.ocr.layout import (LAYOUT_FILENAME, SIGNED_URL_KEYS, classify_labels,
-                            extract_layout, load_layout, save_layout, sort_key_stats)
+from app.ocr.layout import (LAYOUT_FILENAME, SIGNED_URL_KEYS, base_sha256,
+                            classify_labels, extract_layout, finalize_layout,
+                            load_layout, save_layout, save_raw_layout_safely,
+                            sort_key_stats)
 
 REPO = Path(__file__).resolve().parent.parent
 GOLDEN = REPO / "tests" / "fixtures" / "ocr_layout_golden.jsonl"
@@ -215,3 +217,103 @@ def test_real_fixture_extracts_and_is_scrubbed():
     stats = sort_key_stats(lay["blocks"])
     assert stats["all_have_gid"] is True, "真实夹具的块应全部带 global_block_id"
     print(f"\n真实夹具：页 {len(lay['pages'])} / 块 {len(lay['blocks'])} / {stats}")
+
+
+# ══ 两阶段落盘（Task 4）═════════════════════════════════
+
+def _one_block_records(tag="x"):
+    """**非空** records —— 避免被测函数在调用写盘之前就提前 return（那会让测试空转）"""
+    return [{"result": {"layoutParsingResults": [{"prunedResult": {
+        "width": 1, "height": 1, "parsing_res_list": [
+            {"block_label": "text", "block_content": tag, "block_bbox": [0, 0, 1, 1],
+             "block_order": 1, "global_block_id": 0}]}}]}}]
+
+
+def test_save_raw_layout_safely_swallows_errors(monkeypatch, tmp_path):
+    """★ 落盘失败**不得抛出**（spec §5.3）。
+
+    ⚠️ patch 点必须落在**真正执行写入的那一步**：`save_raw_layout_safely` 自己
+    `write_text` + `Path.replace`，**不调用 `save_layout`** —— 若照旧 patch
+    `save_layout`，本用例会**空转恒绿**（这正是第二轮外部复核 #8 指出的问题）。
+    """
+    import app.ocr.layout as mod
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mod.Path, "replace", boom)
+    mod.save_raw_layout_safely(_one_block_records(), str(tmp_path))   # 不抛即通过
+
+
+def test_save_raw_layout_safely_noop_without_output_dir():
+    import app.ocr.layout as mod
+    mod.save_raw_layout_safely(_one_block_records(), None)
+
+
+def test_save_raw_layout_safely_skips_when_blocks_empty(tmp_path):
+    """★ 空 blocks **不落盘** —— 否则产生「有 layout 但 0 块」，审查页渲染空白页，
+    绕过 spec §13 的降级契约（前提是"**没有** layout"）"""
+    import app.ocr.layout as mod
+    mod.save_raw_layout_safely(
+        [{"result": {"layoutParsingResults": [{"prunedResult": {"width": 10, "height": 20}}]}}],
+        str(tmp_path))
+    assert not (tmp_path / mod.LAYOUT_RAW_FILENAME).exists()
+
+
+def test_save_raw_layout_safely_survives_malformed_blocks(tmp_path):
+    """畸形解析结果不得抛出（覆盖 AttributeError 一类）"""
+    import app.ocr.layout as mod
+    mod.save_raw_layout_safely([{"result": {"layoutParsingResults": [
+        {"prunedResult": {"width": 1, "height": 1,
+                          "parsing_res_list": ["not-a-dict", None,
+                                               {"block_label": "text", "block_content": "x",
+                                                "block_bbox": [0, 0, 1, 1], "block_order": 1,
+                                                "global_block_id": 0}]}}]}}], str(tmp_path))
+
+
+def test_finalize_layout_anchors_persists_and_records_params(tmp_path):
+    """两阶段收尾：消费 raw → 锚定 → 落 layout.json（含 span / 指纹 / 生效参数）"""
+    import app.ocr.layout as mod
+    mod.save_raw_layout_safely(_one_block_records("AAA"), str(tmp_path),
+                               params={"markdownIgnoreLabels": ["number"]})
+    stats = mod.finalize_layout(str(tmp_path), "AAA\n\nBBB")
+    assert stats is not None and stats["missed"] == 0 and stats["anchored"] == 1
+
+    lay = mod.load_layout(tmp_path)
+    assert lay is not None
+    assert lay["blocks"][0]["start_line"] == 0 and lay["blocks"][0]["end_line"] == 1
+    assert lay["base_sha256"] == base_sha256("AAA\n\nBBB"), "必须记录基准指纹"
+    assert lay["ocr_params"]["markdownIgnoreLabels"] == ["number"], "必须记录生效参数"
+    assert not (tmp_path / mod.LAYOUT_RAW_FILENAME).exists(), "成功后应删除 raw"
+
+
+def test_finalize_layout_keeps_raw_on_failure(tmp_path):
+    """★ 锚定失败时**保留 raw** 便于排查/重试"""
+    import app.ocr.layout as mod
+    mod.save_raw_layout_safely(_one_block_records(), str(tmp_path))
+    (tmp_path / mod.LAYOUT_RAW_FILENAME).write_text("{ 坏 json", encoding="utf-8")
+    assert mod.finalize_layout(str(tmp_path), "任意") is None
+    assert (tmp_path / mod.LAYOUT_RAW_FILENAME).exists(), "失败不得删 raw"
+
+
+def test_finalize_layout_clears_stale_layout_on_rerun(tmp_path):
+    """★ 重跑时**不得把旧 layout.json 与新文本混用**（没有代际键会错配）"""
+    import app.ocr.layout as mod
+    stale = {"version": 1, "pages": [{"index": 1, "width": 1, "height": 1}],
+             "blocks": [{"label": "text", "content": "OLD", "page": 1, "bbox": [0, 0, 1, 1],
+                         "order": 1, "global_block_id": 0,
+                         "start_line": 0, "end_line": 1, "prefix": "", "suffix": ""}],
+             "base_sha256": "stale"}
+    mod.save_layout(stale, tmp_path)
+    mod.save_raw_layout_safely(_one_block_records("NEW"), str(tmp_path))
+
+    stats = mod.finalize_layout(str(tmp_path), "NEW")
+    lay = mod.load_layout(tmp_path)
+    assert stats is not None and stats["anchored"] == 1
+    assert lay is not None
+    assert lay["base_sha256"] == base_sha256("NEW") and lay["base_sha256"] != "stale"
+
+
+def test_finalize_layout_noop_without_raw(tmp_path):
+    import app.ocr.layout as mod
+    assert mod.finalize_layout(str(tmp_path), "任意文本") is None

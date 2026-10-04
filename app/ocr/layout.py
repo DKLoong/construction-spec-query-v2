@@ -408,3 +408,84 @@ def splice(base_text: str, blocks: list[dict], edits: dict[int, str]) -> str:
         cursor = e
     out.extend(lines[cursor:])
     return "\n".join(out)
+
+
+# ═══════════════════════════════════════════════════════════
+# 两阶段落盘（计划 Task 4）
+# ═══════════════════════════════════════════════════════════
+
+def _write_json_atomic(payload: dict, path: Path) -> None:
+    """原子写：先写 `.tmp` 再 `replace`。抽出来便于单测注入失败。"""
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def save_raw_layout_safely(records: list[dict], output_dir: str | None,
+                           params: dict | None = None) -> None:
+    """**第一阶段**：把**未锚定**的块落 `layout.raw.json`；失败只记 WARN、**绝不抛出**。
+
+    为什么分两阶段：锚定必须以**审查页实际使用的那份文本**为基准，而那是
+    `_process_import` 处理后的产物，OCR 客户端看不到。
+
+    ⚠️ **blocks 为空时不落盘**（否则审查页渲染空白页，绕过 spec §13 的降级契约）。
+    ⚠️ 异常**必须收窄**（全局规则 §1.2）。`params` 一并存下，供锚定阶段用**同一份**
+    `markdownIgnoreLabels` —— 不得把动态参数当固定事实。
+    """
+    if not output_dir:
+        return
+    try:
+        layout = extract_layout(records)
+        if not layout["blocks"]:
+            logger.warning("layout 为空（响应可能不含 parsing_res_list），不落盘: %s", output_dir)
+            return
+        layout["ocr_params"] = dict(params or {})
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(layout, out / LAYOUT_RAW_FILENAME)
+    except (OSError, KeyError, TypeError, ValueError, AttributeError) as e:
+        logger.warning("layout.raw.json 落盘失败（不影响导入）: %s", e)
+
+
+def finalize_layout(output_dir: str | Path, base_text: str,
+                    ignore_labels=None) -> dict | None:
+    """**第二阶段**：消费 `layout.raw.json` → 锚定到 `base_text` → 落 `layout.json`。
+
+    写下的 `layout.json` 含：`blocks`（带 span + prefix/suffix）、`base_sha256`（指纹）、
+    `ocr_params`（生效参数）、`stats`。指纹用于防止「**旧 span + 新文本**」错配 ——
+    故重跑时会**先删旧 `layout.json`**。
+
+    **失败只记 WARN、绝不抛出**，且**失败时保留 raw** 便于排查/重试。
+    返回锚定统计；无 raw 时返回 `None`（老任务 / 其他后端路径）。
+    """
+    out = Path(output_dir)
+    raw_path = out / LAYOUT_RAW_FILENAME
+    if not raw_path.is_file():
+        return None
+    try:
+        raw = json.loads(raw_path.read_text(encoding="utf-8"))
+        params = raw.get("ocr_params") or {}
+        ignore = ignore_labels if ignore_labels is not None else params.get("markdownIgnoreLabels")
+        anchored, stats = anchor_blocks(base_text, raw.get("blocks") or [], ignore)
+        layout = {
+            "version": LAYOUT_VERSION,
+            "pages": raw.get("pages") or [],
+            "blocks": anchored,
+            "base_sha256": base_sha256(base_text),
+            "ocr_params": params,
+            "stats": {k: v for k, v in stats.items() if k != "residual_miss"},
+        }
+        # ⚠️ 先清旧 layout.json，避免"旧 span + 新文本"错配
+        (out / LAYOUT_FILENAME).unlink(missing_ok=True)
+        save_layout(layout, out)
+        if stats["missed"]:
+            logger.warning("layout 锚定：未命中 %d / 可锚定 %d（详见 layout.json.stats）: %s",
+                           stats["missed"], stats["anchorable"], out)
+        # ✅ 只有**成功**才删 raw；失败保留以便排查/重试
+        raw_path.unlink(missing_ok=True)
+        return stats
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError,
+            TypeError, ValueError, AttributeError) as e:
+        logger.warning("layout 锚定失败（不影响导入；**保留 %s 便于排查**）: %s",
+                       LAYOUT_RAW_FILENAME, e)
+        return None

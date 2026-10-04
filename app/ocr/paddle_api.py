@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import Protocol
 
+from app.ocr.layout import save_raw_layout_safely
+
 logger = logging.getLogger(__name__)
 
 # 每批最大页数
@@ -390,6 +392,7 @@ class PaddleVLClient:
             resp = await client.get(url)
             resp.raise_for_status()
 
+        records: list[dict] = []
         parts = []
         for line in resp.text.strip().split("\n"):
             if not line.strip():
@@ -398,6 +401,7 @@ class PaddleVLClient:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            records.append(record)
             for lp in record.get("result", {}).get("layoutParsingResults", []):
                 md = lp.get("markdown", {})
                 if md.get("text"):
@@ -405,6 +409,12 @@ class PaddleVLClient:
                 if output_dir and isinstance(md.get("images"), dict):
                     for img_rel, img_url in md["images"].items():
                         await self._save_image(img_rel, img_url, output_dir)
+
+        # 旁路落**未锚定**的版面块 + **本次生效参数**（审查页用）。
+        # 锚定要等导入流程拿到"审查页实际使用的那份文本"后才做（见 _process_import）。
+        # 失败只记 WARN，不中断导入（spec §5.3）。
+        save_raw_layout_safely(records, output_dir, self._optional_payload())
+
         return "\n".join(parts)
 
     async def _save_image(self, img_rel: str, img_url: str, output_dir: str) -> None:
