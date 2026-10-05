@@ -2079,7 +2079,7 @@ def f13_14_swallowing_a_clause_line_shows_as_removed(page):
     blk.locator("button:has-text('保存')").click()
     assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() < base, 15000), \
         f"抹掉编号后预览条数未减少（仍为 {base}）"
-    assert "消失" in page.locator(".rvb-preview-hd").inner_text(), "没有给出「消失 N 条」的提示"
+    assert "消失" in page.locator(".rvb-cut-hd").inner_text(), "没有给出「消失 N 条」的提示"
 
 
 def _rvb_wait_done(page, task_id, timeout_ms=180000):
@@ -2259,6 +2259,36 @@ def f13_19_page_image_is_rendered_at_device_pixel_ratio(page):
         hp.close()
 
 
+def f13_20_panes_are_three_equal_height_columns(page):
+    """★ 三栏：左 PDF / 中 版面编辑 / 右 切分，**等高**且顺序固定。
+
+    此前切分面板嵌在右栏下部（`.rvb-cut` 是 `.rvb-right` 的**子**节点），
+    220px 的横条把编辑区挤扁，左中对照被割裂。
+    """
+    task_id = _rvb_seed(page, "20")
+    assert task_id is not None, "前置不成立"
+    assert poll_until(page, lambda: page.locator(".rvb-cut").count() > 0, 10000), "第三栏未出现"
+    order = page.evaluate(
+        "() => [...document.querySelector('.rvb-panes').children]"
+        ".map(e => e.className.split(' ')[0])")
+    assert order == ["rvb-left", "rvb-right", "rvb-cut"], f"栏序不对：{order}"
+    hs = page.evaluate(
+        "() => [...document.querySelector('.rvb-panes').children]"
+        ".map(e => Math.round(e.getBoundingClientRect().height))")
+    assert max(hs) - min(hs) <= 2, f"三栏不等高：{hs}"
+    tops = page.evaluate(
+        "() => [...document.querySelector('.rvb-panes').children]"
+        ".map(e => Math.round(e.getBoundingClientRect().top))")
+    assert max(tops) - min(tops) <= 2, f"三栏不顶对齐：{tops}"
+    # ★ 切分栏是**固定宽**（`flex: 0 0 280px`），不是 1:1:1 三等分。
+    #   实测：只断言「栏序 / 等高 / 顶对齐」时，把 `flex: 0 0 280px` 换成
+    #   `flex: 1 1 50%` **三条全绿** ⇒ 必须直接量宽度，否则用例钉不住固定宽这条设计。
+    ws = page.evaluate(
+        "() => [...document.querySelector('.rvb-panes').children]"
+        ".map(e => Math.round(e.getBoundingClientRect().width))")
+    assert abs(ws[2] - 280) <= 2, f"切分栏未固定宽（应为 ~280px）：{ws}"
+
+
 CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_2_inline_round_trip_is_byte_exact,
                 f13_3_alignment_wrap_unwrap_round_trip,
@@ -2277,7 +2307,8 @@ CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_16_submit_sends_the_edited_text_to_phase2,
                 f13_17_submit_without_edits_still_imports,
                 f13_18_preview_count_equals_imported_clause_count,
-                f13_19_page_image_is_rendered_at_device_pixel_ratio]
+                f13_19_page_image_is_rendered_at_device_pixel_ratio,
+                f13_20_panes_are_three_equal_height_columns]
 
 
 if __name__ == "__main__":

@@ -159,9 +159,9 @@ def test_preview_panel_is_not_flex_shrinkable():
     """
     from pathlib import Path
     css = Path("static/app.css").read_text(encoding="utf-8")
-    line = [l for l in css.splitlines() if l.strip().startswith(".rvb-preview {")]
-    assert line, ".rvb-preview 规则不见了"
-    assert "flex: 0 0 auto" in line[0], f"未固定高度：{line[0]}"
+    line = [l for l in css.splitlines() if l.strip().startswith(".rvb-cut {")]
+    assert line, ".rvb-cut 规则不见了"
+    assert "flex: 0 0 280px" in line[0], f"切分栏未固定宽（不可收缩）：{line[0]}"
 
 
 def test_page_url_multiplies_scale_by_device_pixel_ratio():
