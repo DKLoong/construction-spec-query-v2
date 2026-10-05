@@ -250,11 +250,16 @@ def f14_2_serialize_strips_editor_artifacts(page):
 
 
 def f14_3_validate_rejects_malformed_tables(page):
-    """★ 校验的三条判据**逐条**都要挡住：越界 `rowspan` / 各行宽度不等 / 空洞。
+    """★ 校验的**三条判据**逐条都要挡住：越界 `rowspan` / 各行宽度不等 / 占位重叠。
 
     ⚠️ 一条用例覆盖三种非法输入是**有意的**（不新增用例，避免打乱后续 Task 的编号）：
-    `validate` 的三条判据是本模块的**已声明契约**，声明了却没人验证＝假承诺。
+    `validate` 的判据是本模块的**已声明契约**，声明了却没人验证＝假承诺。
     合法放行由 `f14_4` 反向钉住。
+
+    ⚠️ **不要试图构造「空洞」**：`_grid` 的占位算法**每格恒填最左空位** ⇒ 占位形态恒稠密，
+    空洞在结构上不可能产生（Task 2 实现者穷举 2~3 行 × 1~3 列 × span∈{1,2,3} 共 270672 张表、
+    **0 例**命中）。故本轮**已删除** `validate` 里那条空洞判据 —— 它是**构造保证的不变式**，
+    不是需要校验的东西；而真正等价的情形（某行少格）由**宽度判据**抓住。
     """
     got = page.evaluate("""(html) => {
         const T = window.tableEditor;
@@ -263,16 +268,16 @@ def f14_3_validate_rejects_malformed_tables(page):
         let t = T.parse(html);
         t.querySelector('td').setAttribute('rowspan', '99');
         out.rowspan = T.validate(t);
-        // ② 各行宽度不等（删掉第 2 行的最后一格）
+        // ② 各行宽度不等（删掉第 2 行的一格）
         t = T.parse(html);
-        const cells = t.querySelectorAll('tr')[1].querySelectorAll('td');
-        cells[cells.length - 1].remove();
-        out.ragged = T.validate(t);
-        // ③ 空洞（给首格设 rowspan=2，再删掉它正下方那一行的对应格）
-        t = T.parse(html);
-        t.querySelector('tr td').setAttribute('rowspan', '2');
         t.querySelectorAll('tr')[1].querySelector('td').remove();
-        out.hole = T.validate(t);
+        out.ragged = T.validate(t);
+        // ③ 占位重叠（首行首格 rowspan=2 占住次行首列，再让次行首格 colspan=2 ⇒ 撞上那个占位）
+        t = T.parse(html);
+        const rows = t.querySelectorAll('tr');
+        rows[0].querySelector('td').setAttribute('rowspan', '2');
+        rows[1].querySelector('td').setAttribute('colspan', '2');
+        out.overlap = T.validate(t);
         return out;
     }""", _TBL_HTML)
     for name, v in got.items():
@@ -1140,11 +1145,13 @@ def f14_12_merge_on_a_single_cell_is_a_no_op(page):
                 case 'split': ok = window.tableEditor.splitCell(t, cell); break;
 ```
 
-> **本 Task 另需补一条注释**（Task 2 修正轮的裁定）：`validate` 里的**「空洞」判据**在当前输入下**不可达**
-> —— Task 2 实现者穷举 2~3 行 × 1~3 列 × span∈{1,2,3} 共 **270672** 张表、**0 例**命中空洞分支
-> （机制：每行单元格恒填最左空位 ⇒ 占位形态恒为「0..k 无洞」）。**保留它**是因为**本 Task 的结构操作
-> 有可能造出空洞**（`insertCol` 在合并格内部返回 false、`deleteCols` 跨合并格递减 `colspan`、`mergeCells` 删格）。
-> 请在判据处补注释写明这一层关系；**若到 Task 6 结束仍构造不出空洞，则按 YAGNI 删除**（届时它连守卫作用都没有）。
+> **本 Task 需删除一条死判据**（Task 2 受限复审推翻控制器初裁后定）：
+> `validate` 里的**「空洞」判据**（`g.grid.some(row => row.some(x => !x))`）**对任意输入恒假** ——
+> `Array.prototype.some` **跳过稀疏空槽**，而 `_grid` 只往矩阵里写**真值**元素 ⇒ 该分支永不触发。
+> 更本质的是：`_grid` 的占位算法**每格恒填最左空位** ⇒ 占位形态恒稠密，**空洞在结构上不可能产生**，
+> 它是**构造保证的不变式**、不是需要校验的东西；真正等价的情形（某行少格）已被**宽度判据**抓住。
+> ⇒ **删掉那条判据**（连同其 `reason` 分支），并**同步把 spec §2.4 / §3 里「无空洞」的措辞**改成
+> 「由 `_grid` 的占位算法保证（恒填最左空位）」。
 
 `app.css` 加选中态：
 
