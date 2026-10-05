@@ -2560,6 +2560,17 @@ def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
     cells = page.locator(".rvb-table-edit table td")
     assert cells.count() == 6, f"单元格数不对：{cells.count()}"
     assert cells.first.get_attribute("contenteditable") == "true", "单元格不可编辑"
+    # ★ 行编辑专属控件（B/I/S、对齐、「+ 行」/「- 行」）对表格块**必须不可见**：表格块的
+    #    `.rvb-lines` 是空的，这些控件对它是死的（「+ 行」/「- 行」会把 null 传进
+    #    `_insertLineAfter`/`_deleteLine` —— 已加 null 守卫兜底，但按钮本就不该出现）。
+    #    ⚠️ `.rvb-line-tools` 在 `x-for` 内**每块一份** ⇒ 必须按**块作用域**取。
+    assert not fix.locator(".rvb-line-tools").is_visible(), \
+        "表格块进入了编辑态，行编辑专属控件却可见（「+行/-行」是死按钮）"
+    # ★ **反向守卫**：「取消」/「保存」对表格块必须**仍然可见** —— 它们是表格编辑态**唯一**的
+    #    保存出口（Task 4 的表格工具条只有结构操作按钮、不含保存）。把整排 `.rvb-tools` 一起
+    #    门控掉会让表格**根本无法保存**（本轮实测踩过：f14_6/f14_7 的保存点击 30s 超时）。
+    assert fix.locator("button:has-text('保存')").is_visible(), \
+        "表格编辑态下「保存」按钮不可见 —— 表格将无法保存"
 
 
 def f14_6_saving_an_edited_table_writes_the_md_region(page):

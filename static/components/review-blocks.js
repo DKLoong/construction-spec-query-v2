@@ -261,21 +261,22 @@ function reviewBlocks() {
         enterEdit(idx) {
             const b = this.blocks[idx];
             if (!b || !this.canEdit(b)) return;
-            // ⚠️ 表格块**缺 `md_html` 就不进编辑态**，且守卫必须在 `editingIdx` 赋值**之前** ——
-            //    放在下面 `$nextTick` 里会变成"已进编辑态、编辑器却是空的"（用户看到空白框）。
+            // ⚠️ 表格块**解析不出 `<table>` 就不进编辑态**（缺 `md_html`、或 `md_html` 里根本没有表），
+            //    且守卫必须在 `editingIdx` 赋值**之前** —— 放在下面 `$nextTick` 里会变成
+            //    "已进编辑态、编辑器却是空的"（用户看到空白框，且行编辑器工具条会一并露出来）。
             //    也绝不能回落到 `b.content`：那是 OCR 的**去样式版**，写回会丢 `border=1` 与
             //    `margin: auto`（边框与居中的唯一来源，渲染侧无补偿 CSS）。宁可不让改。
-            if (b.label === 'table' && !b.md_html) return;
+            //    两种失效原因（缺 md_html / 里面没表）**一并**由 `parse` 的 null 覆盖，保持
+            //    「要么完整进编辑态、要么完全不进」这一条不变量。`parse` 是纯 DOM 构造、
+            //    不依赖宿主元素存在，故可安全前移到 `$nextTick` 之外。
+            const t = (b.label === 'table') ? window.tableEditor.parse(b.md_html) : null;
+            if (b.label === 'table' && !t) return;
             this.tableError = '';          // 清掉上一次的表格报错（否则会跟着下一块显示）
             this.editingIdx = idx;
             this.$nextTick(() => {
                 const box = this._editBox();
                 box.innerHTML = '';
                 if (b.label === 'table') {
-                    // `md_html` 的存在性已在开头守卫过（缺了根本不会进到这里）；
-                    // parse 仍可能返回 null（入参里没有 <table>）—— 那种情况保持静默，不回落 content。
-                    const t = window.tableEditor.parse(b.md_html);
-                    if (!t) return;
                     t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
                     this._tableSnapshots = [t.outerHTML];       // 快照栈的起点（Task 5 起用）
                     const host = this._tableHost();
@@ -408,12 +409,14 @@ function reviewBlocks() {
         },
 
         _insertLineAfter(el) {
+            if (!el) return;      // `_focusLine()` 在空编辑区可能返回 null（防御第二道）
             const line = this._makeLine('');
             el.parentNode.insertBefore(line, el.nextSibling);
             line.focus();
         },
 
         _deleteLine(el) {
+            if (!el) return;      // 同上：没有聚焦行时不动作，绝不抛 `null.parentNode`
             const box = this._editBox();
             if (box.querySelectorAll('.rvb-line').length <= 1) { el.innerHTML = ''; return; }
             const prev = el.previousElementSibling;
@@ -457,6 +460,7 @@ function reviewBlocks() {
                 if (!t) return;
                 const v = window.tableEditor.validate(t);
                 if (!v.ok) { this.tableError = '表格结构不合法：' + v.reason; return; }
+                this.tableError = '';      // 成功路径也清（与失败分支对称，不留陈旧状态）
                 this.edits[b.__i] = window.tableEditor.serialize(t);
                 this.editingIdx = -1;
                 this.schedulePreview();

@@ -935,6 +935,10 @@
    进度区不会白占一屏；内容一到就自然撑高并触发外层滚动（用户裁定）。 */
 .rvb-result-slot { min-height: 0; flex: 0 0 auto; }
 
+/* 行编辑专属控件（B/I/S、对齐、+行/-行）：表格块的编辑态里整段隐藏。
+   `inline-flex` + 与 `.rvb-tools` 相同的 gap ⇒ 与原先**同一排、同样的间距**。 */
+.rvb-line-tools { display: inline-flex; gap: 0.3rem; align-items: center; }
+
 /* 表格编辑器（P3）：容器与表格本体。单元格的选中态在 Task 5 加。 */
 .rvb-table-edit { border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.25rem; }
 .rvb-table-edit table { width: auto; max-width: 100%; }
