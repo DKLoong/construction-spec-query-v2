@@ -39,7 +39,7 @@
 - **静态资源版本号**：任何 Task 改了 `static/` 下的 js/css（或 `app/templates/partials/*.html` 里引用的资源），**必须递增** `app/templates/base.html` 里对应的 `?v=N`。`review-blocks.js` 现为 `?v=7`、`app.css` 现为 `?v=43`、`md-inline.js` 现为 `?v=1`。改完提示用户 **Ctrl+F5 强刷**。
 - **探针运行方式**：`PYTHONPATH` 下 `D:/Python/python.exe scripts/probe_spec_ui.py f13`。四个隔离路径 —— `DATABASE_PATH` / `UPLOAD_DIR` / `OUTPUT_DIR` / `LANCE_DB_PATH` —— **必须同时对 uvicorn 服务端与探针进程导出**；只导给服务端会让夹具写进真实 `data/`，症状伪装成「块列表为空」（已实测否证）。服务端口 **8123**，**不加 `--reload`**。每轮回归前重新 `cp` 一份隔离库。
 - **探针证明力受限（T37）**：runner 无逐例 try/except，一例失败即中止整组 ⇒ 一次变异运行只能证明「被点名的用例红 + 它**之前**仍绿」。凡「只 X 红」的措辞都要读作「X 之后未被覆盖」。
-- **parser 改动门禁（memory §五，非可选）**：`tests/test_md_parser.py`（120 用例）+ `tests/test_parse_conservation.py`（正文守恒）+ `scripts/survey_structure.py` 的 12 项结构指标 + 两份真语料（`tests/fixtures/cjj2_source.md` 固定夹具 **sha256 勿改**；`data/outputs/aa96b73a/aa96b73a.md` 缺则跳过）。
+- **parser 改动门禁（memory §五，非可选）**：`tests/test_md_parser.py`（120 用例）+ `tests/test_parse_conservation.py`（正文守恒）+ `scripts/survey_structure.py` 的 12 项结构指标（**该脚本必须传 md 路径**，用固定夹具 `tests/fixtures/cjj2_source.md`）+ 两份真语料（`tests/fixtures/cjj2_source.md` 固定夹具 **sha256 勿改**；`data/outputs/aa96b73a/aa96b73a.md` 缺则跳过）。**两份真语料的改动前后条数与 12 项指标必须逐项完全一致** —— 控制器已预跑候选修法证明零差异，基线值见 Task 4 Step 4。
 - **`finalize_layout` 定义在 `align_clauses` 之前**（`:462` vs `:510`）：Python 在调用时解析模块级名字，**该顺序是对的，不要为了「看起来更顺」把函数搬家** —— 搬家会改动 `tests/test_ocr_layout.py` 依赖的导入面。
 - **不主动安装依赖**；不改系统配置。
 
@@ -559,10 +559,19 @@ Expected: 前两条 FAIL（`GB5768` / `HPB235` 混进 `nums`；第一条还会�
 Run: `D:/Python/python.exe -m pytest tests/test_md_parser.py tests/test_parse_conservation.py -q`
 Expected: **126 passed**（已预跑验证）
 
-Run: `D:/Python/python.exe scripts/survey_structure.py`
-Expected: 12 项指标与改动前**逐项对比**，降级行计数（指标 12）不得上升
+Run: `D:/Python/python.exe scripts/survey_structure.py tests/fixtures/cjj2_source.md`（**必须传 md 路径**；固定夹具 sha256 勿改）
+Expected: 12 项指标与改动前**逐项完全一致**。改动前基线（控制器 2026-10-05 抓取，存 `.superpowers/sdd/2026-10-05-ocr-review-p2-5-fixes/t4-baseline-survey.txt`）：
 
-Run: 两份真语料 —— `tests/fixtures/cjj2_source.md`（**sha256 勿改**）与 `data/outputs/aa96b73a/aa96b73a.md`（缺则跳过）解析后条文数与改动前对比，只允许「伪条消失」方向的差异
+```
+clause_count: 889            content_chars: 442651      content_chars_plain: 142445
+fake_clause_no_count: 7      breadcrumb_coverage: 0.9986    missing_sections: 0
+duplicate_clause_no: 121     duplicate_rows: 254        duplicate_rows_is_non: 135
+duplicate_group_kinds: {'designed': 119, 'body_only': 0, 'commentary_only': 2}
+真重复（两次都在正文）: 0 组
+```
+
+Run: 两份真语料 —— `tests/fixtures/cjj2_source.md`（**sha256 勿改**）与 `data/outputs/aa96b73a/aa96b73a.md`（缺则跳过）
+Expected: **条数逐项完全一致** —— 基线 `889` 与 `72`。控制器已用运行期替换 `_NUM_PATTERNS[1]` 的方式预跑候选修法：两份语料**零差异**（889→889、72→72，消失 0 / 新增 0），故任何 delta 都按 finding 处理、要求逐号解释。改善只应出现在 OCR 语料上（`data/outputs/e9915ba8/e9915ba8.md`：21 条含 3 伪条 → 20 条 0 伪条，「1 范围」与「前言」回归）。
 
 - [ ] **Step 5: 跑 pyright**
 
