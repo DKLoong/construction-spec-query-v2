@@ -995,6 +995,13 @@ async def review_preview(request: Request, task_id: str):
     md_text, err = await _compose_or_error(request, task_id)
     if err is not None:
         return err
+    # ⚠️ 这一行**不是多余的**（Task 4 实现者实测逼出）：`_compose_or_error` 返回
+    # `tuple[str | None, JSONResponse | None]` 是**两个独立 union**、不是判别联合 ⇒
+    # `if err is not None` **不会**把 `md_text` 窄化成 `str`；直抄 Step 3 的代码会报
+    # 2 条 `reportArgumentType`（喂给 `parse_markdown` 时）。本仓栽过**同类两次**
+    # （「不做元组跨元素窄化」）。用 `assert` 而不是 `cast`：运行期零成本，
+    # 且把「走到这里 md_text 必非 None」写成可执行的不变量。
+    assert md_text is not None
     rows = _filter_cover_clauses(parse_markdown(md_text))
     clauses = [{"clause_no": c.get("clause_no") or "", "title": c.get("title") or ""}
                for c in rows]
