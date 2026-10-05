@@ -701,3 +701,18 @@ def test_import_duplicate_style_registered():
     assert "import-dup-warn" in css, "app.css 应定义 .import-dup-warn"
 
 
+def test_md_review_page_discloses_submit_normalization(auth_client, isolated_paths):
+    """★ 源码审查页必须**明说**提交时会做规范化。
+
+    用户裁定两条入口都生效后，.md 用户在源码框里看不到表格被加 align —— 静默改写
+    与「源码页所见即所提」相冲突，至少要让这层改写是**被披露**的。
+    """
+    from tests.conftest import seed_import_task
+    task_id = "ab000020"
+    seed_import_task(task_id, status="review_needed", md_text="# 规范\n## 1.1 条\n内容",
+                     title="t", code="c", file_path="/tmp/x.md", file_name="x.md")
+    resp = auth_client.get(f"/import/review/{task_id}")
+    assert resp.status_code == 200
+    assert "表格居中" in resp.text
+
+

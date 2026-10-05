@@ -136,3 +136,48 @@ def test_review_page_no_longer_posts_md_as_form_field(auth_client):
     finally:
         import app.routes.import_routes as ir
         ir.delete_task(task_id)
+
+
+def test_confirm_normalizes_tables_and_literal_n(auth_client, monkeypatch):
+    """★ confirm 是两条入口的**唯一咽喉** ⇒ 规范化放这里，.md 与 PDF 都覆盖。
+
+    用户 2026-10-05 裁定「两条入口都生效」（另一选项是只管版面块页）。
+    """
+    import app.routes.import_routes as ir
+
+    monkeypatch.setattr(ir, "_process_import_phase2", _phase2_stub([]))
+    task_id = "cc000010"
+    _seed_task(task_id)
+    body = "<table><tr><td>甲</td></tr></table>\n3.0.1 条文" + chr(92) + "n续"
+    try:
+        resp = auth_client.post(
+            f"/import/review/{task_id}/confirm",
+            content=body.encode("utf-8"),
+            headers={"Content-Type": "text/plain; charset=utf-8"},
+        )
+        assert resp.status_code == 200, resp.text
+        stored = import_task_row(task_id)["md_text"]
+        assert '<table align="center">' in stored
+        assert "<br>续" in stored
+    finally:
+        ir.delete_task(task_id)
+
+
+def test_confirm_leaves_plain_text_untouched(auth_client, monkeypatch):
+    """没有表格、没有字面 \\n 的正文**一字不改**（规范化的影响面必须收窄到这两类）"""
+    import app.routes.import_routes as ir
+
+    monkeypatch.setattr(ir, "_process_import_phase2", _phase2_stub([]))
+    task_id = "cc000011"
+    _seed_task(task_id)
+    body = "# 规范\n## 3.0.1 条文\n内容一段。"
+    try:
+        resp = auth_client.post(
+            f"/import/review/{task_id}/confirm",
+            content=body.encode("utf-8"),
+            headers={"Content-Type": "text/plain; charset=utf-8"},
+        )
+        assert resp.status_code == 200
+        assert import_task_row(task_id)["md_text"] == body
+    finally:
+        ir.delete_task(task_id)

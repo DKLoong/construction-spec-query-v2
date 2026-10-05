@@ -24,7 +24,7 @@
     <!-- 确认 / 取消（与双栏保持 30px 间距，样式在 .review-panels margin 基础上由本行 margin-top 提供） -->
     <div style="margin-top:30px;padding-top:1rem;border-top:1px solid var(--pico-muted-border-color);
                 display:flex;justify-content:space-between;align-items:center">
-        <small style="color:var(--pico-muted-color)">审查完毕后点击确认继续导入流程（解析 + 分类 + 索引）</small>
+        <small style="color:var(--pico-muted-color)">审查完毕后点击确认继续导入流程（解析 + 分类 + 索引）。提交时会自动统一表格居中，并把字面的 \n 转成 &lt;br&gt;（OCR 遗留格式）。</small>
         <div style="display:flex;gap:0.75rem;align-items:center">
             {# md 走 raw body 由 confirmImport() 以 fetch 提交：表单字段有 1MB 上限，
                大规范（md 46 万字符）会被 400 拒掉且页面毫无反应 #}

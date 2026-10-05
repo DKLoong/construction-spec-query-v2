@@ -1488,6 +1488,11 @@ async def confirm_review(
             "<p style='color:red'>审查内容为空，未提交</p>", status_code=400
         )
 
+    # 存储期规范化（Task 1 的 normalize_md）：表格统一居中 + 字面 \n → <br>。
+    # 放在 confirm 这个**唯一咽喉**上 ⇒ `.md` 源码审查页与版面块页**两条入口都覆盖**
+    # （用户 2026-10-05 裁定）。幂等 ⇒ 版面块页在 compose 里已规范化过，此处是 no-op。
+    content = normalize_md(content)
+
     title = task.get("title", "")
     code = task.get("code", "")
     file_path = task.get("file_path", "")
