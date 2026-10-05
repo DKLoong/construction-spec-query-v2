@@ -691,6 +691,24 @@ def test_compose_rejects_stale_layout(auth_client, isolated_paths):
     resp = _post(auth_client, task_id, {"edits": {}})
     assert resp.status_code == 409
     assert "不一致" in resp.json()["detail"] or "刷新" in resp.json()["detail"]
+
+
+def test_compose_rejects_edit_on_block_without_span(auth_client, isolated_paths):
+    """★ **无 span 的块不接受编辑**（P2 终审的 Important 发现 I-1）。
+
+    为什么必须拒绝：`splice` 只替换有 span 的块 ⇒ 对无 span 块的编辑会被**静默忽略**
+    （200 但毫无效果），而本仓口径是「**静默丢改动比拒绝更坏**」（计划边界 B1）。
+    前端 `canEdit` 用 `hasSpan` 已挡住 ⇒ UI 不可达；本用例钉的是**契约层**的兜底，
+    防未来前端 bug 或直连调用拿到「成功但无效」。
+    """
+    task_id = _seed(auth_client, "ab000004", md="3.0.1 第一条。", blocks=[
+        {"label": "text", "content": "3.0.1 第一条。", "page": 1, "bbox": [0, 0, 1, 1],
+         "order": 0, "global_block_id": 0, "start_line": None, "end_line": None,
+         "prefix": "", "suffix": "", "clause_no": None},
+    ])
+    resp = _post(auth_client, task_id, {"edits": {"0": "改过的内容"}})
+    assert resp.status_code == 422, f"无 span 块的编辑应被拒绝，实得 {resp.status_code}"
+    assert "未定位" in resp.json()["detail"]
 ```
 
 - [ ] **Step 2: 先修夹具，再跑测试确认失败**
@@ -803,6 +821,18 @@ async def _compose_or_error(
     edits, err = _parse_edits(payload, len(blocks))
     if err:
         return None, JSONResponse({"detail": err}, status_code=422)
+
+    # ★ **未定位块不得接受编辑**（P2 终审的 Important 发现 I-1）：
+    #   `splice` 只处理**有 span** 的块（`app/ocr/layout.py` 的 ops 推导式里
+    #   `if b.get("start_line") is not None`）⇒ 对无 span 块的编辑会被**静默忽略**：
+    #   返回 200 却毫无效果。这正是本仓反复声明「**静默丢改动比拒绝更坏**」的形态
+    #   —— 也正是本计划边界表 B1 自己写下的理由。
+    #   前端 `canEdit` 用 `hasSpan` 已挡住 ⇒ **UI 不可达**；这里是**契约层**的兜底
+    #   （防未来前端 bug 或直连调用拿到「成功但无效」）。
+    for idx in edits:
+        if blocks[idx].get("start_line") is None:
+            return None, JSONResponse(
+                {"detail": f"块 {idx} 在原文件中未定位，无法安全回写"}, status_code=422)
 
     # 指纹守卫：layout 的 span 是对**这份文本**锚定的。文本变过（例如任务被重跑）
     # 就必须拒绝，否则会把编辑写进错的行区间 —— 静默改写，正是最不能承受的失效。
