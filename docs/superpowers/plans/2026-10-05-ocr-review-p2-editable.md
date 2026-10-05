@@ -1162,7 +1162,8 @@ git commit -m "feat: confirm 接存储期规范化（两条审查入口都覆盖
   - `contentOf(b) -> string`（有编辑用编辑，否则用原文）
   - `enterEdit(idx)` / `cancelEdit()` / `saveEdit()`
   - `_makeLine(mdLine)` / `_insertLineAfter(el)` / `_deleteLine(el)`
-  - `_lineElements()` / `_lineIndex(el)` / `_focusLine()`（**DOM 元素不存 Alpine 状态**，只存下标）
+  - `_editBox()`（按 `[data-block-idx]` 取当前块的编辑框 —— **不得用 `x-ref`**，见 Step 1 的说明）
+  - `_lineElements()` / `_lineIndex(el)` / `_focusLine()` / `isClauseLine(el)`（**DOM 元素不存 Alpine 状态**，只存下标）
   - `renderBlock(b)` 改用 `contentOf(b)`
 
 - [ ] **Step 1: 后端白名单 + 下发**
@@ -1244,7 +1245,7 @@ def test_layout_endpoint_ships_editable_labels(review_env):
             if (!b || !this.canEdit(b)) return;
             this.editingIdx = idx;
             this.$nextTick(() => {
-                const box = this.$refs.editBox;
+                const box = this._editBox();
                 box.innerHTML = '';
                 for (const ln of window.mdInline.splitLines(this.contentOf(b))) {
                     box.appendChild(this._makeLine(ln));
@@ -1284,13 +1285,28 @@ def test_layout_endpoint_ships_editable_labels(review_env):
             return el;
         },
 
+        /** 编辑框**按块下标**取 —— `x-ref` 放在 `x-for` 里会被同名的**最后一项**覆盖。
+         *
+         * ⚠️ **本 helper 是必需的，不是优雅写法**（Task 6 实现者用 Alpine 源码 + 最小复现实测）：
+         * Alpine 把 `x-ref` 注册在**最近的 `[x-data]` 根**上（`_x_refs[名字] = 元素`），
+         * 故 `x-for` 每次迭代都覆盖同一个键 ⇒ `$refs.editBox` 永远指向**最后一个块**的编辑框。
+         * 直接用它会出现「点第 N 块、内容却灌进最后一块」，而 `_rvb_first_editable` 返回的正是
+         * **第一个**可编辑块 ⇒ f13_4/5/6 全红。
+         */
+        _editBox() {
+            const list = this.$refs.list;
+            return list
+                ? list.querySelector(`[data-block-idx="${this.editingIdx}"] .rvb-lines`)
+                : null;
+        },
+
         _lineElements() {
-            const box = this.$refs.editBox;
+            const box = this._editBox();
             return box ? [...box.querySelectorAll('.rvb-line')] : [];
         },
 
         _lineIndex(el) {
-            const box = this.$refs.editBox;
+            const box = this._editBox();
             return box ? [...box.querySelectorAll('.rvb-line')].indexOf(el) : -1;
         },
 
@@ -1313,14 +1329,13 @@ def test_layout_endpoint_ships_editable_labels(review_env):
         },
 
         _insertLineAfter(el) {
-            const box = this.$refs.editBox;
             const line = this._makeLine('');
             el.parentNode.insertBefore(line, el.nextSibling);
             line.focus();
         },
 
         _deleteLine(el) {
-            const box = this.$refs.editBox;
+            const box = this._editBox();
             if (box.querySelectorAll('.rvb-line').length <= 1) { el.innerHTML = ''; return; }
             const prev = el.previousElementSibling;
             el.remove();
@@ -1357,7 +1372,7 @@ def test_layout_endpoint_ships_editable_labels(review_env):
         },
 
         saveEdit() {
-            const box = this.$refs.editBox;
+            const box = this._editBox();
             const els = [...box.querySelectorAll('.rvb-line')];
             const md = els.map((el) => window.mdInline.wrap(
                 window.mdInline.domToMd(el), el.dataset.align || null)).join('\n');
@@ -1405,7 +1420,10 @@ def test_layout_endpoint_ships_editable_labels(review_env):
                                 <button type="button" @click="cancelEdit()" style="margin:0">取消</button>
                                 <button type="button" @click="saveEdit()" style="margin:0">保存</button>
                             </div>
-                            <div class="rvb-lines" x-ref="editBox"></div>
+                            <!-- ⚠️ **不要加 `x-ref`**：它在 `x-for` 里会被同名的最后一项覆盖
+                                 （Alpine 把 x-ref 注册在最近的 [x-data] 根上）。定位走
+                                 `_editBox()` 的 `[data-block-idx]` 查询（块卡片上已有该属性）。 -->
+                            <div class="rvb-lines"></div>
                         </div>
 ```
 
