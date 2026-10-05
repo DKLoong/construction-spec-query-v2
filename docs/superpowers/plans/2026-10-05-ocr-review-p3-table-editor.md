@@ -443,7 +443,7 @@ git commit -m "feat: 新增表格编辑器纯函数模块（解析/序列化/校
 
 **Interfaces:**
 - Consumes: Task 1 的 `b.md_html`、Task 2 的 `window.tableEditor`
-- Produces: `enterEdit(idx)` 在 `b.label === 'table'` 时于 `.rvb-lines` 内建出**可编辑表格**（容器 `.rvb-table-edit`，内含 `<table>`）；`saveEdit()` 在该情形下把 `tableEditor.serialize(tableEl)` 写进 `edits[__i]`。`_rvb_seed(page, suffix, extra_md="", with_table=False)`。
+- Produces: `enterEdit(idx)` 在 `b.label === 'table'` 时于**容器 `.rvb-table-edit`** 内建出**可编辑表格**（与行编辑器的 `.rvb-lines` **分开**，避免两套选择器互相干扰）；`saveEdit()` 在该情形下把 `tableEditor.serialize(tableEl)` 写进 `edits[__i]`。`_rvb_seed(page, suffix, extra_md="", with_table=False)`。
 
 - [ ] **Step 1: 给探针夹具加 opt-in 合成表 + 追加用例**
 
@@ -855,11 +855,15 @@ def f14_9_insert_and_delete_column_keep_the_rectangle(page):
 
 并在 `window.tableEditor = { parse, serialize, validate }` 里补上这四个函数名。
 
-模板加工具条（仅在表格编辑态显示；**尺寸同行编辑器**）：
+模板加工具条（仅在表格编辑态显示；**尺寸同行编辑器**）。
+
+> ⚠️ 行编辑器那排（`.rvb-editor` 内的 `.rvb-tools`）已在 **Task 3 修正轮**加了 `&& blocks[i].label !== 'table'` 门控 ⇒ 两排**靠 label 互斥**，表格块不会同时看到两条工具条。若你发现两排同时出现，说明 Task 3 的门控没落地，**停下来报告**。
 
 ```html
                             <!-- 表格工具条（仅表格块编辑态）。按钮尺寸与行编辑器一致：
                                  `.rvb-tools button` 已是 0.72rem / padding 1px 6px，故复用该类。 -->
+                            <!-- 表格工具条：与**行编辑器**那排靠 label 互斥 —— 行那排由 Task 3
+                                 加了 `&& blocks[i].label !== 'table'` 门控，故表格块只会看到这一排。 -->
                             <div class="rvb-tools" x-show="editingIdx === i && blocks[i].label === 'table'">
                                 <button type="button" @click="tableOp('insertRowBefore')" style="margin:0"
                                         title="在选中格所在行之前插入一行">+ 行</button>
@@ -1099,12 +1103,18 @@ def f14_12_merge_on_a_single_cell_is_a_no_op(page):
         },
 
         /** 撤销：弹出最近一次快照整体还原（spec §2.4；**只覆盖结构操作**，不覆盖格内文字）。 */
+        /** 撤销：弹出最近一次快照并**还原被弹出的那一个**（spec §2.4；只覆盖结构操作，不覆盖格内文字）。
+         *
+         * ⚠️ **必须 restore 被 `pop()` 掉的值，不能 restore「新栈顶」** —— `tableOp` 是
+         * **操作前**压快照，故 op2 之后栈是 `[D0, D1]`；restore 新栈顶会得到 D0 ⇒
+         * **一次撤销回退两步**（Task 3 评审复核时指出的 off-by-one）。被 pop 的 D1 才是
+         * "op2 之前的状态"。
+         */
         tableUndo() {
             const snaps = this._tableSnapshots || [];
-            if (snaps.length <= 1) return;
-            snaps.pop();
-            this._restoreTable(snaps[snaps.length - 1]);
-            this.submitError = '';
+            if (snaps.length <= 1) return;      // 只剩起点 ⇒ 没有可撤销的结构操作
+            this._restoreTable(snaps.pop());    // ← 还原被弹出的那个
+            this.tableError = '';
         },
 ```
 
