@@ -2327,3 +2327,58 @@ def test_orphan_head_region_filter_title_boundary():
     assert "目次" in rows_mid[0]["content"], \
         "块内（非首行）出现的过滤标题行按既有口径保留：隐藏块不进检索、不进覆盖率分母"
     assert [c["clause_no"] for c in rows_mid[1:]] == ["1.0.1"]
+
+
+# ═══════════════════════════════════════════
+# 标准号/材料牌号行被误判成条号（2026-10-05 用户实测 GB 5768.1-2009 引出）
+# ═══════════════════════════════════════════
+# 成因：`_NUM_PATTERNS` 的字母模式把点号写成**可选**，于是「GB 5768 的…」
+# 被吃成 `GB` + `5768` 的附录式编号。后果有两层：
+#   ① 凭空产出伪条（生产库已有 8 条：GB6095 / JGJ46 / HPB235 / JTG/T3610-2019 …）；
+#   ② 它**抢占所属条的正文** ⇒ 该条被判「无自身正文」= 内节点 ⇒ **整条丢弃**
+#      （实测：「## 1 范围」的正文首行是「GB 5768 的本部分规定了…」⇒ 「1」消失）。
+
+def test_standard_designation_line_is_not_a_clause():
+    """★ 正文行「GB 5768 的…」不得成为条号；其所属条「1」必须存活"""
+    md = ("## 1 范围\n\n"
+          "GB 5768 的本部分规定了道路交通标志和标线的原则和一般规定。\n\n"
+          "## 2 规范性引用文件\n\n"
+          "下列文件中的条款通过引用而成为本部分的条款。\n")
+    rows = parse_markdown(md)
+    nums = [r["clause_no"] for r in rows]
+    assert not any(n.replace(" ", "").startswith("GB") for n in nums), \
+        f"标准号行被误判成条号：{nums}"
+    assert "1" in nums, f"「1 范围」被伪条吞掉了（现有：{nums}）"
+    assert "2" in nums
+
+
+def test_material_grade_line_is_not_a_clause():
+    """★ 材料牌号行（HPB235 / JGJ46 形态）同样不得成条"""
+    md = ("## 4.2 使用\n\n"
+          "4.2.1 钢筋应符合下列规定。\n\n"
+          "HPB235 钢筋的强度标准值应按表 4.2.1 采用。\n")
+    rows = parse_markdown(md)
+    nums = [r["clause_no"] for r in rows]
+    assert "HPB235" not in nums, f"牌号被误判成条号：{nums}"
+    assert "4.2.1" in nums
+
+
+def test_dotted_letter_clause_numbers_still_work():
+    """★ 防误伤：收紧后合法字母编号必须**逐条**仍然成立
+
+    ⚠️ **每个编号后面都必须跟一行自身正文** —— 无自身正文的章/节是**内节点**、
+    不入库（spec §11.2）。夹具漏掉正文行会让断言把「内节点规则」误报成「编号被误伤」。
+    实测（2026-10-05 预检）：本夹具不加正文行时只产出 `['A.1','B.0.1','D.4.1']`，
+    缺 `附录A` / `附录B`；补上正文行后才五个齐全。
+    """
+    md = ("附录A 接头型式检验的加载制度\n\n"
+          "本附录规定了接头型式检验的加载制度。\n\n"
+          "A.1 检验设备\n\n"
+          "加载装置应满足下列要求。\n\n"
+          "### 附录 B 压实度评定\n\n"
+          "本附录规定了压实度的评定方法。\n\n"
+          "B. 0.1 路基和路面基层的压实度应以重型击实标准为准。\n\n"
+          "D.4.1 开挖深度 20 m 及以上的岸坡开挖工程。\n")
+    nums = [r["clause_no"] for r in parse_markdown(md)]
+    for want in ("附录A", "A.1", "附录B", "B.0.1", "D.4.1"):
+        assert want in nums, f"合法编号 {want} 被误伤（现有：{nums}）"
