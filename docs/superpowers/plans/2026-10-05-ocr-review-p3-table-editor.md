@@ -1141,6 +1141,12 @@ def f14_12_merge_on_a_single_cell_is_a_no_op(page):
          * **一次撤销回退两步**（Task 3 评审复核时指出的 off-by-one）。被 pop 的 D1 才是
          * "op2 之前的状态"。
          */
+        /** ⚠️ **栈语义（写死，勿"优化"）**：`enterEdit` 压入的栈首是**基线**；`tableOp` 每次
+         * 成功后压入**操作前**状态。因 op1 的操作前状态 == 基线，栈里会出现两项相同值 ——
+         * 那**不是冗余**：配合下面「还原被 pop 的值」，它恰好充当"已无可撤销"的哨兵
+         * （`length <= 1` 即到底）。Task 4 评审曾按旧口径（还原新栈顶）判其为"多余的空撤销"，
+         * 那个判断在旧口径下成立、在当前口径下不成立。
+         */
         tableUndo() {
             const snaps = this._tableSnapshots || [];
             if (snaps.length <= 1) return;      // 只剩起点 ⇒ 没有可撤销的结构操作
