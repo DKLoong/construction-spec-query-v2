@@ -971,6 +971,19 @@ git commit -m "feat: 表格插入/删除行列（含操作后校验与整体回�
 
 ### Task 5: 选择模型 · 合并 / 拆分 · 撤销
 
+> ⚠️ **本 Task 必须一并处理两件"由它引爆/顺手"的事**（Task 4 受限复审 out-of-scope 观察 + Minor）：
+>
+> **(1) `f14_9` 的桩没有还原 —— 本 Task 追加用例后就会被污染。** Task 4 的用例在
+> `page.evaluate` 里改写了**活页** Alpine 状态（`_tableEl` / `_tableHost` / `_tableSnapshots` /
+> `tableError`）却**不还原桩**；当前安全**仅仅因为它是 `CASES["f14"]` 的最后一条**。
+> 本 Task（以及 Task 6）会往后**追加**用例 ⇒ 残留状态会污染它们。
+> **修法**：把 `f14_9` 里那段桩改写包进 `try/finally`，`finally` 里恢复原方法/原值
+> （或干脆不在活页上打桩，改用独立的临时元素）。**这是本 Task 的第一步**，否则你自己的新用例会被它污染而给出假红/假绿。
+>
+> **(2) `tableOp` 的 `catch` 无任何日志（1 行）** —— `static/components/review-blocks.js` 的
+> `catch (e) { ok = false; }` 把一切抛出（含"`window.tableEditor` 未加载"这类**接线错误**）
+> 都转述成「该操作在当前选区不可用」，控制台零痕迹。补一行 `console.warn(e)` 即可保住可观测性。
+
 **Files:**
 - Modify: `static/components/table-editor.js`、`static/components/review-blocks.js`、`app/templates/partials/ocr_review_blocks.html`、`static/app.css`、`app/templates/base.html`
 - Test: `scripts/probe_spec_ui.py`（f14 追加）
