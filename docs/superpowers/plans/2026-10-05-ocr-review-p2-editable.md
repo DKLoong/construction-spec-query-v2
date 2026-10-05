@@ -1665,7 +1665,10 @@ git commit -m "feat: 行级编辑器骨架（进入/取消/保存/行增删 + �
             const el = this._focusLine();
             if (!el) return;
             el.focus();
-            document.execCommand(cmd, false, null);   // Chrome：产生 <strong>/<i>/<strike>
+            document.execCommand(cmd, false, null);   // Chrome：产 <b>/<i>/<strike>（不是 <strong>，实测）
+            // ⚠️ 标签名不必对齐：`domToMd` 认 b/strong、i/em、s/strike/del；
+            //    而我们自己的 `lineToHtml` 产的是 `<strong>/<i>/<s>` ⇒ 重进编辑态看到的是后者
+            //    （f13_8 断言的正是重进后的 DOM，故它绿是合理的）。
         },
 
         // `isClauseLine` **已在 Task 6 定义**（`enterEdit`/`_makeLine` 需要它维护
