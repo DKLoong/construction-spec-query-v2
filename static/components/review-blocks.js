@@ -279,8 +279,10 @@ function reviewBlocks() {
                 if (b.label === 'table') {
                     t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
                     this._tableSnapshots = [t.outerHTML];       // 快照栈的起点（Task 5 起用）
+                    this._selAnchor = null;                     // 换表必须重置锚点（旧锚点属别的表 / 已分离）
                     const host = this._tableHost();
                     if (host) { host.innerHTML = ''; host.appendChild(t); }
+                    this._selectTable();                        // 默认选中首格（工具条操作都作用于选区）
                     return;
                 }
                 for (const ln of window.mdInline.splitLines(this.contentOf(b))) {
@@ -348,6 +350,30 @@ function reviewBlocks() {
         _tableEl() {
             const host = this._tableHost();
             return host ? host.querySelector('table') : null;
+        },
+
+        /** 表格单元格的点击 / Shift+点：由容器**事件委托**处理（格是动态生成的，逐个绑会随重建失效） */
+        onTableCellClick(ev) {
+            const cell = ev.target.closest('td,th');
+            if (!cell) return;
+            const t = this._tableEl();
+            if (!t || !t.contains(cell)) return;
+            if (!ev.shiftKey) this._selAnchor = cell;
+            this._selectTable(cell);
+        },
+
+        /** 表格编辑态的选择：点 = 单格；Shift+点 = 以已选为锚点扩成矩形区域。
+         *
+         * ⚠️ **选中态存在元素 class 上**（`rvb-cell-sel`）、**不进 Alpine 状态** —— 本仓既定口径：
+         *    Alpine 状态里只放下标/布尔，DOM 元素会被 Proxy 包壳出问题（见 `_makeLine` 注释）。
+         *    `_selAnchor` 只是「Shift 扩选」的锚点引用，由调用方在换表/还原时重置。 */
+        _selectTable(anchorCell) {
+            const t = this._tableEl();
+            if (!t) return;
+            const focus = anchorCell || t.querySelector('.rvb-cell-sel') || t.querySelector('td,th');
+            const anchor = this._selAnchor || focus;
+            window.tableEditor.selectRange(t, anchor, focus);
+            this._selAnchor = focus;
         },
 
         _lineElements() {
@@ -587,8 +613,8 @@ function reviewBlocks() {
          * ⚠️ 快照必须在**操作前**压：这是「撤销」按钮唯一的数据来源（spec §2.4）。
          * ⚠️ 每次结构操作后立刻 `validate`：非法就**整体回滚到刚压的快照**，
          *    而不是把用户留在半坏的表里（校验器只会在保存时再挡一次，那时已经晚了）。
-         * ⚠️ 选中格回落：本 Task（Task 4）尚无选区概念，暂取「块内第一个格」；
-         *    Task 5 引入 `.rvb-cell-sel` 后会自然改走选中格，届时删掉这个回落即可。
+         * ⚠️ 选中格回落：Task 5 起优先取**选中格**（`.rvb-cell-sel`）；`|| t.querySelector('td,th')`
+         *    是兜底 —— 表结构非法时 `selectRange` 会拒绝对选区打标（`g.err`），此时仍有格可用。
          */
         tableOp(name) {
             const t = this._tableEl();
@@ -610,9 +636,16 @@ function reviewBlocks() {
                     case 'insertColAfter': ok = window.tableEditor.insertCol(t, cell, false); break;
                     case 'deleteRow': ok = window.tableEditor.deleteRows(t, [cell]); break;
                     case 'deleteCol': ok = window.tableEditor.deleteCols(t, [cell]); break;
+                    case 'merge': ok = window.tableEditor.mergeCells(
+                        t, [...t.querySelectorAll('.rvb-cell-sel')]); break;
+                    case 'split': ok = window.tableEditor.splitCell(t, cell); break;
                 }
             } catch (e) {
                 ok = false;      // 任何抛出都走下面的回滚分支（绝不把用户留在半坏的表里）
+                // ⚠️ **必须留痕**：没有这行时，一切抛出（含 `window.tableEditor` 未加载这类
+                //    **接线错误**）都被下面统一转述成「该操作在当前选区不可用」、控制台零痕迹，
+                //    排查时无从下手。日志只做可观测性，不改失败语义。
+                console.warn(e);
             }
             const v = window.tableEditor.validate(t);
             if (!ok || !v.ok) {
@@ -624,8 +657,26 @@ function reviewBlocks() {
             this._tableSnapshots.push(snap);
         },
 
+        /** 撤销：弹出最近一次快照并**还原被弹出的那一个**（spec §2.4；只覆盖结构操作，不覆盖格内文字）。
+         *
+         * ⚠️ **必须 restore 被 `pop()` 掉的值，不能 restore「新栈顶」** —— `tableOp` 是**操作前**
+         *    压快照，故 op2 之后栈是 `[D0, D1]`；restore 新栈顶会得到 D0 ⇒ **一次撤销回退两步**
+         *    （Task 3 评审复核时指出的 off-by-one）。被 pop 的 D1 才是「op2 之前的状态」。
+         *
+         * ⚠️ **栈语义（写死，勿"优化"）**：`enterEdit` 压入的栈首是**基线**；`tableOp` 每次成功后
+         *    压入**操作前**状态。因 op1 的操作前状态 == 基线，栈里会出现两项相同值 —— 那**不是冗余**：
+         *    配合「还原被 pop 的值」，它恰好充当「已无可撤销」的哨兵（`length <= 1` 即到底）。
+         *    Task 4 评审曾按旧口径（还原新栈顶）判其为「多余的空撤销」，那个判断在旧口径下成立、
+         *    在当前口径下不成立。 */
+        tableUndo() {
+            const snaps = this._tableSnapshots || [];
+            if (snaps.length <= 1) return;      // 只剩起点 ⇒ 没有可撤销的结构操作
+            this._restoreTable(snaps.pop());    // ← 还原被弹出的那个
+            this.tableError = '';
+        },
+
         /** 用快照整体还原表格（结构操作回滚 / 撤销共用）。
-         *  Task 4 只做「还原」；Task 5 会在末尾补一句 `this._selectTable()` 重新绑定选中格。 */
+         *  Task 4 只做「还原」；Task 5 在末尾重新绑定选中格。 */
         _restoreTable(snap) {
             const host = this._tableHost();
             const t = window.tableEditor.parse(snap);
@@ -633,6 +684,10 @@ function reviewBlocks() {
             t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
             host.innerHTML = '';
             host.appendChild(t);
+            // ⚠️ 旧锚点此刻已**分离**（指向被替换掉的旧表）⇒ 必须重置，否则 `selectRange` 里
+            //    `anchor.closest('tr')` 为 null、`rows.indexOf(null)` = -1 ⇒ `g.grid[-1]` 抛错。
+            this._selAnchor = null;
+            this._selectTable();
         },
 
         _resultScroller() {

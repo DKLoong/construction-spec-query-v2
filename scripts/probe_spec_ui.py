@@ -2721,27 +2721,133 @@ def f14_9_insert_and_delete_column_keep_the_rectangle(page):
         const host = document.createElement('div');
         host.appendChild(t);
         const before = t.outerHTML;
-        // 用桩把待测表接进 tableOp（真实逻辑不变，只改 DOM 取址）
-        d._tableEl = () => t;
-        d._tableHost = () => host;
-        d.tableError = '';
-        d._tableSnapshots = [];
-        d.tableOp('insertColAfter');        // rowspan 表上必抛 NotFoundError
-        const out = host.querySelector('table');
-        // ⚠️ 还原后 `_restoreTable` 会**故意**给每格补回 `contenteditable="true"`（编辑态需要），
-        //    故逐字比较前必须剥掉它，否则会误判成「未还原」（实测踩过）。
-        const strip = (s) => s.replace(/ contenteditable="true"/g, '').replace(/\\s+/g, ' ');
-        return { restored: !!out && strip(out.outerHTML) === strip(before),
-                 rows: out ? out.querySelectorAll('tr').length : -1,
-                 cells: out ? out.querySelectorAll('td').length : -1,
-                 rowspan: out ? (out.querySelector('td').getAttribute('rowspan')) : null,
-                 err: d.tableError, snaps: d._tableSnapshots.length };
+        // ⚠️ **桩必须还原**（Task 5 修）：这里是**活页** Alpine 状态，本组后续用例（f14_10 起）
+        //    与真实交互都依赖真的 `_tableEl`/`_tableHost`；残留的桩会把它们指向本用例的临时表
+        //    ⇒ 后续用例假红/假绿。原写法**仅因本用例恒为末条**才侥幸安全，一旦往后追加用例即引爆。
+        const orig = { el: d._tableEl, host: d._tableHost,
+                       err: d.tableError, snaps: d._tableSnapshots };
+        try {
+            // 用桩把待测表接进 tableOp（真实逻辑不变，只改 DOM 取址）
+            d._tableEl = () => t;
+            d._tableHost = () => host;
+            d.tableError = '';
+            d._tableSnapshots = [];
+            d.tableOp('insertColAfter');        // rowspan 表上必抛 NotFoundError
+            const out = host.querySelector('table');
+            // ⚠️ 还原后 `_restoreTable` 会**故意**给每格补回 `contenteditable="true"`（编辑态需要），
+            //    故逐字比较前必须剥掉它，否则会误判成「未还原」（实测踩过）。
+            const strip = (s) => s.replace(/ contenteditable="true"/g, '').replace(/\\s+/g, ' ');
+            return { restored: !!out && strip(out.outerHTML) === strip(before),
+                     rows: out ? out.querySelectorAll('tr').length : -1,
+                     cells: out ? out.querySelectorAll('td').length : -1,
+                     rowspan: out ? (out.querySelector('td').getAttribute('rowspan')) : null,
+                     err: d.tableError, snaps: d._tableSnapshots.length };
+        } finally {
+            // 无论成功/抛出/断言读取，都把活页状态恢复原样（后续用例不再被污染）
+            d._tableEl = orig.el;
+            d._tableHost = orig.host;
+            d.tableError = orig.err;
+            d._tableSnapshots = orig.snaps;
+        }
     }""")
     assert rb["err"], f"抛异常的结构操作没有给出块内报错：{rb}"
     assert rb["snaps"] == 0, f"失败的操作竟压入了快照（撤销栈会被污染）：{rb}"
     assert rb["restored"], f"抛异常后表未回到操作前（用户被留在半坏的表里）：{rb}"
     assert rb["rows"] == 2 and rb["cells"] == 3 and rb["rowspan"] == "2", \
         f"回滚后的表结构不对：{rb}"
+
+    # ★ 补两条 Task 4 的**欠覆盖分支**（Task 4 报告 + 其评审指出：f14_8/f14_9 用的都是普通表，
+    #   这两条只有人工佐证）。合并格夹具天然适合 —— 折进本用例，不新增编号（否则顺延 Task 6）。
+    #   ① `insertCol` 的**合并格拒绝**分支：插入边界落在跨列格内部 ⇒ 返回 false、结构不变；
+    #      且同一张表上非合并边界必须**放行**（防「一律拒绝」的过宽判据 —— Task 4 的 `!==` 覆辙）。
+    #   ② `deleteCols` 的 **colspan 递减**分支：跨列格被删掉覆盖范围内的一列 ⇒ `colspan` 减 1
+    #      （**整格不删**），其余行照常删该格 ⇒ 仍是矩形表。
+    br = page.evaluate("""() => {
+        const T = window.tableEditor;
+        const HTML = '<table border="1"><tr><td colspan="2">A</td><td>B</td></tr>'
+                   + '<tr><td>C</td><td>D</td><td>E</td></tr></table>';
+        // ① 拒绝：边界落在 A（colspan=2，占第 0/1 列）内部
+        const t1 = T.parse(HTML);
+        const a1 = t1.querySelector('td');
+        const before1 = t1.querySelectorAll('td').length;
+        const rej = T.insertCol(t1, a1, false);
+        const after1 = t1.querySelectorAll('td').length;
+        const rejOk = T.validate(t1).ok;
+        // ①b 放行：同一张表上的非合并边界（B 在第 2 列之后 ⇒ at=3，不落在任何跨列格内）
+        //     ⚠️ 行内**子元素数** ≠ 网格列数（A 跨 2 列 ⇒ row0 只有 2 个子元素）⇒ 取 children[1]=B。
+        const t2 = T.parse(HTML);
+        const b2 = t2.querySelectorAll('tr')[0].children[1];
+        const acc = T.insertCol(t2, b2, false);
+        const kids2 = [...t2.querySelectorAll('tr')].map(r => r.children.length);
+        const accOk = T.validate(t2).ok;
+        // ② 递减：格删「第 0 列」（用第 2 行的 C 定位 ⇒ cols 恰好 = {0}），A 的 colspan 应 2→1 且整格保留
+        const t3 = T.parse(HTML);
+        const c3 = t3.querySelectorAll('tr')[1].children[0];
+        const ok3 = T.deleteCols(t3, [c3]);
+        const a3 = t3.querySelector('td');
+        return { rej, before1, after1, rejOk, acc, kids2, accOk,
+                 ok3, cs3: a3 && a3.getAttribute('colspan'), a3Text: a3 && a3.textContent.trim(),
+                 kids3: [...t3.querySelectorAll('tr')].map(r => r.children.length),
+                 ok3v: T.validate(t3).ok };
+    }""")
+    assert br["rej"] is False and br["after1"] == br["before1"] and br["rejOk"] is True, \
+        f"落在合并格内部的插列没被拒绝（或改动了结构）：{br}"
+    assert br["acc"] is True and br["kids2"] == [3, 4] and br["accOk"] is True, \
+        f"非合并边界的插列被误拒 / 未插格（判据过宽？）：{br}"
+    assert br["ok3"] is True and br["cs3"] == "1", \
+        f"跨列格未被 span 递减（或整格被删）：{br}"
+    assert br["a3Text"] == "A", f"跨列格被整格删除了（应只减 colspan、保留格）：{br}"
+    assert br["kids3"] == [2, 2] and br["ok3v"] is True, f"span 递减后不是矩形表：{br}"
+
+
+def f14_10_merge_sets_spans_and_drops_swallowed_cells(page):
+    """★ 合并：左上格设 rowspan/colspan，**其余格删除**，结构仍合法。"""
+    got = page.evaluate("""(html) => {
+        const T = window.tableEditor;
+        const t = T.parse(html);
+        const rows = t.querySelectorAll('tr');
+        const cells = [...rows[0].children, ...rows[1].children];   // 整表 2×3
+        const ok = T.mergeCells(t, cells);
+        const tl = rows[0].children[0];
+        return { ok, rs: tl.getAttribute('rowspan'), cs: tl.getAttribute('colspan'),
+                 childRows: [...t.querySelectorAll('tr')].map(r => r.children.length),
+                 valid: T.validate(t).ok };
+    }""", _TBL_HTML)
+    assert got["ok"] is True and got["valid"] is True, f"合并结果不合法：{got}"
+    assert got["rs"] == "2" and got["cs"] == "3", f"span 不对：{got}"
+    assert got["childRows"] == [1, 0], f"被吞格没删干净：{got}"
+
+
+def f14_11_split_restores_empty_cells(page):
+    """★ 拆分：按 colspan/rowspan 补出**空格**（内容不还原 —— spec §8.3 用户已接受）。"""
+    got = page.evaluate("""(html) => {
+        const T = window.tableEditor;
+        const t = T.parse(html);
+        const rows = [...t.querySelectorAll('tr')];
+        T.mergeCells(t, [...rows[0].children, ...rows[1].children]);
+        const tl = rows[0].children[0];
+        const before = tl.getAttribute('colspan');
+        const ok = T.splitCell(t, tl);
+        return { before, ok, rs: tl.getAttribute('rowspan'), cs: tl.getAttribute('colspan'),
+                 rows: [...t.querySelectorAll('tr')].map(r => r.children.length),
+                 valid: T.validate(t).ok, firstText: rows[0].children[0].textContent.trim() };
+    }""", _TBL_HTML)
+    assert got["ok"] is True and got["valid"] is True, f"拆分结果不合法：{got}"
+    assert got["rs"] is None and got["cs"] is None, f"span 属性没清掉：{got}"
+    assert got["rows"] == [3, 3], f"行列没恢复：{got}"
+    assert got["firstText"] == "序号", f"左上格内容应保留：{got}"
+
+
+def f14_12_merge_on_a_single_cell_is_a_no_op(page):
+    """★ 反向：只选一格时合并不应有副作用（否则用户误点就把表改了）。"""
+    got = page.evaluate("""(html) => {
+        const T = window.tableEditor;
+        const t = T.parse(html);
+        const before = T.serialize(t);
+        const ok = T.mergeCells(t, [t.querySelector('td')]);
+        return { ok, changed: T.serialize(t) !== before };
+    }""", _TBL_HTML)
+    assert got["ok"] is False and got["changed"] is False, f"单格合并产生了副作用：{got}"
 
 
 CASES["f14"] = [f14_1_round_trip_is_byte_identical,
@@ -2752,7 +2858,10 @@ CASES["f14"] = [f14_1_round_trip_is_byte_identical,
                 f14_6_saving_an_edited_table_writes_the_md_region,
                 f14_7_save_refuses_a_broken_table_and_keeps_editing,
                 f14_8_insert_and_delete_row_keep_the_rectangle,
-                f14_9_insert_and_delete_column_keep_the_rectangle]
+                f14_9_insert_and_delete_column_keep_the_rectangle,
+                f14_10_merge_sets_spans_and_drops_swallowed_cells,
+                f14_11_split_restores_empty_cells,
+                f14_12_merge_on_a_single_cell_is_a_no_op]
 
 
 if __name__ == "__main__":

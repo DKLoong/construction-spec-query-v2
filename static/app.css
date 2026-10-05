@@ -939,8 +939,10 @@
    `inline-flex` + 与 `.rvb-tools` 相同的 gap ⇒ 与原先**同一排、同样的间距**。 */
 .rvb-line-tools { display: inline-flex; gap: 0.3rem; align-items: center; }
 
-/* 表格编辑器（P3）：容器与表格本体。单元格的选中态在 Task 5 加。 */
+/* 表格编辑器（P3）：容器与表格本体。 */
 .rvb-table-edit { border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.25rem; }
 .rvb-table-edit table { width: auto; max-width: 100%; }
 .rvb-table-edit td, .rvb-table-edit th { padding: 2px 6px; }
 .rvb-table-edit td:focus, .rvb-table-edit th:focus { outline: 2px solid var(--pico-primary); }
+/* 表格编辑器：单元格选中态（合并/拆分/对齐都作用于选区；序列化前会被 `_scrub` 剥掉） */
+.rvb-cell-sel { background: #fff3e0; outline: 1px solid #e8710a; }

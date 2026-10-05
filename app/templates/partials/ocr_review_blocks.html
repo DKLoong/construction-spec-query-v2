@@ -146,10 +146,20 @@
                                         title="删除选中格所在的整行">- 行</button>
                                 <button type="button" @click="tableOp('deleteCol')" style="margin:0"
                                         title="删除选中格所在的整列">- 列</button>
+                                <!-- ⚠️ 插入锚点**写死**在「- 列」之后：本工具条里 `.rvb-sep` 有多处
+                                     （行编辑器那排 + 本排前面一枚），按 `.rvb-sep` 定位会插错位置。 -->
+                                <span class="rvb-sep"></span>
+                                <button type="button" @click="tableOp('merge')" style="margin:0"
+                                        title="合并选中的单元格">合并</button>
+                                <button type="button" @click="tableOp('split')" style="margin:0"
+                                        title="拆分选中的单元格">拆分</button>
+                                <button type="button" @click="tableUndo()" style="margin:0"
+                                        title="撤销上一次表格结构操作">撤销</button>
                             </div>
                             <!-- 表格编辑器容器：仅当该块 label === 'table' 时由 JS 填充。
                                  与行编辑器的 `.rvb-lines` 分开，避免 `.rvb-line` 选择器互相干扰。 -->
-                            <div class="rvb-table-edit" x-show="editingIdx === i && blocks[i].label === 'table'"></div>
+                            <div class="rvb-table-edit" x-show="editingIdx === i && blocks[i].label === 'table'"
+                                 @click="onTableCellClick($event)"></div>
                             <!-- 表格编辑态的**块内**错误提示（spec §2.4：校验失败要保留编辑态、
                                  只在块内报错）。**不要**复用页面级的 `submitError` —— 那个横幅
                                  在提交条下方（已落到折线以下），用户当下看不到。 -->

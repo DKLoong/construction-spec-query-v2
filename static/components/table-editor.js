@@ -101,7 +101,11 @@
         const w = widths[0] || 0;
         if (w === 0) return { ok: false, reason: '表格没有单元格' };
         if (widths.some((x) => x !== w)) return { ok: false, reason: `各行宽度不一致（${widths.join('/')}）` };
-        if (g.grid.some((row) => row.some((x) => !x))) return { ok: false, reason: '表格存在空洞' };
+        // ⚠️ 此处原有「空洞」判据（`g.grid.some(row => row.some(x => !x))`）**已删除**：
+        //    `Array.prototype.some` 会**跳过稀疏空槽**，而 `_grid` 只往矩阵里写真值元素 ⇒
+        //    该判据对任意输入**恒假**（Task 2 受限复审推翻控制器初裁后确认）。更本质的是
+        //    `_grid` 的占位算法**每格恒填最左空位** ⇒ 占位形态恒稠密，「空洞」是**构造保证
+        //    的不变式**、不是需要校验的东西；真正等价的情形（某行少格）已被上面的**宽度判据**抓住。
         return { ok: true, reason: '' };
     }
 
@@ -187,6 +191,89 @@
         return true;
     }
 
+    /** 给 `anchor`→`focus` 之间的**矩形区域**加选中态（不改结构）。
+     *
+     * 选中态存在**元素 class**（`rvb-cell-sel`）上、不进 Alpine 状态 —— 本仓既定口径：
+     * Alpine 状态里只放下标/布尔，DOM 元素会被 Proxy 包壳出问题（见 review-blocks.js `_makeLine` 注释）。 */
+    function selectRange(tableEl, anchor, focus) {
+        tableEl.querySelectorAll('.rvb-cell-sel').forEach((c) => c.classList.remove('rvb-cell-sel'));
+        const g = _grid(tableEl);
+        if (g.err) return false;
+        const rows = [...tableEl.querySelectorAll('tr')];
+        const r1 = rows.indexOf(anchor.closest('tr')), r2 = rows.indexOf(focus.closest('tr'));
+        const c1 = g.grid[r1].indexOf(anchor), c2 = g.grid[r2].indexOf(focus);
+        const [ra, rb] = [Math.min(r1, r2), Math.max(r1, r2)];
+        const [ca, cb] = [Math.min(c1, c2), Math.max(c1, c2)];
+        for (let r = ra; r <= rb; r++) {
+            for (let c = ca; c <= cb; c++) {
+                const cell = g.grid[r] && g.grid[r][c];
+                if (cell) cell.classList.add('rvb-cell-sel');
+            }
+        }
+        return true;
+    }
+
+    /** 合并选中的矩形区域：左上格设 span，**其余格删除**；少于 2 格 ⇒ no-op（返回 false）。 */
+    function mergeCells(tableEl, selected) {
+        const uniq = [...new Set(selected)];
+        if (uniq.length < 2) return false;
+        const g = _grid(tableEl);
+        if (g.err) return false;
+        const rows = [...tableEl.querySelectorAll('tr')];
+        const rs = uniq.map((c) => rows.indexOf(c.closest('tr')));
+        const cs = uniq.map((c) => g.grid[rows.indexOf(c.closest('tr'))].indexOf(c));
+        const r0 = Math.min(...rs), r1 = Math.max(...rs);
+        const c0 = Math.min(...cs), c1 = Math.max(...cs);
+        const tl = g.grid[r0][c0];
+        if (!tl) return false;
+        const nrs = r1 - r0 + 1, ncs = c1 - c0 + 1;
+        tl.setAttribute('rowspan', String(nrs));
+        tl.setAttribute('colspan', String(ncs));
+        // 删掉区域内**除左上格**以外的所有格（含跨出选区的合并格 —— 一律整格删除）
+        for (let r = r0; r <= r1; r++) {
+            for (let c = c0; c <= c1; c++) {
+                const cell = g.grid[r] && g.grid[r][c];
+                if (cell && cell !== tl) cell.remove();
+            }
+        }
+        // rowspan=1 / colspan=1 没有语义，清掉（否则 HTML 里留噪声属性）
+        if (nrs === 1) tl.removeAttribute('rowspan');
+        if (ncs === 1) tl.removeAttribute('colspan');
+        return true;
+    }
+
+    /** 拆分一个合并格：按 span 在**同行/同列**补出空格。span 全为 1 ⇒ no-op。 */
+    function splitCell(tableEl, cell) {
+        const rs = parseInt(cell.getAttribute('rowspan') || '1', 10);
+        const cs = parseInt(cell.getAttribute('colspan') || '1', 10);
+        if (rs === 1 && cs === 1) return false;
+        const tr = cell.closest('tr');
+        const rows = [...tableEl.querySelectorAll('tr')];
+        const r0 = rows.indexOf(tr);
+        const g = _grid(tableEl);
+        const c0 = g.grid[r0].indexOf(cell);
+        // 同行右侧补 (cs-1) 个空格
+        for (let j = 1; j < cs; j++) tr.insertBefore(document.createElement('td'), cell.nextSibling);
+        // 其下 (rs-1) 行各补 cs 个空格：插在**本行**第一个「网格列 >= c0」的格之前（没有则追加）。
+        // ⚠️ **不能拿 `g.grid[r][c0]` 当参考节点**：它可能正是**被拆的合并格本身**（属上一行，
+        //    不属于本行）⇒ `row.insertBefore(td, ref)` 抛 `NotFoundError`（实测：2 行合并格
+        //    拆分必抛）。参考节点必须是 `row` 自己的子元素 —— 用 `_grid` 反查它所在列。
+        for (let i = 1; i < rs; i++) {
+            const row = rows[r0 + i];
+            if (!row) continue;
+            const ref = [...row.children].find((c) => g.grid[r0 + i].indexOf(c) >= c0) || null;
+            for (let j = 0; j < cs; j++) {
+                const td = document.createElement('td');
+                if (ref) row.insertBefore(td, ref);
+                else row.appendChild(td);
+            }
+        }
+        cell.removeAttribute('rowspan');
+        cell.removeAttribute('colspan');
+        return true;
+    }
+
     window.tableEditor = { parse, serialize, validate,
-                           insertRow, insertCol, deleteRows, deleteCols };
+                           insertRow, insertCol, deleteRows, deleteCols,
+                           selectRange, mergeCells, splitCell };
 })();
