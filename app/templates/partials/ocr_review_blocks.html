@@ -115,6 +115,14 @@
                                 <button type="button" @click="cancelEdit()" style="margin:0">取消</button>
                                 <button type="button" @click="saveEdit()" style="margin:0">保存</button>
                             </div>
+                            <!-- 表格编辑器容器：仅当该块 label === 'table' 时由 JS 填充。
+                                 与行编辑器的 `.rvb-lines` 分开，避免 `.rvb-line` 选择器互相干扰。 -->
+                            <div class="rvb-table-edit" x-show="editingIdx === i && blocks[i].label === 'table'"></div>
+                            <!-- 表格编辑态的**块内**错误提示（spec §2.4：校验失败要保留编辑态、
+                                 只在块内报错）。**不要**复用页面级的 `submitError` —— 那个横幅
+                                 在提交条下方（已落到折线以下），用户当下看不到。 -->
+                            <p class="rvb-table-err" x-show="editingIdx === i && tableError"
+                               x-text="tableError" style="color:#c00;margin:0.25rem 0 0"></p>
                             <!-- ⚠️ 不给 `x-ref`：编辑框在 x-for 内，同名 x-ref 会被最后一项
                                  覆盖 ⇒ 组件里的 `_editBox()` 按 data-block-idx 作用域查 -->
                             <div class="rvb-lines"></div>

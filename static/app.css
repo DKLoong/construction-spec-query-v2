@@ -934,3 +934,9 @@
 /* `min-height: 0`（原为 96px）—— 空槽**不占位**：闲置时三栏能把提交行以上全吃掉，
    进度区不会白占一屏；内容一到就自然撑高并触发外层滚动（用户裁定）。 */
 .rvb-result-slot { min-height: 0; flex: 0 0 auto; }
+
+/* 表格编辑器（P3）：容器与表格本体。单元格的选中态在 Task 5 加。 */
+.rvb-table-edit { border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.25rem; }
+.rvb-table-edit table { width: auto; max-width: 100%; }
+.rvb-table-edit td, .rvb-table-edit th { padding: 2px 6px; }
+.rvb-table-edit td:focus, .rvb-table-edit th:focus { outline: 2px solid var(--pico-primary); }

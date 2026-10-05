@@ -1515,11 +1515,26 @@ def _rvb_make_pdf(path, pages):
     doc.close()
 
 
-def _rvb_seed(page, suffix, extra_md=""):
+# f14 专用合成表：**md 侧带样式、块侧去样式**（复刻真实产物的两种序列化），
+# 且**含一张内嵌图片** —— 出口判据「行列被当成图片塞进合并格」要用到它。
+_RVBT_MD = ("\n\n<table border=1 style='margin: auto; word-wrap: break-word;'>"
+            "<tr><td style='text-align: center;'>序号</td>"
+            "<td style='text-align: center;'>图 形</td>"
+            "<td style='text-align: center;'>说 明</td></tr>"
+            "<tr><td style='text-align: center;'>1</td>"
+            "<td style='text-align: center;'><img src=\"imgs/t.jpg\" /></td>"
+            "<td style='text-align: center;'>探针表格</td></tr></table>")
+_RVBT_CONTENT = ('<table><tr><td>序号</td><td>图 形</td><td>说 明</td></tr>'
+                 '<tr><td>1</td><td><img src="imgs/t.jpg" /></td>'
+                 '<td>探针表格</td></tr></table>')
+
+
+def _rvb_seed(page, suffix, extra_md="", with_table=False):
     """造一个**带 layout.json** 的待审查任务并打开审查页；前置不成立返回 None。
 
-    `extra_md`：追加到参考 md **末尾**的额外文本（默认空 ⇒ 行为与原先逐字一致）。
-    追加在末尾 ⇒ 既有块的行号不位移、锚定不受影响。
+    `extra_md` / `with_table` 均为 **opt-in**：默认与原先逐字一致（不影响 f12/f13 的夹具计数）。
+    `with_table=True` 时追加一张**合成表格**（md 原文 + 对应块），供 f14 使用 ——
+    真实夹具里唯一的 table 块在第 29 页，而本探针只切到 `_RVB_PAGES` 页，会被过滤掉。
     """
     import json as _json
     from pathlib import Path as _Path
@@ -1567,6 +1582,20 @@ def _rvb_seed(page, suffix, extra_md=""):
                     "bbox": None, "order": 9999, "global_block_id": 9999,
                     "start_line": 1, "end_line": 2, "prefix": "", "suffix": "",
                     "clause_no": None})
+
+    if with_table:
+        md = md + _RVBT_MD
+        _lines = md.split("\n")
+        try:
+            _ts = next(i for i, l in enumerate(_lines)
+                       if l.lstrip().startswith("<table") and "探针表格" in l)
+        except StopIteration:
+            return None
+        # gid 取 10000（比上面两个合成块大）⇒ 阅读顺序排在最后，与 md 行号递增一致
+        aligned.append({"label": "table", "content": _RVBT_CONTENT, "page": 1,
+                        "bbox": None, "order": 10000, "global_block_id": 10000,
+                        "start_line": _ts, "end_line": _ts + 1, "prefix": "", "suffix": "",
+                        "clause_no": None, "md_html": _lines[_ts]})
 
     task_id = _make_review_task(page, f"PROBE-RVB {suffix}", f"探针块审查 {suffix}",
                                 ext=".pdf")
@@ -2512,10 +2541,103 @@ def f14_4_validate_accepts_well_formed_table(page):
     assert got["ok"] is True, f"合法表被误拒：{got}"
 
 
+def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
+    """★ 表格块点「纠正」⇒ 块内出现**可编辑表格**，且单元格是可编辑的。
+
+    先钉前置：夹具里**确有**一个带 span 的 table 块 —— 否则本组会以"没有表格块"这种
+    误导性的方式红（真实夹具的 table 块在第 29 页、会被页数切片过滤掉，故必须走 with_table）。
+    """
+    task_id = _rvb_seed(page, "14a", with_table=True)
+    assert task_id is not None, "前置不成立（合成表没进去）"
+    tbl_blocks = page.evaluate(
+        "() => Alpine.$data(document.querySelector('.rvb-root')).blocks"
+        ".filter(b => b.label === 'table' && b.start_line !== null).length")
+    assert tbl_blocks >= 1, f"夹具没有可编辑的表格块（{tbl_blocks}）"
+    fix = page.locator('[data-block-idx]', has_text="探针表格")
+    fix.locator("button:has-text('纠正')").first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 1, 5000), \
+        "点纠正后没有出现可编辑表格"
+    cells = page.locator(".rvb-table-edit table td")
+    assert cells.count() == 6, f"单元格数不对：{cells.count()}"
+    assert cells.first.get_attribute("contenteditable") == "true", "单元格不可编辑"
+
+
+def f14_6_saving_an_edited_table_writes_the_md_region(page):
+    """★ 保存 ⇒ 该表在 md 里的那段被**整段替换**成序列化结果（写回路径打通）。
+
+    断言到**结果**：保存后块的 `renderBlock` 里出现改后的文字，且**开标签属性仍在**
+    （`border=1` / `margin: auto` —— 丢了就等于把表格的边框与居中弄没了）。
+    """
+    task_id = _rvb_seed(page, "14b", with_table=True)
+    assert task_id is not None, "前置不成立"
+    # ⚠️ 块定位必须用**下标**（不能用 has_text）：保存后格内文字被改成「改过的说明」，
+    #    has_text 会当场失去匹配 ⇒ locator 解析成 0 个元素，poll 里的 inner_text() 直接超时。
+    #    且 `.rvb-editor` 在 `x-for` 内**每块一份**、按钮靠 `x-show` 隐藏 ⇒ 保存按钮也必须
+    #    **按块作用域**取（页面级 `.first` 会点到第 0 块那个不可见的 `保存`，点击超时）。
+    idx = page.evaluate("""() => [...document.querySelectorAll('.rvb-block')]
+        .findIndex(el => el.textContent.includes('探针表格'))""")
+    assert idx >= 0, "前置不成立：找不到合成表格块"
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    blk.locator("button:has-text('纠正')").first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 1, 5000)
+    cell = page.locator(".rvb-table-edit table td").nth(5)          # 「探针表格」那格
+    cell.click()
+    page.keyboard.press("Control+A")
+    page.keyboard.type("改过的说明")
+    blk.locator("button:has-text('保存')").first.click()
+    assert poll_until(page, lambda: "改过的说明" in blk.inner_text(), 5000), "保存后块内容没变"
+    md_html = page.evaluate("""() => {
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
+        return d.edits[d.blocks.findIndex(b => b.label === 'table' && b.start_line !== null)];
+    }""")
+    assert md_html and "改过的说明" in md_html, f"edits 里没有改后的表：{str(md_html)[:80]}"
+    # ⚠️ 断言必须按**属性值**核，**不能**按源串字面核 `"border=1"` —— 表格一经改动，
+    #    序列化走归一化形态（`border=1` → `border="1"`、引号统一、自动插 `<tbody>`），
+    #    字面断言会**假红**。（本用例改了格内文字 ⇒ 一定走归一化分支。）
+    probe = page.evaluate("""(html) => {
+        const t = window.tableEditor.parse(html);
+        return { border: t.getAttribute('border'), style: t.getAttribute('style') || '' };
+    }""", md_html)
+    assert probe["border"] == "1", f"border 属性丢了（表格会没边框）：{probe}"
+    assert "margin: auto" in probe["style"] or "margin:auto" in probe["style"], \
+        f"margin:auto 丢了（表格会左对齐）：{probe}"
+    assert "contenteditable" not in md_html, "编辑器痕迹漏进了 md"
+
+
+def f14_7_save_refuses_a_broken_table_and_keeps_editing(page):
+    """★ 校验**在保存路径上**也要挡住（不是只在纯函数层挡）：非法结构 ⇒ 不写入 edits、
+    留在编辑态、块内出现可读报错。这是 spec §2.4「绝不写坏 md」的可观测形式。"""
+    task_id = _rvb_seed(page, "14c", with_table=True)
+    assert task_id is not None, "前置不成立"
+    blk = page.locator('[data-block-idx]', has_text="探针表格")
+    blk.locator("button:has-text('纠正')").first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 1, 5000)
+    page.evaluate("""() => {
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
+        d._tableEl().querySelector('td').setAttribute('rowspan', '99');
+    }""")
+    # 保存按钮**必须按块作用域**取：`.rvb-editor` 在 `x-for` 内每块一份，
+    # 页面级 `.first` 命中的是第 0 块那个被 `x-show` 隐藏的「保存」（点击超时）。
+    blk.locator("button:has-text('保存')").first.click()
+    # ⚠️ 报错 `<p>` 在 `x-for` 内**每块一份**（`x-show` 控制显隐、元素恒在 DOM）⇒
+    #    页面级 `.rvb-table-err` 会命中全部块、触发 strict 模式；必须按块作用域取。
+    assert poll_until(page, lambda: blk.locator(".rvb-table-err").is_visible(), 3000), \
+        "非法结构没有给出块内报错"
+    state = page.evaluate("""() => {
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
+        return { editing: d.editingIdx, edits: Object.keys(d.edits).length };
+    }""")
+    assert state["editing"] >= 0, "校验失败后不该退出编辑态（会丢失用户改动）"
+    assert state["edits"] == 0, f"非法结构竟然写进了 edits：{state}"
+
+
 CASES["f14"] = [f14_1_round_trip_is_byte_identical,
                 f14_2_serialize_strips_editor_artifacts,
                 f14_3_validate_rejects_malformed_tables,
-                f14_4_validate_accepts_well_formed_table]
+                f14_4_validate_accepts_well_formed_table,
+                f14_5_entering_edit_on_a_table_shows_an_editable_table,
+                f14_6_saving_an_edited_table_writes_the_md_region,
+                f14_7_save_refuses_a_broken_table_and_keeps_editing]
 
 
 if __name__ == "__main__":

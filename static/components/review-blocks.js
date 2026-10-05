@@ -36,6 +36,9 @@ function reviewBlocks() {
         previewErr: '',
         submitting: false,     // 提交中（防重复点击；也给预览刷新守卫用）
         submitError: '',       // 提交失败的可见文案
+        tableError: '',            // 表格编辑态的**块内**错误提示（不要复用页面级 submitError）
+        _tableSnapshots: [],       // 结构操作的快照栈（Task 5 的撤销用它）
+        _selAnchor: null,          // 选区锚点格（DOM 元素，不进响应式；Task 5 用）
         _previewTimer: null,
         _dragging: false,
         _dragFrom: null,
@@ -258,10 +261,24 @@ function reviewBlocks() {
         enterEdit(idx) {
             const b = this.blocks[idx];
             if (!b || !this.canEdit(b)) return;
+            this.tableError = '';          // 清掉上一次的表格报错（否则会跟着下一块显示）
             this.editingIdx = idx;
             this.$nextTick(() => {
                 const box = this._editBox();
                 box.innerHTML = '';
+                if (b.label === 'table') {
+                    // ⚠️ **必须用 `md_html`，且缺了就不进编辑态** —— 绝不能回落到 `b.content`：
+                    //    它是 OCR 的**去样式版**，保存时会把它写回 md ⇒ 表格丢掉 `border=1` 与
+                    //    `margin: auto`（边框与居中的唯一来源，渲染侧无补偿 CSS）。宁可不让改。
+                    if (!b.md_html) return;
+                    const t = window.tableEditor.parse(b.md_html);
+                    if (!t) return;
+                    t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
+                    this._tableSnapshots = [t.outerHTML];       // 快照栈的起点（Task 5 起用）
+                    const host = this._tableHost();
+                    if (host) { host.innerHTML = ''; host.appendChild(t); }
+                    return;
+                }
                 for (const ln of window.mdInline.splitLines(this.contentOf(b))) {
                     box.appendChild(this._makeLine(ln));
                 }
@@ -313,6 +330,20 @@ function reviewBlocks() {
             return list
                 ? list.querySelector(`[data-block-idx="${this.editingIdx}"] .rvb-lines`)
                 : null;
+        },
+
+        /** 表格编辑器容器（同样**按块下标**取 —— `x-ref` 在 `x-for` 里会被最后一项覆盖） */
+        _tableHost() {
+            const list = this.$refs.list;
+            return list
+                ? list.querySelector(`[data-block-idx="${this.editingIdx}"] .rvb-table-edit`)
+                : null;
+        },
+
+        /** 当前编辑态里的 `<table>` 元素（表格块专用；非表格块返回 null） */
+        _tableEl() {
+            const host = this._tableHost();
+            return host ? host.querySelector('table') : null;
         },
 
         _lineElements() {
@@ -417,6 +448,17 @@ function reviewBlocks() {
         },
 
         saveEdit() {
+            const b = this.blocks[this.editingIdx];
+            if (b && b.label === 'table') {
+                const t = this._tableEl();
+                if (!t) return;
+                const v = window.tableEditor.validate(t);
+                if (!v.ok) { this.tableError = '表格结构不合法：' + v.reason; return; }
+                this.edits[b.__i] = window.tableEditor.serialize(t);
+                this.editingIdx = -1;
+                this.schedulePreview();
+                return;
+            }
             const box = this._editBox();
             const els = [...box.querySelectorAll('.rvb-line')];
             const md = els.map((el) => window.mdInline.wrap(
@@ -427,6 +469,7 @@ function reviewBlocks() {
         },
 
         cancelEdit() {
+            this.tableError = '';
             this.editingIdx = -1;
             this.schedulePreview();
         },
