@@ -23,6 +23,7 @@ function reviewBlocks() {
         scaleMode: 'fit',      // 'fit' | 1 | 1.5 | 2
         zoom: 1,               // 实际倍数（fit 时按容器宽算）
         activeIdx: -1,
+        cutOpen: true,         // 第三栏（切分预览）折叠态；窄屏可收起让出宽度
         error: '',
         editableLabels: [],    // 后端下发的可编辑 label 白名单（单一来源，不在此另写一份）
         editingIdx: -1,        // 正在编辑的块下标（-1 = 无）
@@ -446,10 +447,22 @@ function reviewBlocks() {
             this._previewTimer = setTimeout(() => this.refreshPreview(), 400);
         },
 
-        /** 点预览里的某条 ⇒ 滚到它的块（复用既有 focusBlock） */
+        /** 点切分栏的条号 ⇒ 滚到并高亮它的块（依赖 Task 1 落库的 b.clause_no）。 */
         openClause(no) {
             const i = this.blocks.findIndex((b) => b.clause_no === no);
-            if (i >= 0) this.focusBlock(i);
+            if (i < 0) return;              // 新增的条号可能没有对应块（见 T38 的归属口径）
+            this.focusBlock(i);
+        },
+
+        /** 某块所属的条号集合（供切分栏高亮；空块返回空数组） */
+        clausesOfBlock(i) {
+            const b = this.blocks[i];
+            return (b && b.clause_no) ? [b.clause_no] : [];
+        },
+
+        /** 切分栏里某条是否应当高亮（= 属于当前聚焦块） */
+        isClauseActive(no) {
+            return this.activeIdx >= 0 && this.clausesOfBlock(this.activeIdx).includes(no);
         },
 
         // ── P2：提交链路（compose → confirm → 轮询） ──

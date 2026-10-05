@@ -1515,8 +1515,12 @@ def _rvb_make_pdf(path, pages):
     doc.close()
 
 
-def _rvb_seed(page, suffix):
-    """造一个**带 layout.json** 的待审查任务并打开审查页；前置不成立返回 None。"""
+def _rvb_seed(page, suffix, extra_md=""):
+    """造一个**带 layout.json** 的待审查任务并打开审查页；前置不成立返回 None。
+
+    `extra_md`：追加到参考 md **末尾**的额外文本（默认空 ⇒ 行为与原先逐字一致）。
+    追加在末尾 ⇒ 既有块的行号不位移、锚定不受影响。
+    """
     import json as _json
     from pathlib import Path as _Path
 
@@ -1536,6 +1540,8 @@ def _rvb_seed(page, suffix):
         return None
 
     md = (ref / "reference.md").read_text(encoding="utf-8")
+    if extra_md:
+        md += extra_md
     lay = extract_layout([_json.loads(l) for l in
                           (ref / "raw.jsonl").read_text(encoding="utf-8").split("\n")
                           if l.strip()])
@@ -2289,6 +2295,98 @@ def f13_20_panes_are_three_equal_height_columns(page):
     assert abs(ws[2] - 280) <= 2, f"切分栏未固定宽（应为 ~280px）：{ws}"
 
 
+# 追加到参考 md **末尾**的两条同号条文：制造重复 clause_no 以触发 key 碰撞。
+# 控制器实测（2026-10-05）：条数 138→140、重复号 ['A.1']、**既有块 start_line 不变**。
+_DUP_CLAUSE_MD = ("\n\n## 附录 C 探针甲\n\nA.1 设备要求应符合下列规定。\n\n"
+                  "## 附录 D 探针乙\n\nA.1 设备要求应符合下列规定。\n")
+
+
+def f13_21_clicking_a_clause_scrolls_to_its_block(page):
+    """★ 点切分栏的条号 ⇒ 滚动到并高亮对应块（此前 `openClause` 恒 findIndex=-1，
+    因为块上根本没有 clause_no —— Task 1 接线后才可能成立）。"""
+    task_id = _rvb_seed(page, "21")
+    assert task_id is not None, "前置不成立"
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() > 0, 10000)
+    first = page.locator(".rvb-clause-list li").first
+    no = first.locator(".rvb-cn").inner_text().strip()
+    first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-block--on").count() == 1, 3000), \
+        f"点条号 {no} 后没有块被高亮"
+    on = page.locator(".rvb-block--on .rvb-clause").first.inner_text().strip()
+    assert on == no, f"高亮的块条号 {on!r} 与被点的 {no!r} 不符"
+
+
+def f13_22_focused_block_highlights_its_clause_in_the_cut_column(page):
+    """★ 反向联动：聚焦块的条号在切分栏里高亮"""
+    task_id = _rvb_seed(page, "22")
+    assert task_id is not None, "前置不成立"
+    assert poll_until(page, lambda: page.locator(".rvb-block .rvb-clause").count() > 0, 10000)
+    page.locator(".rvb-block").first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li.rvb-clause-on").count() == 1, 3000), \
+        "聚焦块后切分栏没有对应条号高亮"
+
+
+def f13_23_cut_column_collapses_and_gives_width_back(page):
+    """★ 窄屏出口：第三栏可折叠，折叠后左右两栏分掉腾出来的宽度"""
+    task_id = _rvb_seed(page, "23")
+    assert task_id is not None, "前置不成立"
+    left_w = lambda: page.evaluate(
+        "() => Math.round(document.querySelector('.rvb-right').getBoundingClientRect().width)")
+    before = left_w()
+    page.locator(".rvb-cut-hd button:has-text('收起')").click()
+    # 用 is_visible 而非 count：x-show 折叠后节点仍在 DOM 里，count 恒为 1（会假绿）
+    assert poll_until(page, lambda: not page.locator(".rvb-cut .rvb-clause-list").is_visible(), 3000), \
+        "未折叠"
+    assert left_w() > before, "折叠后中栏没有变宽"
+    # 反向：还得能再展开 —— 只验折叠会放过「单向陷阱」（点开后收不回，宽度也还不回去）
+    page.locator(".rvb-cut-hd button:has-text('展开')").click()
+    assert poll_until(page, lambda: page.locator(".rvb-cut .rvb-clause-list").is_visible(), 3000), \
+        "折叠后无法再展开（单向陷阱）"
+    assert left_w() <= before, "展开后中栏没有把宽度还回去"
+
+
+def f13_24_duplicate_clause_numbers_render_one_row_each(page):
+    """★★ Task 2 那个 `:key` 修复的**运行时护栏**（原本只有源码文本断言）。
+
+    触发条件（控制器 2026-10-05 实测，本 Task 复核）：**重复的 `clause_no` 是可达的，
+    且能穿过 Task 4 的编号误判修复** —— parser 的「同号重复拒绝」只管**纯数字**号，
+    字母/附录号不受它管：`A.1` 出现两次 ⇒ `['A.1','A.1']`。对照：纯数字 `## 1 …`
+    出现两次只会产出一条。
+
+    ⚠️ **判据必须是「渲染行数 == 后端条数」，不能拿首屏行数当自己的基线**：
+    用 `:key="'pc' + c.clause_no"` 时 Alpine 的 keyed diff **首次渲染就把重复项并掉**
+    （本 Task 实测：后端 140 条 ⇒ DOM 只有 139 行），而「变更前后都 139」照样自洽 ⇒
+    拿首屏当基线会**空转恒绿**（本仓 T37 教训）。真要分辨，只能与后端 `count` 对账。
+    """
+    task_id = _rvb_seed(page, "24", extra_md=_DUP_CLAUSE_MD)
+    assert task_id is not None, "前置不成立"
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() > 0, 10000), \
+        "切分预览为空"
+    # 后端口径：条数 +「确有重复号」这个前置（否则本用例退化成空转）
+    api = page.evaluate("""async ([tid]) => {
+        const r = await fetch('/import/review/' + tid + '/preview', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({edits: {}})});
+        const d = await r.json();
+        const nos = d.clauses.map((c) => c.clause_no);
+        const m = {}; nos.forEach((n) => { m[n] = (m[n] || 0) + 1; });
+        return {count: d.count, has_dup: Object.values(m).some((v) => v > 1)};
+    }""", [task_id])
+    assert api["has_dup"], "夹具未造出重复条号 —— key 碰撞无从触发，本用例会空转"
+    backend_n = api["count"]
+    before_n = page.locator(".rvb-clause-list li").count()
+    assert before_n == backend_n, \
+        f"重复条号被并掉：渲染 {before_n} 行 / 后端 {backend_n} 条"
+    # 列表变更后仍不得塌（症状就是「重算后才折叠」）
+    page.locator(".rvb-block .rvb-fix").first.click()
+    page.locator("button:has-text('取消')").first.click()
+    assert poll_until(
+        page,
+        lambda: page.locator(".rvb-clause-list li").count() == backend_n, 5000), \
+        (f"列表变更后行数塌了：变更前 {before_n} / 变更后 "
+         f"{page.locator('.rvb-clause-list li').count()} / 后端 {backend_n} —— key 碰撞未修好")
+
+
 CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_2_inline_round_trip_is_byte_exact,
                 f13_3_alignment_wrap_unwrap_round_trip,
@@ -2308,7 +2406,11 @@ CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_17_submit_without_edits_still_imports,
                 f13_18_preview_count_equals_imported_clause_count,
                 f13_19_page_image_is_rendered_at_device_pixel_ratio,
-                f13_20_panes_are_three_equal_height_columns]
+                f13_20_panes_are_three_equal_height_columns,
+                f13_21_clicking_a_clause_scrolls_to_its_block,
+                f13_22_focused_block_highlights_its_clause_in_the_cut_column,
+                f13_23_cut_column_collapses_and_gives_width_back,
+                f13_24_duplicate_clause_numbers_render_one_row_each]
 
 
 if __name__ == "__main__":

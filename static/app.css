@@ -884,6 +884,8 @@
 .rvb-clause-list { overflow: auto; margin: 0; padding: 0 0.6rem 0.4rem 1.6rem; font-size: 0.85rem; }
 .rvb-clause-list li { cursor: pointer; }
 .rvb-clause-new { background: #e8f5e9; }
+/* 当前聚焦块所属条号：与「新增绿底」同族橙（#e8710a），避免撞色 */
+.rvb-clause-on { background: #fff3e0; font-weight: 600; }
 .rvb-cn { color: var(--pico-muted-color); margin-right: 0.4rem; }
 
 /* 提交条（compose → confirm raw body → 结果区由 htmx 轮询） */

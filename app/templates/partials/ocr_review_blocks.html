@@ -118,9 +118,13 @@
         <!-- 切分预览（spec §11.4）：**独立第三栏**。此前嵌在右栏下部（220px 横条），
              把编辑区挤扁、割裂左中对照；改为与左右栏等高的独立栏。
              header 里的计数与新增/消失标记、列表的 :key 均保持不变。 -->
-        <section class="rvb-cut" x-show="!error" x-cloak>
+        <section class="rvb-cut" x-show="!error" x-cloak
+                 :style="cutOpen ? '' : 'flex:0 0 44px'">
             <header class="rvb-cut-hd">
                 <strong>切分预览</strong>
+                <button type="button" class="outline" style="margin:0"
+                        @click="cutOpen = !cutOpen"
+                        x-text="cutOpen ? '收起' : '展开'"></button>
                 <span x-text="'当前 ' + preview.count + ' 条'"></span>
                 <span class="rvb-added" x-show="preview.added.length"
                       x-text="'新增 ' + preview.added.length + ' 条'"></span>
@@ -129,11 +133,12 @@
                 <span x-show="previewBusy" style="color:var(--pico-muted-color)">计算中…</span>
                 <span x-text="previewErr" style="color:#c00"></span>
             </header>
-            <ol class="rvb-clause-list">
+            <ol class="rvb-clause-list" x-show="cutOpen">
                 <!-- key 用**下标**：clause_no 可能重复（后端会产出空串），
                      用它做 key 会让 Alpine 在列表变更时崩成「只剩标题行」（Task 2） -->
                 <template x-for="(c, ci) in preview.clauses" :key="'pc' + ci">
-                    <li :class="preview.added.includes(c.clause_no) && 'rvb-clause-new'"
+                    <li :class="[preview.added.includes(c.clause_no) && 'rvb-clause-new',
+                                  isClauseActive(c.clause_no) && 'rvb-clause-on']"
                         @click="openClause(c.clause_no)">
                         <span class="rvb-cn" x-text="c.clause_no"></span>
                         <span x-text="c.title"></span>
