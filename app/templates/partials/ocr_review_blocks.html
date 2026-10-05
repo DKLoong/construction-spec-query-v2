@@ -113,6 +113,28 @@
                     </article>
                 </template>
             </div>
+            <!-- 切分预览（spec §11.4）：「你这次编辑改了切分吗」—— 本次改版最有价值的一项 -->
+            <section class="rvb-preview" x-show="!error" x-cloak>
+                <header class="rvb-preview-hd">
+                    <strong>切分预览</strong>
+                    <span x-text="'当前 ' + preview.count + ' 条'"></span>
+                    <span class="rvb-added" x-show="preview.added.length"
+                          x-text="'新增 ' + preview.added.length + ' 条'"></span>
+                    <span class="rvb-removed" x-show="preview.removed.length"
+                          x-text="'消失 ' + preview.removed.length + ' 条'"></span>
+                    <span x-show="previewBusy" style="color:var(--pico-muted-color)">计算中…</span>
+                    <span x-text="previewErr" style="color:#c00"></span>
+                </header>
+                <ol class="rvb-clause-list">
+                    <template x-for="c in preview.clauses" :key="'pc' + c.clause_no">
+                        <li :class="preview.added.includes(c.clause_no) && 'rvb-clause-new'"
+                            @click="openClause(c.clause_no)">
+                            <span class="rvb-cn" x-text="c.clause_no"></span>
+                            <span x-text="c.title"></span>
+                        </li>
+                    </template>
+                </ol>
+            </section>
         </section>
     </div>
 </div>

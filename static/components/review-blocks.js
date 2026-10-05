@@ -26,6 +26,11 @@ function reviewBlocks() {
         edits: {},             // {块下标: 编辑后的 md}；编辑**不落库**，只存内存
         focusIdx: -1,          // 当前聚焦的**行下标**（-1 = 还没落到任何一行）
         focusIsClause: false,  // 当前行是否编号/标题行（响应式，供对齐禁用判据读）
+        baseline: null,        // 首次 preview 响应的条文序列（= 导入前的切分基线）；null = 尚未取到
+        preview: { count: 0, clauses: [], added: [], removed: [] },
+        previewBusy: false,
+        previewErr: '',
+        _previewTimer: null,
         _dragging: false,
         _dragFrom: null,
 
@@ -51,6 +56,8 @@ function reviewBlocks() {
             this.curPage = this.pages.length ? this.pages[0].index : 1;
             this.fileName = await this._fileName();
             this.$nextTick(() => this._applyFit());
+            // 切分预览基线：此刻 edits 为空 ⇒ 首次响应即「导入前的切分」（spec §11.4）
+            this.refreshPreview();
         },
 
         async _fileName() {
@@ -375,10 +382,59 @@ function reviewBlocks() {
                 window.mdInline.domToMd(el), el.dataset.align || null)).join('\n');
             this.edits[this.blocks[this.editingIdx].__i] = md;
             this.editingIdx = -1;
+            this.schedulePreview();          // 保存后刷新切分预览（防抖）
         },
 
         cancelEdit() {
             this.editingIdx = -1;
+            this.schedulePreview();
+        },
+
+        // ── P2：切分预览（spec §11.4）「这次编辑改了切分吗」 ──
+
+        /** 首次调用就是**基线**（edits 为空 ⇒ 与导入前的切分一致）。 */
+        async refreshPreview() {
+            // ⚠️ 只判 `editingIdx`：`submitting` 是 **Task 9** 才引入的状态，本 Task 不该引用它
+            //    （读未定义属性不会抛，但那是「成员定义在后面的 Task」这类缺陷的同一个形状，
+            //    Task 6 的 `isClauseLine` 已经栽过一次）—— Task 9 接进来时自己补 `|| this.submitting`。
+            if (this.editingIdx >= 0) return;
+            this.previewBusy = true;
+            this.previewErr = '';
+            try {
+                const resp = await fetch(`/import/review/${this.taskId}/preview`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({edits: this.edits}),
+                });
+                if (!resp.ok) throw new Error((await resp.json()).detail || resp.status);
+                const data = await resp.json();
+                if (!this.baseline) this.baseline = data.clauses.map((c) => c.clause_no);
+                const now = data.clauses.map((c) => c.clause_no);
+                const baseSet = new Set(this.baseline);
+                const nowSet = new Set(now);
+                this.preview = {
+                    count: data.count,
+                    clauses: data.clauses,
+                    added: now.filter((n) => !baseSet.has(n)),
+                    removed: this.baseline.filter((n) => !nowSet.has(n)),
+                };
+            } catch (e) {
+                this.previewErr = '切分预览失败：' + e;
+            } finally {
+                this.previewBusy = false;
+            }
+        },
+
+        /** 变更后 400 ms 防抖（实测最重产物 109 ms ⇒ 无需 spec §11.4 的降级方案） */
+        schedulePreview() {
+            clearTimeout(this._previewTimer);
+            this._previewTimer = setTimeout(() => this.refreshPreview(), 400);
+        },
+
+        /** 点预览里的某条 ⇒ 滚到它的块（复用既有 focusBlock） */
+        openClause(no) {
+            const i = this.blocks.findIndex((b) => b.clause_no === no);
+            if (i >= 0) this.focusBlock(i);
         },
     };
 }

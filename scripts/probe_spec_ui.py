@@ -1552,9 +1552,14 @@ def _rvb_seed(page, suffix):
                     "bbox": None, "order": 9998, "global_block_id": 9998,
                     "start_line": None, "end_line": None, "prefix": "", "suffix": "",
                     "clause_no": None})
+    # ⚠️ span 必须取 **(1, 2)**，不能取 (0, 1)（Task 8 实现者离线复现 + 控制者复核）：
+    #   真实块 0（`## 前言`）的区间**也是** [0, 1) ⇒ 与之重叠 ⇒ `splice` 抛
+    #   `ValueError: layout 区间重叠：[0, 1) 与游标 1` ⇒ **compose/preview 对该夹具一律 500**。
+    #   第 1 行是空行，取 (1, 2) 实测：splice 通过、空 edits 逐字节等价、基线仍 138 条、
+    #   该样本仍有 span 且非白名单 ⇒ 隔离语义不变。
     aligned.append({"label": "display_formula", "content": "非白名单但有 span", "page": 1,
                     "bbox": None, "order": 9999, "global_block_id": 9999,
-                    "start_line": 0, "end_line": 1, "prefix": "", "suffix": "",
+                    "start_line": 1, "end_line": 2, "prefix": "", "suffix": "",
                     "clause_no": None})
 
     task_id = _make_review_task(page, f"PROBE-RVB {suffix}", f"探针块审查 {suffix}",
@@ -1979,6 +1984,104 @@ def f13_11_enter_splits_into_a_new_line_not_a_br(page):
     assert blk.locator(".rvb-line br").count() == 0, "Enter 产生了行内 <br>（会与字面 \\n 混淆）"
 
 
+def f13_12_preview_lists_clauses_of_the_document(page):
+    """预览面板列出当前切分；条数与块列表无关（它是整篇的切分）"""
+    assert _rvb_seed(page, "12") is not None, "前置不成立"
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() > 0, 10000), \
+        "切分预览没有任何条文"
+    n = page.locator(".rvb-clause-list li").count()
+    assert n > 50, f"夹具切片条数异常：{n}"
+
+
+def _rvb_clause_block_idx(page, task_id):
+    """找一个「**编辑后真能改变切分条数**」的可编辑块（用与端点同源的 preview 现地试选）。
+
+    ⚠️ **不能按内容正则静态挑**（Task 8 实现者离线复现 + 本机实测，计划原稿的判据在此夹具上失效）：
+      - 计划原稿的 `^(#{1,6}\\s|\\d+(\\.\\d+)*...)` **首个命中是目录行** `1 总则 ..... 1`
+        （下标 14）——它不是真条文 ⇒ 追加编号行 **+0**、抹掉编号 **+0**，两条用例都不动；
+      - 版式受解析器的「标题吸收」等怪癖支配（下标 24 `1.0.1` 抹掉编号是 **+0 而非 −1**，
+        因为 `## 1 总 则` 被并进来补位），「看着像编号行」远不足以预测条数变化。
+    故只能**拿本块真的造两种编辑、问 preview 结果**，挑同时满足
+    「追加编号行 ⇒ +1」与「抹掉首行编号 ⇒ −1」的第一个块（本夹具实证为下标 25 `1.0.2`）。
+    这不构成循环：本 helper 只做**前置挑选**；若端点坏了，下面的断言会以「找不到」变红。
+    """
+    idx = page.evaluate("""async ([tid]) => {
+        const L = await (await fetch('/import/review/' + tid + '/layout')).json();
+        const editable = new Set(L.editable_labels || []);
+        const prev = async (edits) => {
+            const r = await fetch('/import/review/' + tid + '/preview', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({edits})});
+            if (!r.ok) throw new Error('preview 返回 ' + r.status);
+            return (await r.json()).count;
+        };
+        const base = await prev({});
+        for (let i = 0; i < L.blocks.length; i++) {
+            const b = L.blocks[i];
+            if (b.start_line === null || b.start_line === undefined) continue;
+            if (!editable.has(b.label)) continue;
+            const ls = (b.content || '').split('\\n');
+            if (!/^\\d+(\\.\\d+)*\\s*[.、．]?\\s*\\S/.test((ls[0] || '').trim())) continue;
+            const plus = await prev({[i]: ls.concat(['9.9.9 PROBE 新增条文']).join('\\n')});
+            if (plus !== base + 1) continue;
+            const minus = await prev({[i]: ['PROBE 编号被抹掉'].concat(ls.slice(1)).join('\\n')});
+            if (minus === base - 1) return i;
+        }
+        return -1;
+    }""", [task_id])
+    assert idx >= 0, "找不到「追加编号行 +1 且抹掉编号 −1」的可编辑块（夹具或端点有问题）"
+    return idx
+
+
+def _rvb_append_line(page, idx, text):
+    """在编辑中块的**首行末尾**按 Enter 新增一行，并**真实键入** text（忠实模拟用户操作）。
+
+    ⚠️ 不要拿 `_rvb_type_line` 的「替换首行」来实现「新增一条」：那是**替换**语义，
+    换文本不改条数（实测 138→138）。新增必须真按 Enter（组件的 `_onLineKey` 会新建编辑行），
+    再用 `.type()` 键入 —— 键入会真触发 `input`，不像程序化赋值。
+    """
+    blk = _rvb_block(page, idx)
+    first = blk.locator(".rvb-line").first
+    first.click()
+    first.press("End")
+    first.press("Enter")
+    assert poll_until(page, lambda: blk.locator(".rvb-line").count() >= 2, 3000), \
+        "Enter 没有新增编辑行（_onLineKey 失效？）"
+    blk.locator(".rvb-line").nth(1).type(text)
+
+
+def f13_13_editing_a_clause_line_changes_the_preview(page):
+    """★ 预览的价值所在：在编号行后补一条**带编号的新行** ⇒ 预览条数 +1 且标出新增"""
+    task_id = _rvb_seed(page, "13")
+    assert task_id is not None, "前置不成立"
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() > 0, 10000)
+    base = page.locator(".rvb-clause-list li").count()
+    idx = _rvb_clause_block_idx(page, task_id)
+    blk = _rvb_block(page, idx)
+    _rvb_edit(page, idx)
+    _rvb_append_line(page, idx, "9.9.9 PROBE 新增条文")
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() == base + 1, 15000), \
+        f"补写编号行后预览条数未 +1（{base} → {page.locator('.rvb-clause-list li').count()}）"
+    assert page.locator(".rvb-clause-new").count() >= 1, "新增条文未被标出"
+
+
+def f13_14_swallowing_a_clause_line_shows_as_removed(page):
+    """★ 反向：把编号行改成普通文本 ⇒ 该条**消失**并标红（「把相邻条吞掉」这个失效）"""
+    task_id = _rvb_seed(page, "14")
+    assert task_id is not None, "前置不成立"
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() > 0, 10000)
+    base = page.locator(".rvb-clause-list li").count()
+    idx = _rvb_clause_block_idx(page, task_id)
+    blk = _rvb_block(page, idx)
+    _rvb_edit(page, idx)
+    _rvb_type_line(page, idx, "PROBE 编号被抹掉")   # **替换**首行 ⇒ 编号没了 ⇒ 少一条
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() < base, 15000), \
+        f"抹掉编号后预览条数未减少（仍为 {base}）"
+    assert "消失" in page.locator(".rvb-preview-hd").inner_text(), "没有给出「消失 N 条」的提示"
+
+
 CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_2_inline_round_trip_is_byte_exact,
                 f13_3_alignment_wrap_unwrap_round_trip,
@@ -1989,7 +2092,10 @@ CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_8_bold_survives_save_and_reopen,
                 f13_9_alignment_wraps_line_and_does_not_add_lines,
                 f13_10_alignment_is_disabled_on_clause_number_lines,
-                f13_11_enter_splits_into_a_new_line_not_a_br]
+                f13_11_enter_splits_into_a_new_line_not_a_br,
+                f13_12_preview_lists_clauses_of_the_document,
+                f13_13_editing_a_clause_line_changes_the_preview,
+                f13_14_swallowing_a_clause_line_shows_as_removed]
 
 
 if __name__ == "__main__":
