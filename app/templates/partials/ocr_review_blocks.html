@@ -155,6 +155,20 @@
                                         title="拆分选中的单元格">拆分</button>
                                 <button type="button" @click="tableUndo()" style="margin:0"
                                         title="撤销上一次表格结构操作">撤销</button>
+                                <span class="rvb-sep"></span>
+                                <button type="button" title="粗体" @mousedown.prevent @click="tableExec('bold')"
+                                        style="margin:0"><strong>B</strong></button>
+                                <button type="button" title="斜体" @mousedown.prevent @click="tableExec('italic')"
+                                        style="margin:0"><span class="rvb-btn-i">I</span></button>
+                                <button type="button" title="删除线" @mousedown.prevent @click="tableExec('strikeThrough')"
+                                        style="margin:0"><s>S</s></button>
+                                <span class="rvb-sep"></span>
+                                <button type="button" @click="tableAlign(null)" style="margin:0" title="格内文字左对齐">左</button>
+                                <button type="button" @click="tableAlign('center')" style="margin:0" title="格内文字居中">中</button>
+                                <button type="button" @click="tableAlign('right')" style="margin:0" title="格内文字右对齐">右</button>
+                                <span class="rvb-sep"></span>
+                                <button type="button" @click="tableRemoveImages()" style="margin:0"
+                                        title="删除选中格里的图片（不删文件）">删图</button>
                             </div>
                             <!-- 表格编辑器容器：仅当该块 label === 'table' 时由 JS 填充。
                                  与行编辑器的 `.rvb-lines` 分开，避免 `.rvb-line` 选择器互相干扰。 -->

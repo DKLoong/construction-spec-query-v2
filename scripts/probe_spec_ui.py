@@ -1962,7 +1962,10 @@ def f13_8_bold_survives_save_and_reopen(page):
     blk = _rvb_block(page, idx)
     _rvb_edit(page, idx)
     _rvb_type_line(page, idx, "PROBE 加粗 x")
-    blk.locator("button[title='粗体']").click()
+    # ⚠️ **必须按「行编辑那排」作用域取**（Task 6 加了表格工具条，其 B 的 title 也叫「粗体」）：
+    #    块级定位器 `button[title='粗体']` 会解析出 2 个元素（表格那排被 x-show 隐藏、但仍在 DOM）
+    #    ⇒ Playwright 1.62 strict 模式报错。`.rvb-line-tools` 是行编辑专属容器（Task 4 起）。
+    blk.locator(".rvb-line-tools button[title='粗体']").click()
     md = page.evaluate("""(i) => window.mdInline.domToMd(
         document.querySelectorAll('.rvb-block')[i].querySelector('.rvb-line'))""", idx)
     assert "**" in md, f"点 B 之后没有产生粗体标记：{md!r}"
@@ -1980,7 +1983,8 @@ def f13_9_alignment_wraps_line_and_does_not_add_lines(page):
     _rvb_edit(page, idx)
     n_before = blk.locator(".rvb-line").count()
     _rvb_type_line(page, idx, "PROBE 图题居中")     # 非编号行 ⇒ 对齐按钮可用
-    blk.locator("button:has-text('中')").click()
+    # ⚠️ 同 f13_8：表格工具条也有「中」（格内居中）⇒ 必须按行编辑容器取，否则 strict 模式撞 2 个。
+    blk.locator(".rvb-line-tools button:has-text('中')").click()
     line = page.evaluate("""(i) => {
         const el = document.querySelectorAll('.rvb-block')[i].querySelector('.rvb-line');
         return window.mdInline.wrap(window.mdInline.domToMd(el), el.dataset.align || null);
@@ -1998,7 +2002,8 @@ def f13_10_alignment_is_disabled_on_clause_number_lines(page):
     _rvb_edit(page, idx)
     _rvb_type_line(page, idx, "3.0.9 编号行不得被包裹")   # 内含补发 input，见其 docstring
     blk.locator(".rvb-line").first.click()
-    btn = blk.locator("button:has-text('中')")
+    # ⚠️ 同上：表格工具条也有「中」⇒ 按行编辑容器取（否则 strict 模式撞 2 个）。
+    btn = blk.locator(".rvb-line-tools button:has-text('中')")
     # 禁用状态由**响应式状态** `focusIsClause` 决定，而它由 focus/input 事件维护 ⇒
     # 既要等 Alpine 重算完（poll），也要保证 `_rvb_type_line` 真的触发了 input（否则恒红）
     assert poll_until(page, lambda: btn.is_disabled(), 5000), "编号行上对齐按钮应禁用"
@@ -2599,6 +2604,26 @@ def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
     assert poll_until(page, lambda: sel() == [0, 1, 2], 3000), \
         (f"锚点漂移了：以锚点(0)为对角应得 {{0,1,2}}，实得 {sel()} —— "
          "若得到 {2,5} 即锚点被上次点击(5)带走（spec §2.3 要求锚点固定）")
+    # ★ **删掉锚点格之后，选区必须能自愈**（Task 5 复审的 out-of-scope 发现，Task 6 带走）。
+    #   症状：选中某格 → 点「- 行」删掉它所在行 ⇒ `_selAnchor` 指向**已分离**的节点 ⇒
+    #   下一次 Shift+点走 `_selectTable(cell, true)` ⇒ `anchor` 是分离节点 ⇒ `selectRange` 里
+    #   `rows.indexOf(anchor.closest('tr'))` = -1 ⇒ `g.grid[-1].indexOf` 抛 **TypeError**。
+    #   ⚠️ 该抛出发生在 `@click` 处理器里、**不在** `tableOp` 的 try/catch 内 ⇒ 用户视角是
+    #      「Shift+点毫无反应」+ 控制台报错（本仓既定口径：不得有未捕获的交互异常）。
+    #   判据：出事的写法下 `selectRange` 会**先清空所有 `rvb-cell-sel` 再抛** ⇒ 声明为**空数组**；
+    #        修好后应恰好选中被点的那个格 ⇒ 用 `sel()` 的**内容**分辨（非空 vs 空）。
+    cells.nth(0).click()                      # 锚点落在第 0 格
+    # ⚠️ 必须按**表格那排**工具条取按钮：行编辑工具条里也有一个同名 `- 行`（被 x-show 隐藏但仍在 DOM），
+    #    页面级/块级定位器会解析出 2 个元素 ⇒ Playwright 1.62 的 strict 模式直接报错。
+    #    `.rvb-tools` 在块内有**两**份（行编辑那排在前、表格那排在后）⇒ `.last` 才是表格工具条。
+    fix.locator(".rvb-tools").last.locator("button:has-text('- 行')").click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit td").count() == 3, 3000), \
+        "「- 行」没删掉那一行"
+    left_cells = page.locator(".rvb-table-edit td")
+    left_cells.nth(2).click(modifiers=["Shift"])
+    assert poll_until(page, lambda: sel() == [2], 3000), \
+        (f"删掉锚点格后再 Shift+点没有自愈（应选中被点的格）：{sel()} —— "
+         "空数组即 `selectRange` 抛了 TypeError（锚点仍指向已分离的节点）")
 
 
 def f14_6_saving_an_edited_table_writes_the_md_region(page):
@@ -2869,6 +2894,113 @@ def f14_12_merge_on_a_single_cell_is_a_no_op(page):
     assert got["ok"] is False and got["changed"] is False, f"单格合并产生了副作用：{got}"
 
 
+def f14_13_remove_images_in_selected_cells(page):
+    """★ 删图：只删**选区格内**的 `<img>`，其余格不动，且**文件不删**（spec §19）。"""
+    got = page.evaluate("""(html) => {
+        const T = window.tableEditor;
+        const t = T.parse(html);
+        const imgCell = t.querySelector('img').closest('td');
+        const n = T.removeImages([imgCell]);
+        return { n, imgs: t.querySelectorAll('img').length, valid: T.validate(t).ok };
+    }""", _TBL_HTML)
+    assert got["n"] == 1 and got["imgs"] == 0, f"删图结果不对：{got}"
+    assert got["valid"] is True, "删图把结构弄坏了"
+
+
+def f14_14_align_applies_to_cell_text_only(page):
+    """★ 对齐作用于**格内文字**（spec §8.6）；**表格整体恒居中**，不提供按钮。"""
+    got = page.evaluate("""(html) => {
+        const T = window.tableEditor;
+        const t = T.parse(html);
+        const cell = t.querySelector('td');
+        T.applyAlign([cell], 'right');
+        const out = T.serialize(t);
+        return { style: cell.style.textAlign, hasTableAlign: /<table[^>]*text-align/.test(out) };
+    }""", _TBL_HTML)
+    assert got["style"] == "right", f"格内对齐没生效：{got}"
+    assert got["hasTableAlign"] is False, "对齐写到 <table> 上了（应为格内文字）"
+
+
+def f14_15_exit_criterion_image_row_can_be_removed(page):
+    """★★ **出口判据（spec §18）**：「行列被当成图片塞进合并格」能被**完整修好**。
+
+    走一遍真实修法：真实产物里「图 形」整列都是 `<img>` ⇒ 选中该列任一格 → 删列
+    ⇒ 该列消失、表结构仍合法、且**没有残留的空格**。
+    """
+    got = page.evaluate("""(html) => {
+        const T = window.tableEditor;
+        const t = T.parse(html);
+        const imgCell = t.querySelector('img').closest('td');      // 「图 形」列
+        const ok = T.deleteCols(t, [imgCell]);
+        const v = T.validate(t);
+        const widths = [...t.querySelectorAll('tr')].map(r => r.children.length);
+        return { ok, valid: v.ok, reason: v.reason, widths,
+                 imgs: t.querySelectorAll('img').length,
+                 text: t.textContent.replace(/\\s+/g, '') };
+    }""", _TBL_HTML)
+    assert got["ok"] is True and got["valid"] is True, f"删列不合法：{got}"
+    assert got["widths"] == [2, 2], f"列没删干净/留了空格：{got}"
+    assert got["imgs"] == 0, f"图片列没清掉：{got}"
+    assert "序号" in got["text"] and "紧急避难设施" in got["text"], f"误删了内容：{got}"
+
+
+def f14_16_saving_a_table_edit_does_not_change_the_clause_set(page):
+    """★ spec §2.6：**表格编辑不改变切分** —— 保存前后条号集合必须相同。
+
+    切分预览与入库条数的一致性（上游 §18 的 P2 铰链）靠这条延续：表格 HTML 不产生
+    新条文号，所以「编辑表格」不该让任何条文凭空出现或消失。
+
+    ⚠️ 直接打 `/preview` 取口径（不读 UI 的预览列表）—— 避开 400ms 防抖带来的时序假红。
+    """
+    task_id = _rvb_seed(page, "14d", with_table=True)
+    assert task_id is not None, "前置不成立"
+
+    def _clause_nos():
+        return page.evaluate("""async ([tid]) => {
+            const r = await fetch('/import/review/' + tid + '/preview', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({edits: {}})});
+            return (await r.json()).clauses.map((c) => c.clause_no).sort();
+        }""", [task_id])
+
+    before = _clause_nos()
+    assert before, "前置：预览为空，无法对账"
+
+    blk = page.locator('[data-block-idx]', has_text="探针表格")
+    blk.locator("button:has-text('纠正')").first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 1, 5000)
+    # ★ **删图必须可撤销**（spec §2.4 把「删图」列进结构操作，且要求快照压在操作**前**）。
+    #   ⚠️ 必须走**组件入口**（`tableRemoveImages` / `tableUndo`）而非纯函数 —— 「压快照」只发生在组件里，
+    #      纯函数根本不碰快照栈。判据要能分辨「压操作前」与「压操作后」：
+    #        · 压**操作前** ⇒ 撤销把图片找回来（1 张）
+    #        · 压**操作后** ⇒ restore 回自己 ⇒ 撤销**空转**（仍 0 张）   ← 两者可分辨
+    #   ⚠️ 先把**图片格**点上：`tableRemoveImages` 的选区为空时回落到**首格**（序号格，没有图）⇒
+    #      不点就是 n=0、只写一条 `tableError`，本段会以"没生效"的样子红，看不出是快照口径的问题。
+    n_img = lambda: page.locator(".rvb-table-edit table img").count()
+    assert n_img() == 1, "前置：夹具表里应有 1 张图"
+    page.locator(".rvb-table-edit table td").nth(4).click()      # 2×3 夹具里图片在第 5 格
+    page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).tableRemoveImages()")
+    assert poll_until(page, lambda: n_img() == 0, 3000), "「删图」没生效（选区或入口没接上）"
+    page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).tableUndo()")
+    assert poll_until(page, lambda: n_img() == 1, 3000), \
+        ("撤销没把图片找回来 —— 快照压在了操作**之后**（restore 回自己 ⇒ 撤销空转）；"
+         "spec §2.4 要求操作**前**压")
+    page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).tableRemoveImages()")
+    assert poll_until(page, lambda: n_img() == 0, 3000), "再删一次失败"
+    # 再做一次**结构变更**供保存对账用。⚠️ 不能再用「图片格」定位（上面已把图片删掉 ⇒ `img` 为 null）；
+    # 删首列即可 —— 本条只关心「保存前后条号集合不变」，与删哪一列无关。
+    page.evaluate("""() => {
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
+        window.tableEditor.deleteCols(d._tableEl(), [d._tableEl().querySelector('td')]);
+    }""")
+    blk.locator("button:has-text('保存')").first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 0, 5000), \
+        "保存后没退出编辑态"
+
+    after = _clause_nos()
+    assert after == before, f"表格编辑改变了切分：{before} -> {after}"
+
+
 CASES["f14"] = [f14_1_round_trip_is_byte_identical,
                 f14_2_serialize_strips_editor_artifacts,
                 f14_3_validate_rejects_malformed_tables,
@@ -2880,7 +3012,11 @@ CASES["f14"] = [f14_1_round_trip_is_byte_identical,
                 f14_9_insert_and_delete_column_keep_the_rectangle,
                 f14_10_merge_sets_spans_and_drops_swallowed_cells,
                 f14_11_split_restores_empty_cells,
-                f14_12_merge_on_a_single_cell_is_a_no_op]
+                f14_12_merge_on_a_single_cell_is_a_no_op,
+                f14_13_remove_images_in_selected_cells,
+                f14_14_align_applies_to_cell_text_only,
+                f14_15_exit_criterion_image_row_can_be_removed,
+                f14_16_saving_a_table_edit_does_not_change_the_clause_set]
 
 
 if __name__ == "__main__":

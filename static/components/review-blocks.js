@@ -493,6 +493,12 @@ function reviewBlocks() {
                 if (!v.ok) { this.tableError = '表格结构不合法：' + v.reason; return; }
                 this.tableError = '';      // 成功路径也清（与失败分支对称，不留陈旧状态）
                 this.edits[b.__i] = window.tableEditor.serialize(t);
+                // ⚠️ **退出编辑态必须释放表格编辑 DOM**：`.rvb-table-edit` 只靠 `x-show` 隐藏，
+                //    不释放的话那张 `contenteditable` 表会**留在 DOM 里**（隐藏但存在）⇒
+                //    「是否还在编辑态」在 DOM 上不可分辨（f14_16 的 exit 判据正是数它）。
+                //    也必须**在** `editingIdx = -1` **之前**清（`_tableHost()` 是按 editingIdx 找的）。
+                const host = this._tableHost();
+                if (host) host.innerHTML = '';
                 this.editingIdx = -1;
                 this.schedulePreview();
                 return;
@@ -507,6 +513,10 @@ function reviewBlocks() {
         },
 
         cancelEdit() {
+            // 与 `saveEdit` 的表格分支同口径：退出编辑态释放表格编辑 DOM（`.rvb-table-edit` 是
+            // `x-show` 隐藏、节点仍在 ⇒ 不释放则「否在编辑态」在 DOM 上不可分辨）。行编辑块该容器本就是空的。
+            const host = this._tableHost();
+            if (host) host.innerHTML = '';
             this.tableError = '';
             this.editingIdx = -1;
             this.schedulePreview();
@@ -659,7 +669,56 @@ function reviewBlocks() {
                 return;
             }
             this.tableError = '';
+            // ✅ 结构操作**成功后**必须处理「锚点格被整个删掉」的情形：
+            //    `merge`/`deleteRows`/`deleteCols` 都可能把锚点格从 DOM 里摘掉 ⇒ `_selAnchor`
+            //    指向**已分离**的节点 ⇒ 下一次 Shift+点走 `selectRange`，`rows.indexOf(分离 tr)` = -1
+            //    ⇒ `g.grid[-1].indexOf` 抛 **TypeError**（抛出点在 `@click` 里，**不在**本函数的
+            //    try/catch 内 ⇒ 用户视角是「Shift+点毫无反应」+ 控制台报错）。
+            //    这里只把**失效的**锚点置空（不重置选区）：置空后下一次 `_selectTable` 会以当前格
+            //    为锚点、自然自愈。⚠️ **不要**改成无条件 `this._selectTable()` —— 那会把多格选区
+            //    塌成单格（用户会莫名其妙丢失选区）。
+            if (this._selAnchor && !t.contains(this._selAnchor)) this._selAnchor = null;
             this._tableSnapshots.push(snap);
+        },
+
+        /** 表内对齐（作用于**选中格**；空选区回落到单格）
+         *
+         * ⚠️ **不压快照**：spec §2.4 的结构操作清单是「合并/拆分/插删行列/**删图**」——
+         *    对齐与 B/I/S **不在其中**，属「格内文字级」操作，**明确不纳入撤销**
+         *    （TODOS T42 第 3 条已登记）。下面 `tableExec` 同。 */
+        tableAlign(v) {
+            const t = this._tableEl();
+            if (!t) return;
+            const cells = [...t.querySelectorAll('.rvb-cell-sel')];
+            window.tableEditor.applyAlign(cells.length ? cells : [t.querySelector('td,th')], v);
+        },
+
+        /** 表内 B/I/S：与行编辑器同一路径（`@mousedown.prevent` 保选区）。
+         *  ⚠️ contenteditable 的格子失焦会让选区塌掉 ⇒ 模板上必须写 `@mousedown.prevent`。
+         *  ⚠️ 同 `tableAlign`：**不压快照**（文字级操作不纳入撤销）。 */
+        tableExec(cmd) {
+            const t = this._tableEl();
+            if (!t) return;
+            const sel = window.getSelection();
+            if (!sel || !sel.rangeCount) return;
+            document.execCommand(cmd, false, null);
+        },
+
+        /** 删图（作用于选中格；空选区回落到单格）
+         *
+         * ⚠️ **快照必须压在操作「前」**（spec §2.4 把「删图」列进结构操作，并明写「**前** push 一次」）：
+         *    `tableUndo` 的口径是「还原被 `pop()` 掉的那个值」，压在**后**就会 restore 回**当前**状态
+         *    ⇒ 点一次「撤销」**空转**（表面像没反应）。这与 `tableOp` 的「操作前压」是同一口径。
+         *    ⚠️ `t.outerHTML` 必须**在** `removeImages` 之前求值 —— 写成 `const snap = t.outerHTML`
+         *    再删是正确顺序，**不要**图省事写成删完再读。 */
+        tableRemoveImages() {
+            const t = this._tableEl();
+            if (!t) return;
+            const cells = [...t.querySelectorAll('.rvb-cell-sel')];
+            const snap = t.outerHTML;                       // ← 操作前
+            const n = window.tableEditor.removeImages(cells.length ? cells : [t.querySelector('td,th')]);
+            if (n) this._tableSnapshots.push(snap);
+            this.tableError = n ? '' : '选中的格子里没有图片';
         },
 
         /** 撤销：弹出最近一次快照并**还原被弹出的那一个**（spec §2.4；只覆盖结构操作，不覆盖格内文字）。

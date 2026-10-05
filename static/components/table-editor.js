@@ -278,7 +278,24 @@
         return true;
     }
 
+    /** 删除 `cells` 覆盖到的格里的 `<img>`。**不删文件**（spec §19：物理清理在确认导入之后，
+     *  编辑期必须可撤回）。返回删除的张数。 */
+    function removeImages(cells) {
+        let n = 0;
+        for (const c of cells) {
+            c.querySelectorAll('img').forEach((img) => { img.remove(); n++; });
+        }
+        return n;
+    }
+
+    /** 格内文字对齐（spec §8.6）。`value` 为 `'left' | 'center' | 'right' | null`（null=清）。 */
+    function applyAlign(cells, value) {
+        for (const c of cells) c.style.textAlign = value || '';
+        return true;
+    }
+
     window.tableEditor = { parse, serialize, validate,
                            insertRow, insertCol, deleteRows, deleteCols,
-                           selectRange, mergeCells, splitCell };
+                           selectRange, mergeCells, splitCell,
+                           removeImages, applyAlign };
 })();
