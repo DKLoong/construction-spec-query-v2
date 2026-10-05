@@ -1140,6 +1140,12 @@ def f14_12_merge_on_a_single_cell_is_a_no_op(page):
                 case 'split': ok = window.tableEditor.splitCell(t, cell); break;
 ```
 
+> **本 Task 另需补一条注释**（Task 2 修正轮的裁定）：`validate` 里的**「空洞」判据**在当前输入下**不可达**
+> —— Task 2 实现者穷举 2~3 行 × 1~3 列 × span∈{1,2,3} 共 **270672** 张表、**0 例**命中空洞分支
+> （机制：每行单元格恒填最左空位 ⇒ 占位形态恒为「0..k 无洞」）。**保留它**是因为**本 Task 的结构操作
+> 有可能造出空洞**（`insertCol` 在合并格内部返回 false、`deleteCols` 跨合并格递减 `colspan`、`mergeCells` 删格）。
+> 请在判据处补注释写明这一层关系；**若到 Task 6 结束仍构造不出空洞，则按 YAGNI 删除**（届时它连守卫作用都没有）。
+
 `app.css` 加选中态：
 
 ```css
