@@ -144,3 +144,21 @@ def test_compose_rejects_stale_layout(auth_client, isolated_paths):
     resp = _post(auth_client, task_id, {"edits": {}})
     assert resp.status_code == 409
     assert "不一致" in resp.json()["detail"] or "刷新" in resp.json()["detail"]
+
+
+def test_compose_rejects_edit_on_block_without_span(auth_client, isolated_paths):
+    """★ **无 span 的块不接受编辑**（P2 终审的 Important 发现 I-1）。
+
+    为什么必须拒绝：`splice` 只替换有 span 的块 ⇒ 对无 span 块的编辑会被**静默忽略**
+    （200 但毫无效果），而本仓口径是「**静默丢改动比拒绝更坏**」（计划边界 B1）。
+    前端 `canEdit` 用 `hasSpan` 已挡住 ⇒ UI 不可达；本用例钉的是**契约层**的兜底，
+    防未来前端 bug 或直连调用拿到「成功但无效」。
+    """
+    task_id = _seed(auth_client, "ab000004", md="3.0.1 第一条。", blocks=[
+        {"label": "text", "content": "3.0.1 第一条。", "page": 1, "bbox": [0, 0, 1, 1],
+         "order": 0, "global_block_id": 0, "start_line": None, "end_line": None,
+         "prefix": "", "suffix": "", "clause_no": None},
+    ])
+    resp = _post(auth_client, task_id, {"edits": {"0": "改过的内容"}})
+    assert resp.status_code == 422, f"无 span 块的编辑应被拒绝，实得 {resp.status_code}"
+    assert "未定位" in resp.json()["detail"]

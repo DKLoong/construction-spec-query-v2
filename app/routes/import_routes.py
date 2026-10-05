@@ -1387,6 +1387,18 @@ async def _compose_or_error(
     if err:
         return None, JSONResponse({"detail": err}, status_code=422)
 
+    # ★ **未定位块不得接受编辑**（P2 终审的 Important 发现 I-1）：
+    #   `splice` 只处理**有 span** 的块（`app/ocr/layout.py` 的 ops 推导式里
+    #   `if b.get("start_line") is not None`）⇒ 对无 span 块的编辑会被**静默忽略**：
+    #   返回 200 却毫无效果。这正是本仓反复声明「**静默丢改动比拒绝更坏**」的形态
+    #   —— 也正是本计划边界表 B1 自己写下的理由。
+    #   前端 `canEdit` 用 `hasSpan` 已挡住 ⇒ **UI 不可达**；这里是**契约层**的兜底
+    #   （防未来前端 bug 或直连调用拿到「成功但无效」）。
+    for idx in edits:
+        if blocks[idx].get("start_line") is None:
+            return None, JSONResponse(
+                {"detail": f"块 {idx} 在原文件中未定位，无法安全回写"}, status_code=422)
+
     # 指纹守卫：layout 的 span 是对**这份文本**锚定的。文本变过（例如任务被重跑）
     # 就必须拒绝，否则会把编辑写进错的行区间 —— 静默改写，正是最不能承受的失效。
     sha = layout.get("base_sha256")
