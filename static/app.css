@@ -872,7 +872,8 @@
 .rvb-locked { color: var(--pico-muted-color); font-size: 0.8rem; }
 
 /* 切分预览（spec §11.4）：整篇的切分列表 + 本次编辑的新增/消失标记 */
-.rvb-preview { border-top: 1px solid var(--pico-muted-border-color); max-height: 220px; display: flex; flex-direction: column; }
+/* flex: 0 0 auto —— 见 tests/test_ocr_review.py::test_preview_panel_is_not_flex_shrinkable */
+.rvb-preview { border-top: 1px solid var(--pico-muted-border-color); max-height: 220px; flex: 0 0 auto; display: flex; flex-direction: column; }
 .rvb-preview-hd { display: flex; gap: 0.75rem; align-items: center; padding: 0.4rem 0.6rem; font-size: 0.85rem; }
 .rvb-added { color: #2f7d32; } .rvb-removed { color: #c62828; }
 .rvb-clause-list { overflow: auto; margin: 0; padding: 0 0.6rem 0.4rem 1.6rem; font-size: 0.85rem; }

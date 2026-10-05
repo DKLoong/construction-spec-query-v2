@@ -133,3 +133,32 @@ def test_review_image_rejects_path_traversal(auth_client, tmp_path, monkeypatch)
     # task_id 非 8 位 hex → 拒绝
     resp2 = auth_client.get("/import/review/BAD!/imgs/a.jpg")
     assert resp2.status_code in (404, 400)
+
+
+def test_clause_list_keys_by_index_not_by_clause_no():
+    """★ 切分列表的 `:key` 必须用**行下标**。
+
+    用 `clause_no` 做 key 时，重复号（后端 `c.get("clause_no") or ""` 可产空串，
+    真实数据里也曾出现同一个号三次）会让 Alpine 的 keyed diff 在列表**变更**时
+    崩掉 —— 症状是「编辑并保存后切分面板只剩标题行，刷新页面又正常」。
+    """
+    from pathlib import Path
+    src = Path("app/templates/partials/ocr_review_blocks.html").read_text(encoding="utf-8")
+    assert 'x-for="(c, ci) in preview.clauses"' in src, \
+        f"切分列表模板结构变了，本用例需同步：{[l for l in src.splitlines() if 'x-for' in l and 'preview' in l]}"
+    assert 'clause_no' not in src.split('x-for="(c, ci) in preview.clauses"')[1].split(">")[0], \
+        "切分列表的 x-for 仍按 clause_no 取值 —— key 必须改用下标"
+
+
+def test_preview_panel_is_not_flex_shrinkable():
+    """★ 切分面板不得可收缩：子列表 `overflow:auto` 的最小高度为 0，
+    空间不足时面板会被压到只剩 header（同样伪装成「只剩标题行」）。
+
+    ⚠️ Task 6 把该规则由 `.rvb-preview` 改名为 `.rvb-cut` —— 届时**同步改本断言**，
+    不是删掉它。
+    """
+    from pathlib import Path
+    css = Path("static/app.css").read_text(encoding="utf-8")
+    line = [l for l in css.splitlines() if l.strip().startswith(".rvb-preview {")]
+    assert line, ".rvb-preview 规则不见了"
+    assert "flex: 0 0 auto" in line[0], f"未固定高度：{line[0]}"

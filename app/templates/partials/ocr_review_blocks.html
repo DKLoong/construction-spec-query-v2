@@ -126,7 +126,9 @@
                     <span x-text="previewErr" style="color:#c00"></span>
                 </header>
                 <ol class="rvb-clause-list">
-                    <template x-for="c in preview.clauses" :key="'pc' + c.clause_no">
+                    <!-- key 用**下标**：clause_no 可能重复（后端会产出空串），
+                         用它做 key 会让 Alpine 在列表变更时崩成「只剩标题行」 -->
+                    <template x-for="(c, ci) in preview.clauses" :key="'pc' + ci">
                         <li :class="preview.added.includes(c.clause_no) && 'rvb-clause-new'"
                             @click="openClause(c.clause_no)">
                             <span class="rvb-cn" x-text="c.clause_no"></span>
