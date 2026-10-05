@@ -479,13 +479,17 @@ def finalize_layout(output_dir: str | Path, base_text: str,
         params = raw.get("ocr_params") or {}
         ignore = ignore_labels if ignore_labels is not None else params.get("markdownIgnoreLabels")
         anchored, stats = anchor_blocks(base_text, raw.get("blocks") or [], ignore)
+        # spec §11.2：块 → 条文号。**必须在这里落库**——审查页只读 layout.json，
+        # 不在请求期重算（那会让 /layout 端点每次请求都跑一遍 parse_markdown）。
+        blocks, align_stats = _align_or_degrade(base_text, anchored)
         layout = {
             "version": LAYOUT_VERSION,
             "pages": raw.get("pages") or [],
-            "blocks": anchored,
+            "blocks": blocks,
             "base_sha256": base_sha256(base_text),
             "ocr_params": params,
-            "stats": {k: v for k, v in stats.items() if k != "residual_miss"},
+            "stats": {**{k: v for k, v in stats.items() if k != "residual_miss"},
+                      **align_stats},
         }
         # ⚠️ 先清旧 layout.json，避免"旧 span + 新文本"错配
         (out / LAYOUT_FILENAME).unlink(missing_ok=True)
@@ -495,7 +499,9 @@ def finalize_layout(output_dir: str | Path, base_text: str,
                            stats["missed"], stats["anchorable"], out)
         # ✅ 只有**成功**才删 raw；失败保留以便排查/重试
         raw_path.unlink(missing_ok=True)
-        return stats
+        # 返回值在原锚定 stats 之上并上条号统计（加 `clause_` 前缀，键不冲突），
+        # 使调用方拿到的 stats 与落盘的 layout.json.stats 口径一致。
+        return {**stats, **align_stats}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError,
             TypeError, ValueError, AttributeError) as e:
         logger.warning("layout 锚定失败（不影响导入；**保留 %s 便于排查**）: %s",
@@ -556,3 +562,25 @@ def align_clauses(md_text: str, blocks: list[dict]) -> tuple[list[dict], dict]:
         "unlabeled": unlabeled,
         "distinct_clauses": len(seen),
     }
+
+
+def _align_or_degrade(md_text: str, blocks: list[dict]) -> tuple[list[dict], dict]:
+    """条号对齐的**降级包装**：任何异常都退回「全部无条号」，绝不向上抛。
+
+    与 `finalize_layout` 里锚定失败的处理口径一致：**保住 layout 主体**，
+    只损失增强字段。返回的 stats 键统一加 `clause_` 前缀，使成功/降级
+    两分支产出**同构**的四个键，也不与锚定 stats 的原生键名混淆。
+    """
+    try:
+        out, st = align_clauses(md_text, blocks)
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
+        logger.warning("条文号对齐失败（不影响锚定，块将不带条号）: %s", e)
+        n = len(blocks)
+        return ([{**b, "clause_no": None} for b in blocks],
+                {"clause_blocks": n, "clause_labeled": 0,
+                 "clause_unlabeled": n, "clause_distinct": 0})
+    # 成功分支同样统一为 `clause_` 前缀：让两个分支产出**同构**的四个键，
+    # 调用方（审查页 / 测试）只需认一套键名，也不与锚定 stats 的原生键名混淆。
+    return out, {"clause_blocks": st["blocks"], "clause_labeled": st["labeled"],
+                 "clause_unlabeled": st["unlabeled"],
+                 "clause_distinct": st["distinct_clauses"]}

@@ -317,3 +317,50 @@ def test_finalize_layout_clears_stale_layout_on_rerun(tmp_path):
 def test_finalize_layout_noop_without_raw(tmp_path):
     import app.ocr.layout as mod
     assert mod.finalize_layout(str(tmp_path), "任意文本") is None
+
+
+def test_finalize_layout_attaches_clause_no_to_blocks(tmp_path):
+    """★ P2.5 接线：块必须带上所属条文号（spec §11.2）。
+
+    此前 `align_clauses` 只有单测、**生产链路从不调用** ⇒ layout.json 里
+    `clause_no` 字段一个都没有，审查页标题栏与「点条号跳转」双双失效。
+
+    ⚠️ 基准文本**必须**写成 `# 1 总则`（带 `#`）。裸单段数字 `1 总则` 被 parser
+    **按设计排除**（它与「项」`1 钢筋` 同形，无法区分；见 memory
+    `md-parser-format-rules.md` §二 与 `tests/test_md_parser.py:190`、`:199-203`）
+    ⇒ 那样写 `clause_no` 恒为 `None`，本用例**不可能通过**，且红灯指向的
+    不是接线而是夹具。实测：`1 总则` → `[]`；`# 1 总则` → `['1']`；`1.1 总则` → `['1.1']`。
+    """
+    import app.ocr.layout as mod
+    mod.save_raw_layout_safely(_one_block_records("本条正文"), str(tmp_path))
+    stats = mod.finalize_layout(str(tmp_path), "# 1 总则\n\n本条正文")
+
+    assert stats is not None
+    lay = mod.load_layout(tmp_path)
+    assert lay is not None
+    blk = lay["blocks"][0]
+    assert "clause_no" in blk, "块未带 clause_no 字段 —— 接线没生效"
+    assert blk["clause_no"] == "1", f"块归属条文号错误：{blk['clause_no']!r}"
+    assert stats["clause_labeled"] == 1 and stats["clause_unlabeled"] == 0
+
+
+def test_finalize_layout_degrades_when_alignment_raises(tmp_path, monkeypatch):
+    """★ 对齐失败必须**降级**（块保留、条号为 None），不得丢掉整份 layout。
+
+    条号是增强信息；若让它把 `finalize_layout` 整条拖挂，审查页会退化成
+    「无版面数据」错误页 —— 那比没有条号严重得多。
+    """
+    import app.ocr.layout as mod
+
+    def boom(*a, **k):
+        raise ValueError("对齐炸了")
+
+    monkeypatch.setattr(mod, "align_clauses", boom)
+    mod.save_raw_layout_safely(_one_block_records("本条正文"), str(tmp_path))
+    stats = mod.finalize_layout(str(tmp_path), "# 1 总则\n\n本条正文")
+
+    assert stats is not None, "对齐失败不应让 finalize_layout 返回 None"
+    lay = mod.load_layout(tmp_path)
+    assert lay is not None and len(lay["blocks"]) == 1, "块数据被丢掉了"
+    assert lay["blocks"][0]["clause_no"] is None
+    assert stats["clause_labeled"] == 0
