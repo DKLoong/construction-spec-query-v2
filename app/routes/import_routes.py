@@ -1273,8 +1273,8 @@ async def review_page_image(task_id: str, page_no: int, scale: float = 1.5):
 
     if not re.fullmatch(r"[0-9a-f]{8}", task_id):
         return JSONResponse({"detail": "任务ID非法"}, status_code=404)
-    if not 0.25 <= scale <= 3.0:
-        return JSONResponse({"detail": "scale 需在 [0.25, 3.0]"}, status_code=422)
+    if not 0.25 <= scale <= 8.0:
+        return JSONResponse({"detail": "scale 需在 [0.25, 8.0]"}, status_code=422)
 
     task = _get_task(task_id)
     src = (task or {}).get("file_path") or ""

@@ -83,8 +83,16 @@ function reviewBlocks() {
             return this.blocks.filter((b) => b.page === this.curPage);
         },
 
+        /** 请求倍率 = CSS 倍率 × devicePixelRatio。
+         *
+         * ⚠️ 不乘 dpr 时：PNG 像素宽 ≡ 容器 CSS 宽（与单位无关地恒等）⇒ 恒为
+         * 「1 图像像素 : 1 CSS 像素」。在 200% 显示缩放的屏幕上，浏览器要 2 个
+         * 设备像素而位图只有 1 个 ⇒ 放大插值 ⇒ 糊。**画布 CSS 宽不用改**：
+         * `.rvb-img{width:100%}` 会把多出来的像素正确地缩回去。
+         */
         pageUrl(n) {
-            const s = this.scaleMode === 'fit' ? this._fitScale() : this.scaleMode;
+            const css = this.scaleMode === 'fit' ? this._fitScale() : this.scaleMode;
+            const s = css * (window.devicePixelRatio || 1);
             return `/import/review/${this.taskId}/page/${n}.png?scale=${Number(s).toFixed(2)}`;
         },
 

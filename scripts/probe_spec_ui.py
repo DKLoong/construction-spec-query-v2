@@ -2225,6 +2225,40 @@ def f13_18_preview_count_equals_imported_clause_count(page):
         f"切分预览与入库条数不一致：预览 {preview_n} / 入库 {imported_n}"
 
 
+def f13_19_page_image_is_rendered_at_device_pixel_ratio(page):
+    """★★ T39：页图的**位图分辨率**必须跟上屏幕 dpr —— 不是看它「清不清楚」，
+    而是直接量 `naturalWidth / clientWidth ≈ devicePixelRatio`。
+
+    ⚠️ **必须自带一个 dpr=2 的页面**：探针主循环建页时没有传
+    `device_scale_factor`，Playwright 默认 1 ⇒ 在那一页上量 `ratio ≈ dpr`
+    是 **1 ≈ 1 的恒真空转**，修复前后都绿。故本用例自行开一个 2 倍页。
+    """
+    task_id = _rvb_seed(page, "19")
+    assert task_id is not None, "前置不成立"
+
+    browser = page.context.browser
+    assert browser is not None, "取不到 browser，无法建 dpr=2 的页面"
+    hp = browser.new_page(viewport={"width": 1600, "height": 900}, device_scale_factor=2)
+    try:
+        login(hp)                                  # 新页面 = 新 context，必须重新登录
+        hp.goto(f"{BASE}/import/review/{task_id}")
+        assert poll_until(
+            hp,
+            lambda: hp.evaluate(
+                "() => { const i = document.querySelector('.rvb-img');"
+                " return !!i && i.naturalWidth > 0; }"),
+            10000), "页图未加载出位图"
+        dpr = hp.evaluate("() => window.devicePixelRatio || 1")
+        assert abs(dpr - 2) < 0.01, f"dpr=2 的页面没建成（实测 {dpr}）—— 本用例会退化成空转"
+        ratio = hp.evaluate(
+            "() => { const i = document.querySelector('.rvb-img');"
+            " return i.naturalWidth / i.clientWidth; }")
+        assert abs(ratio - dpr) < 0.15, \
+            f"页图位图密度 {ratio:.2f} 与屏幕 dpr {dpr:.2f} 不符 —— 仍在 1:1 栅格化"
+    finally:
+        hp.close()
+
+
 CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_2_inline_round_trip_is_byte_exact,
                 f13_3_alignment_wrap_unwrap_round_trip,
@@ -2242,7 +2276,8 @@ CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_15_editing_a_block_does_not_let_submit_while_editing,
                 f13_16_submit_sends_the_edited_text_to_phase2,
                 f13_17_submit_without_edits_still_imports,
-                f13_18_preview_count_equals_imported_clause_count]
+                f13_18_preview_count_equals_imported_clause_count,
+                f13_19_page_image_is_rendered_at_device_pixel_ratio]
 
 
 if __name__ == "__main__":

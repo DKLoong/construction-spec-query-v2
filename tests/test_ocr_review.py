@@ -162,3 +162,12 @@ def test_preview_panel_is_not_flex_shrinkable():
     line = [l for l in css.splitlines() if l.strip().startswith(".rvb-preview {")]
     assert line, ".rvb-preview 规则不见了"
     assert "flex: 0 0 auto" in line[0], f"未固定高度：{line[0]}"
+
+
+def test_page_url_multiplies_scale_by_device_pixel_ratio():
+    """★ 1 图像像素 : 1 CSS 像素是模糊的根因（200% 缩放下被 2 倍上采样）。
+    请求倍率必须乘上 devicePixelRatio。"""
+    from pathlib import Path
+    src = Path("static/components/review-blocks.js").read_text(encoding="utf-8")
+    seg = src.split("pageUrl(n)")[1].split("}")[0]
+    assert "devicePixelRatio" in seg, f"pageUrl 未乘 dpr：{seg!r}"

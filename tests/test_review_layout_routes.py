@@ -95,7 +95,7 @@ def test_page_endpoint_rejects_out_of_range_scale(review_env):
     """★ `scale` 是**外部输入**：越界必须挡下（全局规则 §1.1）——
     否则 200 倍缩放能把 PyMuPDF 渲染成一堵墙，把服务端内存吃光。"""
     client, _ = review_env
-    for bad in ("0", "0.1", "3.5", "abc", "-1"):
+    for bad in ("0", "0.1", "8.5", "abc", "-1"):
         r = client.get(f"/import/review/{TASK_ID}/page/1.png?scale={bad}")
         assert r.status_code == 422, f"scale={bad} 应被拒"
 
@@ -152,3 +152,12 @@ def test_page_endpoint_404_for_invalid_task_id(auth_client):
     r = auth_client.get("/import/review/ZZZZZZZZ/page/1.png")
     assert r.status_code == 404
     assert r.json()["detail"] == "任务ID非法", f"不是本端点的 404：{r.text}"
+
+
+def test_page_image_accepts_hidpi_scale(auth_client):
+    """★ dpr=2 的屏幕上，适应宽度后请求倍率会到 ~3.0×2=6.0，
+    旧上限 3.0 会 422 ⇒ 页图整个加载不出来（比模糊更糟）。"""
+    r = auth_client.get("/import/review/deadbeef/page/1.png?scale=6.0")
+    assert r.status_code != 422, f"6.0 被判非法：{r.status_code} {r.text[:120]}"
+    r2 = auth_client.get("/import/review/deadbeef/page/1.png?scale=9.0")
+    assert r2.status_code == 422, "上限没兜住 —— 渲染倍数必须有护栏"
