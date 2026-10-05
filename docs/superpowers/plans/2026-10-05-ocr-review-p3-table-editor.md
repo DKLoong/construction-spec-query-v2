@@ -547,7 +547,11 @@ Expected: `f14_5` 红，报「点纠正后没有出现可编辑表格」。
                 const box = this._editBox();
                 box.innerHTML = '';
                 if (b.label === 'table') {
-                    const t = window.tableEditor.parse(b.md_html || b.content);
+                    // ⚠️ **必须用 `md_html`，且缺了就不进编辑态** —— 绝不能回落到 `b.content`：
+                    //    它是 OCR 的**去样式版**，保存时会把它写回 md ⇒ 表格丢掉 `border=1` 与
+                    //    `margin: auto`（边框与居中的唯一来源，渲染侧无补偿 CSS）。宁可不让改。
+                    if (!b.md_html) return;
+                    const t = window.tableEditor.parse(b.md_html);
                     if (!t) return;
                     t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
                     this._tableSnapshots = [t.outerHTML];       // 快照栈的起点（Task 5 起用）
