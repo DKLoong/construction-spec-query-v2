@@ -427,11 +427,6 @@ git commit -m "feat: 提交期规范化 normalize_md（表格居中 + 字面 n �
 # ⚠️ 本仓无 JS 测试设施 ⇒ 探针是纯函数唯一的宿主；改 md-inline.js 必须同步跑 f13。
 
 
-def _f13_ok(page, expr, msg=None):
-    """在页内跑一段表达式，返回其真值；失败时给出表达式本身"""
-    val = page.evaluate(expr)
-    assert val, (msg or "表达式不成立") + f"：{expr}"
-    return val
 ```
 
 ```python
@@ -461,6 +456,20 @@ def f13_2_inline_round_trip_is_byte_exact(page):
             return window.mdInline.domToMd(box);
         }""", x)
         assert got == x, f"行内往返被改坏：{x!r} → {got!r}"
+    # ★ **方向钉**（Task 2 评审的 Important 发现，已裁定采纳）：
+    #   `domToMd(lineToHtml(x)) === x` 只证明两者**互为逆函数** —— 一对
+    #   「lineToHtml 原样返回文本 / domToMd 取 textContent」的错实现同样恒绿，
+    #   即整条标记方向可以完全失守而本用例不动。spec §15.3 明确要求这张网**非空**
+    #   （摘掉能力必须变红），故必须再直接钉住两个方向。
+    html = page.evaluate("() => window.mdInline.lineToHtml('**粗** 和 ~~删~~ 与 *斜*')")
+    assert "<strong>" in html and "<s>" in html and "<i>" in html, \
+        f"标记没有转成真实标签（行内 md → HTML 方向失守）：{html!r}"
+    back = page.evaluate("""() => {
+        const box = document.createElement('div');
+        box.innerHTML = '<strong>a</strong><s>b</s><i>c</i>';
+        return window.mdInline.domToMd(box);
+    }""")
+    assert back == "**a**~~b~~*c*", f"手写 HTML 未转回标记（DOM → md 方向失守）：{back!r}"
     # Chrome 会在空的可编辑行里留占位 <br>：整行只有一个 <br> 必须被当成**空行**
     got = page.evaluate("""() => {
         const box = document.createElement('div'); box.innerHTML = '<br>';
