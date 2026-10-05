@@ -2255,14 +2255,28 @@ def _rvb_imported_clause_count(title_fragment):
 
 
 def _rvb_imported_has_text(title_fragment, needle):
-    """库里该规范的任一条文含 needle 即真"""
+    """库里该规范的任一条文含 needle 即真 —— **content 或 title 都要查**。
+
+    ⚠️ **只查 `content` 会让一条完全正常的链路永久变红**（Task 9 实现者实测 + 控制者复核）：
+
+    ```text
+    "9.9.8 PROBE 端到端条文"                       → 0 条！（裸编号行无自身正文 ⇒ 内节点不入库）
+    "9.9.8 PROBE 端到端条文\n\n后续正文一句。"      → 1 条，title='PROBE 端到端条文'，content='后续正文一句。'
+    夹具那三条单行（3.0.1/3.0.2/3.0.3 各一行）      → 3 条，title=''，content='第一条。'
+    ```
+
+    即：编号后的那段文字**可能落在 `title` 而不是 `content`**（取决于是否有后续正文与 R14 兄弟表决）。
+    故两个字段都要查 —— 这不是放宽断言：变异（跳过 compose 用原文提交）**仍会让 f13_16 变红**
+    （原文里根本没有 needle，两个字段都查不到）。
+    """
     from app.database import get_db
     sid = _rvb_imported_spec_id(title_fragment)
     if sid is None:
         return False
     with get_db() as conn:
-        n = conn.execute("SELECT COUNT(*) FROM clauses WHERE spec_id=? AND content LIKE ?",
-                         (sid, f"%{needle}%")).fetchone()[0]
+        n = conn.execute(
+            "SELECT COUNT(*) FROM clauses WHERE spec_id=? AND (content LIKE ? OR title LIKE ?)",
+            (sid, f"%{needle}%", f"%{needle}%")).fetchone()[0]
     return n > 0
 
 
