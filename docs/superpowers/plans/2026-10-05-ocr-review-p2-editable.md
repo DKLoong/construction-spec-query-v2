@@ -1300,6 +1300,18 @@ def test_layout_endpoint_ships_editable_labels(review_env):
             return els[0] || null;
         },
 
+        /** 行首是编号或 `#` 标题 ⇒ 该行**不得被包裹**（实测：标签与内容同行会让全篇切不出条文）。
+         *
+         * ⚠️ **本 Task 就必须定义它**（Task 6 实现者实测逼出）：`enterEdit` 与 `_makeLine`
+         * 都要调它来维护 `focusIsClause`，而 Task 7 才用它做对齐禁用。若留到 Task 7 定义，
+         * Task 6 照抄会在 `$nextTick` 回调里抛 `TypeError` —— **且探针看不见**（编辑行已经
+         * append 进去了，f13_4..7 照绿）。这正是本仓最怕的静默失效形态。
+         */
+        isClauseLine(el) {
+            const t = (el.textContent || '').trim();
+            return /^#{1,6}\s+/.test(t) || /^\d+(\.\d+)*\s*[．.、]?\s*\S/.test(t);
+        },
+
         _insertLineAfter(el) {
             const box = this.$refs.editBox;
             const line = this._makeLine('');
@@ -1456,7 +1468,13 @@ def _rvb_first_editable(page):
 
 
 def f13_4_entering_edit_keeps_line_count(page):
-    """★ spec R10：进入编辑态前后**行数必须一致**（否则一进一出就多/少一行）"""
+    """★ spec R10：进入编辑态前后**行数必须一致**（否则一进一出就多/少一行）
+
+    ★ 同时钉住「**进入编辑态不得抛异常**」。为什么必须单独钉：`$nextTick` 回调里的
+    throw 被 Alpine 吞掉，而编辑行**已经 append 进去了** ⇒ 只数行数的断言**看不见**它
+    （Task 6 实现者实测：计划原稿把 `isClauseLine` 留到下一个 Task 定义，就会造成
+    这种「编辑器坏了但四条用例全绿」的静默失效）。故挂一个 pageerror 收集器。
+    """
     task_id = _rvb_seed(page, "4")
     assert task_id is not None, "前置不成立"
     idx = _rvb_first_editable(page)
@@ -1466,8 +1484,19 @@ def f13_4_entering_edit_keeps_line_count(page):
         return (data.blocks[i].content || '').split('\\n').length;
     }""", [task_id, idx])
     blk = _rvb_block(page, idx)
-    _rvb_edit(page, idx)
-    got = blk.locator(".rvb-line").count()
+
+    errs = []
+
+    def _on_err(e):
+        errs.append(str(e))
+
+    page.on("pageerror", _on_err)
+    try:
+        _rvb_edit(page, idx)
+        got = blk.locator(".rvb-line").count()
+    finally:
+        page.remove_listener("pageerror", _on_err)
+    assert not errs, f"进入编辑态时页面抛了异常（会被 Alpine 吞掉，只有这条断言看得见）：{errs}"
     assert got == expect, f"进出编辑态行数不一致：原文 {expect} 行，编辑态 {got} 行"
 
 
@@ -1555,11 +1584,8 @@ git commit -m "feat: 行级编辑器骨架（进入/取消/保存/行增删 + �
             document.execCommand(cmd, false, null);   // Chrome：产生 <strong>/<i>/<strike>
         },
 
-        /** 行首是编号或 `#` 标题 ⇒ **不得包裹**（实测：标签与内容同行会让全篇切不出条文） */
-        isClauseLine(el) {
-            const t = (el.textContent || '').trim();
-            return /^#{1,6}\s+/.test(t) || /^\d+(\.\d+)*\s*[．.、]?\s*\S/.test(t);
-        },
+        // `isClauseLine` **已在 Task 6 定义**（`enterEdit`/`_makeLine` 需要它维护
+        // `focusIsClause`）—— 本 Task 只消费，**不要重复定义**。
 
         /** ⚠️ 判据取**响应式状态**（focusIsClause，由行的 focus/input 事件维护）。
          *  若在这里读 `document.activeElement`，Alpine 不会跟着重算 ⇒ 按钮 disabled 永远是旧值。 */
