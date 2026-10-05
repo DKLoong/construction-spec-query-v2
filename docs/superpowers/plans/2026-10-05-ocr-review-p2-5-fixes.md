@@ -795,7 +795,7 @@ git commit -m "feat: 切分预览改为独立第三栏（左 PDF / 中 编辑 / 
 
 **Files:**
 - Modify: `static/components/review-blocks.js`、`app/templates/partials/ocr_review_blocks.html`、`static/app.css`、`app/templates/base.html`
-- Test: `scripts/probe_spec_ui.py`（f13 新用例）
+- Test: `scripts/probe_spec_ui.py`（f13 新用例 + `_rvb_seed` 加可选 `extra_md`）
 
 **Interfaces:**
 - Consumes: Task 1 落库的 `b.clause_no`；既有 `focusBlock(i)`；既有 `activeIdx`
@@ -803,7 +803,33 @@ git commit -m "feat: 切分预览改为独立第三栏（左 PDF / 中 编辑 / 
 
 - [ ] **Step 1: 加探针用例**
 
+先给探针的夹具函数 `_rvb_seed`（`scripts/probe_spec_ui.py:1518`）加一个**可选**参数，只在被显式传入时才生效（不影响其余 18 个用例）：
+
 ```python
+def _rvb_seed(page, suffix, extra_md=""):
+    """造一个**带 layout.json** 的待审查任务并打开审查页；前置不成立返回 None。
+
+    `extra_md`：追加到参考 md **末尾**的额外文本（默认空 ⇒ 行为与原先逐字一致）。
+    追加在末尾 ⇒ 既有块的行号不位移、锚定不受影响。
+    """
+```
+并在函数体内 `md = (ref / "reference.md").read_text(encoding="utf-8")` 那一行**之后**加：
+
+```python
+    if extra_md:
+        md += extra_md
+```
+（`base_sha256(md)` 与写库的 `md_text` 都用这个 `md` 变量，故自动一致。）
+
+然后是四条用例：
+
+```python
+# 追加到参考 md **末尾**的两条同号条文：制造重复 clause_no 以触发 key 碰撞。
+# 控制器实测（2026-10-05）：条数 138→140、重复号 ['A.1']、**既有块 start_line 不变**。
+_DUP_CLAUSE_MD = ("\n\n## 附录 C 探针甲\n\nA.1 设备要求应符合下列规定。\n\n"
+                  "## 附录 D 探针乙\n\nA.1 设备要求应符合下列规定。\n")
+
+
 def f13_21_clicking_a_clause_scrolls_to_its_block(page):
     """★ 点切分栏的条号 ⇒ 滚动到并高亮对应块（此前 `openClause` 恒 findIndex=-1，
     因为块上根本没有 clause_no —— Task 1 接线后才可能成立）。"""
@@ -841,6 +867,34 @@ def f13_23_cut_column_collapses_and_gives_width_back(page):
     assert poll_until(page, lambda: not page.locator(".rvb-cut .rvb-clause-list").is_visible(), 3000), \
         "未折叠"
     assert left_w() > before, "折叠后中栏没有变宽"
+
+
+def f13_24_duplicate_clause_numbers_render_one_row_each(page):
+    """★★ Task 2 那个 `:key` 修复的**运行时护栏**（原本只有源码文本断言）。
+
+    触发条件（控制器 2026-10-05 实测）：**重复的 `clause_no` 是可达的，且能穿过
+    Task 4 的编号误判修复** —— parser 的「同号重复拒绝」只管**纯数字**号，字母/附录号
+    不受它管：`A.1` 出现两次 ⇒ `['A.1','A.1']`（`附录A`/`B. 0.1` 同）。对照：纯数字
+    `## 1 …` 出现两次只会产出一条。
+    用 `:key="'pc' + c.clause_no"` 时 Alpine 的 keyed diff 在列表**变更**后会把重复项
+    并掉 ⇒ 行数少于后端 `count`。
+
+    ⚠️ 断言必须发生在**列表变更之后**，不能只看首屏 —— 症状本身就是「保存后才折叠」。
+    """
+    task_id = _rvb_seed(page, "24", extra_md=_DUP_CLAUSE_MD)
+    assert task_id is not None, "前置不成立"
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() > 0, 10000), \
+        "切分预览为空"
+    before_n = page.locator(".rvb-clause-list li").count()
+    assert before_n > 1, f"夹具没造出多行预览（{before_n} 行），本用例会退化"
+    # 触发一次列表变更（首块进编辑态再取消 ⇒ schedulePreview 重算）
+    page.locator(".rvb-block .rvb-fix").first.click()
+    page.locator("button:has-text('取消')").first.click()
+    assert poll_until(
+        page,
+        lambda: page.locator(".rvb-clause-list li").count() == before_n, 5000), \
+        (f"列表变更后行数塌了：变更前 {before_n} / 变更后 "
+         f"{page.locator('.rvb-clause-list li').count()} —— key 碰撞未修好")
 ```
 
 - [ ] **Step 2: 实现 —— JS**
@@ -899,7 +953,7 @@ def f13_23_cut_column_collapses_and_gives_width_back(page):
 - [ ] **Step 5: 跑探针**
 
 Run: `D:/Python/python.exe scripts/probe_spec_ui.py f13`
-Expected: `23/23`
+Expected: `24/24`
 
 - [ ] **Step 6: 跑 pyright 与增量测试**
 
