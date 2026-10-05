@@ -834,10 +834,16 @@
    故缩放时框自动跟随，不需要任何重算。 */
 .rvb-root { height: 100%; display: flex; flex-direction: column; }
 .rvb-error { padding: 1rem; }
-/* `flex: 0 0 100%`（**不是** `flex: 1`）—— 三栏占满**一屏高**、不被下方提交区挤压；
-   提交区因此落到折线以下，`_resultScroller()` 在点「确认并继续导入」时才把
-   `.center-panel-v2` 滚到底（用户裁定：给三栏尽可能留出展示空间）。 */
-.rvb-panes { display: flex; gap: 12px; flex: 0 0 100%; min-height: 0; }
+/* 三栏吃掉「一屏减去提交行」的全部剩余高度（用户裁定 2026-10-05）：
+   **提示语与两个按钮必须和栏同屏**，只有下方**结果槽**的高度留给下一屏 ——
+   由 `.rvb-result-slot` 的 `min-height: 0`（空槽不占位）实现，结果内容一来就把它撑高、
+   总高超出 ⇒ `.center-panel-v2` 出现滚动，点「确认并继续导入」时既有 `_resultScroller()`
+   自动把进度滚进视野。**不要**改成固定 `flex-basis`：那会把提交行一起推下折线。 */
+/* ⚠️ `min-height` 是 **60vh 而不是 0**：`flex: 1 1 auto` 三栏是**可收缩**的，
+   若下限为 0，进度区一出现三栏就会被压扁去容纳它（实测：注入 600px 后面板不可滚动、
+   三栏被吃剩 ~90px）。给了下限 ⇒ 三栏顶多让到 60vh，其余溢出到下一屏、由
+   `.center-panel-v2` 滚动（用户在点「确认并继续导入」时由 `_resultScroller()` 自动滚到）。 */
+.rvb-panes { display: flex; gap: 12px; flex: 1 1 auto; min-height: 60vh; }
 /* 三栏共用**一套外框**（用户裁定：参照切分预览栏统一轮廓）。
    外框只在这一处声明 —— 别再往单个栏里各写一遍，否则改一处会漏两处。 */
 .rvb-left, .rvb-right, .rvb-cut {
@@ -917,9 +923,14 @@
 /* ⚠️ `flex: 0 0 auto` 不是可选的：`.rvb-panes` 占了 100% 高之后，提交区若可收缩
    （默认 `flex-shrink:1`）就会被**压扁**而不是落到折线以下 —— 那样既没腾出空间、
    又把按钮挤变形。固定不收缩 ⇒ 总高超出 `.rvb-root` ⇒ `.center-panel-v2` 出现滚动。 */
-.rvb-submit { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between;
+.rvb-submit { display: flex; gap: 0.75rem; align-items: center; justify-content: flex-start;
               flex: 0 0 auto;
               border-top: 1px solid var(--pico-muted-border-color); padding-top: 0.75rem; margin-top: 0.75rem; }
+/* 两个按钮成组**右对齐**：提示语留左，操作区靠右（`margin-left:auto`）。
+   不要用 `justify-content: space-between` —— 那会把「确认」顶到页面中部。 */
+.rvb-submit-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 0.75rem; }
 .rvb-mask { position: absolute; inset: 0; background: rgba(255,255,255,.55);
             border: 1px dashed var(--pico-muted-border-color); border-radius: 6px; z-index: 2; }
-.rvb-result-slot { min-height: 96px; flex: 0 0 auto; }
+/* `min-height: 0`（原为 96px）—— 空槽**不占位**：闲置时三栏能把提交行以上全吃掉，
+   进度区不会白占一屏；内容一到就自然撑高并触发外层滚动（用户裁定）。 */
+.rvb-result-slot { min-height: 0; flex: 0 0 auto; }

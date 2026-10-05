@@ -165,14 +165,19 @@
     <!-- 提交 / 取消（与源码审查页同构：raw body + 结果区 + htmx 轮询） -->
     <div class="rvb-submit">
         <small style="color:var(--pico-muted-color)">审查完毕后点击确认继续导入流程（解析 + 分类 + 索引）</small>
-        <span style="position:relative;display:inline-flex;align-items:center">
-            <span x-show="submitting" x-cloak class="rvb-mask"></span>
-            <button type="button" style="position:relative;z-index:1;margin:0" :disabled="submitting"
-                    @click="confirmImport()" x-text="submitting ? '提交中…' : '✅ 确认并继续导入'"></button>
+        <!-- 两个按钮**成组右对齐**（用户裁定）：主操作在左、取消在右。
+             注意**不要**写成 `justify-content: space-between`——那会让「确认」落在页面
+             中部、看着像跟中栏（版面编辑栏）绑在一起。 -->
+        <span class="rvb-submit-actions">
+            <span style="position:relative;display:inline-flex;align-items:center">
+                <span x-show="submitting" x-cloak class="rvb-mask"></span>
+                <button type="button" style="position:relative;z-index:1;margin:0" :disabled="submitting"
+                        @click="confirmImport()" x-text="submitting ? '提交中…' : '✅ 确认并继续导入'"></button>
+            </span>
+            <button type="button" class="secondary" style="margin:0"
+                    hx-post="/import/review/{{ task_id }}/cancel"
+                    hx-confirm="确定取消本次导入？已上传的文件和识别结果将被删除。">✖ 取消导入</button>
         </span>
-        <button type="button" class="secondary" style="margin:0"
-                hx-post="/import/review/{{ task_id }}/cancel"
-                hx-confirm="确定取消本次导入？已上传的文件和识别结果将被删除。">✖ 取消导入</button>
     </div>
     <!-- ⚠️ `submitError` 的 `<p>` 必须在 `#rvb-result` **外面**（Task 9 评审的 Important 发现）：
          报错路径上 `box.innerHTML = html` 会把槽内内容**整体换掉** ⇒ 槽内的 `<p>` 被销毁 ⇒

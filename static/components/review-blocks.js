@@ -197,16 +197,35 @@ function reviewBlocks() {
             });
         },
 
+        /** 让 `el` 在 `box` **这一个**容器内就位，**不牵动任何外层滚动容器**。
+         *
+         * ⚠️ **不能改用 `scrollIntoView`**：它会连**所有可滚动祖先**一起滚 —— 外层
+         * `.center-panel-v2` 自三栏占满一屏后也可滚动，于是点一下切分栏的条号，
+         * 整页跟着跳（用户实测）。手动改 `scrollTop` 只影响指定容器。
+         * `block`：`'center'` 居中；`'nearest'` 贴近边缘（已在视内则不动）。
+         */
+        _scrollInto(el, box, block) {
+            if (!el || !box) return;
+            const er = el.getBoundingClientRect();
+            const br = box.getBoundingClientRect();
+            if (block === 'center') {
+                box.scrollTop += (er.top - br.top) - (box.clientHeight - er.height) / 2;
+            } else if (er.top < br.top) {
+                box.scrollTop += er.top - br.top;
+            } else if (er.bottom > br.bottom) {
+                box.scrollTop += er.bottom - br.bottom;
+            }
+        },
+
         _scrollLeftTo() {
             const vp = this.$refs.vp;
-            const box = vp && vp.querySelector('.rvb-box--on');
-            if (box) box.scrollIntoView({ block: 'center', behavior: 'auto' });
+            this._scrollInto(vp && vp.querySelector('.rvb-box--on'), vp, 'center');
         },
 
         _scrollRightTo(idx) {
             const list = this.$refs.list;
-            const el = list && list.querySelector(`[data-block-idx="${idx}"]`);
-            if (el) el.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+            this._scrollInto(list && list.querySelector(`[data-block-idx="${idx}"]`),
+                             list, 'nearest');
         },
 
         // ── P2：行级编辑（编辑**只写内存** this.edits，不发任何写请求） ──
