@@ -1684,6 +1684,77 @@ CASES["f12"] = [f12_1_left_shows_page_image,
                 f12_7_review_page_falls_back_when_no_layout]
 
 
+# ═══════════════════════════════════════════
+# f13：版面块审查页（P2 编辑能力）
+# ═══════════════════════════════════════════
+#
+# 复用 f12 的 _rvb_seed（造带 layout.json 的待审查任务）。
+# 本组用例一律**先进入编辑态再断言**；纯函数用例直接 evaluate window.mdInline。
+#
+# ⚠️ 本仓无 JS 测试设施 ⇒ 探针是纯函数唯一的宿主；改 md-inline.js 必须同步跑 f13。
+
+
+def _f13_ok(page, expr, msg=None):
+    """在页内跑一段表达式，返回其真值；失败时给出表达式本身"""
+    val = page.evaluate(expr)
+    assert val, (msg or "表达式不成立") + f"：{expr}"
+    return val
+
+
+def f13_1_md_inline_loaded_and_split_lines(page):
+    """前置：md-inline.js 已加载（否则后面全是空跑）"""
+    page.goto(BASE)
+    assert page.evaluate("() => !!(window.mdInline && window.mdInline.splitLines)"), \
+        "md-inline.js 未加载（base.html 未引入或版本号没递增）"
+    assert page.evaluate("() => window.mdInline.splitLines('a\\nb\\nc').length") == 3
+
+
+def f13_2_inline_round_trip_is_byte_exact(page):
+    """★ 纯函数不变式：domToMd(lineToHtml(x)) === x（含强调、字面 \\n、孤立星号、&<>）"""
+    page.goto(BASE)
+    cases = [
+        "3.0.1 普通一行",
+        "**粗体**与*斜体*与~~删除线~~",
+        "3.0.1 采用 * 号标注",          # 孤立星号：必须原样保留
+        "甲" + chr(92) + "n乙",         # 字面反斜杠 n
+        "a & b < c > d",                # 不做 HTML 转义 ⇒ 逐字节可逆
+        "",                             # 空行：不得用 <br> 占位，否则回来变成字面 \n
+    ]
+    for x in cases:
+        got = page.evaluate("""(x) => {
+            const box = document.createElement('div');
+            box.innerHTML = window.mdInline.lineToHtml(x);
+            return window.mdInline.domToMd(box);
+        }""", x)
+        assert got == x, f"行内往返被改坏：{x!r} → {got!r}"
+    # Chrome 会在空的可编辑行里留占位 <br>：整行只有一个 <br> 必须被当成**空行**
+    got = page.evaluate("""() => {
+        const box = document.createElement('div'); box.innerHTML = '<br>';
+        return window.mdInline.domToMd(box);
+    }""")
+    assert got == "", f"占位 <br> 被当成了字面换行：{got!r}"
+
+
+def f13_3_alignment_wrap_unwrap_round_trip(page):
+    """对齐包裹/解包往返；且包裹**不新增行**（M9：绝不引入换行符）"""
+    page.goto(BASE)
+    got = page.evaluate("""() => {
+        const M = window.mdInline;
+        const line = M.wrap('图 8.0.2 (mm)', 'center');
+        const parsed = M.parseLine(line);
+        return {line: line, align: parsed.align, inner: parsed.inner};
+    }""")
+    assert got["align"] == "center", f"解包未取回对齐档：{got}"
+    assert got["inner"] == "图 8.0.2 (mm)", f"解包未取回内容：{got}"
+    assert "\n" not in got["line"], "对齐包裹引入了换行 —— 会改变切分"
+    assert "text-align:center" in got["line"]
+
+
+CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
+                f13_2_inline_round_trip_is_byte_exact,
+                f13_3_alignment_wrap_unwrap_round_trip]
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "f1"
     with sync_playwright() as p:
