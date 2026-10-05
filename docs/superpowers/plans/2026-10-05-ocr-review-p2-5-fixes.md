@@ -86,10 +86,16 @@ def test_finalize_layout_attaches_clause_no_to_blocks(tmp_path):
 
     此前 `align_clauses` 只有单测、**生产链路从不调用** ⇒ layout.json 里
     `clause_no` 字段一个都没有，审查页标题栏与「点条号跳转」双双失效。
+
+    ⚠️ 基准文本**必须**写成 `# 1 总则`（带 `#`）。裸单段数字 `1 总则` 被 parser
+    **按设计排除**（它与「项」`1 钢筋` 同形，无法区分；见 memory
+    `md-parser-format-rules.md` §二 与 `tests/test_md_parser.py:190`、`:199-203`）
+    ⇒ 那样写 `clause_no` 恒为 `None`，本用例**不可能通过**，且红灯指向的
+    不是接线而是夹具。实测：`1 总则` → `[]`；`# 1 总则` → `['1']`；`1.1 总则` → `['1.1']`。
     """
     import app.ocr.layout as mod
     mod.save_raw_layout_safely(_one_block_records("本条正文"), str(tmp_path))
-    stats = mod.finalize_layout(str(tmp_path), "1 总则\n\n本条正文")
+    stats = mod.finalize_layout(str(tmp_path), "# 1 总则\n\n本条正文")
 
     assert stats is not None
     lay = mod.load_layout(tmp_path)
@@ -113,7 +119,7 @@ def test_finalize_layout_degrades_when_alignment_raises(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod, "align_clauses", boom)
     mod.save_raw_layout_safely(_one_block_records("本条正文"), str(tmp_path))
-    stats = mod.finalize_layout(str(tmp_path), "1 总则\n\n本条正文")
+    stats = mod.finalize_layout(str(tmp_path), "# 1 总则\n\n本条正文")
 
     assert stats is not None, "对齐失败不应让 finalize_layout 返回 None"
     lay = mod.load_layout(tmp_path)
@@ -194,7 +200,7 @@ Expected: 全绿（`test_layout_clauses.py` 的 8 例不受影响 —— 它直�
 
 - [ ] **Step 5: 跑 pyright**
 
-Run: `D:/Python/python.exe -m pyright app tests scripts`
+Run: `pyright app tests scripts`
 Expected: 0 errors 0 warnings（与基线一致）
 
 - [ ] **Step 6: 提交**
@@ -560,7 +566,7 @@ Run: 两份真语料 —— `tests/fixtures/cjj2_source.md`（**sha256 勿改**�
 
 - [ ] **Step 5: 跑 pyright**
 
-Run: `D:/Python/python.exe -m pyright app tests scripts`
+Run: `pyright app tests scripts`
 Expected: 0 errors 0 warnings
 
 - [ ] **Step 6: 提交**
@@ -898,7 +904,7 @@ Expected: `23/23`
 - [ ] **Step 6: 跑 pyright 与增量测试**
 
 Run: `D:/Python/python.exe -m pytest tests/test_ocr_review.py tests/test_layout_clauses.py tests/test_ocr_layout.py -q`
-Run: `D:/Python/python.exe -m pyright app tests scripts`
+Run: `pyright app tests scripts`
 Expected: 全绿 / 0 errors
 
 - [ ] **Step 7: 提交**
