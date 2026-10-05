@@ -1757,9 +1757,122 @@ def f13_3_alignment_wrap_unwrap_round_trip(page):
     assert "text-align:center" in got["line"]
 
 
+# ⚠️ **编辑框在 `x-for` 内** ⇒ 每个块各有一份 `.rvb-editor` / `.rvb-lines`（靠 `x-show` 隐藏）。
+#    所以断言**必须按块作用域**取：`page.locator(".rvb-line")` 会拿到**第 0 个块**的编辑
+#    （不论是否可见），点它的按钮 = 点一个 display:none 的元素，Playwright 直接失败。
+
+def _rvb_block(page, idx):
+    return page.locator(".rvb-block").nth(idx)
+
+
+def _rvb_edit(page, idx):
+    """进入第 idx 个块的编辑态；返回**该块**的编辑框 locator"""
+    blk = _rvb_block(page, idx)
+    blk.locator(".rvb-fix").click()
+    assert poll_until(page, lambda: blk.locator(".rvb-lines").is_visible(), 5000), \
+        "进入编辑态后编辑框未出现"
+    return blk.locator(".rvb-lines")
+
+
+def _rvb_type_line(page, idx, text):
+    """把编辑中块的**第一行**整体换成 text，并全选该行内容（execCommand 需要选区）"""
+    page.evaluate("""([i, t]) => {
+        const el = document.querySelectorAll('.rvb-block')[i].querySelector('.rvb-line');
+        el.textContent = t;
+        el.focus();
+        const r = document.createRange(); r.selectNodeContents(el);
+        const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    }""", [idx, text])
+
+
+def _rvb_first_editable(page):
+    """返回第一个**可编辑**块的下标（未定位/非文本类块没有「纠正」按钮）"""
+    idx = page.evaluate("""() => [...document.querySelectorAll('.rvb-block')]
+        .findIndex(el => {
+            const b = el.querySelector('.rvb-fix');
+            return b && getComputedStyle(b).display !== 'none';
+        })""")
+    assert idx >= 0, "一个可编辑块都没有 —— 白名单或 span 判据有问题"
+    return idx
+
+
+def f13_4_entering_edit_keeps_line_count(page):
+    """★ spec R10：进入编辑态前后**行数必须一致**（否则一进一出就多/少一行）
+
+    ★ 同时钉住「**进入编辑态不得抛异常**」。为什么必须单独钉：`$nextTick` 回调里的
+    throw 被 Alpine 吞掉，而编辑行**已经 append 进去了** ⇒ 只数行数的断言**看不见**它
+    （Task 6 实现者实测：计划原稿把 `isClauseLine` 留到下一个 Task 定义，就会造成
+    这种「编辑器坏了但四条用例全绿」的静默失效）。故挂一个 pageerror 收集器。
+    """
+    task_id = _rvb_seed(page, "4")
+    assert task_id is not None, "前置不成立"
+    idx = _rvb_first_editable(page)
+    # 原行数从**后端下发的 layout** 取（不读页内 Alpine 内部状态，避免断言对象漂移）
+    expect = page.evaluate("""async ([tid, i]) => {
+        const data = await (await fetch('/import/review/' + tid + '/layout')).json();
+        return (data.blocks[i].content || '').split('\\n').length;
+    }""", [task_id, idx])
+    blk = _rvb_block(page, idx)
+
+    errs = []
+
+    def _on_err(e):
+        errs.append(str(e))
+
+    page.on("pageerror", _on_err)
+    try:
+        _rvb_edit(page, idx)
+        got = blk.locator(".rvb-line").count()
+    finally:
+        page.remove_listener("pageerror", _on_err)
+    assert not errs, f"进入编辑态时页面抛了异常（会被 Alpine 吞掉，只有这条断言看得见）：{errs}"
+    assert got == expect, f"进出编辑态行数不一致：原文 {expect} 行，编辑态 {got} 行"
+
+
+def f13_5_edit_and_save_updates_the_block(page):
+    """改一行 → 保存 → 块内容变 + 出现「已修改」标"""
+    assert _rvb_seed(page, "5") is not None, "前置不成立"
+    idx = _rvb_first_editable(page)
+    blk = _rvb_block(page, idx)
+    _rvb_edit(page, idx)
+    _rvb_type_line(page, idx, "PROBE-EDIT-锚点")
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: blk.locator(".rvb-editor").is_hidden(), 5000), \
+        "保存后编辑框未收起"
+    assert "PROBE-EDIT-锚点" in blk.locator(".rvb-block-bd").inner_text(), "保存后渲染内容没变"
+    assert "已修改" in blk.locator(".rvb-block-meta").inner_text(), "保存后没有「已修改」标"
+
+
+def f13_6_cancel_discards_the_edit(page):
+    """取消 ⇒ 内容**一字不动**（不能只收起编辑框）"""
+    assert _rvb_seed(page, "6") is not None, "前置不成立"
+    idx = _rvb_first_editable(page)
+    blk = _rvb_block(page, idx)
+    before = blk.locator(".rvb-block-bd").inner_text()
+    _rvb_edit(page, idx)
+    _rvb_type_line(page, idx, "不该留下")
+    blk.locator("button:has-text('取消')").click()
+    assert poll_until(page, lambda: blk.locator(".rvb-editor").is_hidden(), 5000)
+    assert blk.locator(".rvb-block-bd").inner_text() == before, "取消后内容被改动"
+
+
+def f13_7_unlocated_and_non_text_blocks_offer_no_fix_button(page):
+    """★ 未定位块 / 非文本类块：**没有**「纠正」，且**可见地**说明原因"""
+    assert _rvb_seed(page, "7") is not None, "前置不成立"
+    # ⚠️ 一律按**可见性**数：x-show 控制的元素永远在 DOM 里（只数存在性 = 空转恒绿）
+    n_locked = page.locator(".rvb-locked:visible").count()
+    assert n_locked > 0, "夹具里应有不可编辑的块（未定位 table/chart 或非文本类），却一个都没**可见地**标出"
+    assert page.locator(".rvb-fix:visible").count() < page.locator(".rvb-block").count(), \
+        "所有块都有「纠正」按钮 —— 白名单/span 判据没生效"
+
+
 CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_2_inline_round_trip_is_byte_exact,
-                f13_3_alignment_wrap_unwrap_round_trip]
+                f13_3_alignment_wrap_unwrap_round_trip,
+                f13_4_entering_edit_keeps_line_count,
+                f13_5_edit_and_save_updates_the_block,
+                f13_6_cancel_discards_the_edit,
+                f13_7_unlocated_and_non_text_blocks_offer_no_fix_button]
 
 
 if __name__ == "__main__":

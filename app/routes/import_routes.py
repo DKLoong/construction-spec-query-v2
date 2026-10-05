@@ -19,7 +19,9 @@ from app.parser.spec_prefix import (
     detect_hierarchy, detect_nature, detect_industry, normalize_spec_code, PREFIX_WHITELIST,
 )
 from app.ocr.pdf_extract import extract_text, is_scanned
-from app.ocr.layout import finalize_layout, load_layout, splice, base_sha256
+from app.ocr.layout import (
+    finalize_layout, load_layout, splice, base_sha256, EDITABLE_TEXT_LABELS,
+)
 from app.classifier.rule_engine import classify_clause, should_use_ai
 from app.classifier.batch_queue import try_enqueue
 from app.search.vector_search import VectorStore
@@ -1255,6 +1257,7 @@ async def review_layout(task_id: str):
         "blocks": layout.get("blocks") or [],
         "pages": layout.get("pages") or [],
         "stats": layout.get("stats") or {},
+        "editable_labels": sorted(EDITABLE_TEXT_LABELS),
     }
 
 

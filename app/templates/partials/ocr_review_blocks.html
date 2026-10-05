@@ -60,7 +60,27 @@
                                   title="该块在 markdown 中的表示与原文件不同，无法定位到页上区域">原文件未定位</span>
                             <span class="rvb-page" x-text="'p' + b.page"></span>
                         </header>
-                        <div class="rvb-block-bd" x-html="renderBlock(b)"></div>
+                        <!-- 只读态：编辑入口只在**可编辑块**上出现（spec §8.1 的「纠正」） -->
+                        <div class="rvb-block-bd" x-show="editingIdx !== i" x-html="renderBlock(b)"></div>
+                        <div class="rvb-block-meta" x-show="editingIdx !== i">
+                            <button type="button" class="outline rvb-fix" x-show="canEdit(b)"
+                                    @click.stop="enterEdit(i)">纠正</button>
+                            <span class="rvb-edited" x-show="isEdited(b)">已修改</span>
+                            <!-- 不可编辑必须**明说原因**，不得静默隐藏（Global Constraint 6） -->
+                            <span class="rvb-locked" x-show="!canEdit(b)"
+                                  x-text="hasSpan(b) ? '该块类型暂不支持编辑' : '原文件未定位，无法安全回写'"></span>
+                        </div>
+                        <!-- 编辑态：行级编辑器（行 = contenteditable） -->
+                        <div class="rvb-editor" x-show="editingIdx === i" x-cloak>
+                            <div class="rvb-tools">
+                                <span>行级编辑</span>
+                                <button type="button" @click="cancelEdit()" style="margin:0">取消</button>
+                                <button type="button" @click="saveEdit()" style="margin:0">保存</button>
+                            </div>
+                            <!-- ⚠️ 不给 `x-ref`：编辑框在 x-for 内，同名 x-ref 会被最后一项
+                                 覆盖 ⇒ 组件里的 `_editBox()` 按 data-block-idx 作用域查 -->
+                            <div class="rvb-lines"></div>
+                        </div>
                     </article>
                 </template>
             </div>

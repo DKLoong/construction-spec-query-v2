@@ -44,6 +44,15 @@ DEFAULT_NOT_IN_MARKDOWN = frozenset({
     "formula_number", "image",
 })
 
+# 审查页 P2 可**行级编辑**的 label —— **单一来源**（前端从 /layout 拿，不在 JS 里另写一份）。
+# 依据：2026-10-05 实测夹具 label 分布（text 477 / paragraph_title 47 / figure_title 9 /
+# content 4 / vision_footnote 3，全部有 span），其余 label 各归其期：
+# display_formula → P4；table / chart → P3；image / number / formula_number → 不进 markdown（豁免）。
+# 注意 `chart` 虽是纯文本 5 行，但**未锚定**（夹具 idx 522）⇒ 会被 canEdit 的 span 判据挡下。
+EDITABLE_TEXT_LABELS = frozenset({
+    "doc_title", "paragraph_title", "content", "text", "figure_title", "vision_footnote",
+})
+
 
 def sort_key_stats(blocks: list[dict]) -> dict:
     """报告排序键的可用性（供计划 Task 1 Step 4 的实测复核用）。

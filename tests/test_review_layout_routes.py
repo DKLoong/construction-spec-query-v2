@@ -58,6 +58,18 @@ def test_layout_endpoint_returns_blocks_pages_stats(review_env):
     assert body["stats"]["anchorable"] == 1
 
 
+def test_layout_endpoint_ships_editable_labels(review_env):
+    """★ 可编辑 label 白名单必须由**后端下发**（单一来源），前端不得另写一份"""
+    from app.ocr.layout import EDITABLE_TEXT_LABELS
+
+    client, out = review_env          # 本文件既有 fixture（隔离四路径 + create_task）
+    _write_layout(out)                # 本文件既有播种 helper
+    r = client.get(f"/import/review/{TASK_ID}/layout")
+    assert r.status_code == 200
+    assert r.json()["editable_labels"] == sorted(EDITABLE_TEXT_LABELS)
+    assert "text" in r.json()["editable_labels"]
+
+
 def test_layout_endpoint_404_without_layout(review_env):
     """无 layout.json（老任务 / .md / 非扫描件）⇒ 404，前端据此降级（spec §13）。
 

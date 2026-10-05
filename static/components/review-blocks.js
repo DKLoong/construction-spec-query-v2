@@ -1,13 +1,14 @@
-/* OCR 审查页（版面块 · P1 只读对照）
+/* OCR 审查页（版面块 · P2 行级编辑）
  *
  * 依赖：md-render.js —— 块内容统一走 window.mdRender.renderHtml，
  *       切勿另起 marked/DOMPurify 内联渲染路径（本仓既定约定）。
  * 后端契约：
- *   GET /import/review/{task_id}/layout            → {blocks, pages, stats}
- *   GET /import/review/{task_id}/page/{n}.png?scale=  → image/png
- *   GET /import/review/{task_id}/content           → {content, file_name}
- *
- * 本期**只读**：本文件不得出现任何写请求。
+ *   GET  /import/review/{task_id}/layout              → {blocks, pages, stats, editable_labels}
+ *   GET  /import/review/{task_id}/page/{n}.png?scale=  → image/png
+ *   GET  /import/review/{task_id}/content             → {content, file_name}
+ *   POST /import/review/{task_id}/compose  {edits:{下标:内容}} → {md_text}
+ *   POST /import/review/{task_id}/preview  同上 → {count, clauses:[{clause_no,title}]}
+ * 编辑**不落库**：「保存」只写 this.edits（spec §8.1）。
  */
 function reviewBlocks() {
     return {
@@ -20,6 +21,11 @@ function reviewBlocks() {
         zoom: 1,               // 实际倍数（fit 时按容器宽算）
         activeIdx: -1,
         error: '',
+        editableLabels: [],    // 后端下发的可编辑 label 白名单（单一来源，不在此另写一份）
+        editingIdx: -1,        // 正在编辑的块下标（-1 = 无）
+        edits: {},             // {块下标: 编辑后的 md}；编辑**不落库**，只存内存
+        focusIdx: -1,          // 当前聚焦的**行下标**（-1 = 还没落到任何一行）
+        focusIsClause: false,  // 当前行是否编号/标题行（响应式，供对齐禁用判据读）
         _dragging: false,
         _dragFrom: null,
 
@@ -39,6 +45,7 @@ function reviewBlocks() {
                 return;
             }
             this.pages = data.pages || [];
+            this.editableLabels = data.editable_labels || [];
             // __i = 原下标：过滤/排序后仍能定位回 blocks（联动与 P2 的 edits 都用它）
             this.blocks = (data.blocks || []).map((b, i) => Object.assign({}, b, { __i: i }));
             this.curPage = this.pages.length ? this.pages[0].index : 1;
@@ -145,8 +152,8 @@ function reviewBlocks() {
 
         renderBlock(b) {
             try {
-                return window.mdRender.renderHtml(
-                    b.content || '', '/import/review/' + this.taskId + '/');
+                return window.mdRender.renderHtml(this.contentOf(b),
+                    '/import/review/' + this.taskId + '/');
             } catch (e) {
                 return '<p style="color:#c00">渲染错误</p>';
             }
@@ -174,6 +181,177 @@ function reviewBlocks() {
             const list = this.$refs.list;
             const el = list && list.querySelector(`[data-block-idx="${idx}"]`);
             if (el) el.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+        },
+
+        // ── P2：行级编辑（编辑**只写内存** this.edits，不发任何写请求） ──
+
+        /** 可编辑 = **有行区间**（能安全回写）且在 label 白名单内（后端下发） */
+        canEdit(b) {
+            return this.hasSpan(b) && this.editableLabels.indexOf(b.label) >= 0;
+        },
+
+        /** 块的当前内容：有编辑用编辑，否则用 OCR 原文（渲染与编辑共用同一取值）。
+         *
+         * ⚠️ **必须先读一次 `this.edits[i]`**（Task 6 实现者仪表化实测逼出）：Alpine 的响应式
+         * **不追踪 `hasOwnProperty`**（它走 `[[GetOwnProperty]]`，Vue 的 proxy 不拦），而首次渲染
+         * 走的是 `b.content` 分支、**从没读过这个键** ⇒ 没有任何 effect 依赖它 ⇒
+         * `saveEdit` 写入后 `x-html="renderBlock(b)"` 与 `x-show="isEdited(b)"` **都不会重跑**
+         * （实测：edits 已写入、editingIdx 已归零、无 pageerror，而 DOM 仍是原文）。
+         * 那一行 `const edited = …` 就是用来建立**键级依赖**的，不能省。
+         */
+        contentOf(b) {
+            const i = b.__i;
+            const edited = this.edits[i];                 // 先读一次 ⇒ 键级响应式依赖
+            return Object.prototype.hasOwnProperty.call(this.edits, i) ? edited : (b.content || '');
+        },
+
+        /** 同理：读键本身就是依赖（不要写成 hasOwnProperty 形式） */
+        isEdited(b) {
+            return this.edits[b.__i] !== undefined;
+        },
+
+        enterEdit(idx) {
+            const b = this.blocks[idx];
+            if (!b || !this.canEdit(b)) return;
+            this.editingIdx = idx;
+            this.$nextTick(() => {
+                const box = this._editBox();
+                box.innerHTML = '';
+                for (const ln of window.mdInline.splitLines(this.contentOf(b))) {
+                    box.appendChild(this._makeLine(ln));
+                }
+                const first = box.querySelector('.rvb-line');
+                this.focusIdx = 0;
+                this.focusIsClause = first ? this.isClauseLine(first) : false;
+                if (first) first.focus();
+            });
+        },
+
+        /**
+         * 一行 = 一个 contenteditable。**行结构即 DOM 结构** ⇒ 进出编辑态行数不变（spec R10）。
+         *
+         * ⚠️ **DOM 元素绝不放 Alpine 状态**：Alpine 会把状态对象包成 Proxy，存进去的元素
+         * 再 `.focus()` 会因 `this` 不是真实元素而抛 Illegal invocation。状态里只存
+         * **下标 + 布尔**（focusIdx / focusIsClause），元素每次按需从 DOM 取 —— 顺带解决
+         * 「`document.activeElement` 不是响应式依赖 ⇒ 按钮 disabled 状态不更新」这个坑。
+         */
+        _makeLine(mdLine) {
+            const parsed = window.mdInline.parseLine(mdLine);
+            const el = document.createElement('div');
+            el.className = 'rvb-line';
+            el.setAttribute('contenteditable', 'true');
+            el.dataset.align = parsed.align || '';
+            el.style.textAlign = parsed.align || '';
+            el.innerHTML = window.mdInline.lineToHtml(parsed.inner);
+            el.addEventListener('focus', () => {
+                this.focusIdx = this._lineIndex(el);
+                this.focusIsClause = this.isClauseLine(el);
+            });
+            el.addEventListener('input', () => {
+                if (this._lineIndex(el) === this.focusIdx) this.focusIsClause = this.isClauseLine(el);
+            });
+            el.addEventListener('keydown', (e) => this._onLineKey(e, el));
+            el.addEventListener('paste', (e) => this._onPaste(e, el));
+            return el;
+        },
+
+        /** 编辑框**按块下标**取 —— `x-ref` 放在 `x-for` 里会被同名的**最后一项**覆盖。
+         *
+         * ⚠️ **本 helper 是必需的，不是优雅写法**（Task 6 实现者用 Alpine 源码 + 最小复现实测）：
+         * Alpine 把 `x-ref` 注册在**最近的 `[x-data]` 根**上（`_x_refs[名字] = 元素`），
+         * 故 `x-for` 每次迭代都覆盖同一个键 ⇒ `$refs.editBox` 永远指向**最后一个块**的编辑框。
+         * 直接用它会出现「点第 N 块、内容却灌进最后一块」，而 `_rvb_first_editable` 返回的正是
+         * **第一个**可编辑块 ⇒ f13_4/5/6 全红。
+         */
+        _editBox() {
+            const list = this.$refs.list;
+            return list
+                ? list.querySelector(`[data-block-idx="${this.editingIdx}"] .rvb-lines`)
+                : null;
+        },
+
+        _lineElements() {
+            const box = this._editBox();
+            return box ? [...box.querySelectorAll('.rvb-line')] : [];
+        },
+
+        _lineIndex(el) {
+            const box = this._editBox();
+            return box ? [...box.querySelectorAll('.rvb-line')].indexOf(el) : -1;
+        },
+
+        _focusLine() {
+            const els = this._lineElements();
+            if (this.focusIdx >= 0 && this.focusIdx < els.length) return els[this.focusIdx];
+            return els[0] || null;
+        },
+
+        /** 行首是编号或 `#` 标题 ⇒ 该行**不得被包裹**（实测：标签与内容同行会让全篇切不出条文）。
+         *
+         * ⚠️ **本 Task 就必须定义它**（Task 6 实现者实测逼出）：`enterEdit` 与 `_makeLine`
+         * 都要调它来维护 `focusIsClause`，而 Task 7 才用它做对齐禁用。若留到 Task 7 定义，
+         * Task 6 照抄会在 `$nextTick` 回调里抛 `TypeError` —— **且探针看不见**（编辑行已经
+         * append 进去了，f13_4..7 照绿）。这正是本仓最怕的静默失效形态。
+         */
+        isClauseLine(el) {
+            const t = (el.textContent || '').trim();
+            return /^#{1,6}\s+/.test(t) || /^\d+(\.\d+)*\s*[．.、]?\s*\S/.test(t);
+        },
+
+        _insertLineAfter(el) {
+            const line = this._makeLine('');
+            el.parentNode.insertBefore(line, el.nextSibling);
+            line.focus();
+        },
+
+        _deleteLine(el) {
+            const box = this._editBox();
+            if (box.querySelectorAll('.rvb-line').length <= 1) { el.innerHTML = ''; return; }
+            const prev = el.previousElementSibling;
+            el.remove();
+            if (prev) prev.focus();
+        },
+
+        /** Enter ⇒ **新增一行**（绝不产生行内 <br>：真实换行与字面 \\n 在 DOM 里无法区分） */
+        _onLineKey(e, el) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this._insertLineAfter(el);
+                return;
+            }
+            if (e.key === 'Backspace' && el.textContent === '' &&
+                el.previousElementSibling) {
+                e.preventDefault();
+                this._deleteLine(el);
+            }
+        },
+
+        /** 粘贴**只取纯文本**（外部 HTML 一律丢弃），多行按行拆分落到多个编辑行 */
+        _onPaste(e, el) {
+            e.preventDefault();
+            const text = (e.clipboardData || window.clipboardData).getData('text/plain') || '';
+            const parts = text.replace(/\r\n?/g, '\n').split('\n');
+            document.execCommand('insertText', false, parts[0]);
+            let host = el;
+            for (const p of parts.slice(1)) {
+                const line = this._makeLine(p);
+                host.parentNode.insertBefore(line, host.nextSibling);
+                host = line;
+            }
+            if (host !== el) host.focus();
+        },
+
+        saveEdit() {
+            const box = this._editBox();
+            const els = [...box.querySelectorAll('.rvb-line')];
+            const md = els.map((el) => window.mdInline.wrap(
+                window.mdInline.domToMd(el), el.dataset.align || null)).join('\n');
+            this.edits[this.blocks[this.editingIdx].__i] = md;
+            this.editingIdx = -1;
+        },
+
+        cancelEdit() {
+            this.editingIdx = -1;
         },
     };
 }

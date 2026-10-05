@@ -861,3 +861,11 @@
 .rvb-page { margin-left: auto; }
 .rvb-block-bd { font-size: 0.9rem; }
 .rvb-block-bd table { width: auto; max-width: 100%; }
+
+.rvb-line { padding: 2px 6px; border: 1px solid transparent; border-radius: 4px; min-height: 1.6em; }
+.rvb-line:focus { outline: none; border-color: var(--pico-primary); background: #fff; }
+.rvb-tools { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+.rvb-lines { border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.25rem; }
+.rvb-fix { margin: 0; font-size: 0.8rem; }
+.rvb-edited { color: #c08552; font-size: 0.8rem; }
+.rvb-locked { color: var(--pico-muted-color); font-size: 0.8rem; }
