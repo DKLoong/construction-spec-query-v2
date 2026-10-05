@@ -587,35 +587,48 @@ git commit -m "fix: 字母编号模式点号必填，标准号/牌号正文行�
 
 ---
 
-### Task 5: 重导受伪条污染的已入库规范
+### Task 5: 重导受伪条污染的已入库规范 —— **仅 spec 40**
 
 **Files:**
 - 无代码改动（使用既有 `scripts/reimport_specs.py`）
 
 **Interfaces:**
 - Consumes: Task 4 修复后的 `parse_markdown`
-- Produces: 库中 8 条伪条及其「被吞掉的条文」被修正
+- Produces: spec 40（DB32/T 2618-2023）的 4 条真伪条被清除
 
 > ⚠️ **本 Task 是破坏性操作**，按项目 `CLAUDE.md` §1.5 必须先向用户确认再执行。`--apply` 会删除目标规范的**全部条文与向量**。
 
-- [ ] **Step 1: 列出受影响的规范 id（只读）**
+**范围已由控制器预检收窄（Ruling 11）** —— 原计划重导 4 本，实测后**只重导 spec 40**：
+
+| spec | code | md→条文数（旧→新） | 消失的号 | `clause_is_non` | 结论 |
+|---|---|---|---|---|---|
+| 29 | JTG/T 3610-2019 | 709→709 | 无 | — | **重导是纯 no-op**，不做 |
+| 35 | GB 50086-2015 | 665→665 | 无 | — | **纯 no-op**，不做 |
+| 39 | JTG/T 3650-2020 | 1630→1630 | `HPB235` | 1（旧模式下被判孤儿） | 净条数不变，不做 |
+| **40** | **DB32/T 2618-2023** | **871→867** | `GB5725`/`GB6095`/`JGJ311`/`JGJ46` | **0（真伪条）** | **本 Task 的目标** |
+
+依据：29/35/39 的「库内条数」与「今日解析条数」**完全相等**（709/665/1630），且 Task 4 的改动对这三本 md 的解析**零差异** ⇒ 重导只有破坏风险、没有收益。唯 spec 40 库内 870 ≠ 今日解析 866，差的 4 条正是那 4 个钢筋牌号/标准号被吃成的伪条。
+
+> ⚠️ **不要把 `clause_is_non=1` 的行当成污染**：全库 2071/6867 行（30%）是这个标记，它们是**设计内**的隐藏块（孤儿文本、条文说明段等），检索侧被 `app/search/hybrid_search.py:125` 过滤、AI 分类被 `app/classifier/batch_queue.py:21` 跳过。用 `clause_no GLOB '[A-Z]*'` 之类的形状查询会把它们一并捞出来，从而**高估**受影响范围（首次统计就因此把 4 本错报成「8 条伪条、4 本规范」）。
+
+- [ ] **Step 1: 复核范围（只读）**
 
 ```bash
 export PYTHONUTF8=1
 D:/Python/python.exe -c "
 import sqlite3
 c = sqlite3.connect('data/spec_query.db')
-q = '''SELECT DISTINCT spec_id FROM clauses
-       WHERE clause_no GLOB '[A-Z]*' AND clause_no NOT LIKE '%.%'
-         AND clause_no NOT LIKE '附录%' '''
-ids = [r[0] for r in c.execute(q)]
-for i in ids:
-    n = c.execute('SELECT count(*) FROM clauses WHERE spec_id=?', (i,)).fetchone()[0]
-    print(i, '条文数', n)
+q = '''SELECT spec_id, clause_no FROM clauses
+       WHERE clause_is_non = 0 AND clause_no GLOB '[A-Z]*'
+         AND clause_no NOT LIKE '%.%' AND clause_no NOT LIKE '附录%' '''
+rows = list(c.execute(q))
+print('真伪条（clause_is_non=0）:', rows)
+print('涉及规范:', sorted({r[0] for r in rows}))
 c.close()"
 ```
 
-Expected: 4 个 spec_id（本次实测口径：共 4 本规范受影响）。
+Expected: `[(40, 'GB5725'), (40, 'GB6095'), (40, 'JGJ311'), (40, 'JGJ46')]`（顺序可能不同），涉及规范 `[40]`。
+**若出现 40 以外的 spec_id，停下报告** —— 说明范围变了，需重新裁定。
 
 - [ ] **Step 2: 备份（不做备份不得进下一步）**
 
@@ -627,17 +640,21 @@ cp -r lance_db "lance_db.bak-$(date +%Y%m%d-%H%M%S)"
 - [ ] **Step 3: dry-run 并请用户确认**
 
 ```bash
-D:/Python/python.exe scripts/reimport_specs.py <id1> <id2> <id3> <id4>
+D:/Python/python.exe scripts/reimport_specs.py 40
 ```
 
 把 dry-run 输出（将删什么、将重建什么）**原文呈现给用户**，得到明确同意后才继续。
 
-⚠️ 重导期间不能有在跑的导入任务（重导会与导入抢同一批表）。执行前查一次「在途/待审查任务」，非 0 则先等或先清理。
+⚠️ 重导会与导入抢同一批表。执行前查一次「非终态导入任务」：
+`SELECT task_id,status,file_name FROM import_tasks WHERE status NOT IN ('done','error','cancelled')`。
+**控制器预检发现当前有且仅有一个：`e9915ba8`（`review_needed`），是用户本人正在审查的任务**
+⇒ **不得擅自清理**（那会毁掉用户手上的审查进度）。把它连同 dry-run 结果一起交用户裁定：
+先等用户处理完它，或用户明确同意后再执行。
 
 - [ ] **Step 4: 执行**
 
 ```bash
-D:/Python/python.exe scripts/reimport_specs.py <id1> <id2> <id3> <id4> --apply
+D:/Python/python.exe scripts/reimport_specs.py 40 --apply
 ```
 
 - [ ] **Step 5: 校验（数字必须现场数，不许推算）**
@@ -648,13 +665,15 @@ D:/Python/python.exe -c "
 import sqlite3
 c = sqlite3.connect('data/spec_query.db')
 q = '''SELECT count(*) FROM clauses
-       WHERE clause_no GLOB '[A-Z]*' AND clause_no NOT LIKE '%.%'
-         AND clause_no NOT LIKE '附录%' '''
-print('残留伪条:', c.execute(q).fetchone()[0])
+       WHERE clause_is_non = 0 AND clause_no GLOB '[A-Z]*'
+         AND clause_no NOT LIKE '%.%' AND clause_no NOT LIKE '附录%' '''
+print('残留真伪条:', c.execute(q).fetchone()[0])
+print('spec 40 条文数:', c.execute('SELECT count(*) FROM clauses WHERE spec_id=40').fetchone()[0])
+print('spec 40 规范记录:', c.execute('SELECT code, clause_count FROM specifications WHERE id=40').fetchone())
 c.close()"
 ```
 
-Expected: `残留伪条: 0`
+Expected: `残留真伪条: 0`；`spec 40 条文数: 866`（重导预期口径，含 `clause_is_non=1` 的隐藏行；若与预期不符，**逐号解释差异**，不得只写「差不多」）。
 
 - [ ] **Step 6: 记录**
 
