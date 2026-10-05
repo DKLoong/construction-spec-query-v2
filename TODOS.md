@@ -635,7 +635,8 @@
   4. `app/ocr/layout.py` 两分支四个 `clause_*` 键的字典**逐字重复**，可抽公共构造。
   5. `static/app.css` 的 `.rvb-clause-on` 与 `.rvb-clause-new` **同权重、后者先定义** ⇒ 橙底压绿底。
   6. `app/templates/partials/ocr_review_blocks.html` 里 `x-show` 与 `:style` 同元素共存有 latent 互踩。
-  7. 切分栏折叠态 44px 仍显示 header 文案，窄屏可能横向溢出（`static/app.css` 的 `.rvb-cut` 折叠态）。
+  7. ~~切分栏折叠态 44px 仍显示 header 文案，窄屏可能横向溢出~~ **✅ 已修（2026-10-05 界面调整轮）**：
+     折叠时 header 只留折叠按钮（其余文案 `x-show="cutOpen"`），并实测 `scrollWidth == clientWidth`、无溢出。
   8. 探针 `f13_21`（`scripts/probe_spec_ui.py`）不验真实滚动位置（只验调用、未断 scroll 落点）。
   9. 探针 `f13_22`（`scripts/probe_spec_ui.py`）只抽首块×首条，覆盖不足。
   10. `static/components/review-blocks.js` 的 `openClause` 多块共条号时只聚焦**首块**
@@ -643,3 +644,24 @@
 - **Why**：终审 triage 全部为**非阻断**（「可留待后续」）；逐项修性价比低，但 2/5/9 影响排查与覆盖可信度。
 - **Context**：来源 = P2.5 整支终审（0 Critical / 0 Important / 6 Minor）+ 本次修复波处理其中 4 项后的余项。
 - **Blocked by**：无。P3/P4 开工时顺手处理最省事。
+
+## T41 — 产出结构变更**不回溯存量数据**：既有 `layout.json` 缺 `clause_no`（2026-10-05 用户实测后登记）
+
+- **What**：P2.5 的 Task 1 把 `align_clauses` 接进了 `finalize_layout`，让**新导入**的 `layout.json`
+  带上 `clause_no`；但**在那之前写的 `layout.json` 没有该字段**，而审查页的块标题栏（`b.clause_no`）
+  与「点条号跳转」（`openClause` 的 `findIndex`）都只读 `/layout` 端点下发的这份数据 ⇒
+  用户在既有任务上看到「标题栏没有条号」「点条号不跳转」，**误以为是加载了旧前端代码**。
+- **Why**：这是一类**通用缺口**，不是一次性事故 —— **凡是给落盘产物新增字段的改动，都必须同时回答
+  「存量产物怎么办」**。本例中我把它与「重导数据库条文」混为一谈（`scripts/reimport_specs.py`
+  重建的是 `clauses` 表，**不碰 `layout.json`** —— 后者由 **OCR 阶段**的 `finalize_layout` 落盘），
+  于是计划里只在派单注记了「需重导」，却没立任何 Task。
+- **Context**：已用 `scripts/backfill_layout_clause_no.py` 回填（**幂等**：块里已有 `clause_no` 的跳过；
+  **带 `base_sha256` 指纹校验**：md 与 layout.json 不是同一次锚定就跳过、不写错；**默认 dry-run**）。
+  实测口径：`e9915ba8` 129 块 → 79 块获条号、涉及 24 个条号。另两个任务目录（`68ad5c7e`/`abdfc8f6`）
+  本就带该字段（是**探针夹具残留**，它们出现在真实 `data/outputs` 下说明历史上某次探针跑漏了隔离 —— 另见待清理项）。
+- **待办**：
+  1. 今后任何「给 `layout.json` / 索引产物新增字段」的改动，**必须**同时交付存量回填脚本或迁移步骤，
+     并把「存量怎么办」写进计划的 Task 列表（不是写在派单的旁注里）。
+  2. 清理 `data/outputs/68ad5c7e`、`data/outputs/abdfc8f6` 两个**探针夹具残留目录**（真实库里
+     `import_tasks` 无对应行；确认无用后删）。
+- **Blocked by**：无。
