@@ -49,9 +49,12 @@
        进度片段是轮询每 2s 换进来的，若结果区高度随内容增长，它的底边会重新落到折叠线
        以下（真实流程实测被裁 25px ⇒「刷新行」看不见）。先预留出足够高度 ⇒ **布局高度
        全程不变** ⇒ 点击时滚到底一次即可，之后进度条与刷新行都在预留区里原位显现。 #}
-    <div id="review-result" class="review-result-slot" style="margin-top:0.5rem">
-        <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
-    </div>
+    <div id="review-result" class="review-result-slot" style="margin-top:0.5rem"></div>
+    <!-- ⚠️ `submitError` 的 `<p>` 必须在 `#review-result` **外面**：报错路径上
+         `box.innerHTML = html` 会整体换掉槽内内容 ⇒ 槽内的 `<p>` 被销毁 ⇒ 之后
+         `this.submitError = …` 永远看不见（且第一次提交后该通道永久失效）。
+         预留高度逻辑（`.review-result-slot`）不受影响：槽本身仍在。 -->
+    <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
 </div>
 
 <script>

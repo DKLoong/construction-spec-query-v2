@@ -2101,12 +2101,18 @@ def _rvb_wait_done(page, task_id, timeout_ms=180000):
 
 
 def f13_15_editing_a_block_does_not_let_submit_while_editing(page):
-    """★ 编辑态下提交必须**被拦**并给出可执行的提示（否则用户的改动被判丢）"""
+    """★ 编辑态下提交必须**被拦**并给出可执行的提示（否则用户的改动被判丢）
+
+    ⚠️ 断言取 `#rvb-result + p`（**槽外的兄弟** `<p>`），不是槽内：
+    Task 9 评审的 Important 修复把 `submitError` 的 `<p>` 移出了 `#rvb-result`
+    （槽内会被 `box.innerHTML = html` 整体换掉）⇒ 提示现在渲染在槽的**外面**。
+    计划稿的模板已改、此处断言最初仍指向槽内（自相矛盾）⇒ 断言跟着模板走。
+    """
     assert _rvb_seed(page, "15") is not None, "前置不成立"
     idx = _rvb_first_editable(page)
     _rvb_edit(page, idx)
     page.locator("button:has-text('确认并继续导入')").click()
-    assert poll_until(page, lambda: "请先" in page.locator("#rvb-result").inner_text(), 5000), \
+    assert poll_until(page, lambda: "请先" in page.locator("#rvb-result + p").inner_text(), 5000), \
         "编辑态下点提交没有被拦（会静默丢掉未保存的改动）"
 
 

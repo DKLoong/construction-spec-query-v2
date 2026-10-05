@@ -150,7 +150,12 @@
                 hx-post="/import/review/{{ task_id }}/cancel"
                 hx-confirm="确定取消本次导入？已上传的文件和识别结果将被删除。">✖ 取消导入</button>
     </div>
-    <div id="rvb-result" class="rvb-result-slot">
-        <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
-    </div>
+    <!-- ⚠️ `submitError` 的 `<p>` 必须在 `#rvb-result` **外面**（Task 9 评审的 Important 发现）：
+         报错路径上 `box.innerHTML = html` 会把槽内内容**整体换掉** ⇒ 槽内的 `<p>` 被销毁 ⇒
+         随后 `this.submitError = …`（服务端报错与 catch 里的网络错**两路都算**）**永远看不见**，
+         而且**第一次提交之后这条通道就永久失效**（`<p>` 再也不会回来）。
+         既有源码审查页 `ocr_review.html` 是**同一种形状**（本计划当初正是照抄它）⇒ 一并修，
+         见 Step 1 末尾的附带修复。 -->
+    <div id="rvb-result" class="rvb-result-slot"></div>
+    <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
 </div>
