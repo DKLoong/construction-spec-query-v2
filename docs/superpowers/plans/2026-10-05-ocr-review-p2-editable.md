@@ -655,7 +655,17 @@ Expected: FAIL（404，且 detail 不是「版面」；说明端点还不存在�
 
 - [ ] **Step 3: 实现端点**
 
-`app/routes/import_routes.py`：顶部 import 处补 `normalize_md`（与既有 `from app.parser.ocr_clean import clean_ocr_text` 合并），并在 `review_image` 之后、`confirm_review` 之前插入：
+`app/routes/import_routes.py`：**顶部三处 import 必须补齐**（否则 `NameError`；已核对现状：
+该文件**没有 `import json`**，`from app.ocr.layout import finalize_layout, load_layout` 里**没有
+`splice`/`base_sha256`**）：
+
+```python
+import json                                  # 新增（文件顶部 import 块，紧邻 import html）
+from app.parser.ocr_clean import clean_ocr_text, normalize_md        # 合并既有那一行
+from app.ocr.layout import finalize_layout, load_layout, splice, base_sha256   # 合并既有那一行
+```
+
+然后在 `review_image` 之后、`confirm_review` 之前插入：
 
 ```python
 # ── 编辑提交：compose（拼装）+ 其共用前置 ───────────────────────────
@@ -1063,7 +1073,8 @@ git commit -m "feat: confirm 接存储期规范化（两条审查入口都覆盖
 - Produces: `app.ocr.layout.EDITABLE_TEXT_LABELS: frozenset[str]`（= `{"doc_title","paragraph_title","content","text","figure_title","vision_footnote"}`，依据 M3 实测 label）
 - Produces: `/import/review/{task_id}/layout` 响应新增 `"editable_labels": [...]`
 - 前端（`reviewBlocks()`）新增状态与方法：
-  - 状态：`editableLabels: string[]`、`editingIdx: number`、`edits: Record<number,string>`、`focusIdx: number`、`focusIsClause: boolean`
+  - 状态（**初值必须写全**，`focusIdx` 用 `-1` 表示「还没落到任何一行」）：
+    `editableLabels: []`、`editingIdx: -1`、`edits: {}`、`focusIdx: -1`、`focusIsClause: false`
   - `canEdit(b) -> boolean`（**有 span** 且 label 在白名单内）
   - `contentOf(b) -> string`（有编辑用编辑，否则用原文）
   - `enterEdit(idx)` / `cancelEdit()` / `saveEdit()`
