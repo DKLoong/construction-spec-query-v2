@@ -97,6 +97,10 @@ def isolated_paths(tmp_path, monkeypatch):
     monkeypatch.setattr("app.routes.import_routes.OUTPUT_DIR", str(tmp_path / "outputs"))
     for d in ("lance_db", "uploads", "outputs"):
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
+    # ⚠️ 必须建表：`auth_client` 建的是**它自己**那份 DB，本夹具随后把 DATABASE_PATH
+    # 改指到这里的 t.db。不建表时两者同用会死在 no such table（曾实测踩到）。
+    from app.database import init_db
+    init_db()
     return tmp_path
 
 

@@ -1,5 +1,6 @@
 import hashlib
 import html
+import json
 import logging
 import re
 import sqlite3
@@ -13,12 +14,12 @@ from app.config import UPLOAD_DIR, OUTPUT_DIR
 from app.database import get_db
 from app.logging_util import log_action, json_detail
 from app.parser.md_parser import parse_markdown, is_cover_clause, find_degraded_heading_lines
-from app.parser.ocr_clean import clean_ocr_text
+from app.parser.ocr_clean import clean_ocr_text, normalize_md
 from app.parser.spec_prefix import (
     detect_hierarchy, detect_nature, detect_industry, normalize_spec_code, PREFIX_WHITELIST,
 )
 from app.ocr.pdf_extract import extract_text, is_scanned
-from app.ocr.layout import finalize_layout, load_layout
+from app.ocr.layout import finalize_layout, load_layout, splice, base_sha256
 from app.classifier.rule_engine import classify_clause, should_use_ai
 from app.classifier.batch_queue import try_enqueue
 from app.search.vector_search import VectorStore
@@ -1314,6 +1315,105 @@ async def review_image(request: Request, task_id: str, filename: str):
     if not img_path.is_file():
         return JSONResponse({"detail": "图片不存在"}, status_code=404)
     return FileResponse(str(img_path))
+
+
+# ── 编辑提交：compose（拼装）+ 其共用前置 ───────────────────────────
+
+# 请求体上限：最重真实产物 617 892 字符（M4）按 UTF-8 中文 3 字节 ≈ 1.9 MB，
+# 留 4 倍余量。超过即拒（全局规则 §1.1：外部输入必须限幅）。
+_COMPOSE_MAX_BODY = 8 * 1024 * 1024
+# 单块内容上限：夹具里最长的块 25 行（M3），给 1 MB 已是数量级余量。
+_EDIT_VALUE_MAX = 1_000_000
+
+
+def _parse_edits(payload: object, n_blocks: int) -> tuple[dict[int, str], str]:
+    """把外部输入的 `edits` 变成 `{下标: 内容}`；非法时返回错误文案。
+
+    **逐项校验**（下标是整数且在范围内、值是字符串、值不超限）—— 这是外部输入，
+    不可信。返回文案而不是抛异常：路由据此回 422，且**文案里点名是哪一项**。
+    """
+    if not isinstance(payload, dict):
+        return {}, "请求体格式不正确（需 JSON 对象）"
+    raw = payload.get("edits")
+    if raw is None:
+        return {}, ""
+    if not isinstance(raw, dict):
+        return {}, "edits 必须是对象"
+    edits: dict[int, str] = {}
+    for k, v in raw.items():
+        try:
+            idx = int(k)
+        except (TypeError, ValueError):
+            return {}, f"块下标非法：{k!r}"
+        if not 0 <= idx < n_blocks:
+            return {}, f"块下标越界：{idx}"
+        if not isinstance(v, str):
+            return {}, f"块内容必须是字符串：{idx}"
+        if len(v) > _EDIT_VALUE_MAX:
+            return {}, f"块内容过长：{idx}"
+        edits[idx] = v
+    return edits, ""
+
+
+async def _compose_or_error(
+    request: Request, task_id: str
+) -> tuple[str | None, JSONResponse | None]:
+    """compose / preview 的共用前置；成功返回 `(拼装后的 md, None)`。
+
+    守卫顺序刻意如此：先确认任务与版面都存在，再校验请求体 —— 否则会拿一个
+    「任务不存在」的现场去报「JSON 非法」，把排查方向带偏。
+    """
+    task = _get_task(task_id)
+    if not task or task.get("md_text") is None:
+        return None, JSONResponse({"detail": "任务不存在或已过期"}, status_code=404)
+    layout = load_layout(Path(OUTPUT_DIR) / task_id)
+    if layout is None:
+        return None, JSONResponse({"detail": "无版面数据"}, status_code=404)
+
+    body = await request.body()
+    if len(body) > _COMPOSE_MAX_BODY:
+        return None, JSONResponse({"detail": "提交内容过大，未处理"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, JSONResponse({"detail": "请求体不是合法 JSON"}, status_code=400)
+
+    md_text = task["md_text"]
+    blocks = layout.get("blocks") or []
+    edits, err = _parse_edits(payload, len(blocks))
+    if err:
+        return None, JSONResponse({"detail": err}, status_code=422)
+
+    # 指纹守卫：layout 的 span 是对**这份文本**锚定的。文本变过（例如任务被重跑）
+    # 就必须拒绝，否则会把编辑写进错的行区间 —— 静默改写，正是最不能承受的失效。
+    sha = layout.get("base_sha256")
+    if sha and sha != base_sha256(md_text):
+        return None, JSONResponse(
+            {"detail": "版面数据与当前文本不一致，请刷新页面后重试"}, status_code=409)
+
+    try:
+        return normalize_md(splice(md_text, blocks, edits)), None
+    except ValueError as e:
+        # splice 只在区间重叠时抛（anchor_blocks 的游标保证不该发生）⇒ 记 ERROR 便于排查
+        logger.error("compose 版面区间异常 task=%s: %s", task_id, e)
+        return None, JSONResponse({"detail": "版面区间异常，请联系管理员"}, status_code=500)
+
+
+@router.post("/import/review/{task_id}/compose")
+async def review_compose(request: Request, task_id: str):
+    """把前端块编辑拼装成完整 `md_text`（spec §10.1：拼装规则**只写一份**）。
+
+    前端不自己拼：`splice` 是本仓 P0 交付、被 f12 反复验证的唯一实现，
+    在 JS 里复刻一份就是本仓反复警告的「第二把尺子」。
+
+    **本端点不写库**：结果由前端原样 POST 给既有 `confirm`（raw body）⇒ 确认链路零改动。
+    """
+    if not re.fullmatch(r"[0-9a-f]{8}", task_id):
+        return JSONResponse({"detail": "任务ID非法"}, status_code=404)
+    md_text, err = await _compose_or_error(request, task_id)
+    if err is not None:
+        return err
+    return {"md_text": md_text}
 
 
 @router.post("/import/review/{task_id}/confirm")
