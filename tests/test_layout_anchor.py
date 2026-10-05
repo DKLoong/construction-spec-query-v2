@@ -216,6 +216,92 @@ def test_anchor_no_content_block_is_exempt_not_missed():
     assert stats["missed"] == 0 and stats["exempt"] == 1
 
 
+# ══ 表格兜底：两种序列化之间按**格内文字签名**定位 ═══════════
+#
+# 实测（控制器 2026-10-05，真实产物 `e9915ba8`）：9 个 `table` 块 `start_line` **全是 None**
+# —— 因为**两侧是同一张表的两种序列化**：
+#   - md 侧：带 `border/style`、跨多行、`<img>` 各自独占一行（该任务里表占 166–172 行）
+#   - 块侧：OCR 给的**去样式、压成一行**的 `content`
+# 逐行比对（`_find_candidates`）必然全灭 ⇒ 表格既不能高亮、也没有写回路径。
+# 故加一条**表格专用兜底**：按"格子里写着什么"（剥标签 + 反转义 + 去空白后取前几格）匹配。
+
+_T_MD_1 = ("<table border=1 style='margin: auto; word-wrap: break-word;'>"
+           "<tr><td style='text-align: center; word-wrap: break-word;'>序号</td>"
+           "<td style='text-align: center; word-wrap: break-word;'>图 形</td>"
+           "<td style='text-align: center; word-wrap: break-word;'>说 明</td></tr>\n"
+           "<tr><td style='text-align: center; word-wrap: break-word;'>1</td>\n"
+           "<td style='text-align: center; word-wrap: break-word;'>"
+           "<img src=\"imgs/img_1.jpg\" alt=\"Image\" /></td>\n"
+           "<td style='text-align: center; word-wrap: break-word;'>紧急避难设施</td></tr></table>")
+
+_T_MD_2 = _T_MD_1.replace("紧急避难设施", "公交机关")      # 同构、签名相同、位置不同
+
+_T_BLK = ('<table><tr><td>序号</td><td>图 形</td><td>说 明</td></tr>'
+          '<tr><td>1</td><td><img src="imgs/img_1.jpg" alt="Image" /></td>'
+          '<td>紧急避难设施</td></tr></table>')
+
+_T_BLK_2 = _T_BLK.replace("紧急避难设施", "公交机关")
+
+
+def test_anchor_locates_styled_multiline_table():
+    """★ 兜底生效：带样式、跨多行的 md 表格 + 去样式单行的块 content ⇒ 能锚上。
+
+    断言到**行为**：span 恰好罩住那段 `<table>…</table>`（首行以 `<table` 开头、
+    末行含 `</table>`），不是只断言"不为 None"。
+    """
+    base = "正文一。\n\n" + _T_MD_1 + "\n\n正文二。"
+    bl = [_blk("正文一。", 0), _blk(_T_BLK, 1, label="table"), _blk("正文二。", 2)]
+    anchored, stats = anchor_blocks(base, bl)
+    tb = anchored[1]
+    assert tb["start_line"] is not None, "表格块仍未锚定 —— 兜底没生效"
+    assert stats["missed"] == 0
+    seg = base.split("\n")[tb["start_line"]:tb["end_line"]]
+    assert seg[0].lstrip().startswith("<table"), f"span 起点不在 <table 行：{seg[0][:40]!r}"
+    assert "</table>" in seg[-1], f"span 终点不含 </table>：{seg[-1][:40]!r}"
+
+
+def test_anchor_resolves_repeated_tables_by_order():
+    """★ 同构表格**各自锚到自己的区域** —— 否则编辑会写错位置。
+
+    ⚠️ 控制器用朴素「首次命中」实测过：9 个块**全部指向第一处**（md 行 166）。
+    故这里必须断言两个 span **不同**，且分别罩住各自的表。
+    """
+    base = _T_MD_1 + "\n\n中间段。\n\n" + _T_MD_2
+    bl = [_blk(_T_BLK, 0, label="table"), _blk(_T_BLK_2, 1, label="table")]
+    anchored, stats = anchor_blocks(base, bl)
+    assert stats["missed"] == 0
+    s0, s1 = anchored[0]["start_line"], anchored[1]["start_line"]
+    assert s0 is not None and s1 is not None and s0 != s1, \
+        f"两张表锚到了同一处（{s0}/{s1}）—— 顺序消歧没生效"
+    lines = base.split("\n")
+    assert "紧急避难设施" in "\n".join(lines[anchored[0]["start_line"]:anchored[0]["end_line"]])
+    assert "公交机关" in "\n".join(lines[anchored[1]["start_line"]:anchored[1]["end_line"]])
+
+
+def test_anchor_does_not_guess_when_table_absent():
+    """★ 兜底**不许猜**：md 里没有这张表 ⇒ 维持未锚定并计入 missed（本仓既有口径）。"""
+    base = "正文里没有任何表格。"
+    bl = [_blk("正文里没有任何表格。", 0), _blk(_T_BLK, 1, label="table")]
+    anchored, stats = anchor_blocks(base, bl)
+    assert anchored[1]["start_line"] is None, "md 里没有该表却锚上了 —— 这是猜"
+    assert stats["missed"] == 1
+
+
+def test_splice_replaces_exactly_the_table_region():
+    """★ 写回正确性：对表格 span 做 splice，**只**替换那段 `<table>`。
+
+    证明方式是把新表文替换回原文，结果与 base **逐字节相同** —— 这同时排除了
+    「span 多吃了相邻行」与「少吃了表尾」两种错。
+    """
+    base = "正文一。\n\n" + _T_MD_1 + "\n\n正文二。"
+    bl = [_blk("正文一。", 0), _blk(_T_BLK, 1, label="table"), _blk("正文二。", 2)]
+    anchored, _ = anchor_blocks(base, bl)
+    new = "<table><tr><td>改过</td></tr></table>"
+    got = splice(base, anchored, {1: new})
+    assert new in got and "正文一。" in got and "正文二。" in got
+    assert got.replace(new, _T_MD_1) == base, "span 没有恰好罩住表格区域"
+
+
 # ══ 真实夹具门禁 ═══════════════════════════════════════
 
 MAX_MISS_RATE = 0.02      # 与 scripts/verify_layout_anchor.py 同一阈值

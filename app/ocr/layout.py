@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import bisect
 import hashlib
+import html
 import json
 import logging
 import re
@@ -297,6 +298,84 @@ def _find_candidates(lines: list[str], content: str, start: int,
     return out
 
 
+# ═══ 表格兜底：两种序列化之间按「格内文字签名」定位（2026-10-05） ═══════════
+#
+# **为什么需要它**（真实产物 `e9915ba8` 实测）：9 个 `table` 块的 `start_line` **全是 None**。
+# 因为同一张表有**两种序列化**：
+#   - md 侧：带 `border/style`、**跨多行**、`<img>` 各自独占一行
+#   - 块侧：OCR 给的**去样式、压成一行**的 `content`
+# 逐行比对（`_find_candidates`）对多行 HTML 必然全灭 ⇒ 表格既不能高亮、也没有写回路径。
+# 故只比对「格子里写着什么」。
+_TABLE_OPEN = re.compile(r"<table\b", re.I)
+_TABLE_CLOSE = re.compile(r"</table\s*>", re.I)
+_CELL_TAG = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", re.S | re.I)
+_ANY_TAG = re.compile(r"<[^>]+>")
+_ANY_WS = re.compile(r"\s+")
+_SIG_CELLS = 3          # 签名取前几个**非空格**的单元格文字
+_SIG_MIN_CELLS = 2      # 少于这么多格 ⇒ 信息量不足，不猜
+
+
+def _table_cells_text(table_html: str, limit: int = _SIG_CELLS) -> tuple[str, ...]:
+    """表格签名 = 前 `limit` 个**非空**单元格的纯文字（剥标签 + 反转义 + 去空白）。
+
+    **图片格天然不参与**：`<img …>` 剥完标签是空串，正好是要忽略的东西。
+    两侧用**同一个函数**算，故只要"格子里写着什么"一致就算同一张表。
+    """
+    out: list[str] = []
+    for cell in _CELL_TAG.findall(table_html):
+        t = _ANY_WS.sub("", html.unescape(_ANY_TAG.sub("", cell)))
+        if t:
+            out.append(t)
+        if len(out) >= limit:
+            break
+    return tuple(out)
+
+
+def _iter_table_regions(lines: list[str], start: int):
+    """从 `start` 起逐个产出 md 里的 `<table>…</table>` 区域 `(起行, 止行)`（半开区间）。
+
+    区域必须**成对**才算数：只找到 `<table` 而无 `</table>` ⇒ 尾部残缺，直接停止。
+    """
+    i, n = start, len(lines)
+    while i < n:
+        if _TABLE_OPEN.search(lines[i]):
+            j = i
+            while j < n and not _TABLE_CLOSE.search(lines[j]):
+                j += 1
+            if j >= n:
+                return
+            yield i, j + 1
+            i = j + 1
+        else:
+            i += 1
+
+
+def _find_table_region(lines: list[str], content: str, start: int,
+                       ) -> list[tuple[int, int, str, str]]:
+    """表格块的兜底定位：按格内文字签名找它的 `<table>` 区域；找不到返回 `[]`。
+
+    **只在 `label == "table"` 且逐行比对已失败时调用**（见 `anchor_blocks`）
+    ⇒ 对现有已锚定的块**零影响**（爆炸半径由构造保证）。
+
+    **不猜**（本仓既有口径，spec §11.2）：
+      - 签名不足 `_SIG_MIN_CELLS` 格 ⇒ 返回 `[]`（信息量不足，撞车风险高）
+      - 该 `<table` 行**行首不是** `<table`（前面还有别的文字）⇒ 跳过该区域
+        （`splice` 是整段替换，行首有别的文字就会连带删掉）
+      - 没有签名相同的区域 ⇒ 返回 `[]`（维持未锚定并计入 missed）
+    重复由**游标**消解：第 k 个表格块取 `start` 之后的**第一个**匹配区域
+    （与 `_find_candidates` 同一套「贪心 + 游标」语义）。
+    """
+    want = _table_cells_text(content)
+    if len(want) < _SIG_MIN_CELLS:
+        return []
+    for s, e in _iter_table_regions(lines, start):
+        if not lines[s].lstrip().lower().startswith("<table"):
+            continue
+        if _table_cells_text("\n".join(lines[s:e])) == want:
+            return [(s, e, "", "")]
+    return []
+
+
 def _sorted_blocks_with_index(blocks: list[dict]) -> list[dict]:
     """按阅读顺序排序，并把**原下标**带进结果（`edits` 用的就是它）。
 
@@ -347,6 +426,10 @@ def anchor_blocks(base_text: str, blocks: list[dict],
             continue
 
         cands = _find_candidates(lines, blk.get("content") or "", cursor)
+        if not cands and (blk.get("label") or "") == "table":
+            # 表格兜底：md 侧是带样式、跨多行的 HTML，逐行比对必然失败
+            # （详见 `_find_table_region`）。**只在已失败时**才走它 ⇒ 现有锚定不受影响。
+            cands = _find_table_region(lines, blk.get("content") or "", cursor)
         if not cands:
             missed += 1
             stale = True                     # 游标停在原地；其后锚定不可信
