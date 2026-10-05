@@ -1054,7 +1054,10 @@ def f14_12_merge_on_a_single_cell_is_a_no_op(page):
         },
 ```
 
-模板：给 `.rvb-table-edit` 容器加 `@click="onTableCellClick($event)"`；工具条加合并/拆分/撤销三枚：
+模板：给 `.rvb-table-edit` 容器加 `@click="onTableCellClick($event)"`；工具条加合并/拆分/撤销三枚。
+
+> ⚠️ **插入锚点要写死**：`<span class="rvb-sep"></span>` 在表格工具条里**有多处**（Task 4 已加过一枚），
+> 按它插入会插错位置。**插在 Task 4 那枚「- 列」按钮之后**（即 `<button ... title="删除选中格所在的整列">- 列</button>` 那一行之后）：
 
 ```html
                                 <span class="rvb-sep"></span>
@@ -1258,7 +1261,10 @@ def f14_16_saving_a_table_edit_does_not_change_the_clause_set(page):
         },
 ```
 
-模板工具条补齐（放在插删行列之后）：
+模板工具条补齐。
+
+> ⚠️ **插入锚点要写死**（同 Task 5 的理由：`<span class="rvb-sep">` 有多处）：**插在 Task 5 那枚
+> 「撤销」按钮之后**（即 `<button ... title="撤销上一次表格结构操作">撤销</button>` 那一行之后）：
 
 ```html
                                 <span class="rvb-sep"></span>
