@@ -2415,6 +2415,73 @@ CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_24_duplicate_clause_numbers_render_one_row_each]
 
 
+# ═══════════════════════════════════════════
+# f14：P3 表格编辑器
+# ═══════════════════════════════════════════
+# 本组**不走 UI**，而是用 `page.evaluate` 直接对 `window.tableEditor` 做单元式断言 ——
+# 本仓没有 JS 单测基建（无 package.json），这是给 JS 纯函数定下的验证方式。
+# 每例自带前置：先断言模块已被页面加载，否则整组会以"函数未定义"这种误导性的方式红。
+
+_TBL_HTML = ("<table border=1 style='margin: auto; word-wrap: break-word;'>"
+             "<tr><td style='text-align: center;'>序号</td>"
+             "<td style='text-align: center;'>图 形</td>"
+             "<td style='text-align: center;'>说 明</td></tr>\n"
+             "<tr><td style='text-align: center;'>1</td>\n"
+             "<td style='text-align: center;'><img src=\"imgs/t.jpg\" /></td>\n"
+             "<td style='text-align: center;'>紧急避难设施</td></tr></table>")
+
+
+def f14_1_round_trip_is_byte_identical(page):
+    """★ 地基：**未做任何编辑 ⇒ 序列化结果与原文逐字节相同**（结构上恒真，不是对拍出来的）。
+
+    **为什么必须缓存源串**：浏览器解析必然归一化（插 `<tbody>`、属性引号统一为双引号、
+    丢自闭合 `/>`），DOM 往返做不到字节相等；缓存 `_rvbSource` 是「未改动 ⇒ 原样返回」
+    的唯一途径（详见 `static/components/table-editor.js` 的 parse/serialize 注释）。"""
+    page.goto(f"{BASE}/")                       # 任意应用页即可（base.html 已加载模块）
+    has = page.evaluate("() => typeof window.tableEditor === 'object'")
+    assert has, "table-editor.js 没被页面加载（检查 base.html 的 script 引用）"
+    got = page.evaluate("""(html) => window.tableEditor.serialize(window.tableEditor.parse(html))""",
+                        _TBL_HTML)
+    assert got == _TBL_HTML, f"往返不逐字节：\n原文 {_TBL_HTML[:80]}\n得到 {got[:80]}"
+
+
+def f14_2_serialize_strips_editor_artifacts(page):
+    """★ 序列化必须剥掉**编辑器痕迹**（contenteditable / 选中态 class / 高亮包裹），
+    否则它们会跟着写进 md。"""
+    got = page.evaluate("""(html) => {
+        const t = window.tableEditor.parse(html);
+        t.setAttribute('contenteditable', 'true');
+        t.querySelector('td').classList.add('rvb-cell-sel');
+        t.querySelector('td').setAttribute('contenteditable', 'true');
+        return window.tableEditor.serialize(t);
+    }""", _TBL_HTML)
+    assert 'contenteditable' not in got, f"编辑器痕迹漏进序列化：{got[:120]}"
+    assert 'rvb-cell-sel' not in got, f"选中态 class 漏进序列化：{got[:120]}"
+
+
+def f14_3_validate_rejects_broken_rowspan(page):
+    """★ 校验必须挡住非法结构（rowspan 越界）—— 保存前拦住，绝不写坏 md。"""
+    got = page.evaluate("""(html) => {
+        const t = window.tableEditor.parse(html);
+        t.querySelector('td').setAttribute('rowspan', '99');
+        return window.tableEditor.validate(t);
+    }""", _TBL_HTML)
+    assert got["ok"] is False and got["reason"], f"越界 rowspan 没被拦住：{got}"
+
+
+def f14_4_validate_accepts_well_formed_table(page):
+    """★ 反向：合法表必须放行（否则校验会把所有保存都挡掉）。"""
+    got = page.evaluate("""(html) => window.tableEditor.validate(window.tableEditor.parse(html))""",
+                        _TBL_HTML)
+    assert got["ok"] is True, f"合法表被误拒：{got}"
+
+
+CASES["f14"] = [f14_1_round_trip_is_byte_identical,
+                f14_2_serialize_strips_editor_artifacts,
+                f14_3_validate_rejects_broken_rowspan,
+                f14_4_validate_accepts_well_formed_table]
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "f1"
     with sync_playwright() as p:
