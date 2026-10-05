@@ -869,7 +869,7 @@ async def review_compose(request: Request, task_id: str):
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_review_compose.py -v`
-Expected: PASS（8 条）
+Expected: PASS（9 条）
 
 - [ ] **Step 5: 回归相关既有测试**
 
