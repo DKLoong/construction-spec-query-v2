@@ -1947,23 +1947,46 @@ def f13_12_preview_lists_clauses_of_the_document(page):
 
 
 def _rvb_clause_block_idx(page, task_id):
-    """第一个「**首行是编号**」的可编辑块的下标（按**内容**挑，不按下标写死）。
+    """找一个「**编辑后真能改变切分条数**」的可编辑块（用与端点同源的 preview **现地试选**）。
 
-    ⚠️ 为什么不能沿用 `_rvb_first_editable`（Task 8 实现者离线复现实测）：首块是 `## 前言`
-    （标题）—— **改标题既不新增也不消失条文**（138→138），而「看着像纯文本」的块也未必能
-    产生变化。能产生期望变化的必须**首行就是编号行** ⇒ 只能按内容挑，不能按下标猜。
+    ⚠️ **不能按内容正则静态挑**（Task 8 实现者离线复现 + 本机实测，本计划原稿的静态判据在此
+    夹具上失效）：
+      - 原稿的 `^(#{1,6}\\s|\\d+(\\.\\d+)*…)` **首个命中是目录行** `1 总则 ..... 1`（下标 14）
+        —— 它不是真条文 ⇒ 追加编号行 **+0**、抹掉编号 **+0**，两条用例都不动；
+      - 版式受解析器的「标题吸收」等怪癖支配（下标 24 的 `1.0.1` 抹掉编号是 **+0 而非 −1**，
+        因为 `## 1 总 则` 被并进来补位）——「看着像编号行」远不足以预测条数变化，
+        而要静态预测就得**把解析器重写一遍**（本仓反复警告的「第二把尺子」）。
+    故改为：拿本块真的造两种编辑、问 preview 结果，挑同时满足「追加 ⇒ +1」与「抹掉首行编号 ⇒ −1」
+    的第一个块（本夹具实证为下标 25 `1.0.2`）。
+
+    **这不构成循环论证**：本 helper 只做**前置挑选**；端点若坏（非 200/条数对不上），
+    它找不到块而**以「找不到」变红**，而不是把失败藏起来。
     """
     idx = page.evaluate("""async ([tid]) => {
-        const layout = await (await fetch('/import/review/' + tid + '/layout')).json();
-        const editable = new Set(layout.editable_labels || []);
-        return layout.blocks.findIndex(b => {
-            if (b.start_line === null || b.start_line === undefined) return false;
-            if (!editable.has(b.label)) return false;
-            const first = (b.content || '').split('\\n')[0].trim();
-            return /^(#{1,6}\\s|\\d+(\\.\\d+)*\\s*[.、．]?\\s*\\S)/.test(first);
-        });
+        const L = await (await fetch('/import/review/' + tid + '/layout')).json();
+        const editable = new Set(L.editable_labels || []);
+        const prev = async (edits) => {
+            const r = await fetch('/import/review/' + tid + '/preview', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({edits})});
+            if (!r.ok) throw new Error('preview 返回 ' + r.status);
+            return (await r.json()).count;
+        };
+        const base = await prev({});
+        for (let i = 0; i < L.blocks.length; i++) {
+            const b = L.blocks[i];
+            if (b.start_line === null || b.start_line === undefined) continue;
+            if (!editable.has(b.label)) continue;
+            const ls = (b.content || '').split('\\n');
+            if (!/^\\d+(\\.\\d+)*\\s*[.、．]?\\s*\\S/.test((ls[0] || '').trim())) continue;
+            const plus = await prev({[i]: ls.concat(['9.9.9 PROBE 新增条文']).join('\\n')});
+            if (plus !== base + 1) continue;
+            const minus = await prev({[i]: ['PROBE 编号被抹掉'].concat(ls.slice(1)).join('\\n')});
+            if (minus === base - 1) return i;
+        }
+        return -1;
     }""", [task_id])
-    assert idx >= 0, "找不到「首行是编号」的可编辑块 —— 夹具或白名单有问题"
+    assert idx >= 0, "找不到「追加编号行 +1 且抹掉编号 −1」的可编辑块（夹具或端点有问题）"
     return idx
 
 
