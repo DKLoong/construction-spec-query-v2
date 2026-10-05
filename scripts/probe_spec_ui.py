@@ -2443,6 +2443,15 @@ def f14_1_round_trip_is_byte_identical(page):
     got = page.evaluate("""(html) => window.tableEditor.serialize(window.tableEditor.parse(html))""",
                         _TBL_HTML)
     assert got == _TBL_HTML, f"往返不逐字节：\n原文 {_TBL_HTML[:80]}\n得到 {got[:80]}"
+    # 源串缓存守卫：入参**不是**「单张表」时（此处带尾随 `<p>`）不得缓存源串，
+    # 否则未改动时 serialize 会把整个入参串当块内容回吐（静默写坏 md，且往返一致型断言
+    # 对它恒绿抓不到）。此处断言 serialize 只吐出那张表，尾随文本不得出现。
+    got2 = page.evaluate(
+        """(html) => window.tableEditor.serialize(window.tableEditor.parse(html + '<p>tail</p>'))""",
+        _TBL_HTML)
+    assert isinstance(got2, str), f"serialize 返回非字符串（源串缓存 / 判空守卫失效）：{got2!r}"
+    assert 'tail' not in got2, f"带尾随文本的入参被整串回吐（源串缓存守卫失效）：{got2[:120]}"
+    assert got2.startswith('<table'), f"多元素入参未退回归一化表 HTML：{got2[:120]}"
 
 
 def f14_2_serialize_strips_editor_artifacts(page):
@@ -2459,14 +2468,41 @@ def f14_2_serialize_strips_editor_artifacts(page):
     assert 'rvb-cell-sel' not in got, f"选中态 class 漏进序列化：{got[:120]}"
 
 
-def f14_3_validate_rejects_broken_rowspan(page):
-    """★ 校验必须挡住非法结构（rowspan 越界）—— 保存前拦住，绝不写坏 md。"""
+def f14_3_validate_rejects_malformed_tables(page):
+    """★ 校验必须挡住**每一种**已声明的非法结构 —— 保存前拦住，绝不写坏 md。
+
+    覆盖 spec §2.4 的三条判据（每条都断言 `ok is False` 且 `reason` 非空）：
+      1) `rowspan` 越界（`r + rs > 行数`）
+      2) 各行宽度不等
+      3) 网格重叠（`colspan` 撞上上方 `rowspan` 的占位）
+
+    ⚠️ 第 4 类「空洞」**零覆盖且造不出**（如实留白，不硬凑）：`_grid` 每行总把自有单元格
+    填到**最左空位**，占位因此恒为「0..k 连续无洞」；实测穷举 2~3 行 × 1~3 列、span∈{1,2,3}
+    共 **270672** 张表，**0 例**落到「空洞」分支（其余全被「宽度不等 / 越界 / 重叠」先行拦下）。
+    """
+    # 1) rowspan 越界：把首格 rowspan 设成 99（表只有 2 行）
     got = page.evaluate("""(html) => {
         const t = window.tableEditor.parse(html);
         t.querySelector('td').setAttribute('rowspan', '99');
         return window.tableEditor.validate(t);
     }""", _TBL_HTML)
     assert got["ok"] is False and got["reason"], f"越界 rowspan 没被拦住：{got}"
+    # 2) 各行宽度不等：删掉第 2 行的一个 td（3 列 → 2 列）
+    got = page.evaluate("""(html) => {
+        const t = window.tableEditor.parse(html);
+        const tr = t.querySelectorAll('tr')[1];
+        tr.removeChild(tr.querySelector('td'));
+        return window.tableEditor.validate(t);
+    }""", _TBL_HTML)
+    assert got["ok"] is False and got["reason"], f"行宽不等没被拦住：{got}"
+    # 3) 网格重叠：第 2 行的 colspan=2 撞上第 1 行 rowspan=2 的占位
+    got = page.evaluate("""() => {
+        const t = window.tableEditor.parse(
+            '<table><tr><td>a</td><td rowspan="2">B</td><td>c</td></tr>' +
+            '<tr><td colspan="2">d</td></tr></table>');
+        return window.tableEditor.validate(t);
+    }""")
+    assert got["ok"] is False and got["reason"], f"重叠格没被拦住：{got}"
 
 
 def f14_4_validate_accepts_well_formed_table(page):
@@ -2478,7 +2514,7 @@ def f14_4_validate_accepts_well_formed_table(page):
 
 CASES["f14"] = [f14_1_round_trip_is_byte_identical,
                 f14_2_serialize_strips_editor_artifacts,
-                f14_3_validate_rejects_broken_rowspan,
+                f14_3_validate_rejects_malformed_tables,
                 f14_4_validate_accepts_well_formed_table]
 
 

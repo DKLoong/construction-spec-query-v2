@@ -28,8 +28,15 @@
             // DOM 往返做不到字节相等 ⇒ 缓存源串是「未改动 ⇒ 原样返回」的唯一途径。
             // 注：expando 不会被 cloneNode 复制，故 serialize 里用「clone 的 outerHTML」
             // 对比「原元素的 baseline」，不会被克隆污染。
-            el._rvbSource = src;
             el._rvbBaseline = el.outerHTML;
+            // ⚠️ `_rvbBaseline` 是**表级**、`_rvbSource` 必须是**输入级且恰好覆盖这张表** ——
+            //    两者作用域一旦不一致，未改动时 `serialize` 会把整个入参串当块内容返回
+            //    （静默写坏 md，且往返一致型断言对它恒绿、抓不到）。
+            //    故只在「入参串的唯一元素子节点就是这张表」时才缓存源串。
+            //    用 `children`（仅元素）而非 `childNodes`，可容忍首尾空白文本节点。
+            if (box.children.length === 1 && box.children[0] === el) {
+                el._rvbSource = src;
+            }
         }
         return el;
     }
@@ -51,7 +58,9 @@
         // 一起剥掉，编辑态当场失效。
         const html = _scrub(tableEl.cloneNode(true)).outerHTML;
         // scrub 后仍等于 parse 时的归一化基线 ⇒ 用户没改动 ⇒ 返回原始串（逐字节不变）。
-        if (tableEl._rvbBaseline !== undefined && html === tableEl._rvbBaseline) {
+        // `_rvbSource` 可能**故意没被缓存**（入参不是单张表，见 parse 的守卫）⇒ 必须一并判空，
+        // 否则会返回 undefined 而非归一化 HTML。
+        if (tableEl._rvbSource !== undefined && html === tableEl._rvbBaseline) {
             return tableEl._rvbSource;
         }
         return html;
