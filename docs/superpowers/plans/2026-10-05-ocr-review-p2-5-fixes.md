@@ -907,7 +907,10 @@ def f13_24_duplicate_clause_numbers_render_one_row_each(page):
     用 `:key="'pc' + c.clause_no"` 时 Alpine 的 keyed diff 在列表**变更**后会把重复项
     并掉 ⇒ 行数少于后端 `count`。
 
-    ⚠️ 断言必须发生在**列表变更之后**，不能只看首屏 —— 症状本身就是「保存后才折叠」。
+    ⚠️ **判据必须是「渲染行数 == 后端 count」，不能拿首屏行数当自己的基线** ——
+    本条初稿以首屏为基线，Task 7 实现者实测**证伪**：key 碰撞时 Alpine **首次渲染就**
+    把重复项并掉（后端 140 ⇒ DOM 139 行），而「变更前后都 139」照样自洽 ⇒ 初稿
+    **空转恒绿**。初稿 docstring 里「症状是保存后才折叠」的说法同样被证伪。
     """
     task_id = _rvb_seed(page, "24", extra_md=_DUP_CLAUSE_MD)
     assert task_id is not None, "前置不成立"
@@ -924,6 +927,14 @@ def f13_24_duplicate_clause_numbers_render_one_row_each(page):
         (f"列表变更后行数塌了：变更前 {before_n} / 变更后 "
          f"{page.locator('.rvb-clause-list li').count()} —— key 碰撞未修好")
 ```
+
+> ⚠️ **上述代码块是初稿，已被 Task 7 实测证伪并替换**（见 `32ca45a` 的实际实现）：
+> 拿首屏行数当基线是恒绿的（key 碰撞在**首次渲染**就并掉重复项，变更前后都是 139，
+> 与后端 140 不符却自洽）。落地版改为：先 `fetch` 后端 `/preview` 取 `count` 与
+> `has_dup`，**断言 `has_dup` 前置**（否则夹具没造出重复号、用例退化）+ **断言
+> `渲染行数 == 后端 count`**，再断言列表变更后不塌。变异证据：`:key` 改回
+> `'pc' + c.clause_no` ⇒ 红（139 vs 140）。
+> **教训（本仓 T37 同族）**：基线不能取自被测实现自身的产物，必须取一个**独立口径**（这里是后端 `count`）。
 
 - [ ] **Step 2: 实现 —— JS**
 
