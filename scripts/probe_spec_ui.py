@@ -2563,9 +2563,14 @@ def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
     # ★ 行编辑专属控件（B/I/S、对齐、「+ 行」/「- 行」）对表格块**必须不可见**：表格块的
     #    `.rvb-lines` 是空的，这些控件对它是死的（「+ 行」/「- 行」会把 null 传进
     #    `_insertLineAfter`/`_deleteLine` —— 已加 null 守卫兜底，但按钮本就不该出现）。
-    #    ⚠️ `.rvb-line-tools` 在 `x-for` 内**每块一份** ⇒ 必须按**块作用域**取。
-    assert not fix.locator(".rvb-line-tools").is_visible(), \
-        "表格块进入了编辑态，行编辑专属控件却可见（「+行/-行」是死按钮）"
+    #    ⚠️ **必须断到按钮，不能只断容器 `.rvb-line-tools`**：若有人把那个 `<span>` 包裹整体去掉
+    #    （按钮回到 `.rvb-tools` 直系子级），容器定位器会解析成 **0 个元素** ⇒ `is_visible()`
+    #    返回 `False` ⇒ 容器级断言**恒绿**，而 bug 其实已复现（按钮可见、可点、点了是死按钮）。
+    #    断到按钮则「包裹被去掉 ⇒ 按钮可见 ⇒ 红」。（`.rvb-line-tools` 是 `inline-flex` 真实盒子，
+    #    刻意避开 `display:contents` 那类「永远 0×0 ⇒ 断言恒绿」的写法。）
+    #    ⚠️ 按钮在 `x-for` 内**每块一份** ⇒ 必须按**块作用域**取。
+    assert not fix.locator("button:has-text('+ 行')").is_visible(), \
+        "表格块进入了编辑态，「+ 行」等行编辑专属按钮却可见（死按钮）"
     # ★ **反向守卫**：「取消」/「保存」对表格块必须**仍然可见** —— 它们是表格编辑态**唯一**的
     #    保存出口（Task 4 的表格工具条只有结构操作按钮、不含保存）。把整排 `.rvb-tools` 一起
     #    门控掉会让表格**根本无法保存**（本轮实测踩过：f14_6/f14_7 的保存点击 30s 超时）。
