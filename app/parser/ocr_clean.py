@@ -81,3 +81,41 @@ def clean_ocr_text(md_text) -> str:
 
         cleaned.append(ln)
     return "\n".join(cleaned)
+
+
+# ═══════════════════════════════════════════════════════════
+# 提交时的存储期规范化（审查页 P2；spec §8.6 方案 b / §10.4）
+# ═══════════════════════════════════════════════════════════
+
+# 字面两字符：反斜杠 + n。Paddle 的已知输出缺陷（真实产物 15 份里 14 份含，合计 827 处）。
+# 渲染层（md-render.js）早已把它当 <br> 显示；这里把**渲染期的补救前移成存储期一次性修好**。
+_LITERAL_BACKSLASH_N = "\\" + "n"
+
+# `<table>` 开头标签：只命中「还没有居中表达」的那些 ⇒ 天然幂等。
+# 居中写法二选一即可：`align="center"`（DOMPurify 保留，spec §8.6 实测）或 margin auto。
+_TABLE_OPEN_RE = re.compile(
+    r"<table(?![^>]*\balign=)(?![^>]*margin-left\s*:\s*auto)([^>]*)>",
+    re.IGNORECASE,
+)
+
+
+def _center_table_tag(m: re.Match) -> str:
+    return f'<table align="center"{m.group(1)}>'
+
+
+def normalize_md(md_text: str) -> str:
+    """审查提交时的**存储期规范化**（幂等；**不改行数**）。
+
+    ① **所有表格统一居中**（spec §8.6 方案 b：居中是本项目的表格规范，含未编辑的表格）；
+    ② **字面 `\\n` → `<br>`**（spec §10.4：行内换行，**不新增行**，故对切分零影响）。
+
+    ⚠️ **两项都不新增/删除换行符** —— 这是「规范化不改切分」的结构性保证，
+    由 `tests/test_ocr_normalize.py` 的行数断言 + 真实夹具的 clause_no 序列断言共同钉住。
+
+    ⚠️ **不得**用于存量规范的清洗：那会改派生文本（`plain_text` 会把 `<br>` 当块级标签
+    转换行），必须连带重建索引 ⇒ 属独立议题（spec §10.4 / R6）。本函数只在新导入路径用。
+    """
+    if not md_text:
+        return md_text
+    out = md_text.replace(_LITERAL_BACKSLASH_N, "<br>")
+    return _TABLE_OPEN_RE.sub(_center_table_tag, out)
