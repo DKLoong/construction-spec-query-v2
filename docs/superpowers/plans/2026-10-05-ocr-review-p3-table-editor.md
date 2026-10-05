@@ -219,7 +219,14 @@ _TBL_HTML = ("<table border=1 style='margin: auto; word-wrap: break-word;'>"
 
 
 def f14_1_round_trip_is_byte_identical(page):
-    """★ 地基：**未做任何编辑 ⇒ 序列化结果与原文逐字节相同**（结构上恒真，不是对拍出来的）。"""
+    """★ 地基：**未做任何编辑 ⇒ 序列化结果与原文逐字节相同**。
+
+    ⚠️ 这条**需要"源串缓存"才能成立**：浏览器解析**必然归一化**（插 `<tbody>`、属性引号统一为
+    双引号、丢弃自闭合 `/>`），纯 DOM→serialize **做不到**字节相等。缓存（`parse` 记源串 +
+    归一化基线，`serialize` 比对后决定返回哪一个）是"未改动 ⇒ 原样返回"的唯一途径（spec §2.5）。
+    夹具 `_TBL_HTML` 用的是**真实产物的写法**（单引号、无 tbody、`<img ... />`），故本用例
+    不是对拍出来的空转。
+    """
     page.goto(f"{BASE}/")                       # 任意应用页即可（base.html 已加载模块）
     has = page.evaluate("() => typeof window.tableEditor === 'object'")
     assert has, "table-editor.js 没被页面加载（检查 base.html 的 script 引用）"
@@ -295,7 +302,16 @@ Expected: `f14_1` 红，报「table-editor.js 没被页面加载」。
     function parse(html) {
         const box = document.createElement('div');
         box.innerHTML = String(html || '');
-        return box.querySelector('table');
+        const t = box.querySelector('table');
+        if (t) {
+            // ⚠️ 必须缓存**原始串**：浏览器解析必然归一化（插 `<tbody>`、属性引号统一为双引号、
+            //    丢弃自闭合 `/>`）⇒ DOM 往返**做不到**字节相等。要兑现 spec §2.5 的
+            //    「未改动 ⇒ 逐字节不变」，只能在 parse 时留一份源串、serialize 时比对基线。
+            // 真实产物实测（`d66c2e0b` 24 份 md_html）：单引号、无 tbody —— 与夹具逐字一致。
+            t._rvbSource = String(html || '');
+            t._rvbBaseline = t.outerHTML;
+        }
+        return t;
     }
 
     function _scrub(el) {
@@ -311,7 +327,14 @@ Expected: `f14_1` 红，报「table-editor.js 没被页面加载」。
 
     function serialize(tableEl) {
         if (!tableEl) return '';
-        return _scrub(tableEl.cloneNode(true)).outerHTML;
+        const scrubbed = _scrub(tableEl.cloneNode(true));
+        // 与 parse 时的**归一化基线**比较：相等 ⇒ 用户没动过 ⇒ 返回**原始串**（逐字节不变）。
+        // 不相等 ⇒ 归一化形态（语义等价，属性值保留）。见 spec §2.5「源串缓存」。
+        if (tableEl._rvbSource && tableEl._rvbBaseline
+            && scrubbed.outerHTML === tableEl._rvbBaseline) {
+            return tableEl._rvbSource;
+        }
+        return scrubbed.outerHTML;
     }
 
     /** 占位矩阵：`m[r][c]` = 占据该格的元素（或 null）。越界 / 重叠 ⇒ 返回原因字符串。 */
@@ -484,8 +507,16 @@ def f14_6_saving_an_edited_table_writes_the_md_region(page):
         return d.edits[d.blocks.findIndex(b => b.label === 'table' && b.start_line !== null)];
     }""")
     assert md_html and "改过的说明" in md_html, f"edits 里没有改后的表：{str(md_html)[:80]}"
-    assert "border=1" in md_html and "margin: auto" in md_html, \
-        f"开标签属性丢了（表格会变成无边框/左对齐）：{md_html[:120]}"
+    # ⚠️ 断言必须按**属性值**核，**不能**按源串字面核 `"border=1"` —— 表格一经改动，
+    #    序列化走归一化形态（`border=1` → `border="1"`、引号统一、自动插 `<tbody>`），
+    #    字面断言会**假红**。（本用例改了格内文字 ⇒ 一定走归一化分支。）
+    probe = page.evaluate("""(html) => {
+        const t = window.tableEditor.parse(html);
+        return { border: t.getAttribute('border'), style: t.getAttribute('style') || '' };
+    }""", md_html)
+    assert probe["border"] == "1", f"border 属性丢了（表格会没边框）：{probe}"
+    assert "margin: auto" in probe["style"] or "margin:auto" in probe["style"], \
+        f"margin:auto 丢了（表格会左对齐）：{probe}"
     assert "contenteditable" not in md_html, "编辑器痕迹漏进了 md"
 
 
