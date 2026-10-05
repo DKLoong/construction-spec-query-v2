@@ -655,10 +655,17 @@
   「存量产物怎么办」**。本例中我把它与「重导数据库条文」混为一谈（`scripts/reimport_specs.py`
   重建的是 `clauses` 表，**不碰 `layout.json`** —— 后者由 **OCR 阶段**的 `finalize_layout` 落盘），
   于是计划里只在派单注记了「需重导」，却没立任何 Task。
-- **Context**：已用 `scripts/backfill_layout_clause_no.py` 回填（**幂等**：块里已有 `clause_no` 的跳过；
-  **带 `base_sha256` 指纹校验**：md 与 layout.json 不是同一次锚定就跳过、不写错；**默认 dry-run**）。
-  实测口径：`e9915ba8` 129 块 → 79 块获条号、涉及 24 个条号。另两个任务目录（`68ad5c7e`/`abdfc8f6`）
-  本就带该字段（是**探针夹具残留**，它们出现在真实 `data/outputs` 下说明历史上某次探针跑漏了隔离 —— 另见待清理项）。
+- **Context**：回填工具现为 **`scripts/backfill_layout.py`**（**取代** `backfill_layout_clause_no.py`）——
+  顺序不可颠倒：**先重锚行区间、再补条文号**（`clause_no` 按 `start_line` 推出，区间不对则条号跟着错）。
+  三条护栏：**指纹校验**（`base_sha256` 不一致就跳过、宁缺勿错）、**幂等**（纯函数重跑同结果）、**默认 dry-run**。
+  实测口径：`e9915ba8` 129 块 → 79 块获条号、涉及 24 个条号。
+  ⚠️ **验证 span / 条号时必须读库里 `import_tasks.md_text`**，**不要**读磁盘的 `data/outputs/{tid}/{tid}.md`
+  —— 两者**不是同一文本**（实测 10239 行 vs 10449 行），读错源会得出「span 错位」的假结论。
+  先比 `base_sha256` 即可确认读的是哪一个（详见 memory `verification-traps` T17）。
+- **待清理**：`data/outputs/68ad5c7e`、`data/outputs/abdfc8f6` 两个目录（**探针夹具残留**：真实库
+  `import_tasks` 无对应行；出现在真实 `data/outputs` 下说明历史上某次探针跑漏了隔离）。
+  另 `data/outputs/e9915ba8/` 已成为**死数据**（该任务已于 2026-10-05 确认导入成规范 43，
+  `import_tasks` 行消失、`/layout` 不再可达）—— 可与上面两个目录一并清理。
 - **待办**：
   1. 今后任何「给 `layout.json` / 索引产物新增字段」的改动，**必须**同时交付存量回填脚本或迁移步骤，
      并把「存量怎么办」写进计划的 Task 列表（不是写在派单的旁注里）。
