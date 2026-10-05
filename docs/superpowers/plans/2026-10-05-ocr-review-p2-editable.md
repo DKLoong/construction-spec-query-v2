@@ -62,6 +62,7 @@
 | `static/app.css`（改） | 新控件的样式 |
 | `app/templates/base.html`（改） | 引入 `md-inline.js?v=1`，并递增 `review-blocks.js` / `app.css` 的版本号 |
 | `tests/test_ocr_normalize.py`（新建） | `normalize_md` 单测 + 真实夹具的「条文序列不变」判据 |
+| `tests/conftest.py`（改） | `isolated_paths` 补 `init_db()` —— 否则它与 `auth_client` 同用时库无表（Task 3 Step 2 实测） |
 | `tests/test_review_compose.py`（新建） | compose 端点契约 + 外部输入校验 + 陈旧 layout 守卫 |
 | `tests/test_review_preview.py`（新建） | preview 端点契约 |
 | `tests/test_confirm_transport.py`（改） | 追加「confirm 会规范化」用例（既有「一字不差」用例必须保持绿） |
@@ -528,6 +529,7 @@ git commit -m "feat: 行内 md 转换器 md-inline.js（成对标记、对齐包
 
 **Files:**
 - Modify: `app/routes/import_routes.py`
+- Modify: `tests/conftest.py`（`isolated_paths` 补 `init_db()`，理由见 Step 2）
 - Create: `tests/test_review_compose.py`
 
 **Interfaces:**
@@ -553,8 +555,6 @@ git commit -m "feat: 行内 md 转换器 md-inline.js（成对标记、对齐包
 """
 import json
 from pathlib import Path
-
-import pytest
 
 from app.ocr.layout import anchor_blocks, base_sha256, save_layout
 from app.parser.ocr_clean import normalize_md
@@ -668,10 +668,34 @@ def test_compose_rejects_stale_layout(auth_client, isolated_paths):
     assert "不一致" in resp.json()["detail"] or "刷新" in resp.json()["detail"]
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [ ] **Step 2: 先修夹具，再跑测试确认失败**
+
+**必须先做这一步**：`tests/conftest.py` 的 `isolated_paths` 末尾补一行 `init_db()`。
+
+为什么（2026-10-05 实测定因，Task 3 实现者先撞上并停下来问）：`auth_client` 自己就
+`monkeypatch.setattr("app.database.DATABASE_PATH", …)` 到 `test_auth.db` 并 `init_db()`；
+而夹具建立顺序 = 用例签名顺序，`(auth_client, isolated_paths)` 会让 `isolated_paths`
+**后**建立、把 `DATABASE_PATH` 改指到**未建表**的 `t.db` ⇒ 全部用例死在
+`sqlite3.OperationalError: no such table: import_tasks`，**根本到不了端点**，
+RED 与「端点不存在」混为一谈。本仓既有用例**从不把这两个夹具同用**（各自的 env
+夹具如 `test_review_layout_routes.py::review_env` 都是「先 auth_client、再 patch + init_db」）。
+补这一行让组合与顺序无关，且只**增建表**、不改任何既有语义。
+
+```python
+    for d in ("lance_db", "uploads", "outputs"):
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
+    # ⚠️ 必须建表：`auth_client` 建的是**它自己**那份 DB，本夹具随后把 DATABASE_PATH
+    # 改指到这里的 t.db。不建表时两者同用会死在 no such table（曾实测踩到）。
+    from app.database import init_db
+    init_db()
+    return tmp_path
+```
 
 Run: `D:/Python/python.exe -m pytest tests/test_review_compose.py -v`
-Expected: FAIL（404，且 detail 不是「版面」；说明端点还不存在）
+Expected: FAIL —— 7 条**全部**失败，且失败原因是**端点还不存在**（多为 `assert 200` 实得 404；
+两条 404 用例因 `detail` 文案不是「版面」而红）。**不得**出现 `no such table`。
+
+> ⚠️ 改的是**全仓共用**的夹具 ⇒ 本 Task 的验证必须包含**全量回归**（Global Constraint 7 的增量要求在此例外）。
 
 - [ ] **Step 3: 实现端点**
 
