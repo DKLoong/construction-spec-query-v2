@@ -821,7 +821,10 @@ def f14_9_insert_and_delete_column_keep_the_rectangle(page):
         const c = g.grid[r].indexOf(refCell);
         if (c < 0) return false;
         const at = before ? c : c + 1;
-        if (g.grid.some((row) => row[at] && row[at] !== row[at - 1])) {
+        // ⚠️ 判据是 `===` 而不是 `!==` —— 要拒的是「插入点落在**某个合并格内部**」，
+        //    即 `grid[ri][at]` 与 `grid[ri][at-1]` 是**同一个元素**（说明 at 是某个跨列格的延续）。
+        //    写成 `!==` 会对**任意无合并普通表恒真** ⇒ 该函数永远拒绝、一个格也不插。
+        if (g.grid.some((row) => row[at] && row[at] === row[at - 1])) {
             // 目标列位置落在某个跨列格内部 ⇒ 拒绝
             return false;
         }
@@ -1184,6 +1187,11 @@ def f14_12_merge_on_a_single_cell_is_a_no_op(page):
                     t, [...t.querySelectorAll('.rvb-cell-sel')]); break;
                 case 'split': ok = window.tableEditor.splitCell(t, cell); break;
 ```
+
+> **本 Task 还要补两条欠覆盖的分支**（Task 4 实现者报告 + 其评审指出：`f14_8`/`f14_9` 用的都是**普通表**）：
+> ① `insertCol` 的**合并格拒绝**分支（插入点落在跨列格内部 ⇒ 返回 false、不插）；
+> ② `deleteCols` 的 **colspan 递减**分支（跨列格被删一列时 `colspan` 减 1 而不是整格删除）。
+> 本 Task 的用例天然带合并格夹具 ⇒ 顺手补上（**断言到行为**：拒绝后结构不变 / 递减后仍是矩形表）。
 
 > **本 Task 需删除一条死判据**（Task 2 受限复审推翻控制器初裁后定）：
 > `validate` 里的**「空洞」判据**（`g.grid.some(row => row.some(x => !x))`）**对任意输入恒假** ——
