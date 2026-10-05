@@ -1495,6 +1495,28 @@ def _rvb_first_editable(page):
     return idx
 
 
+# ★ **改 P1 既有的 `_rvb_seed`：追加两块「门槛隔离」样本**
+#   （Task 6 评审对着真实夹具实测逼出，必须自己造，不能指望夹具里现成有）
+#
+#   实测：真实夹具切 10 页后是 76 块 = 「66 个 白名单∧有 span」+「10 个 `number`（既非白名单、
+#   又无 span）」——**没有任何一块只违反其中一个条件** ⇒ `canEdit` 的两个条件里**单独删掉任一个**
+#   （`hasSpan` 或 label 白名单），f13_7 都照样绿：它实际只证明「canEdit 不是恒真」。
+#   故补这两块，让两条门槛各自可被否证。**追加在末尾** ⇒ 既有块下标不变、
+#   `_rvb_first_editable` 仍返回 0。`bbox` 给 `None`：不画高亮框，免得干扰左栏用例。
+
+```python
+    aligned = [b for b in aligned if (b.get("page") or 1) <= _RVB_PAGES]
+    aligned.append({"label": "text", "content": "白名单但无 span", "page": 1,
+                    "bbox": None, "order": 9998, "global_block_id": 9998,
+                    "start_line": None, "end_line": None, "prefix": "", "suffix": "",
+                    "clause_no": None})
+    aligned.append({"label": "display_formula", "content": "非白名单但有 span", "page": 1,
+                    "bbox": None, "order": 9999, "global_block_id": 9999,
+                    "start_line": 0, "end_line": 1, "prefix": "", "suffix": "",
+                    "clause_no": None})
+```
+
+
 def f13_4_entering_edit_keeps_line_count(page):
     """★ spec R10：进入编辑态前后**行数必须一致**（否则一进一出就多/少一行）
 
@@ -1556,13 +1578,37 @@ def f13_6_cancel_discards_the_edit(page):
 
 
 def f13_7_unlocated_and_non_text_blocks_offer_no_fix_button(page):
-    """★ 未定位块 / 非文本类块：**没有**「纠正」，且**可见地**说明原因"""
+    """★ `canEdit` 是**两个条件的合取**（有 span ∧ 白名单）⇒ 两条门槛必须**各自**被钉住。
+
+    ⚠️ 为什么不能只断言「存在被锁的块」（Task 6 评审实测）：真实夹具切片里 76 块恰好是
+    「66 个 白名单∧有 span」+「10 个 `number`（既非白名单、又无 span）」，**没有一块只违反
+    其中一个条件** ⇒ 单独删掉任一条件，原断言照样绿（它实际只证明 canEdit 不是恒真）。
+    为此 `_rvb_seed` 补了两块**门槛隔离**样本（见上）。
+    """
     assert _rvb_seed(page, "7") is not None, "前置不成立"
     # ⚠️ 一律按**可见性**数：x-show 控制的元素永远在 DOM 里（只数存在性 = 空转恒绿）
-    n_locked = page.locator(".rvb-locked:visible").count()
-    assert n_locked > 0, "夹具里应有不可编辑的块（未定位 table/chart 或非文本类），却一个都没**可见地**标出"
+    assert page.locator(".rvb-locked:visible").count() > 0, "没有任何块**可见地**标出「不可编辑」"
     assert page.locator(".rvb-fix:visible").count() < page.locator(".rvb-block").count(), \
-        "所有块都有「纠正」按钮 —— 白名单/span 判据没生效"
+        "所有块都有「纠正」按钮 —— canEdit 判据没生效"
+    # ★ 门槛隔离：两块合成样本的「纠正」都必须不可见
+    gate = page.evaluate("""() => {
+        const out = {};
+        for (const el of document.querySelectorAll('.rvb-block')) {
+            const bd = el.querySelector('.rvb-block-bd');
+            const t = bd ? bd.textContent.trim() : '';
+            if (t === '白名单但无 span' || t === '非白名单但有 span') {
+                const fx = el.querySelector('.rvb-fix');
+                out[t] = !!(fx && getComputedStyle(fx).display !== 'none');
+            }
+        }
+        return out;
+    }""")
+    assert '白名单但无 span' in gate and '非白名单但有 span' in gate, \
+        f"找不到门槛隔离样本块（`_rvb_seed` 没补上？）：{gate}"
+    assert gate['白名单但无 span'] is False, \
+        "白名单但**无 span** 的块给了「纠正」⇒ span 门槛被删了（编辑会静默丢）"
+    assert gate['非白名单但有 span'] is False, \
+        "**非白名单**但有 span 的块给了「纠正」⇒ 白名单门槛被删了"
 ```
 
 并把这 4 条追加进 `CASES["f13"]`。
