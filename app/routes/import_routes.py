@@ -1416,6 +1416,38 @@ async def review_compose(request: Request, task_id: str):
     return {"md_text": md_text}
 
 
+@router.post("/import/review/{task_id}/preview")
+async def review_preview(request: Request, task_id: str):
+    """实时切分预览（spec §11.4）：**当前编辑会切成哪些条**。
+
+    ⚠️ **必须镜像 Phase 2 的解析前两步**，否则 spec §18 的 P2 出口判据
+    「切分预览与导入后实际条文数一致」不成立：
+
+        preview        : _filter_cover_clauses(parse_markdown(md))     ← 本端点
+        _process_import_phase2: _filter_cover_clauses(parse_markdown(md_text))
+
+    `_filter_cover_clauses` 会丢掉封面/出版信息页伪条文（`import_routes.py` 内既有），
+    漏掉它会让预览数**系统性地高于**入库数，而用户拿这个数当验收凭据。
+
+    与 compose **同源**（共用 `_compose_or_error`：同一次 splice + 同一次 normalize）
+    ⇒ 这里数出来的就是「真提交上去会入库的条数」。
+
+    性能（实测 M4）：最重真实产物 617 892 字符 ⇒ `parse_markdown` 109 ms；
+    拼装 0.4 ms。故**不需要** spec §11.4 设想的降级（只显示受影响片段）；
+    前端做 400 ms 防抖即可。
+    """
+    if not re.fullmatch(r"[0-9a-f]{8}", task_id):
+        return JSONResponse({"detail": "任务ID非法"}, status_code=404)
+    md_text, err = await _compose_or_error(request, task_id)
+    if err is not None:
+        return err
+    assert md_text is not None  # _compose_or_error 契约：无 err 时 md_text 必为 str（窄化供类型检查）
+    rows = _filter_cover_clauses(parse_markdown(md_text))
+    clauses = [{"clause_no": c.get("clause_no") or "", "title": c.get("title") or ""}
+               for c in rows]
+    return {"count": len(clauses), "clauses": clauses, "md_chars": len(md_text)}
+
+
 @router.post("/import/review/{task_id}/confirm")
 async def confirm_review(
     request: Request,
