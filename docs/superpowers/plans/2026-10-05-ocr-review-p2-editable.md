@@ -1230,14 +1230,24 @@ def test_layout_endpoint_ships_editable_labels(review_env):
             return this.hasSpan(b) && this.editableLabels.indexOf(b.label) >= 0;
         },
 
-        /** 块的当前内容：有编辑用编辑，否则用 OCR 原文（渲染与编辑共用同一取值） */
+        /** 块的当前内容：有编辑用编辑，否则用 OCR 原文（渲染与编辑共用同一取值）。
+         *
+         * ⚠️ **必须先读一次 `this.edits[i]`**（Task 6 实现者仪表化实测逼出）：Alpine 的响应式
+         * **不追踪 `hasOwnProperty`**（它走 `[[GetOwnProperty]]`，Vue 的 proxy 不拦），而首次渲染
+         * 走的是 `b.content` 分支、**从没读过这个键** ⇒ 没有任何 effect 依赖它 ⇒
+         * `saveEdit` 写入后 `x-html="renderBlock(b)"` 与 `x-show="isEdited(b)"` **都不会重跑**
+         * （实测：edits 已写入、editingIdx 已归零、无 pageerror，而 DOM 仍是原文）。
+         * 那一行 `const edited = …` 就是用来建立**键级依赖**的，不能省。
+         */
         contentOf(b) {
             const i = b.__i;
-            return Object.prototype.hasOwnProperty.call(this.edits, i) ? this.edits[i] : (b.content || '');
+            const edited = this.edits[i];                 // 先读一次 ⇒ 键级响应式依赖
+            return Object.prototype.hasOwnProperty.call(this.edits, i) ? edited : (b.content || '');
         },
 
+        /** 同理：读键本身就是依赖（不要写成 hasOwnProperty 形式） */
         isEdited(b) {
-            return Object.prototype.hasOwnProperty.call(this.edits, b.__i);
+            return this.edits[b.__i] !== undefined;
         },
 
         enterEdit(idx) {
