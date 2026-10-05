@@ -2211,7 +2211,10 @@ def f13_15_editing_a_block_does_not_let_submit_while_editing(page):
     idx = _rvb_first_editable(page)
     _rvb_edit(page, idx)
     page.locator("button:has-text('确认并继续导入')").click()
-    assert poll_until(page, lambda: "请先" in page.locator("#rvb-result").inner_text(), 5000), \
+    # ⚠️ 选择器是 `#rvb-result + p`（**紧邻的兄弟**）而不是槽**内部**：`submitError` 的 `<p>` 已按
+    #    Task 9 评审的 Important 裁决移到结果槽**外面**（槽内的会被 `innerHTML` 换掉 ⇒ 死通道）。
+    #    断言的**对象**没变（还是那条提示文案），只是它渲染的位置变了 ⇒ 这不是放宽断言。
+    assert poll_until(page, lambda: "请先" in page.locator("#rvb-result + p").inner_text(), 5000), \
         "编辑态下点提交没有被拦（会静默丢掉未保存的改动）"
 
 
