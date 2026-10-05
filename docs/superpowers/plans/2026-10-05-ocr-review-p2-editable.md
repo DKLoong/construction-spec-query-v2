@@ -563,15 +563,24 @@ MD = "3.0.1 第一条。\n\n3.0.2 第二条。\n\n3.0.3 第三条。"
 
 
 def _blocks_of(md: str) -> list[dict]:
+    """三块，**块内容含编号**。
+
+    ⚠️ **必须含编号**：`anchor_blocks` 要求「块内容 == 该行内容」（`_split_affixes` 只剥
+    `#` 前缀与 HTML 外壳）。写成 `"第一条。"` 会让**三个块全部锚不上**（实测 `start_line`
+    全 None）⇒ 编辑落不到任何区间 ⇒ 编辑类用例变成「看起来在测、实际空转」。
+    真实产物正是含编号的：477 个 `text` 块 **477 个锚定成功**，只有内容逐字等于整行才可能。
+    """
     raw = [
-        {"label": "text", "content": "第一条。", "page": 1, "bbox": [0, 0, 1, 1],
+        {"label": "text", "content": "3.0.1 第一条。", "page": 1, "bbox": [0, 0, 1, 1],
          "order": 0, "global_block_id": 0},
-        {"label": "text", "content": "第二条。", "page": 1, "bbox": [0, 0, 1, 1],
+        {"label": "text", "content": "3.0.2 第二条。", "page": 1, "bbox": [0, 0, 1, 1],
          "order": 1, "global_block_id": 1},
-        {"label": "text", "content": "第三条。", "page": 1, "bbox": [0, 0, 1, 1],
+        {"label": "text", "content": "3.0.3 第三条。", "page": 1, "bbox": [0, 0, 1, 1],
          "order": 2, "global_block_id": 2},
     ]
     blocks, _ = anchor_blocks(md, raw)
+    assert [b["start_line"] for b in blocks] == [0, 2, 4], \
+        "前置不成立：三块必须都锚定到 0/2/4 行，否则下面的编辑用例是空转"
     return blocks
 
 
@@ -613,8 +622,10 @@ def test_compose_applies_only_the_edited_range(auth_client, isolated_paths):
     assert resp.status_code == 200, resp.text
     out = resp.json()["md_text"]
     assert "改过的第二条。" in out
-    assert "第一条。" in out and "第三条。" in out
-    assert "第二条。" not in out
+    assert "3.0.1 第一条。" in out and "3.0.3 第三条。" in out
+    # ⚠️ 必须断言**整行**（含编号）已消失：新内容「改过的第二条。」**含**子串「第二条。」，
+    #    只查子串会让这条断言恒真
+    assert "3.0.2 第二条。" not in out
 
 
 def test_compose_rejects_out_of_range_index_with_detail(auth_client, isolated_paths):
@@ -866,9 +877,14 @@ def test_preview_mirrors_phase2_cover_filter(auth_client, isolated_paths):
 
 
 def test_preview_reflects_an_edit_that_adds_a_clause(auth_client, isolated_paths):
-    """★ 补写一条**带编号的新行** ⇒ 预览必须多出一条（这正是用户补 OCR 丢失内容的场景）"""
+    """★ 补写一条**带编号的新行** ⇒ 预览必须多出一条（这正是用户补 OCR 丢失内容的场景）
+
+    ⚠️ 编辑值**必须带上原行整行内容**（含 `3.0.3`）：行级编辑器里那一行就是整行，
+    用户是在其**后**追加一行；只写「第三条。」会把 `3.0.3` 这个编号整行抹掉，
+    切出来变成 `3.0.1/3.0.2/3.0.4`（少一条），用例会红得莫名其妙。实测已核。
+    """
     task_id = _seed(auth_client, "ab000011")
-    edited = "第三条。\n3.0.4 补写的新条文。"
+    edited = "3.0.3 第三条。\n3.0.4 补写的新条文。"
     resp = _post(auth_client, task_id, {"edits": {"2": edited}})
     assert resp.status_code == 200, resp.text
     nos = [c["clause_no"] for c in resp.json()["clauses"]]
