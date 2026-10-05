@@ -1329,10 +1329,29 @@ def f14_16_saving_a_table_edit_does_not_change_the_clause_set(page):
     blk = page.locator('[data-block-idx]', has_text="探针表格")
     blk.locator("button:has-text('纠正')").first.click()
     assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 1, 5000)
+    # ★ **删图必须可撤销**（spec §2.4 把「删图」列进结构操作，且要求快照压在操作**前**）。
+    #   ⚠️ 必须走**组件入口**（`tableRemoveImages` / `tableUndo`）而非纯函数 —— 「压快照」只发生在组件里，
+    #      纯函数根本不碰快照栈。判据要能分辨「压操作前」与「压操作后」：
+    #        · 压**操作前** ⇒ 撤销把图片找回来（1 张）
+    #        · 压**操作后** ⇒ restore 回自己 ⇒ 撤销**空转**（仍 0 张）   ← 两者可分辨
+    #   ⚠️ 先把**图片格**点上：`tableRemoveImages` 的选区为空时回落到**首格**（序号格，没有图）⇒
+    #      不点就是 n=0、只写一条 `tableError`，本段会以"没生效"的样子红，看不出是快照口径的问题。
+    n_img = lambda: page.locator(".rvb-table-edit table img").count()
+    assert n_img() == 1, "前置：夹具表里应有 1 张图"
+    page.locator(".rvb-table-edit table td").nth(4).click()      # 2×3 夹具里图片在第 5 格
+    page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).tableRemoveImages()")
+    assert poll_until(page, lambda: n_img() == 0, 3000), "「删图」没生效（选区或入口没接上）"
+    page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).tableUndo()")
+    assert poll_until(page, lambda: n_img() == 1, 3000), \
+        ("撤销没把图片找回来 —— 快照压在了操作**之后**（restore 回自己 ⇒ 撤销空转）；"
+         "spec §2.4 要求操作**前**压")
+    page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).tableRemoveImages()")
+    assert poll_until(page, lambda: n_img() == 0, 3000), "再删一次失败"
+    # 再做一次**结构变更**供保存对账用。⚠️ 不能再用「图片格」定位（上面已把图片删掉 ⇒ `img` 为 null）；
+    # 删首列即可 —— 本条只关心「保存前后条号集合不变」，与删哪一列无关。
     page.evaluate("""() => {
         const d = Alpine.$data(document.querySelector('.rvb-root'));
-        const t = d._tableEl();
-        window.tableEditor.deleteCols(t, [t.querySelector('img').closest('td')]);
+        window.tableEditor.deleteCols(d._tableEl(), [d._tableEl().querySelector('td')]);
     }""")
     blk.locator("button:has-text('保存')").first.click()
     assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 0, 5000), \
@@ -1343,6 +1362,32 @@ def f14_16_saving_a_table_edit_does_not_change_the_clause_set(page):
 ```
 
 （加进 `CASES["f14"]`。）
+
+★ **另需给现有 `f14_5` 追加一段**（**不新增编号**，计数链保持 16）—— Task 5 受限复审报出、
+判为 out-of-scope 的**可达缺陷**，由本 Task 带走（先例：Ruling 8 把 Task 3 的定时炸弹交给引爆它的 Task 4）：
+
+```python
+    # ★ **删掉锚点格之后，选区必须能自愈**（Task 5 复审的 out-of-scope 发现，Task 6 带走）。
+    #   症状：选中某格 → 点「- 行」删掉它所在行 ⇒ `_selAnchor` 指向**已分离**的节点 ⇒
+    #   下一次 Shift+点走 `_selectTable(cell, true)` ⇒ `anchor` 是分离节点 ⇒ `selectRange` 里
+    #   `rows.indexOf(anchor.closest('tr'))` = -1 ⇒ `g.grid[-1].indexOf` 抛 **TypeError**。
+    #   ⚠️ 该抛出发生在 `@click` 处理器里、**不在** `tableOp` 的 try/catch 内 ⇒ 用户视角是
+    #      「Shift+点毫无反应」+ 控制台报错（本仓既定口径：不得有未捕获的交互异常）。
+    #   判据：出事的写法下 `selectRange` 会**先清空所有 `rvb-cell-sel` 再抛** ⇒ 声明为**空数组**；
+    #        修好后应恰好选中被点的那个格 ⇒ 用 `sel()` 的**内容**分辨（非空 vs 空）。
+    cells.nth(0).click()                      # 锚点落在第 0 格
+    # ⚠️ 必须按**表格那排**工具条取按钮：行编辑工具条里也有一个同名 `- 行`（被 x-show 隐藏但仍在 DOM），
+    #    页面级/块级定位器会解析出 2 个元素 ⇒ Playwright 1.62 的 strict 模式直接报错。
+    #    `.rvb-tools` 在块内有**两**份（行编辑那排在前、表格那排在后）⇒ `.last` 才是表格工具条。
+    fix.locator(".rvb-tools").last.locator("button:has-text('- 行')").click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit td").count() == 3, 3000), \
+        "「- 行」没删掉那一行"
+    left_cells = page.locator(".rvb-table-edit td")
+    left_cells.nth(2).click(modifiers=["Shift"])
+    assert poll_until(page, lambda: sel() == [2], 3000), \
+        (f"删掉锚点格后再 Shift+点没有自愈（应选中被点的格）：{sel()} —— "
+         "空数组即 `selectRange` 抛了 TypeError（锚点仍指向已分离的节点）")
+```
 
 - [ ] **Step 2: 跑到红** —— `f14_13` 红（`removeImages is not a function`）。
 
@@ -1373,35 +1418,65 @@ def f14_16_saving_a_table_edit_does_not_change_the_clause_set(page):
 `review-blocks.js` 加两个入口：
 
 ```js
-        /** 表内对齐（作用于**选中格**；空选区回落到单格） */
+        /** 表内对齐（作用于**选中格**；空选区回落到单格）
+         *
+         * ⚠️ **不压快照**：spec §2.4 的结构操作清单是「合并/拆分/插删行列/**删图**」——
+         *    对齐与 B/I/S **不在其中**，属「格内文字级」操作，**明确不纳入撤销**
+         *    （TODOS T42 第 3 条已登记）。下面 `tableExec` 同。 */
         tableAlign(v) {
             const t = this._tableEl();
             if (!t) return;
             const cells = [...t.querySelectorAll('.rvb-cell-sel')];
             window.tableEditor.applyAlign(cells.length ? cells : [t.querySelector('td,th')], v);
-            this._tableSnapshots.push(t.outerHTML);
         },
 
         /** 表内 B/I/S：与行编辑器同一路径（`@mousedown.prevent` 保选区）。
-         *  ⚠️ contenteditable 的格子失焦会让选区塌掉 ⇒ 模板上必须写 `@mousedown.prevent`。 */
+         *  ⚠️ contenteditable 的格子失焦会让选区塌掉 ⇒ 模板上必须写 `@mousedown.prevent`。
+         *  ⚠️ 同 `tableAlign`：**不压快照**（文字级操作不纳入撤销）。 */
         tableExec(cmd) {
             const t = this._tableEl();
             if (!t) return;
             const sel = window.getSelection();
             if (!sel || !sel.rangeCount) return;
             document.execCommand(cmd, false, null);
-            this._tableSnapshots.push(t.outerHTML);
         },
 
-        /** 删图（作用于选中格；空选区回落到单格） */
+        /** 删图（作用于选中格；空选区回落到单格）
+         *
+         * ⚠️ **快照必须压在操作「前」**（spec §2.4 把「删图」列进结构操作，并明写「**前** push 一次」）：
+         *    `tableUndo` 的口径是「还原被 `pop()` 掉的那个值」，压在**后**就会 restore 回**当前**状态
+         *    ⇒ 点一次「撤销」**空转**（表面像没反应）。这与 `tableOp` 的「操作前压」是同一口径。
+         *    ⚠️ `t.outerHTML` 必须**在** `removeImages` 之前求值 —— 写成 `const snap = t.outerHTML`
+         *    再删是正确顺序，**不要**图省事写成删完再读。 */
         tableRemoveImages() {
             const t = this._tableEl();
             if (!t) return;
             const cells = [...t.querySelectorAll('.rvb-cell-sel')];
+            const snap = t.outerHTML;                       // ← 操作前
             const n = window.tableEditor.removeImages(cells.length ? cells : [t.querySelector('td,th')]);
-            if (n) this._tableSnapshots.push(t.outerHTML);
+            if (n) this._tableSnapshots.push(snap);
             this.tableError = n ? '' : '选中的格子里没有图片';
         },
+```
+
+`review-blocks.js` 的 `tableOp` **成功分支**再补一条锚点自愈（Task 5 复审的 out-of-scope 发现，本 Task 带走）：
+
+```js
+            const v = window.tableEditor.validate(t);
+            if (!ok || !v.ok) {
+                ...
+                return;
+            }
+            // ✅ 结构操作**成功后**必须处理「锚点格被整个删掉」的情形：
+            //    `merge`/`deleteRows`/`deleteCols` 都可能把锚点格从 DOM 里摘掉 ⇒ `_selAnchor`
+            //    指向**已分离**的节点 ⇒ 下一次 Shift+点走 `selectRange`，`rows.indexOf(分离 tr)` = -1
+            //    ⇒ `g.grid[-1].indexOf` 抛 **TypeError**（抛出点在 `@click` 里，**不在**本函数的
+            //    try/catch 内 ⇒ 用户视角是「Shift+点毫无反应」+ 控制台报错）。
+            //    这里只把**失效的**锚点置空（不重置选区）：置空后下一次 `_selectTable` 会以当前格
+            //    为锚点、自然自愈。⚠️ **不要**改成无条件 `this._selectTable()` —— 那会把多格选区
+            //    塌成单格（用户会莫名其妙丢失选区）。
+            if (this._selAnchor && !t.contains(this._selAnchor)) this._selAnchor = null;
+            this._tableSnapshots.push(snap);
 ```
 
 模板工具条补齐。
@@ -1426,7 +1501,9 @@ def f14_16_saving_a_table_edit_does_not_change_the_clause_set(page):
                                         title="删除选中格里的图片（不删文件）">删图</button>
 ```
 
-**版本号**：`review-blocks.js?v=14` → `?v=15`、`table-editor.js?v=3` → `?v=4`。
+**版本号**（⚠️ 照 Task 5 落地后的**实际值**递增，不照本计划初稿的数字 —— 初稿写于 Task 5 之前）：
+`review-blocks.js?v=17` → `?v=18`、`table-editor.js?v=4` → `?v=5`；`app.css` 本 Task 未动 ⇒ 仍 `?v=54`、
+且 `base.html` 与 `login.html` **两处**必须一致（`app.css` 有两个消费方）。
 
 `TODOS.md` 末尾新增：
 
@@ -1439,7 +1516,8 @@ def f14_16_saving_a_table_edit_does_not_change_the_clause_set(page):
   差异只在存储的 `content` 源码里。详见 spec §2.5。
 - **遗留**：
   1. `insertCol` / `deleteCols` 落在**合并格内部**时一律**拒绝**（返回 false，提示"该操作在当前选区不可用"）而不是猜行为；
-  2. 表格工具条 13 枚按钮在窄中栏可能折行 —— 用户裁定的出口是**折叠切分栏**，未做响应式分支；
+  2. 表格工具条 **16 枚**按钮（`+行/行+/+列/列+`、`-行/-列`、`合并/拆分/撤销`、`B/I/S`、`左/中/右`、`删图`）
+     在窄中栏可能折行 —— 用户裁定的出口是**折叠切分栏**，未做响应式分支；
   3. **不覆盖**格内文字的撤销（`tableUndo` 只回滚结构操作）；
   4. 表格内公式（`<span class="katex">`）不参与编辑，属 P4。
 - **Blocked by**：无。
