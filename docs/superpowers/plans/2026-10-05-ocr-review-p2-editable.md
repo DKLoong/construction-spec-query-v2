@@ -1520,9 +1520,14 @@ def _rvb_first_editable(page):
                     "bbox": None, "order": 9998, "global_block_id": 9998,
                     "start_line": None, "end_line": None, "prefix": "", "suffix": "",
                     "clause_no": None})
+    # ⚠️ span 必须取 **(1, 2)**，不能取 (0, 1)（Task 8 实现者离线复现 + 控制者复核）：
+    # 真实块 0（`## 前言`）的区间**也是** [0, 1) ⇒ 与之重叠 ⇒ `splice` 抛
+    # `ValueError: layout 区间重叠：[0, 1) 与游标 1` ⇒ **compose/preview 对该夹具一律 500**
+    # （splice 只在区间重叠时抛，路由把它记 ERROR 后回 500）。第 1 行是空行，取 (1, 2) 实测：
+    # splice 通过、空 edits 逐字节等价、基线仍 138 条、该样本仍有 span 且非白名单 ⇒ 隔离语义不变。
     aligned.append({"label": "display_formula", "content": "非白名单但有 span", "page": 1,
                     "bbox": None, "order": 9999, "global_block_id": 9999,
-                    "start_line": 0, "end_line": 1, "prefix": "", "suffix": "",
+                    "start_line": 1, "end_line": 2, "prefix": "", "suffix": "",
                     "clause_no": None})
 ```
 
@@ -1842,7 +1847,10 @@ git commit -m "feat: 行内 B/I/S 与整行对齐（编号行禁用，探针 f13
 ```js
         /** 首次调用就是**基线**（edits 为空 ⇒ 与导入前的切分一致） */
         async refreshPreview() {
-            if (this.editingIdx >= 0 || this.submitting) return;
+            // ⚠️ 只判 `editingIdx`：`submitting` 是 **Task 9** 才引入的状态，本 Task 不该引用它
+            //    （读未定义属性不会抛，但那是「成员定义在后面的 Task」这类缺陷的同一个形状，
+            //    Task 6 的 `isClauseLine` 已经栽过一次）—— Task 9 接进来时自己补 `|| this.submitting`。
+            if (this.editingIdx >= 0) return;
             this.previewBusy = true;
             this.previewErr = '';
             try {
@@ -1938,32 +1946,72 @@ def f13_12_preview_lists_clauses_of_the_document(page):
     assert n > 50, f"夹具切片条数异常：{n}"
 
 
+def _rvb_clause_block_idx(page, task_id):
+    """第一个「**首行是编号**」的可编辑块的下标（按**内容**挑，不按下标写死）。
+
+    ⚠️ 为什么不能沿用 `_rvb_first_editable`（Task 8 实现者离线复现实测）：首块是 `## 前言`
+    （标题）—— **改标题既不新增也不消失条文**（138→138），而「看着像纯文本」的块也未必能
+    产生变化。能产生期望变化的必须**首行就是编号行** ⇒ 只能按内容挑，不能按下标猜。
+    """
+    idx = page.evaluate("""async ([tid]) => {
+        const layout = await (await fetch('/import/review/' + tid + '/layout')).json();
+        const editable = new Set(layout.editable_labels || []);
+        return layout.blocks.findIndex(b => {
+            if (b.start_line === null || b.start_line === undefined) return false;
+            if (!editable.has(b.label)) return false;
+            const first = (b.content || '').split('\\n')[0].trim();
+            return /^(#{1,6}\\s|\\d+(\\.\\d+)*\\s*[.、．]?\\s*\\S)/.test(first);
+        });
+    }""", [task_id])
+    assert idx >= 0, "找不到「首行是编号」的可编辑块 —— 夹具或白名单有问题"
+    return idx
+
+
+def _rvb_append_line(page, idx, text):
+    """在编辑中块的**首行末尾**按 Enter 新增一行，并**真实键入** text（忠实模拟用户操作）。
+
+    ⚠️ 不要拿 `_rvb_type_line` 的「替换首行」来实现「新增一条」：那是**替换**语义，
+    换文本不改条数（实测 138→138）。新增必须真按 Enter（组件的 `_onLineKey` 会新建编辑行），
+    再用 `.type()` 键入 —— 键入会真触发 `input`，不像程序化赋值。
+    """
+    blk = _rvb_block(page, idx)
+    first = blk.locator(".rvb-line").first
+    first.click()
+    first.press("End")
+    first.press("Enter")
+    assert poll_until(page, lambda: blk.locator(".rvb-line").count() >= 2, 3000), \
+        "Enter 没有新增编辑行（_onLineKey 失效？）"
+    blk.locator(".rvb-line").nth(1).type(text)
+
+
 def f13_13_editing_a_clause_line_changes_the_preview(page):
     """★ 预览的价值所在：在编号行后补一条**带编号的新行** ⇒ 预览条数 +1 且标出新增"""
-    assert _rvb_seed(page, "13") is not None, "前置不成立"
+    task_id = _rvb_seed(page, "13")
+    assert task_id is not None, "前置不成立"
     assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() > 0, 10000)
     base = page.locator(".rvb-clause-list li").count()
-    idx = _rvb_first_editable(page)
+    idx = _rvb_clause_block_idx(page, task_id)
     blk = _rvb_block(page, idx)
     _rvb_edit(page, idx)
-    _rvb_type_line(page, idx, "9.9.9 PROBE 新增条文")
+    _rvb_append_line(page, idx, "9.9.9 PROBE 新增条文")
     blk.locator("button:has-text('保存')").click()
-    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() == base + 1, 10000), \
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() == base + 1, 15000), \
         f"补写编号行后预览条数未 +1（{base} → {page.locator('.rvb-clause-list li').count()}）"
     assert page.locator(".rvb-clause-new").count() >= 1, "新增条文未被标出"
 
 
 def f13_14_swallowing_a_clause_line_shows_as_removed(page):
     """★ 反向：把编号行改成普通文本 ⇒ 该条**消失**并标红（「把相邻条吞掉」这个失效）"""
-    assert _rvb_seed(page, "14") is not None, "前置不成立"
+    task_id = _rvb_seed(page, "14")
+    assert task_id is not None, "前置不成立"
     assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() > 0, 10000)
     base = page.locator(".rvb-clause-list li").count()
-    idx = _rvb_first_editable(page)
+    idx = _rvb_clause_block_idx(page, task_id)
     blk = _rvb_block(page, idx)
     _rvb_edit(page, idx)
-    _rvb_type_line(page, idx, "PROBE 编号被抹掉")
+    _rvb_type_line(page, idx, "PROBE 编号被抹掉")   # **替换**首行 ⇒ 编号没了 ⇒ 少一条
     blk.locator("button:has-text('保存')").click()
-    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() < base, 10000), \
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() < base, 15000), \
         f"抹掉编号后预览条数未减少（仍为 {base}）"
     assert "消失" in page.locator(".rvb-preview-hd").inner_text(), "没有给出「消失 N 条」的提示"
 ```
