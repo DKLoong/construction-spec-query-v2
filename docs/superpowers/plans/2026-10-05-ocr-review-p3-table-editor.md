@@ -723,6 +723,28 @@ git commit -m "feat: 表格块在审查页可就地编辑（enterEdit/saveEdit �
 
 ### Task 4: 插入 / 删除行列
 
+> ⚠️ **本 Task 必须一并处理两件事（都是"由本 Task 引爆/造成"，故由本 Task 带走最干净）**：
+>
+> **(1) `f14_5` 的断言会因本 Task 而误红 —— 必须同时改掉。** Task 3 修正轮 2 把该断言收紧成
+> `fix.locator("button:has-text('+ 行')")`，而**本 Task 新增的表格工具条里也有一个可见的 `+ 行`**
+> （见下方模板）。Playwright 1.62 的 `is_visible()` 以 **strict 模式**解析（`_locator.py` 已核），
+> 同一表格块内会解析出 **2 个**元素 ⇒ **strict mode violation 报错** ⇒ `f14_5` 由绿转红。
+> **改法（二选一，推荐前者）**：
+> ```python
+> # 推荐：按「行编辑专属控件组」的容器作用域取，并钉存在性 —— 既避开与表格工具条同名冲突，
+> # 又不会因"容器被整体删掉 ⇒ 0 个元素 ⇒ is_visible 为假"而恒绿（那正是 Task 3 修过的空隙）。
+> lt = fix.locator(".rvb-line-tools")
+> assert lt.count() == 1, f"行编辑专属控件组应有且仅有一份（实际 {lt.count()} 份）"
+> assert not lt.is_visible(), "表格块进入了编辑态，行编辑专属控件却可见（死按钮）"
+> ```
+> 或：`assert not fix.locator(".rvb-line-tools button:has-text('+ 行')").is_visible()`（同样避开冲突，
+> 但容器被删时会退化为"0 个元素 ⇒ 绿"，需你再补一条 `count()` 断言）。
+>
+> **(2) `app.css` 的缓存版本号要改**两处**。** `app/templates/login.html` 仍写着 `app.css?v=43`
+> —— 它已落后于 `base.html` 的 52（T36 第 9 条修过一次、现在又漂了）。**本 Task 会再动 `app.css`
+> （52→53）⇒ 必须把 `base.html` 与 `login.html` **两处一起**改到 53**，否则登录页会一直吃旧缓存。
+> 顺带在 `TODOS.md` 记一条「`app.css` 版本号有两处消费方，改一处会漂」的提醒。
+
 **Files:**
 - Modify: `static/components/table-editor.js`、`app/templates/partials/ocr_review_blocks.html`、`static/components/review-blocks.js`、`app/templates/base.html`
 - Test: `scripts/probe_spec_ui.py`（f14 追加）
