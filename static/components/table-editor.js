@@ -251,6 +251,11 @@
         const rows = [...tableEl.querySelectorAll('tr')];
         const r0 = rows.indexOf(tr);
         const g = _grid(tableEl);
+        // ⚠️ 与 `mergeCells`/`selectRange` 同口径：`_grid` 判非法时返回 `{err}`（**没有 `grid` 字段**），
+        //    此时下面 `g.grid[r0]` 会直接抛 TypeError。本函数对外契约是「返回 false、无副作用」，
+        //    抛异常是违约（评审 Task 5 的 Minor ①）。生产路径 `tableOp` 有 try/catch 兜底不崩，
+        //    但不该靠它 —— 这里补齐守卫。
+        if (g.err) return false;
         const c0 = g.grid[r0].indexOf(cell);
         // 同行右侧补 (cs-1) 个空格
         for (let j = 1; j < cs; j++) tr.insertBefore(document.createElement('td'), cell.nextSibling);

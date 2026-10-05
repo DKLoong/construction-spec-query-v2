@@ -358,22 +358,27 @@ function reviewBlocks() {
             if (!cell) return;
             const t = this._tableEl();
             if (!t || !t.contains(cell)) return;
-            if (!ev.shiftKey) this._selAnchor = cell;
-            this._selectTable(cell);
+            this._selectTable(cell, ev.shiftKey);
         },
 
-        /** 表格编辑态的选择：点 = 单格；Shift+点 = 以已选为锚点扩成矩形区域。
+        /** 表格编辑态的选择：点 = 单格；Shift+点 = 以**锚点**到当前格为对角扩成矩形区域（spec §2.3）。
          *
          * ⚠️ **选中态存在元素 class 上**（`rvb-cell-sel`）、**不进 Alpine 状态** —— 本仓既定口径：
          *    Alpine 状态里只放下标/布尔，DOM 元素会被 Proxy 包壳出问题（见 `_makeLine` 注释）。
-         *    `_selAnchor` 只是「Shift 扩选」的锚点引用，由调用方在换表/还原时重置。 */
-        _selectTable(anchorCell) {
+         *    `_selAnchor` 只是「Shift 扩选」的锚点引用，由调用方在换表/还原时重置。
+         *
+         * ⚠️ **锚点只在「起选」时移动**（`extend` 为假），扩选时**不动** —— 原写法在 `_selectTable`
+         *    末尾无条件 `_selAnchor = focus`，配合「Shift 时只跳过赋值」的调用方，会让锚点**逐段漂移**
+         *    到上一次点击处：连按两次 Shift+点选出的不是 [首次点击 … 当前]，而是 [上次点击 … 当前]
+         *    （spec §2.3 要的是前者）。**注意 `focus`（当前格）与 `anchor`（起点）不可混同** ——
+         *    最终写回的必须是 `anchor`，写 `focus` 就是这次修正前的漂移写法。 */
+        _selectTable(anchorCell, extend) {
             const t = this._tableEl();
             if (!t) return;
             const focus = anchorCell || t.querySelector('.rvb-cell-sel') || t.querySelector('td,th');
-            const anchor = this._selAnchor || focus;
+            const anchor = (extend && this._selAnchor) || focus;
             window.tableEditor.selectRange(t, anchor, focus);
-            this._selAnchor = focus;
+            this._selAnchor = anchor;
         },
 
         _lineElements() {

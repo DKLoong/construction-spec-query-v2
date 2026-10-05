@@ -2580,6 +2580,25 @@ def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
     #    门控掉会让表格**根本无法保存**（本轮实测踩过：f14_6/f14_7 的保存点击 30s 超时）。
     assert fix.locator("button:has-text('保存')").is_visible(), \
         "表格编辑态下「保存」按钮不可见 —— 表格将无法保存"
+    # ★ 选区模型（Task 5）：点 = 单格；**Shift+点 = 以锚点到当前格为对角**扩成矩形（spec §2.3）。
+    #   ⚠️ 判据必须能分辨「锚点固定」与「锚点漂移到上次点击处」——**只数选中格数分辨不出**
+    #      （两次 Shift+点按漂移写法一样能得到 3 格）⇒ 必须断言**具体是哪几格**。
+    #      夹具是 2×3（文档序 0..5：第 0 行 0/1/2，第 1 行 3/4/5）。
+    #      点 0 → Shift 点 5（锚点 0 ⇒ 整表 6 格）→ Shift 点 2：
+    #        · 锚点固定 ⇒ [0..2] = {0,1,2}（第 0 行整行）
+    #        · 锚点漂移 ⇒ 锚点已变成 5 ⇒ 行 0..1 × 列 2 ⇒ {2,5}   ← 两者**不同**，可证伪
+    sel = lambda: page.evaluate("""() => [...document.querySelectorAll('.rvb-table-edit td')]
+        .map((c, i) => c.classList.contains('rvb-cell-sel') ? i : -1).filter((i) => i >= 0)""")
+    cells.nth(0).click()
+    assert poll_until(page, lambda: sel() == [0], 3000), \
+        f"点单元格未选中它（选区模型没接上）：{sel()}"
+    cells.nth(5).click(modifiers=["Shift"])
+    assert poll_until(page, lambda: sel() == [0, 1, 2, 3, 4, 5], 3000), \
+        f"Shift+点没有扩成矩形（期望整表 6 格）：{sel()}"
+    cells.nth(2).click(modifiers=["Shift"])
+    assert poll_until(page, lambda: sel() == [0, 1, 2], 3000), \
+        (f"锚点漂移了：以锚点(0)为对角应得 {{0,1,2}}，实得 {sel()} —— "
+         "若得到 {2,5} 即锚点被上次点击(5)带走（spec §2.3 要求锚点固定）")
 
 
 def f14_6_saving_an_edited_table_writes_the_md_region(page):
