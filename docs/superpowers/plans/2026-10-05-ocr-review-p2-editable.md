@@ -1474,10 +1474,20 @@ def _rvb_edit(page, idx):
 
 
 def _rvb_type_line(page, idx, text):
-    """把编辑中块的**第一行**整体换成 text，并全选该行内容（execCommand 需要选区）"""
+    """把编辑中块的**第一行**整体换成 text，并全选该行内容（execCommand 需要选区）。
+
+    ⚠️ **必须显式补发 `input` 事件**（Task 7 实现者实测逼出）：`el.textContent = t` 是
+    **程序化赋值**，浏览器**不触发 `input`**；而该行在 `enterEdit` 里已经 `focus()` 过、
+    本来就是 `activeElement`，故这里的 `el.focus()` 与随后的 Playwright `.click()`
+    **都不再触发 `focus`**。后果：组件靠 focus/input 维护的 `focusIsClause` 会**永远停在
+    enterEdit 时算出的值** ⇒ 断言「编号行上对齐按钮禁用」的用例（f13_10）**恒红**，
+    而且与实现对不对**无关**（它失去分辨力，变异证据也随之失效）。
+    真实用户的键盘输入是会触发 `input` 的 ⇒ 补发才是**忠实模拟**，不是为过用例而放宽。
+    """
     page.evaluate("""([i, t]) => {
         const el = document.querySelectorAll('.rvb-block')[i].querySelector('.rvb-line');
         el.textContent = t;
+        el.dispatchEvent(new Event('input', {bubbles: true}));   // 忠实模拟键盘输入
         el.focus();
         const r = document.createRange(); r.selectNodeContents(el);
         const s = getSelection(); s.removeAllRanges(); s.addRange(r);
@@ -1761,10 +1771,11 @@ def f13_10_alignment_is_disabled_on_clause_number_lines(page):
     idx = _rvb_first_editable(page)
     blk = _rvb_block(page, idx)
     _rvb_edit(page, idx)
-    _rvb_type_line(page, idx, "3.0.9 编号行不得被包裹")
+    _rvb_type_line(page, idx, "3.0.9 编号行不得被包裹")   # 内含补发 input，见其 docstring
     blk.locator(".rvb-line").first.click()
     btn = blk.locator("button:has-text('中')")
-    # 禁用状态由**焦点事件**驱动的响应式状态决定 ⇒ 必须等它重算完
+    # 禁用状态由**响应式状态** `focusIsClause` 决定，而它由 focus/input 事件维护 ⇒
+    # 既要等 Alpine 重算完（poll），也要保证 `_rvb_type_line` 真的触发了 input（否则恒红）
     assert poll_until(page, lambda: btn.is_disabled(), 5000), "编号行上对齐按钮应禁用"
     assert "编号行" in (btn.get_attribute("title") or ""), "禁用原因必须给出说明（title）"
 
