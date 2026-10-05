@@ -2059,7 +2059,8 @@ git commit -m "feat: 切分预览面板（与提交同源；新增/消失条文�
 
 **Files:**
 - Modify: `app/templates/partials/ocr_review_blocks.html`、`static/components/review-blocks.js`、`static/app.css`、`app/templates/base.html`（版本号）
-- Modify: `scripts/probe_spec_ui.py`（f13 追加 3 条）
+- Modify: `app/templates/partials/ocr_review.html`（**附带修复**：把 `submitError` 的 `<p>` 移出结果槽，见 Step 2）
+- Modify: `scripts/probe_spec_ui.py`（f13 追加 4 条）
 
 **Interfaces:**
 - Consumes: `POST …/compose`（Task 3）、既有 `POST …/confirm`（raw body，**零改动**）、既有 `GET /import/progress/{id}`
@@ -2140,10 +2141,36 @@ git commit -m "feat: 切分预览面板（与提交同源；新增/消失条文�
                 hx-post="/import/review/{{ task_id }}/cancel"
                 hx-confirm="确定取消本次导入？已上传的文件和识别结果将被删除。">✖ 取消导入</button>
     </div>
-    <div id="rvb-result" class="rvb-result-slot">
-        <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
+    <!-- ⚠️ `submitError` 的 `<p>` 必须在 `#rvb-result` **外面**（Task 9 评审的 Important 发现）：
+         报错路径上 `box.innerHTML = html` 会把槽内内容**整体换掉** ⇒ 槽内的 `<p>` 被销毁 ⇒
+         随后 `this.submitError = …`（服务端报错与 catch 里的网络错**两路都算**）**永远看不见**，
+         而且**第一次提交之后这条通道就永久失效**（`<p>` 再也不会回来）。
+         既有源码审查页 `ocr_review.html` 是**同一种形状**（本计划当初正是照抄它）⇒ 一并修，
+         见 Step 1 末尾的附带修复。 -->
+    <div id="rvb-result" class="rvb-result-slot"></div>
+    <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
+```
+
+**附带修复（Task 9 评审的 Important，本轮裁决：一并修）**：既有源码审查页
+`app/templates/partials/ocr_review.html` 里是**同一种坏形状** ——
+
+```html
+    <div id="review-result" class="review-result-slot" style="margin-top:0.5rem">
+        <p x-show="submitError" x-text="submitError" style="color:#c00"></p>   <!-- ← 在槽内部 -->
     </div>
 ```
+
+改成把 `<p>` 移到槽**外**（`</div>` 之后），槽本身保留：
+
+```html
+    <div id="review-result" class="review-result-slot" style="margin-top:0.5rem"></div>
+    <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
+```
+
+- 这是**已上线代码里的既有缺陷**（不是本次引入的），本计划的新页是照抄它 inherit 来的 ⇒ 两处一起修，
+  否则 `.md` 入口上那条报错通道依旧是死的。
+- ⚠️ 改完必须复跑 `f10` 与 `f11`（它们是源码审查页仅有的两组探针：滚动与搜索/替换），
+  确认移动那个 `<p>` 没有扰动该页；`.review-result-slot` 的**预留高度**逻辑不得动。
 
 `app.css`：
 
