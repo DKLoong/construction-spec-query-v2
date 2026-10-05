@@ -261,16 +261,19 @@ function reviewBlocks() {
         enterEdit(idx) {
             const b = this.blocks[idx];
             if (!b || !this.canEdit(b)) return;
+            // ⚠️ 表格块**缺 `md_html` 就不进编辑态**，且守卫必须在 `editingIdx` 赋值**之前** ——
+            //    放在下面 `$nextTick` 里会变成"已进编辑态、编辑器却是空的"（用户看到空白框）。
+            //    也绝不能回落到 `b.content`：那是 OCR 的**去样式版**，写回会丢 `border=1` 与
+            //    `margin: auto`（边框与居中的唯一来源，渲染侧无补偿 CSS）。宁可不让改。
+            if (b.label === 'table' && !b.md_html) return;
             this.tableError = '';          // 清掉上一次的表格报错（否则会跟着下一块显示）
             this.editingIdx = idx;
             this.$nextTick(() => {
                 const box = this._editBox();
                 box.innerHTML = '';
                 if (b.label === 'table') {
-                    // ⚠️ **必须用 `md_html`，且缺了就不进编辑态** —— 绝不能回落到 `b.content`：
-                    //    它是 OCR 的**去样式版**，保存时会把它写回 md ⇒ 表格丢掉 `border=1` 与
-                    //    `margin: auto`（边框与居中的唯一来源，渲染侧无补偿 CSS）。宁可不让改。
-                    if (!b.md_html) return;
+                    // `md_html` 的存在性已在开头守卫过（缺了根本不会进到这里）；
+                    // parse 仍可能返回 null（入参里没有 <table>）—— 那种情况保持静默，不回落 content。
                     const t = window.tableEditor.parse(b.md_html);
                     if (!t) return;
                     t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
