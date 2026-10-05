@@ -84,16 +84,21 @@ function reviewBlocks() {
             return this.blocks.filter((b) => b.page === this.curPage);
         },
 
-        /** 请求倍率 = CSS 倍率 × devicePixelRatio。
+        /** 请求倍率 = CSS 倍率 × devicePixelRatio，**并夹到端点上限 8.0**。
          *
          * ⚠️ 不乘 dpr 时：PNG 像素宽 ≡ 容器 CSS 宽（与单位无关地恒等）⇒ 恒为
          * 「1 图像像素 : 1 CSS 像素」。在 200% 显示缩放的屏幕上，浏览器要 2 个
          * 设备像素而位图只有 1 个 ⇒ 放大插值 ⇒ 糊。**画布 CSS 宽不用改**：
          * `.rvb-img{width:100%}` 会把多出来的像素正确地缩回去。
+         *
+         * ⚠️ **上限 8.0 与端点 `app/routes/import_routes.py` 的 `scale` 上限必须同步**
+         * （前端无法 import 后端常量，故此处硬编码，改一处须改另一处）。`_fitScale()`
+         * 顶格 3.0、`scaleMode` 最大 2.0 ⇒ 乘机会超过 8.0（如 dpr > 2.67 的高分屏 +
+         * 窄页吃满 fit 档）；不夹则端点返回 422、左栏**整页图加载失败**（比模糊更糟）。
          */
         pageUrl(n) {
             const css = this.scaleMode === 'fit' ? this._fitScale() : this.scaleMode;
-            const s = css * (window.devicePixelRatio || 1);
+            const s = Math.min(8.0, css * (window.devicePixelRatio || 1));
             return `/import/review/${this.taskId}/page/${n}.png?scale=${Number(s).toFixed(2)}`;
         },
 

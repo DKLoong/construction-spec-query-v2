@@ -499,8 +499,8 @@ def finalize_layout(output_dir: str | Path, base_text: str,
                            stats["missed"], stats["anchorable"], out)
         # ✅ 只有**成功**才删 raw；失败保留以便排查/重试
         raw_path.unlink(missing_ok=True)
-        # 返回值在原锚定 stats 之上并上条号统计（加 `clause_` 前缀，键不冲突），
-        # 使调用方拿到的 stats 与落盘的 layout.json.stats 口径一致。
+        # 返回值在锚定 stats 之上并上条号统计（**含 `residual_miss`**）；落盘副本额外
+        # 剔除 `residual_miss`（既有口径），故二者**仅差该键**、并非同一口径。
         return {**stats, **align_stats}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError,
             TypeError, ValueError, AttributeError) as e:

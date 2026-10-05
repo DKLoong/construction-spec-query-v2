@@ -151,11 +151,7 @@ def test_clause_list_keys_by_index_not_by_clause_no():
 
 
 def test_preview_panel_is_not_flex_shrinkable():
-    """★ 切分面板不得可收缩：子列表 `overflow:auto` 的最小高度为 0，
-    空间不足时面板会被压到只剩 header（同样伪装成「只剩标题行」）。
-
-    ⚠️ Task 6 把该规则由 `.rvb-preview` 改名为 `.rvb-cut` —— 届时**同步改本断言**，
-    不是删掉它。
+    """★ 切分栏**固定宽、不可被挤窄**（见 `static/app.css` 的 `.rvb-cut { flex: 0 0 280px }`）。
     """
     from pathlib import Path
     css = Path("static/app.css").read_text(encoding="utf-8")

@@ -587,6 +587,19 @@
   且给 `.rvb-preview` 加 `flex: 0 0 auto`。
 - **Blocked by**：需用户先裁定「块标题栏显示什么」（条号／是否显示「将被切到 X 条」／多对多时怎么表达），
   再动模板。**T39 已定与本条一起改**。
+- **✅ 结案（2026-10-05，分支 `feat/p2-5-review-fixes`）**：
+  1. **呈现位置**已按用户裁定改为**三栏** —— `.rvb-cut` 作为 `.rvb-panes` 的独立第三兄弟
+     （左 PDF / 中 编辑 / 右 切分，等高，右栏固定 280px），commit `3c4b9b5`。
+  2. **两个「只剩标题行」机制均已消除** —— ① 切分列表 `:key` 改用**行下标**（`b21bfc6`，
+     并有探针 `f13_24` 作运行时护栏）；② 切分栏不再是可收缩的 flex 子项（改固定宽后压扁无从发生）。
+  3. **重导 spec 40（计划 T5 的结案记录，Task 5 Step 6）** —— spec 40（DB32/T 2618-2023）已重导：
+     条文 **870 → 866**（净减 4 = 4 条真伪条），全库 clauses **6867 → 6863**；清除的 4 条为
+     `GB5725`/`GB6095`/`JGJ311`/`JGJ46`。**主键由 40 漂移为 42**（删除+新建的固有代价；库内无悬挂外键、
+     全仓无硬编码 40 的引用，残余风险 = 指向旧 id 的外部书签失效）。另三本（29 JTG/T 3610-2019、
+     35 GB 50086-2015、39 JTG/T 3650-2020）实测**无需重导**：29/35 为纯 no-op、39 净条数不变。
+     备份：`data/spec_query.db.bak-20261005-172639`、`data/lance_db.bak-20261005-172639`。
+     ⚠️ **库级指标 ≠ 夹具级指标**（本仓既有约定）：上列 870→866 / 6867→6863 是**库内实际条数**
+     （含 `clause_is_non=1` 的隐藏行）；导入会改写文本，不能与夹具级口径混谈。
 
 ## T39 — 左栏页图清晰度：栅格化未考虑 devicePixelRatio（2026-10-05 用户实测后登记，修法已定）
 
@@ -604,3 +617,29 @@
   —— **没有任何一条要求最低可读 DPI 或 dpr 适配**，也没有视觉验收判据；左栏保真度也从未被 P2/P3/P4 任一立为交付项。
 - **Context**：用户 2026-10-05 裁定「Q2 既然已有修法，先记 TODOS，**等 T38（Q1）修法定了一起改**」。
 - **Blocked by**：T38 的呈现形态裁定（用户要求两者一起改）。
+- **✅ 结案（2026-10-05，分支 `feat/p2-5-review-fixes`）**：已修 —— `pageUrl` 乘
+  `devicePixelRatio`（commit `9a81268`）并**夹到端点上限 8.0**（本次修复波钳制，
+  `static/components/review-blocks.js`）；端点 `scale` 上限 3.0 → 8.0
+  （`app/routes/import_routes.py:1276`）。有探针 `f13_19`（自带 dpr=2 页面）作运行时护栏。
+
+## T40 — P2.5 终审 triage 为「可留待后续」的 minors（2026-10-05 终审后登记）
+
+- **What**：P2.5 分支（`feat/p2-5-review-fixes`）终审 6 Minor 中，本次修复波只处理了 4 项
+  （pageUrl 夹上限 / 过时 docstring / 名不副实注释 / TODOS 收尾），其余 triage 为「可留待后续」，逐条登记：
+  1. `static/components/review-blocks.js` 的 `pageUrl` 已夹上限 8.0，但 8.0 是**前端硬编码**，需与后端
+     `app/routes/import_routes.py` 的 `scale` 上限人工同步（改一处须改另一处）。
+  2. `tests/test_ocr_review.py` 中多条用例的 `Path("app/…")` / `Path("static/…")` 为 **CWD 相对**，
+     换工作目录跑即失配。
+  3. `tests/test_ocr_review.py::test_page_image_accepts_hidpi_scale` 首断言 `!= 422` 弱于 `== 404`
+     （未钉死具体拒绝态）。
+  4. `app/ocr/layout.py` 两分支四个 `clause_*` 键的字典**逐字重复**，可抽公共构造。
+  5. `static/app.css` 的 `.rvb-clause-on` 与 `.rvb-clause-new` **同权重、后者先定义** ⇒ 橙底压绿底。
+  6. `app/templates/partials/ocr_review_blocks.html` 里 `x-show` 与 `:style` 同元素共存有 latent 互踩。
+  7. 切分栏折叠态 44px 仍显示 header 文案，窄屏可能横向溢出（`static/app.css` 的 `.rvb-cut` 折叠态）。
+  8. 探针 `f13_21`（`scripts/probe_spec_ui.py`）不验真实滚动位置（只验调用、未断 scroll 落点）。
+  9. 探针 `f13_22`（`scripts/probe_spec_ui.py`）只抽首块×首条，覆盖不足。
+  10. `static/components/review-blocks.js` 的 `openClause` 多块共条号时只聚焦**首块**
+      （T38 遗留的「多对多如何表达」待裁定项）。
+- **Why**：终审 triage 全部为**非阻断**（「可留待后续」）；逐项修性价比低，但 2/5/9 影响排查与覆盖可信度。
+- **Context**：来源 = P2.5 整支终审（0 Critical / 0 Important / 6 Minor）+ 本次修复波处理其中 4 项后的余项。
+- **Blocked by**：无。P3/P4 开工时顺手处理最省事。
