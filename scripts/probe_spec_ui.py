@@ -1788,10 +1788,20 @@ def _rvb_edit(page, idx):
 
 
 def _rvb_type_line(page, idx, text):
-    """把编辑中块的**第一行**整体换成 text，并全选该行内容（execCommand 需要选区）"""
+    """把编辑中块的**第一行**整体换成 text，并全选该行内容（execCommand 需要选区）。
+
+    ⚠️ **必须显式补发 `input` 事件**（Task 7 实现者实测逼出）：`el.textContent = t` 是
+    **程序化赋值**，浏览器**不触发 `input`**；而该行在 `enterEdit` 里已经 `focus()` 过、
+    本来就是 `activeElement`，故这里的 `el.focus()` 与随后的 Playwright `.click()`
+    **都不再触发 `focus`**。后果：组件靠 focus/input 维护的 `focusIsClause` 会**永远停在
+    enterEdit 时算出的值** ⇒ 断言「编号行上对齐按钮禁用」的用例（f13_10）**恒红**，
+    而且与实现对不对**无关**（它失去分辨力，变异证据也随之失效）。
+    真实用户的键盘输入是会触发 `input` 的 ⇒ 补发才是**忠实模拟**，不是为过用例而放宽。
+    """
     page.evaluate("""([i, t]) => {
         const el = document.querySelectorAll('.rvb-block')[i].querySelector('.rvb-line');
         el.textContent = t;
+        el.dispatchEvent(new Event('input', {bubbles: true}));   // 忠实模拟键盘输入
         el.focus();
         const r = document.createRange(); r.selectNodeContents(el);
         const s = getSelection(); s.removeAllRanges(); s.addRange(r);
@@ -1903,13 +1913,83 @@ def f13_7_unlocated_and_non_text_blocks_offer_no_fix_button(page):
         "**非白名单**但有 span 的块给了「纠正」⇒ 白名单门槛被删了"
 
 
+# `_rvb_type_line` / `_rvb_block` / `_rvb_edit` / `_rvb_first_editable` 已在 Task 6 Step 5 定义
+
+def f13_8_bold_survives_save_and_reopen(page):
+    """★ 行内富文本往返：选中 → B → 保存 ⇒ md 里出现 **…**；再进编辑仍显示 <strong>"""
+    assert _rvb_seed(page, "8") is not None, "前置不成立"
+    idx = _rvb_first_editable(page)
+    blk = _rvb_block(page, idx)
+    _rvb_edit(page, idx)
+    _rvb_type_line(page, idx, "PROBE 加粗 x")
+    blk.locator("button[title='粗体']").click()
+    md = page.evaluate("""(i) => window.mdInline.domToMd(
+        document.querySelectorAll('.rvb-block')[i].querySelector('.rvb-line'))""", idx)
+    assert "**" in md, f"点 B 之后没有产生粗体标记：{md!r}"
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: blk.locator(".rvb-editor").is_hidden(), 5000)
+    _rvb_edit(page, idx)
+    assert blk.locator(".rvb-line strong").count() >= 1, "重进编辑后粗体丢失（往返不闭环）"
+
+
+def f13_9_alignment_wraps_line_and_does_not_add_lines(page):
+    """★ 对齐：非编号行可加居中；产物是对齐包裹，且**行数不变**（M9：绝不引入换行）"""
+    assert _rvb_seed(page, "9") is not None, "前置不成立"
+    idx = _rvb_first_editable(page)
+    blk = _rvb_block(page, idx)
+    _rvb_edit(page, idx)
+    n_before = blk.locator(".rvb-line").count()
+    _rvb_type_line(page, idx, "PROBE 图题居中")     # 非编号行 ⇒ 对齐按钮可用
+    blk.locator("button:has-text('中')").click()
+    line = page.evaluate("""(i) => {
+        const el = document.querySelectorAll('.rvb-block')[i].querySelector('.rvb-line');
+        return window.mdInline.wrap(window.mdInline.domToMd(el), el.dataset.align || null);
+    }""", idx)
+    assert "text-align:center" in line, f"对齐未落到行上：{line!r}"
+    assert "\n" not in line, "对齐包裹新增了换行 —— 会改变切分"
+    assert blk.locator(".rvb-line").count() == n_before, "对齐改变了编辑行数"
+
+
+def f13_10_alignment_is_disabled_on_clause_number_lines(page):
+    """★ 编号行上的对齐必须**禁用**（Global Constraint 4）"""
+    assert _rvb_seed(page, "10") is not None, "前置不成立"
+    idx = _rvb_first_editable(page)
+    blk = _rvb_block(page, idx)
+    _rvb_edit(page, idx)
+    _rvb_type_line(page, idx, "3.0.9 编号行不得被包裹")   # 内含补发 input，见其 docstring
+    blk.locator(".rvb-line").first.click()
+    btn = blk.locator("button:has-text('中')")
+    # 禁用状态由**响应式状态** `focusIsClause` 决定，而它由 focus/input 事件维护 ⇒
+    # 既要等 Alpine 重算完（poll），也要保证 `_rvb_type_line` 真的触发了 input（否则恒红）
+    assert poll_until(page, lambda: btn.is_disabled(), 5000), "编号行上对齐按钮应禁用"
+    assert "编号行" in (btn.get_attribute("title") or ""), "禁用原因必须给出说明（title）"
+
+
+def f13_11_enter_splits_into_a_new_line_not_a_br(page):
+    """★ Enter ⇒ **新增一个编辑行**（真实换行），绝不产生行内 <br>（spec §8.2 的建模范式）"""
+    assert _rvb_seed(page, "11") is not None, "前置不成立"
+    idx = _rvb_first_editable(page)
+    blk = _rvb_block(page, idx)
+    _rvb_edit(page, idx)
+    n = blk.locator(".rvb-line").count()
+    _rvb_type_line(page, idx, "第一行")
+    blk.locator(".rvb-line").first.press("Enter")
+    assert poll_until(page, lambda: blk.locator(".rvb-line").count() == n + 1, 5000), \
+        "Enter 没有新增编辑行"
+    assert blk.locator(".rvb-line br").count() == 0, "Enter 产生了行内 <br>（会与字面 \\n 混淆）"
+
+
 CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_2_inline_round_trip_is_byte_exact,
                 f13_3_alignment_wrap_unwrap_round_trip,
                 f13_4_entering_edit_keeps_line_count,
                 f13_5_edit_and_save_updates_the_block,
                 f13_6_cancel_discards_the_edit,
-                f13_7_unlocated_and_non_text_blocks_offer_no_fix_button]
+                f13_7_unlocated_and_non_text_blocks_offer_no_fix_button,
+                f13_8_bold_survives_save_and_reopen,
+                f13_9_alignment_wraps_line_and_does_not_add_lines,
+                f13_10_alignment_is_disabled_on_clause_number_lines,
+                f13_11_enter_splits_into_a_new_line_not_a_br]
 
 
 if __name__ == "__main__":

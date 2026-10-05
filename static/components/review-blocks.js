@@ -286,6 +286,33 @@ function reviewBlocks() {
             return els[0] || null;
         },
 
+        ALIGN_LOCK_HINT: '编号行必须保持行首为编号，加对齐会改变条文切分',
+
+        exec(cmd) {
+            const el = this._focusLine();
+            if (!el) return;
+            el.focus();
+            document.execCommand(cmd, false, null);   // Chrome：产生 <strong>/<i>/<strike>
+        },
+
+        // `isClauseLine` **已在 Task 6 定义**（`enterEdit`/`_makeLine` 需要它维护
+        // `focusIsClause`）—— 本 Task 只消费，**不要重复定义**。
+
+        /** ⚠️ 判据取**响应式状态**（focusIsClause，由行的 focus/input 事件维护）。
+         *  若在这里读 `document.activeElement`，Alpine 不会跟着重算 ⇒ 按钮 disabled 永远是旧值。 */
+        alignDisabled() {
+            return this.editingIdx < 0 || this.focusIsClause;
+        },
+
+        applyAlign(v) {
+            const el = this._focusLine();
+            if (!el || this.isClauseLine(el)) return;
+            el.dataset.align = v || '';
+            el.style.textAlign = v || '';
+        },
+
+        alignOf(el) { return el.dataset.align || ''; },
+
         /** 行首是编号或 `#` 标题 ⇒ 该行**不得被包裹**（实测：标签与内容同行会让全篇切不出条文）。
          *
          * ⚠️ **本 Task 就必须定义它**（Task 6 实现者实测逼出）：`enterEdit` 与 `_makeLine`

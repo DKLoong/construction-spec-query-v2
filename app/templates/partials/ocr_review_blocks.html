@@ -74,6 +74,35 @@
                         <div class="rvb-editor" x-show="editingIdx === i" x-cloak>
                             <div class="rvb-tools">
                                 <span>行级编辑</span>
+                                <!-- ⚠️ `@mousedown.prevent` 不是可选项：点按钮会让 contenteditable **失焦**、
+                                     选区塌掉，execCommand 就作用不到任何东西（点了 B 没反应）。
+                                     prevent 掉 mousedown ⇒ 焦点与选区都留在当前行。 -->
+                                <button type="button" title="粗体" @mousedown.prevent @click="exec('bold')"
+                                        style="margin:0"><strong>B</strong></button>
+                                <button type="button" title="斜体" @mousedown.prevent @click="exec('italic')"
+                                        style="margin:0"><em>I</em></button>
+                                <button type="button" title="删除线" @mousedown.prevent @click="exec('strikeThrough')"
+                                        style="margin:0"><s>S</s></button>
+                                <span class="rvb-sep"></span>
+                                <!-- 对齐作用于**当前行**（用户裁定）；编号行禁用并说明原因。
+                                     禁用元素不弹 tooltip ⇒ title 走**双通道**：外层 span 给可见提示，
+                                     按钮自身给程序化读取（探针断言的就是它）—— 本仓既有口径。 -->
+                                <span :title="alignDisabled() ? ALIGN_LOCK_HINT : ''">
+                                    <button type="button" :title="alignDisabled() ? ALIGN_LOCK_HINT : '左对齐'"
+                                            @mousedown.prevent @click="applyAlign(null)"
+                                            :disabled="alignDisabled()" style="margin:0">左</button>
+                                    <button type="button" :title="alignDisabled() ? ALIGN_LOCK_HINT : '居中'"
+                                            @mousedown.prevent @click="applyAlign('center')"
+                                            :disabled="alignDisabled()" style="margin:0">中</button>
+                                    <button type="button" :title="alignDisabled() ? ALIGN_LOCK_HINT : '右对齐'"
+                                            @mousedown.prevent @click="applyAlign('right')"
+                                            :disabled="alignDisabled()" style="margin:0">右</button>
+                                </span>
+                                <span class="rvb-sep"></span>
+                                <button type="button" @mousedown.prevent @click="_insertLineAfter(_focusLine())"
+                                        style="margin:0">+ 行</button>
+                                <button type="button" @mousedown.prevent @click="_deleteLine(_focusLine())"
+                                        style="margin:0">- 行</button>
                                 <button type="button" @click="cancelEdit()" style="margin:0">取消</button>
                                 <button type="button" @click="saveEdit()" style="margin:0">保存</button>
                             </div>
