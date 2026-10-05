@@ -2333,13 +2333,15 @@ def f13_23_cut_column_collapses_and_gives_width_back(page):
     left_w = lambda: page.evaluate(
         "() => Math.round(document.querySelector('.rvb-right').getBoundingClientRect().width)")
     before = left_w()
-    page.locator(".rvb-cut-hd button:has-text('收起')").click()
+    # ⚠️ 用**类名**定位，不要用文字：按钮文案会变（现为 QA 会话栏那种 `切分 ▸` / `◂`），
+    #    按文字找的用例会随文案一起烂掉。
+    page.locator(".rvb-cut-toggle").click()
     # 用 is_visible 而非 count：x-show 折叠后节点仍在 DOM 里，count 恒为 1（会假绿）
     assert poll_until(page, lambda: not page.locator(".rvb-cut .rvb-clause-list").is_visible(), 3000), \
         "未折叠"
     assert left_w() > before, "折叠后中栏没有变宽"
     # 反向：还得能再展开 —— 只验折叠会放过「单向陷阱」（点开后收不回，宽度也还不回去）
-    page.locator(".rvb-cut-hd button:has-text('展开')").click()
+    page.locator(".rvb-cut-toggle").click()
     assert poll_until(page, lambda: page.locator(".rvb-cut .rvb-clause-list").is_visible(), 3000), \
         "折叠后无法再展开（单向陷阱）"
     assert left_w() <= before, "展开后中栏没有把宽度还回去"

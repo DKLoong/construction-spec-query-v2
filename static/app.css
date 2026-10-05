@@ -834,19 +834,32 @@
    故缩放时框自动跟随，不需要任何重算。 */
 .rvb-root { height: 100%; display: flex; flex-direction: column; }
 .rvb-error { padding: 1rem; }
-.rvb-panes { display: flex; gap: 12px; flex: 1; min-height: 0; }
+/* `flex: 0 0 100%`（**不是** `flex: 1`）—— 三栏占满**一屏高**、不被下方提交区挤压；
+   提交区因此落到折线以下，`_resultScroller()` 在点「确认并继续导入」时才把
+   `.center-panel-v2` 滚到底（用户裁定：给三栏尽可能留出展示空间）。 */
+.rvb-panes { display: flex; gap: 12px; flex: 0 0 100%; min-height: 0; }
+/* 三栏共用**一套外框**（用户裁定：参照切分预览栏统一轮廓）。
+   外框只在这一处声明 —— 别再往单个栏里各写一遍，否则改一处会漏两处。 */
+.rvb-left, .rvb-right, .rvb-cut {
+    min-width: 0; display: flex; flex-direction: column;
+    border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
+}
 /* 左 PDF 与中 编辑区各占一半，右栏切分预览**固定宽** ——
-   它的内容只有「条号 + 短标题」，宽屏上不需要跟着变宽。
-   用户裁定（2026-10-05）：三栏等高、顺序 左/中/右。 */
-.rvb-left, .rvb-right { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
-.rvb-cut { flex: 0 0 280px; min-width: 0; display: flex; flex-direction: column;
-           border: 1px solid var(--pico-muted-border-color); border-radius: 6px; }
-.rvb-bar { display: flex; gap: 8px; align-items: baseline; justify-content: space-between;
-           font-size: 0.8rem; color: var(--pico-muted-color); }
+   它的内容只有「条号 + 短标题」，宽屏上不需要跟着变宽。 */
+.rvb-left, .rvb-right { flex: 1 1 0; }
+.rvb-cut { flex: 0 0 280px; }
 .rvb-zoom { display: flex; gap: 6px; align-items: center; padding: 4px 0; flex-wrap: wrap; }
+/* 底部工具行（原文栏**下方**）：左 = 缩放档，右 = 页码 + 文件名（右对齐） */
+.rvb-foot { display: flex; align-items: center; gap: 8px; padding-top: 2px; }
+.rvb-foot .rvb-zoom { padding: 0; flex-wrap: nowrap; }
+.rvb-foot-right { margin-left: auto; display: inline-flex; align-items: baseline;
+                  gap: 8px; font-size: 0.8rem; color: var(--pico-muted-color);
+                  min-width: 0; }
+.rvb-file { max-width: 20ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rvb-zoom button { margin: 0; font-size: 0.78rem; padding: 2px 8px; }
 .rvb-zoom .rvb-on { border-color: var(--pico-primary); color: var(--pico-primary); }
-.rvb-viewport { flex: 1; overflow: auto; border: 1px solid var(--pico-muted-border-color);
+/* 不再自带边框：外框已由所属栏（`.rvb-left`）提供，两处都画会成双线 */
+.rvb-viewport { flex: 1; overflow: auto; padding: 4px;
                 position: relative; cursor: grab; }
 .rvb-viewport:active { cursor: grabbing; }
 .rvb-canvas { position: relative; margin: 0 auto; }
@@ -869,8 +882,14 @@
 
 .rvb-line { padding: 2px 6px; border: 1px solid transparent; border-radius: 4px; min-height: 1.6em; }
 .rvb-line:focus { outline: none; border-color: var(--pico-primary); background: #fff; }
-.rvb-tools { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
-.rvb-sep { flex: 0 0 1px; height: 20px; background: var(--pico-muted-border-color); }
+/* 10 个按钮（B/I/S · 左中右 · +行/-行 · 取消/保存）要**在一行内**排下：
+   缩字号 + 缩内边距 + 允许不换行（用户裁定）。 */
+.rvb-tools { display: flex; gap: 0.3rem; align-items: center; flex-wrap: nowrap;
+             margin-bottom: 0.5rem; overflow-x: auto; }
+.rvb-tools button { margin: 0; font-size: 0.72rem; padding: 1px 6px; }
+.rvb-sep { flex: 0 0 1px; height: 16px; background: var(--pico-muted-border-color); }
+/* 斜体按钮的 I 用**衬线**斜体：等宽无衬线的大写 I 倾斜后就是一根斜杠 */
+.rvb-btn-i { font-family: Georgia, "Times New Roman", serif; font-style: italic; }
 .rvb-lines { border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.25rem; }
 .rvb-fix { margin: 0; font-size: 0.8rem; }
 .rvb-edited { color: #c08552; font-size: 0.8rem; }
@@ -880,8 +899,14 @@
 /* 固定宽 —— 见 tests/test_ocr_review.py::test_preview_panel_is_not_flex_shrinkable */
 .rvb-cut-hd { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center;
               padding: 0.4rem 0.6rem; font-size: 0.85rem; }
+/* 折叠按钮：形状/尺寸照抄 QA 会话管理栏 `#qa-session-toggle`；右推贴 header 末尾 */
+.rvb-cut-toggle { margin: 0 0 0 auto; font-size: 0.75rem; padding: 0.1rem 0.4rem; }
 .rvb-added { color: #2f7d32; } .rvb-removed { color: #c62828; }
-.rvb-clause-list { overflow: auto; margin: 0; padding: 0 0.6rem 0.4rem 1.6rem; font-size: 0.85rem; }
+/* `list-style: none` 不是可选的：这是 `<ol>`，浏览器自带的序号会与条目里的**条号**叠加
+   成「1. 前言 前言」「2. 1 范围」这种双号（用户实测截图）。条号本身才是标识，
+   位置序号没有信息量，去掉。 */
+.rvb-clause-list { overflow: auto; margin: 0; padding: 0 0.6rem 0.4rem 0.6rem;
+                   font-size: 0.85rem; list-style: none; }
 .rvb-clause-list li { cursor: pointer; }
 .rvb-clause-new { background: #e8f5e9; }
 /* 当前聚焦块所属条号：与「新增绿底」同族橙（#e8710a），避免撞色 */
@@ -889,8 +914,12 @@
 .rvb-cn { color: var(--pico-muted-color); margin-right: 0.4rem; }
 
 /* 提交条（compose → confirm raw body → 结果区由 htmx 轮询） */
+/* ⚠️ `flex: 0 0 auto` 不是可选的：`.rvb-panes` 占了 100% 高之后，提交区若可收缩
+   （默认 `flex-shrink:1`）就会被**压扁**而不是落到折线以下 —— 那样既没腾出空间、
+   又把按钮挤变形。固定不收缩 ⇒ 总高超出 `.rvb-root` ⇒ `.center-panel-v2` 出现滚动。 */
 .rvb-submit { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between;
+              flex: 0 0 auto;
               border-top: 1px solid var(--pico-muted-border-color); padding-top: 0.75rem; margin-top: 0.75rem; }
 .rvb-mask { position: absolute; inset: 0; background: rgba(255,255,255,.55);
             border: 1px dashed var(--pico-muted-border-color); border-radius: 6px; z-index: 2; }
-.rvb-result-slot { min-height: 96px; }
+.rvb-result-slot { min-height: 96px; flex: 0 0 auto; }

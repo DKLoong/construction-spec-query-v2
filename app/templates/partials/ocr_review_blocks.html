@@ -12,23 +12,9 @@
     <div class="rvb-panes" x-show="!error" x-cloak>
         <!-- ══ 左栏：原文件 ══ -->
         <section class="rvb-left">
-            <header class="rvb-bar">
-                <span class="rvb-file" x-text="fileName || '原文件'"></span>
-                <span class="rvb-pageinfo" x-text="curPage + ' / ' + pages.length"></span>
-            </header>
-            <!-- 缩放 4 档 + 重置（spec §6.2；「重置」= 回适应宽度，**不是刷新**） -->
-            <div class="rvb-zoom">
-                <button type="button" class="outline" @click="setScaleMode('fit')"
-                        :class="scaleMode === 'fit' && 'rvb-on'">适应宽度</button>
-                <button type="button" class="outline" @click="setScaleMode(1.0)"
-                        :class="scaleMode === 1 && 'rvb-on'">100%</button>
-                <button type="button" class="outline" @click="setScaleMode(1.5)"
-                        :class="scaleMode === 1.5 && 'rvb-on'">150%</button>
-                <button type="button" class="outline" @click="setScaleMode(2.0)"
-                        :class="scaleMode === 2 && 'rvb-on'">200%</button>
-                <button type="button" class="secondary outline" @click="resetZoom()"
-                        title="缩放恢复「适应宽度」">重置</button>
-            </div>
+            <!-- ⚠️ 视口必须是左栏**第一个**子元素：这样左栏顶部才与中栏（版面编辑）齐平。
+                 缩放档与文件名先前压在视口上方，把左栏整体推下去、两栏顶不齐（用户实测）。
+                 它们现在在视口**下方**的 `.rvb-foot` 行里 —— 见本元素末尾。 -->
             <div class="rvb-viewport" x-ref="vp" @mousedown="startPan($event)">
                 <div class="rvb-canvas" :style="canvasStyle()">
                     <img class="rvb-img" :src="pageUrl(curPage)" @load="onImgLoad()"
@@ -42,6 +28,28 @@
                              @click.stop="focusBlock(b.__i)"></div>
                     </template>
                 </div>
+            </div>
+
+            <!-- 底部工具行（用户裁定：缩放档与文件名移到原文栏下方）
+                 左 = 缩放 4 档 + 重置（spec §6.2；「重置」= 回适应宽度，**不是刷新**）
+                 右 = 页码 + 文件名（`margin-left:auto` 右对齐，文件名过长省略不换行） -->
+            <div class="rvb-foot">
+                <div class="rvb-zoom">
+                    <button type="button" class="outline" @click="setScaleMode('fit')"
+                            :class="scaleMode === 'fit' && 'rvb-on'">适应宽度</button>
+                    <button type="button" class="outline" @click="setScaleMode(1.0)"
+                            :class="scaleMode === 1 && 'rvb-on'">100%</button>
+                    <button type="button" class="outline" @click="setScaleMode(1.5)"
+                            :class="scaleMode === 1.5 && 'rvb-on'">150%</button>
+                    <button type="button" class="outline" @click="setScaleMode(2.0)"
+                            :class="scaleMode === 2 && 'rvb-on'">200%</button>
+                    <button type="button" class="secondary outline" @click="resetZoom()"
+                            title="缩放恢复「适应宽度」">重置</button>
+                </div>
+                <span class="rvb-foot-right">
+                    <span class="rvb-pageinfo" x-text="curPage + ' / ' + pages.length"></span>
+                    <span class="rvb-file" x-text="fileName || '原文件'"></span>
+                </span>
             </div>
         </section>
 
@@ -73,14 +81,15 @@
                         <!-- 编辑态：行级编辑器（行 = contenteditable） -->
                         <div class="rvb-editor" x-show="editingIdx === i" x-cloak>
                             <div class="rvb-tools">
-                                <span>行级编辑</span>
                                 <!-- ⚠️ `@mousedown.prevent` 不是可选项：点按钮会让 contenteditable **失焦**、
                                      选区塌掉，execCommand 就作用不到任何东西（点了 B 没反应）。
                                      prevent 掉 mousedown ⇒ 焦点与选区都留在当前行。 -->
                                 <button type="button" title="粗体" @mousedown.prevent @click="exec('bold')"
                                         style="margin:0"><strong>B</strong></button>
+                                <!-- 斜体按钮用**衬线**斜体 I：等宽无衬线的大写 I 做倾斜变换后
+                                     就是一根斜杠（用户把它读成了「/」）—— 衬线斜体 I 才认得出是 I。 -->
                                 <button type="button" title="斜体" @mousedown.prevent @click="exec('italic')"
-                                        style="margin:0"><em>I</em></button>
+                                        style="margin:0"><span class="rvb-btn-i">I</span></button>
                                 <button type="button" title="删除线" @mousedown.prevent @click="exec('strikeThrough')"
                                         style="margin:0"><s>S</s></button>
                                 <span class="rvb-sep"></span>
@@ -121,17 +130,22 @@
         <section class="rvb-cut" x-show="!error" x-cloak
                  :style="cutOpen ? '' : 'flex:0 0 44px'">
             <header class="rvb-cut-hd">
-                <strong>切分预览</strong>
-                <button type="button" class="outline" style="margin:0"
-                        @click="cutOpen = !cutOpen"
-                        x-text="cutOpen ? '收起' : '展开'"></button>
-                <span x-text="'当前 ' + preview.count + ' 条'"></span>
-                <span class="rvb-added" x-show="preview.added.length"
+                <strong x-show="cutOpen">切分预览</strong>
+                <span x-show="cutOpen" x-text="'当前 ' + preview.count + ' 条'"></span>
+                <span class="rvb-added" x-show="cutOpen && preview.added.length"
                       x-text="'新增 ' + preview.added.length + ' 条'"></span>
-                <span class="rvb-removed" x-show="preview.removed.length"
+                <span class="rvb-removed" x-show="cutOpen && preview.removed.length"
                       x-text="'消失 ' + preview.removed.length + ' 条'"></span>
-                <span x-show="previewBusy" style="color:var(--pico-muted-color)">计算中…</span>
-                <span x-text="previewErr" style="color:#c00"></span>
+                <span x-show="cutOpen && previewBusy" style="color:var(--pico-muted-color)">计算中…</span>
+                <span x-show="cutOpen" x-text="previewErr" style="color:#c00"></span>
+                <!-- 折叠按钮放在 header **末尾**并右推，形状/尺寸照抄 QA 会话管理栏的
+                     `#qa-session-toggle`（箭头指向「面板将要移动的方向」）。
+                     ⚠️ 折叠后（44px 宽）只留这一个按钮：其余文案一律 `x-show="cutOpen"`，
+                     否则窄栏里 header 会横向溢出（终审记过的 Minor）。 -->
+                <button type="button" class="outline rvb-cut-toggle"
+                        @click="cutOpen = !cutOpen"
+                        x-text="cutOpen ? '切分 ▸' : '◂'"
+                        title="展开/折叠切分预览"></button>
             </header>
             <ol class="rvb-clause-list" x-show="cutOpen">
                 <!-- key 用**下标**：clause_no 可能重复（后端会产出空串），
