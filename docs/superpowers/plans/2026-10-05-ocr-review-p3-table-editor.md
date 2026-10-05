@@ -506,7 +506,7 @@ def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
     task_id = _rvb_seed(page, "14a", with_table=True)
     assert task_id is not None, "前置不成立（合成表没进去）"
     tbl_blocks = page.evaluate(
-        "() => Alpine.$data(document.querySelector('[x-data]')).blocks"
+        "() => Alpine.$data(document.querySelector('.rvb-root')).blocks"
         ".filter(b => b.label === 'table' && b.start_line !== null).length")
     assert tbl_blocks >= 1, f"夹具没有可编辑的表格块（{tbl_blocks}）"
     fix = page.locator('[data-block-idx]', has_text="探针表格")
@@ -536,7 +536,7 @@ def f14_6_saving_an_edited_table_writes_the_md_region(page):
     page.locator("button:has-text('保存')").first.click()
     assert poll_until(page, lambda: "改过的说明" in blk.inner_text(), 5000), "保存后块内容没变"
     md_html = page.evaluate("""() => {
-        const d = Alpine.$data(document.querySelector('[x-data]'));
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
         return d.edits[d.blocks.findIndex(b => b.label === 'table' && b.start_line !== null)];
     }""")
     assert md_html and "改过的说明" in md_html, f"edits 里没有改后的表：{str(md_html)[:80]}"
@@ -562,14 +562,14 @@ def f14_7_save_refuses_a_broken_table_and_keeps_editing(page):
     blk.locator("button:has-text('纠正')").first.click()
     assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 1, 5000)
     page.evaluate("""() => {
-        const d = Alpine.$data(document.querySelector('[x-data]'));
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
         d._tableEl().querySelector('td').setAttribute('rowspan', '99');
     }""")
     blk.locator("button:has-text('保存')").first.click()
     assert poll_until(page, lambda: page.locator(".rvb-table-err").is_visible(), 3000), \
         "非法结构没有给出块内报错"
     state = page.evaluate("""() => {
-        const d = Alpine.$data(document.querySelector('[x-data]'));
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
         return { editing: d.editingIdx, edits: Object.keys(d.edits).length };
     }""")
     assert state["editing"] >= 0, "校验失败后不该退出编辑态（会丢失用户改动）"
@@ -606,15 +606,17 @@ Expected: `f14_5` 红，报「点纠正后没有出现可编辑表格」。
         enterEdit(idx) {
             const b = this.blocks[idx];
             if (!b || !this.canEdit(b)) return;
+            // ⚠️ 表格块**缺 `md_html` 就不进编辑态**，且守卫必须在 `editingIdx` 赋值**之前** ——
+            //    放在下面 `$nextTick` 里会变成"已进编辑态、编辑器却是空的"（用户看到空白框）。
+            //    也绝不能回落到 `b.content`：那是 OCR 的**去样式版**，写回会丢 `border=1` 与
+            //    `margin: auto`（边框与居中的唯一来源，渲染侧无补偿 CSS）。宁可不让改。
+            if (b.label === 'table' && !b.md_html) return;
             this.editingIdx = idx;
             this.$nextTick(() => {
                 const box = this._editBox();
                 box.innerHTML = '';
                 if (b.label === 'table') {
-                    // ⚠️ **必须用 `md_html`，且缺了就不进编辑态** —— 绝不能回落到 `b.content`：
-                    //    它是 OCR 的**去样式版**，保存时会把它写回 md ⇒ 表格丢掉 `border=1` 与
-                    //    `margin: auto`（边框与居中的唯一来源，渲染侧无补偿 CSS）。宁可不让改。
-                    if (!b.md_html) return;
+                    // `md_html` 的存在性已在 enterEdit 开头守卫过（那里更靠前、避免"空的编辑态"）
                     const t = window.tableEditor.parse(b.md_html);
                     if (!t) return;
                     t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
@@ -1263,7 +1265,7 @@ def f14_16_saving_a_table_edit_does_not_change_the_clause_set(page):
     blk.locator("button:has-text('纠正')").first.click()
     assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 1, 5000)
     page.evaluate("""() => {
-        const d = Alpine.$data(document.querySelector('[x-data]'));
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
         const t = d._tableEl();
         window.tableEditor.deleteCols(t, [t.querySelector('img').closest('td')]);
     }""")
