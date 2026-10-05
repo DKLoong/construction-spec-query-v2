@@ -249,14 +249,34 @@ def f14_2_serialize_strips_editor_artifacts(page):
     assert 'rvb-cell-sel' not in got, f"选中态 class 漏进序列化：{got[:120]}"
 
 
-def f14_3_validate_rejects_broken_rowspan(page):
-    """★ 校验必须挡住非法结构（rowspan 越界）—— 保存前拦住，绝不写坏 md。"""
+def f14_3_validate_rejects_malformed_tables(page):
+    """★ 校验的三条判据**逐条**都要挡住：越界 `rowspan` / 各行宽度不等 / 空洞。
+
+    ⚠️ 一条用例覆盖三种非法输入是**有意的**（不新增用例，避免打乱后续 Task 的编号）：
+    `validate` 的三条判据是本模块的**已声明契约**，声明了却没人验证＝假承诺。
+    合法放行由 `f14_4` 反向钉住。
+    """
     got = page.evaluate("""(html) => {
-        const t = window.tableEditor.parse(html);
+        const T = window.tableEditor;
+        const out = {};
+        // ① rowspan 越界
+        let t = T.parse(html);
         t.querySelector('td').setAttribute('rowspan', '99');
-        return window.tableEditor.validate(t);
+        out.rowspan = T.validate(t);
+        // ② 各行宽度不等（删掉第 2 行的最后一格）
+        t = T.parse(html);
+        const cells = t.querySelectorAll('tr')[1].querySelectorAll('td');
+        cells[cells.length - 1].remove();
+        out.ragged = T.validate(t);
+        // ③ 空洞（给首格设 rowspan=2，再删掉它正下方那一行的对应格）
+        t = T.parse(html);
+        t.querySelector('tr td').setAttribute('rowspan', '2');
+        t.querySelectorAll('tr')[1].querySelector('td').remove();
+        out.hole = T.validate(t);
+        return out;
     }""", _TBL_HTML)
-    assert got["ok"] is False and got["reason"], f"越界 rowspan 没被拦住：{got}"
+    for name, v in got.items():
+        assert v["ok"] is False and v["reason"], f"{name} 这种非法结构没被拦住：{v}"
 
 
 def f14_4_validate_accepts_well_formed_table(page):
@@ -268,7 +288,7 @@ def f14_4_validate_accepts_well_formed_table(page):
 
 CASES["f14"] = [f14_1_round_trip_is_byte_identical,
                 f14_2_serialize_strips_editor_artifacts,
-                f14_3_validate_rejects_broken_rowspan,
+                f14_3_validate_rejects_malformed_tables,
                 f14_4_validate_accepts_well_formed_table]
 ```
 
@@ -300,18 +320,26 @@ Expected: `f14_1` 红，报「table-editor.js 没被页面加载」。
     const EDITOR_CLASSES = ['rvb-cell-sel'];
 
     function parse(html) {
+        const src = String(html || '');
         const box = document.createElement('div');
-        box.innerHTML = String(html || '');
-        const t = box.querySelector('table');
-        if (t) {
+        box.innerHTML = src;
+        const el = box.querySelector('table');
+        if (el) {
             // ⚠️ 必须缓存**原始串**：浏览器解析必然归一化（插 `<tbody>`、属性引号统一为双引号、
             //    丢弃自闭合 `/>`）⇒ DOM 往返**做不到**字节相等。要兑现 spec §2.5 的
             //    「未改动 ⇒ 逐字节不变」，只能在 parse 时留一份源串、serialize 时比对基线。
             // 真实产物实测（`d66c2e0b` 24 份 md_html）：单引号、无 tbody —— 与夹具逐字一致。
-            t._rvbSource = String(html || '');
-            t._rvbBaseline = t.outerHTML;
+            el._rvbBaseline = el.outerHTML;
+            // ⚠️ `_rvbBaseline` 是**表级**、`_rvbSource` 必须是**输入级且恰好覆盖这张表** ——
+            //    两者作用域一旦不一致，未改动时 `serialize` 会把**整个入参串**当块内容返回
+            //    （**静默写坏 md**，而且"往返一致"型断言对它恒绿、抓不到）。
+            //    故只在「入参串的唯一元素子节点就是这张表」时才缓存源串。
+            //    用 `children`（仅元素）而非 `childNodes`，可容忍首尾空白文本节点。
+            if (box.children.length === 1 && box.children[0] === el) {
+                el._rvbSource = src;
+            }
         }
-        return t;
+        return el;
     }
 
     function _scrub(el) {
