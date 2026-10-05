@@ -584,18 +584,22 @@ def _blocks_of(md: str) -> list[dict]:
     return blocks
 
 
-def _seed(auth_client, task_id="ab000001", md=MD, sha=None):
-    """造一个带 layout.json 的待审查任务，返回 task_id"""
+def _seed(auth_client, task_id="ab000001", md=MD, sha=None, blocks=None):
+    """造一个带 layout.json 的待审查任务，返回 task_id。
+
+    `blocks` 默认按 `md` 锚定；**不需要锚定**的场景（例如只验「规范化有没有接线」）
+    显式传 `[]` —— 否则 `_blocks_of` 的前置断言会先炸。
+    """
     from tests.conftest import seed_import_task
     from app.routes import import_routes as ir
 
     seed_import_task(task_id, status="review_needed", progress=50,
                      message="待审查", md_text=md, title="测试", code="GB-X",
                      file_path="/tmp/x.pdf", file_name="x.pdf")
-    blocks = _blocks_of(md)
+    bl = _blocks_of(md) if blocks is None else blocks
     save_layout({
         "version": 1, "pages": [{"index": 1, "width": 100, "height": 200}],
-        "blocks": blocks, "base_sha256": sha if sha is not None else base_sha256(md),
+        "blocks": bl, "base_sha256": sha if sha is not None else base_sha256(md),
         "stats": {},
     }, Path(ir.OUTPUT_DIR) / task_id)
     return task_id
@@ -608,12 +612,33 @@ def _post(auth_client, task_id, payload):
 
 
 def test_compose_without_edits_keeps_text_byte_exact_before_normalize(auth_client, isolated_paths):
-    """不编辑 ⇒ **未编辑区间原样取回**（splice 的结构性保证）：先去规范化再比，逐字节相等"""
+    """不编辑 ⇒ **未编辑区间原样取回**（splice 的结构性保证）：先去规范化再比，逐字节相等
+
+    ⚠️ **本用例**不能**充当「规范化已接线」的证据**：本夹具的 md 既无字面反斜杠 n 也无
+    `<table>` ⇒ `normalize_md` 在它上面是**恒等函数** ⇒ 把路由里那句 `normalize_md(...)`
+    整句删掉，这行断言照样绿（Task 3 评审实测）。规范化由下一条用例钉住。
+    """
     from app.ocr.layout import splice
     task_id = _seed(auth_client)
     resp = _post(auth_client, task_id, {"edits": {}})
     assert resp.status_code == 200, resp.text
     assert resp.json()["md_text"] == normalize_md(splice(MD, _blocks_of(MD), {}))
+
+
+def test_compose_applies_storage_normalization(auth_client, isolated_paths):
+    """★ 组装结果必须**真的**过一遍 `normalize_md`（spec §8.6 方案 b / §10.4）。
+
+    输入必须挑**规范化确实会改写**的那两类（字面反斜杠 n、裸 `<table>`），否则用例
+    在恒等夹具上恒绿，整条落库规范化保证会**静默回归而测试全绿**（Task 3 评审的
+    Important 发现，已裁定采纳）。块列表传 `[]`：本用例只验接线，不需要锚定。
+    """
+    md = "3.0.1 条文" + chr(92) + "n续\n<table><tr><td>甲</td></tr></table>"
+    task_id = _seed(auth_client, "ab000003", md=md, blocks=[])
+    resp = _post(auth_client, task_id, {"edits": {}})
+    assert resp.status_code == 200, resp.text
+    out = resp.json()["md_text"]
+    assert "<br>续" in out, f"字面反斜杠 n 未在组装结果里被规范化：{out!r}"
+    assert '<table align="center">' in out, f"表格未在组装结果里被规范化成居中：{out!r}"
 
 
 def test_compose_applies_only_the_edited_range(auth_client, isolated_paths):
@@ -814,7 +839,7 @@ async def review_compose(request: Request, task_id: str):
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `D:/Python/python.exe -m pytest tests/test_review_compose.py -v`
-Expected: PASS（7 条）
+Expected: PASS（8 条）
 
 - [ ] **Step 5: 回归相关既有测试**
 
