@@ -2652,37 +2652,96 @@ def f14_7_save_refuses_a_broken_table_and_keeps_editing(page):
 
 
 def f14_8_insert_and_delete_row_keep_the_rectangle(page):
-    """★ 插入/删除行后表仍是**矩形**（校验通过），且**插在选区所在行之前**。"""
+    """★ 插入/删除行后表仍是**矩形**（校验通过），且**插在选区所在行之前**。
+
+    ⚠️ **必须钉住「位置」而不只是「数量」**：`before=true` 若被忽略（恒插在之后），
+    行数仍是 3、随后删首格所在行仍回到 2 行且合法 ⇒ 只断数量的写法对该变异**恒绿**
+    （docstring 承诺了「之前」却没人验证＝假承诺）。故断言：插后 `rows[0]` 是**空新行**、
+    原首行文字**下移到 `rows[1]`**。
+    """
     got = page.evaluate("""(html) => {
         const T = window.tableEditor;
         const t = T.parse(html);
         const firstCell = t.querySelector('td');
+        const firstRowText = [...t.querySelectorAll('tr')[0].children]
+            .map(c => c.textContent.trim()).join('|');
         T.insertRow(t, firstCell, true);              // 在第 1 行之前插一行
-        const rows1 = t.querySelectorAll('tr').length;
+        const rows = [...t.querySelectorAll('tr')];
+        const rows1 = rows.length;
+        const newRowEmpty = [...rows[0].children].every(c => c.textContent.trim() === '');
+        const oldNowAt1 = [...rows[1].children].map(c => c.textContent.trim()).join('|');
         const v1 = T.validate(t);
         T.deleteRows(t, [t.querySelector('td')]);     // 删掉刚插的那行的首格所在行
-        return { rows1, ok1: v1.ok, reason1: v1.reason,
+        return { rows1, ok1: v1.ok, reason1: v1.reason, newRowEmpty, oldNowAt1, firstRowText,
                  rows2: t.querySelectorAll('tr').length, ok2: T.validate(t).ok };
     }""", _TBL_HTML)
     assert got["rows1"] == 3, f"插入后行数不对：{got}"
     assert got["ok1"] is True, f"插入后结构非法：{got['reason1']}"
+    assert got["newRowEmpty"], f"新插入的行不是空行：{got}"
+    assert got["oldNowAt1"] == got["firstRowText"], \
+        f"原首行未下移到第 2 行（`before=true` 被忽略？）：{got}"
     assert got["rows2"] == 2 and got["ok2"] is True, f"删除后不对：{got}"
 
 
 def f14_9_insert_and_delete_column_keep_the_rectangle(page):
-    """★ 列同理：插列后每行宽度 +1，删列后恢复，且始终通过校验。"""
+    """★ 列同理：插列后每行宽度 +1、**新列落在下标 1 且为空**、原第 2 格右移，删列后恢复且始终通过校验。
+
+    ⚠️ 同 f14_8：位置（`before=false` 的语义）必须钉住，不能只断列数。
+    ⚠️ 另含**回滚承诺**断言：rowspan 表上调 `insertColAfter` 会**抛 `NotFoundError`**
+    （第 i 行取到的 `ref` 是上一行 rowspan 格的 DOM、不属于本 `<tr>`）⇒ `tableOp` 必须
+    整体回滚 + 置 `tableError`（否则用户看到锯齿表却毫无提示）。用桩替换
+    `_tableEl`/`_tableHost` 直接驱动真实的 `tableOp`。
+    """
     got = page.evaluate("""(html) => {
         const T = window.tableEditor;
         const t = T.parse(html);
         T.insertCol(t, t.querySelector('td'), false);   // 在第 1 格**之后**插一列
-        const cols1 = t.querySelectorAll('tr')[0].children.length;
+        const row0 = [...t.querySelectorAll('tr')[0].children];
+        const cols1 = row0.length;
         const ok1 = T.validate(t).ok;
+        const newColEmpty = row0[1].textContent.trim() === '';
+        const shifted = row0[2].textContent.trim();     // 原第 2 格「图 形」应右移到下标 2
         T.deleteCols(t, [t.querySelectorAll('tr')[0].children[1]]);
-        return { cols1, ok1, cols2: t.querySelectorAll('tr')[0].children.length,
-                 ok2: T.validate(t).ok };
+        return { cols1, ok1, newColEmpty, shifted,
+                 cols2: t.querySelectorAll('tr')[0].children.length, ok2: T.validate(t).ok };
     }""", _TBL_HTML)
     assert got["cols1"] == 4 and got["ok1"] is True, f"插列不对：{got}"
+    assert got["newColEmpty"], f"新插入的列不是空列：{got}"
+    assert got["shifted"] == "图 形", f"原第 2 格未右移（`before=false` 被忽略？）：{got}"
     assert got["cols2"] == 3 and got["ok2"] is True, f"删列不对：{got}"
+
+    # ★ 回滚承诺：rowspan 表上会抛的结构操作 ⇒ 结构回到操作前 + tableError 非空。
+    assert page.evaluate("() => !!document.querySelector('.rvb-root')"), \
+        "前置不成立：不在审阅页（无 .rvb-root），无法驱动 tableOp"
+    rb = page.evaluate("""() => {
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
+        const RS = '<table border="1"><tr><td rowspan="2">序号</td><td>图形</td></tr>'
+                 + '<tr><td>说明</td></tr></table>';
+        const t = window.tableEditor.parse(RS);
+        const host = document.createElement('div');
+        host.appendChild(t);
+        const before = t.outerHTML;
+        // 用桩把待测表接进 tableOp（真实逻辑不变，只改 DOM 取址）
+        d._tableEl = () => t;
+        d._tableHost = () => host;
+        d.tableError = '';
+        d._tableSnapshots = [];
+        d.tableOp('insertColAfter');        // rowspan 表上必抛 NotFoundError
+        const out = host.querySelector('table');
+        // ⚠️ 还原后 `_restoreTable` 会**故意**给每格补回 `contenteditable="true"`（编辑态需要），
+        //    故逐字比较前必须剥掉它，否则会误判成「未还原」（实测踩过）。
+        const strip = (s) => s.replace(/ contenteditable="true"/g, '').replace(/\\s+/g, ' ');
+        return { restored: !!out && strip(out.outerHTML) === strip(before),
+                 rows: out ? out.querySelectorAll('tr').length : -1,
+                 cells: out ? out.querySelectorAll('td').length : -1,
+                 rowspan: out ? (out.querySelector('td').getAttribute('rowspan')) : null,
+                 err: d.tableError, snaps: d._tableSnapshots.length };
+    }""")
+    assert rb["err"], f"抛异常的结构操作没有给出块内报错：{rb}"
+    assert rb["snaps"] == 0, f"失败的操作竟压入了快照（撤销栈会被污染）：{rb}"
+    assert rb["restored"], f"抛异常后表未回到操作前（用户被留在半坏的表里）：{rb}"
+    assert rb["rows"] == 2 and rb["cells"] == 3 and rb["rowspan"] == "2", \
+        f"回滚后的表结构不对：{rb}"
 
 
 CASES["f14"] = [f14_1_round_trip_is_byte_identical,

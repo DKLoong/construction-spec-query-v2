@@ -596,13 +596,23 @@ function reviewBlocks() {
             if (!t || !cell) return;
             const snap = t.outerHTML;
             let ok = false;
-            switch (name) {
-                case 'insertRowBefore': ok = window.tableEditor.insertRow(t, cell, true); break;
-                case 'insertRowAfter': ok = window.tableEditor.insertRow(t, cell, false); break;
-                case 'insertColBefore': ok = window.tableEditor.insertCol(t, cell, true); break;
-                case 'insertColAfter': ok = window.tableEditor.insertCol(t, cell, false); break;
-                case 'deleteRow': ok = window.tableEditor.deleteRows(t, [cell]); break;
-                case 'deleteCol': ok = window.tableEditor.deleteCols(t, [cell]); break;
+            // ⚠️ **必须 try/catch**：结构操作是「就地改 DOM」，途中可能**抛异常**（不是返回 false）。
+            //    已复现的一例：rowspan 表上调 `insertColAfter` —— 第 i 行取到的 `ref` 可能是
+            //    上一行 rowspan 格的 DOM（不属于本 `<tr>`）⇒ `row.insertBefore` 抛 `NotFoundError`，
+            //    此时**前面的行已经插了格**（锯齿表）、而异常发生在任何 `validate`/`_restoreTable`
+            //    **之前** ⇒ 不回滚、`tableError` 不置、用户毫无提示。包 catch 后任何抛出都归一到
+            //    下面的失败分支：整体回滚 + 块内报错，绝不把用户留在半坏的表里。
+            try {
+                switch (name) {
+                    case 'insertRowBefore': ok = window.tableEditor.insertRow(t, cell, true); break;
+                    case 'insertRowAfter': ok = window.tableEditor.insertRow(t, cell, false); break;
+                    case 'insertColBefore': ok = window.tableEditor.insertCol(t, cell, true); break;
+                    case 'insertColAfter': ok = window.tableEditor.insertCol(t, cell, false); break;
+                    case 'deleteRow': ok = window.tableEditor.deleteRows(t, [cell]); break;
+                    case 'deleteCol': ok = window.tableEditor.deleteCols(t, [cell]); break;
+                }
+            } catch (e) {
+                ok = false;      // 任何抛出都走下面的回滚分支（绝不把用户留在半坏的表里）
             }
             const v = window.tableEditor.validate(t);
             if (!ok || !v.ok) {
