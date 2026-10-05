@@ -52,6 +52,9 @@ DEFAULT_NOT_IN_MARKDOWN = frozenset({
 # 注意 `chart` 虽是纯文本 5 行，但**未锚定**（夹具 idx 522）⇒ 会被 canEdit 的 span 判据挡下。
 EDITABLE_TEXT_LABELS = frozenset({
     "doc_title", "paragraph_title", "content", "text", "figure_title", "vision_footnote",
+    # P3：表格块走**自己的编辑器**（不是行级），但仍须在白名单里 —— `canEdit` 的白名单
+    # 是"这块能不能改"的唯一判据，`enterEdit` 再按 label 分派到行编辑器或表格编辑器。
+    "table",
 })
 
 
@@ -448,8 +451,12 @@ def anchor_blocks(base_text: str, blocks: list[dict],
         s, e, prefix, suffix = cands[0]
         cursor = e
         anchored += 1
+        # 表格块的 md 原文必须**随块下发**（P3 表格编辑器的编辑与写回都以它为准）：
+        # 块的 `content` 是 OCR 的去样式版，而 `border/style` 是边框与居中的唯一来源。
+        # 其它 label 的 content 与 md 行本就等价（锚定判据就是按行比对的），无需重复携带。
+        extra = {"md_html": "\n".join(lines[s:e])} if blk.get("label") == "table" else {}
         out.append({**blk, "start_line": s, "end_line": e,
-                    "prefix": prefix, "suffix": suffix})
+                    "prefix": prefix, "suffix": suffix, **extra})
 
     return out, {
         "total": len(blocks),
