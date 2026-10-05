@@ -269,7 +269,17 @@ function reviewBlocks() {
             //    两种失效原因（缺 md_html / 里面没表）**一并**由 `parse` 的 null 覆盖，保持
             //    「要么完整进编辑态、要么完全不进」这一条不变量。`parse` 是纯 DOM 构造、
             //    不依赖宿主元素存在，故可安全前移到 `$nextTick` 之外。
-            const t = (b.label === 'table') ? window.tableEditor.parse(b.md_html) : null;
+            // ⚠️ **取「当前内容」而不是导入时的 `b.md_html`**（Task 6 复审的 Important 修复）：
+            //    用 `b.md_html` 时，「改表 → 保存 → 再点纠正」会从**原始表**重建编辑器 ⇒
+            //    此时再保存就把 `edits[i]` 覆盖回原始表 ⇒ **第一次的编辑静默丢失**（两步用户动作可达）。
+            // ⚠️ **绝不能写成 `this.contentOf(b)`**：表格块的 `contentOf` 无编辑时回落 `b.content` ——
+            //    那是 OCR 的**去样式版**，会把 `border=1` / `margin: auto`（边框与居中的唯一来源、
+            //    渲染侧无补偿 CSS）悄悄丢掉。Task 3 当初选 `md_html` 正是为此。这里只在
+            //    **确实存在编辑**时才用 `edits[i]`（那是一条单表字符串）。
+            //    ⚠️ serialize 契约不受影响：`edits[i]` 是单张表 ⇒ `parse` 缓存 `_rvbSource` ⇒
+            //    未改动的重进编辑仍**逐字节**往返。
+            const src = this.edits[b.__i] ?? b.md_html;
+            const t = (b.label === 'table') ? window.tableEditor.parse(src) : null;
             if (b.label === 'table' && !t) return;
             this.tableError = '';          // 清掉上一次的表格报错（否则会跟着下一块显示）
             this.editingIdx = idx;

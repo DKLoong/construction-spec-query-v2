@@ -2666,6 +2666,27 @@ def f14_6_saving_an_edited_table_writes_the_md_region(page):
     assert "margin: auto" in probe["style"] or "margin:auto" in probe["style"], \
         f"margin:auto 丢了（表格会左对齐）：{probe}"
     assert "contenteditable" not in md_html, "编辑器痕迹漏进了 md"
+    # ★ **保存后再进编辑，必须看到改后的内容**（Task 6 复审的 Important 修复，折进本用例、不新增编号）。
+    #   `enterEdit` 原取 `b.md_html`（**导入时**的原表）⇒ 「改→保存→再点纠正」会从原始表重建编辑器，
+    #   此时再保存就把 `edits[i]` 覆盖回原始表 ⇒ **第一次编辑静默丢失**（两步用户动作可达）。
+    #   判据必须落在**编辑器里显示什么**（那句"再进编辑看到原始表"正是可分辨的失效形态）+
+    #   **二次保存后 md 里仍在**（覆盖发生在上面的写入路径上）。
+    blk.locator("button:has-text('纠正')").first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 1, 5000), \
+        "二次进入编辑态失败"
+    shown = page.evaluate("""() => [...document.querySelectorAll('.rvb-table-edit td')]
+        .map(td => td.textContent).join('|')""")
+    assert "改过的说明" in shown, \
+        (f"重进编辑看到的是**原始表** ⇒ 再保存会把用户的编辑静默覆盖回原文：{shown}")
+    blk.locator("button:has-text('保存')").first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 0, 5000), \
+        "二次保存后没退出编辑态"
+    md_html2 = page.evaluate("""() => {
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
+        return d.edits[d.blocks.findIndex(b => b.label === 'table' && b.start_line !== null)];
+    }""")
+    assert "改过的说明" in md_html2, \
+        (f"二次保存把第一次的编辑覆盖回原始表了（静默数据丢失）：{str(md_html2)[:120]}")
 
 
 def f14_7_save_refuses_a_broken_table_and_keeps_editing(page):
@@ -2955,15 +2976,15 @@ def f14_16_saving_a_table_edit_does_not_change_the_clause_set(page):
     task_id = _rvb_seed(page, "14d", with_table=True)
     assert task_id is not None, "前置不成立"
 
-    def _clause_nos():
-        return page.evaluate("""async ([tid]) => {
+    def _clause_nos(edits):
+        return page.evaluate("""async ([tid, edits]) => {
             const r = await fetch('/import/review/' + tid + '/preview', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({edits: {}})});
+                body: JSON.stringify({edits})});
             return (await r.json()).clauses.map((c) => c.clause_no).sort();
-        }""", [task_id])
+        }""", [task_id, edits])
 
-    before = _clause_nos()
+    before = _clause_nos({})
     assert before, "前置：预览为空，无法对账"
 
     blk = page.locator('[data-block-idx]', has_text="探针表格")
@@ -2997,7 +3018,21 @@ def f14_16_saving_a_table_edit_does_not_change_the_clause_set(page):
     assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 0, 5000), \
         "保存后没退出编辑态"
 
-    after = _clause_nos()
+    # ★ `after` 必须带上**本次保存真正产出的编辑**（Task 6 复审的 Important 修复）：
+    #   原写法两次都 POST `{edits: {}}` ⇒ 比较的是两个**完全相同**的请求，由端点确定性结构性保证，
+    #   对「表格编辑是否改变切分」**零覆盖**（把上面整段表格编辑删掉，本行照样绿 —— 空转）。
+    #   ⇒ 现在从组件里读回保存出来的 edits，用它当 after 的口径。
+    stored = page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).edits")
+    orig_html = page.evaluate("""() => Alpine.$data(document.querySelector('.rvb-root'))
+        .blocks.find(b => b.label === 'table' && b.start_line !== null).md_html""")
+    keys = list(stored.keys())
+    # ★ **空转守卫**：编辑必须**真的存在**且**与原始表不同** —— 否则一旦保存路径改坏
+    #   （e.g. 存了个跟原文一样的表），本用例又会退化成"两次同口径比较"而恒绿。
+    assert len(keys) == 1, f"前置：保存后应恰好有一条编辑，实得 {keys}"
+    edited_html = stored[keys[0]]
+    assert edited_html and edited_html != orig_html, \
+        f"前置：保存出来的表与原始表相同（表格编辑没生效 ⇒ 对账会空转）：{str(edited_html)[:120]}"
+    after = _clause_nos(stored)
     assert after == before, f"表格编辑改变了切分：{before} -> {after}"
 
 
