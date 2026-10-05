@@ -919,7 +919,9 @@ def test_preview_mirrors_phase2_cover_filter(auth_client, isolated_paths):
     assert len(parse_markdown(md)) == 2, "前置不成立：夹具没有产出封面伪条文"
     assert len(_filter_cover_clauses(parse_markdown(md))) == 1, "前置不成立：封面未被过滤"
 
-    task_id = _seed(auth_client, "ab000014", md=md)
+    task_id = _seed(auth_client, "ab000014", md=md, blocks=[])
+    # ⚠️ `blocks=[]` 不是可选项：本用例的 md 是**另一份**文本，默认的 `_blocks_of(md)`
+    # 会因前置断言（三块须锚到 0/2/4）先炸。本用例只关心条数，不需要锚定。
     resp = _post(auth_client, task_id, {"edits": {}})
     assert resp.status_code == 200, resp.text
     assert resp.json()["count"] == 1, "预览没有镜像 Phase 2 的封面过滤"
