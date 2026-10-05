@@ -879,3 +879,10 @@
 .rvb-clause-list li { cursor: pointer; }
 .rvb-clause-new { background: #e8f5e9; }
 .rvb-cn { color: var(--pico-muted-color); margin-right: 0.4rem; }
+
+/* 提交条（compose → confirm raw body → 结果区由 htmx 轮询） */
+.rvb-submit { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between;
+              border-top: 1px solid var(--pico-muted-border-color); padding-top: 0.75rem; margin-top: 0.75rem; }
+.rvb-mask { position: absolute; inset: 0; background: rgba(255,255,255,.55);
+            border: 1px dashed var(--pico-muted-border-color); border-radius: 6px; z-index: 2; }
+.rvb-result-slot { min-height: 96px; }

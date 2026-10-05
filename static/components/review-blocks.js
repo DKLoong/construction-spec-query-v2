@@ -8,7 +8,10 @@
  *   GET  /import/review/{task_id}/content             → {content, file_name}
  *   POST /import/review/{task_id}/compose  {edits:{下标:内容}} → {md_text}
  *   POST /import/review/{task_id}/preview  同上 → {count, clauses:[{clause_no,title}]}
+ *   POST /import/review/{task_id}/confirm  **raw body**（text/plain）→ HTML 进度片段
  * 编辑**不落库**：「保存」只写 this.edits（spec §8.1）。
+ *
+ * 提交链路：compose（拼装，规则只此一份）→ confirm（既有 raw body 通道，端点零改动）。
  */
 function reviewBlocks() {
     return {
@@ -30,6 +33,8 @@ function reviewBlocks() {
         preview: { count: 0, clauses: [], added: [], removed: [] },
         previewBusy: false,
         previewErr: '',
+        submitting: false,     // 提交中（防重复点击；也给预览刷新守卫用）
+        submitError: '',       // 提交失败的可见文案
         _previewTimer: null,
         _dragging: false,
         _dragFrom: null,
@@ -394,10 +399,9 @@ function reviewBlocks() {
 
         /** 首次调用就是**基线**（edits 为空 ⇒ 与导入前的切分一致）。 */
         async refreshPreview() {
-            // ⚠️ 只判 `editingIdx`：`submitting` 是 **Task 9** 才引入的状态，本 Task 不该引用它
-            //    （读未定义属性不会抛，但那是「成员定义在后面的 Task」这类缺陷的同一个形状，
-            //    Task 6 的 `isClauseLine` 已经栽过一次）—— Task 9 接进来时自己补 `|| this.submitting`。
-            if (this.editingIdx >= 0) return;
+            // 编辑态或提交中都不刷新：前者的中间态没有意义，后者的响应会在结果区被覆盖后
+            // 又写回预览（Task 8 已判 `editingIdx`，Task 9 把 `submitting` 补上）。
+            if (this.editingIdx >= 0 || this.submitting) return;
             this.previewBusy = true;
             this.previewErr = '';
             try {
@@ -435,6 +439,57 @@ function reviewBlocks() {
         openClause(no) {
             const i = this.blocks.findIndex((b) => b.clause_no === no);
             if (i >= 0) this.focusBlock(i);
+        },
+
+        // ── P2：提交链路（compose → confirm → 轮询） ──
+
+        /** 提交：compose（拼装）→ confirm（既有 raw body 通道）⇒ confirm 端点零改动 */
+        async confirmImport() {
+            if (this.submitting) return;
+            if (this.editingIdx >= 0) {
+                this.submitError = '请先「保存」或「取消」正在编辑的块，再提交。';
+                return;
+            }
+            this.submitting = true;
+            this.submitError = '';
+            const box = document.getElementById('rvb-result');
+            const scroller = this._resultScroller();
+            if (scroller) scroller.scrollTop = scroller.scrollHeight;   // 瞬时，避免「点了没反应」误判
+            try {
+                const cr = await fetch(`/import/review/${this.taskId}/compose`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({edits: this.edits}),
+                });
+                if (!cr.ok) throw new Error((await cr.json()).detail || ('compose ' + cr.status));
+                const md = (await cr.json()).md_text;
+                // md 走 raw body（text/plain）：表单字段有 1MB 上限，大规范会被 400 拒掉
+                const resp = await fetch(`/import/review/${this.taskId}/confirm`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'text/plain; charset=utf-8'},
+                    body: md,
+                });
+                const html = await resp.text();
+                if (box) box.innerHTML = html;
+                if (!resp.ok) {
+                    this.submitError = (html || '').replace(/<[^>]+>/g, '').trim()
+                        || ('提交失败（HTTP ' + resp.status + '）');
+                } else if (window.htmx && box) {
+                    window.htmx.process(box);      // 进度片段带 hx-get/hx-trigger，必须让 htmx 接管
+                }
+            } catch (e) {
+                this.submitError = '提交失败：' + e;
+            } finally {
+                this.submitting = false;
+            }
+        },
+
+        _resultScroller() {
+            const box = document.getElementById('rvb-result');
+            for (let s = box && box.parentElement; s; s = s.parentElement) {
+                if (s.scrollHeight > s.clientHeight) return s;
+            }
+            return null;
         },
     };
 }

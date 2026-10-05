@@ -2082,6 +2082,143 @@ def f13_14_swallowing_a_clause_line_shows_as_removed(page):
     assert "消失" in page.locator(".rvb-preview-hd").inner_text(), "没有给出「消失 N 条」的提示"
 
 
+def _rvb_wait_done(page, task_id, timeout_ms=180000):
+    """轮询隔离实例的进度 JSON，直到任务离开 processing（真实提交会跑 Phase 2）"""
+    import json as _json
+    import time as _time
+    t0 = _time.time()
+    while (_time.time() - t0) * 1000 < timeout_ms:
+        txt = page.evaluate("""async (tid) => (await fetch('/import/progress/' + tid + '/json')).text()""",
+                            task_id)
+        try:
+            st = _json.loads(txt).get("status")
+        except Exception:
+            st = None
+        if st in ("done", "error"):
+            return st
+        page.wait_for_timeout(1000)
+    return "timeout"
+
+
+def f13_15_editing_a_block_does_not_let_submit_while_editing(page):
+    """★ 编辑态下提交必须**被拦**并给出可执行的提示（否则用户的改动被判丢）"""
+    assert _rvb_seed(page, "15") is not None, "前置不成立"
+    idx = _rvb_first_editable(page)
+    _rvb_edit(page, idx)
+    page.locator("button:has-text('确认并继续导入')").click()
+    assert poll_until(page, lambda: "请先" in page.locator("#rvb-result").inner_text(), 5000), \
+        "编辑态下点提交没有被拦（会静默丢掉未保存的改动）"
+
+
+def f13_16_submit_sends_the_edited_text_to_phase2(page):
+    """★ 端到端：改一行 → 提交 → 任务进入 done，且**库里条文含改后的文本**。
+
+    这是「编辑后导入结果与手改 md 等价」的**端到端证据**：走的正是 compose → confirm → Phase 2
+    这条真实链路，不是桩。
+    """
+    task_id = _rvb_seed(page, "16")
+    assert task_id is not None, "前置不成立"
+    idx = _rvb_first_editable(page)
+    blk = _rvb_block(page, idx)
+    _rvb_edit(page, idx)
+    _rvb_type_line(page, idx, "9.9.8 PROBE 端到端条文")
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: blk.locator(".rvb-editor").is_hidden(), 5000)
+    page.locator("button:has-text('确认并继续导入')").click()
+    assert poll_until(page, lambda: page.locator("#rvb-result").inner_text().strip() != "", 10000), \
+        "提交后结果区没有回显（说明 confirm 没被调到）"
+    st = _rvb_wait_done(page, task_id)
+    assert st == "done", f"端到端导入未成功：{st}"
+    # 库里真的落进了编辑后的文本 ⇒ 编辑没有停在浏览器里
+    assert _rvb_imported_has_text("探针块审查 16", "PROBE 端到端条文"), \
+        "编辑后的文本没有入库（compose/confirm 链路断了）"
+
+
+def f13_17_submit_without_edits_still_imports(page):
+    """未编辑直接提交 ⇒ 也能正常导入（规范化不会把内容改坏到切不出条）"""
+    task_id = _rvb_seed(page, "17")
+    assert task_id is not None, "前置不成立"
+    page.locator("button:has-text('确认并继续导入')").click()
+    assert poll_until(page, lambda: page.locator("#rvb-result").inner_text().strip() != "", 10000)
+    st = _rvb_wait_done(page, task_id)
+    assert st == "done", f"未编辑提交未成功：{st}"
+
+
+def _rvb_imported_spec_id(title_fragment):
+    """定位本次导入的规范 id。
+
+    种子带唯一后缀（code `PROBE-RVB 16` / title `探针块审查 16`），但导入侧会对
+    code/title 做归一化（`_parse_filename_to_code_title` 的剥噪声）⇒ **两列都试**，
+    再退回「最新一条」（探针刚导完，最新那条就是它；探针运行期间没有别的写入者）。
+    """
+    from app.database import get_db
+    frag = f"%{title_fragment}%"
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id FROM specifications WHERE title LIKE ? OR code LIKE ? "
+            "ORDER BY id DESC LIMIT 1", (frag, frag)).fetchone()
+        if row is None:
+            row = conn.execute("SELECT id FROM specifications ORDER BY id DESC LIMIT 1").fetchone()
+    return row[0] if row else None
+
+
+def _rvb_imported_clause_count(title_fragment):
+    """数这个任务**真正入库**的条文数。
+
+    直查隔离库而不是查接口：要断言的正是「预览条数 == 入库条数」，
+    中间再隔一层接口（它有自己的过滤）会把差异盖掉。
+    """
+    from app.database import get_db
+    sid = _rvb_imported_spec_id(title_fragment)
+    if sid is None:
+        return 0
+    with get_db() as conn:
+        return conn.execute("SELECT COUNT(*) FROM clauses WHERE spec_id=?", (sid,)).fetchone()[0]
+
+
+def _rvb_imported_has_text(title_fragment, needle):
+    """库里该规范的任一条文含 needle 即真。
+
+    ⚠️ **必须同时查 `title` 列**（本 Task 实测逼出，计划原稿只查 `content` 会恒红）：
+    `parse_markdown` 把**编号行**「`9.9.8 PROBE 端到端条文`」拆成
+    `clause_no='9.9.8'` + `title='PROBE 端到端条文'`，而 `content` 只装其后的正文行。
+    f13_16 编辑的正是编号行 ⇒ 文本落进 `title`。原稿只查 `content` 与它自己的
+    docstring（「任一条文含 needle 即真」）矛盾，且会让一条**链路完全正常**的用例恒红。
+    查两列**不削弱分辨力**：真把编辑丢了（compose 未带上改后文本），两列都不会有 needle。
+    """
+    from app.database import get_db
+    sid = _rvb_imported_spec_id(title_fragment)
+    if sid is None:
+        return False
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM clauses WHERE spec_id=? "
+            "AND (content LIKE ? OR title LIKE ?)",
+            (sid, f"%{needle}%", f"%{needle}%")).fetchone()[0]
+    return n > 0
+
+
+def f13_18_preview_count_equals_imported_clause_count(page):
+    """★★ spec §18 的 P2 出口判据：**切分预览与导入后实际条文数一致**。
+
+    这条是整个 P2 的验收铰链 —— 预览若不准，用户拿它当凭据就是被误导。
+    ⚠️ 若首跑不相等，**先查 Phase 2 是否有本条未镜像的过滤**（`_filter_cover_clauses`
+    之外的任何一步），把同一条规则补进 preview，**不得为了让它变绿而放宽断言**。
+    """
+    task_id = _rvb_seed(page, "18")
+    assert task_id is not None, "前置不成立"
+    assert poll_until(page, lambda: page.locator(".rvb-clause-list li").count() > 0, 10000), \
+        "切分预览为空，无法对账"
+    preview_n = page.locator(".rvb-clause-list li").count()
+    page.locator("button:has-text('确认并继续导入')").click()
+    assert poll_until(page, lambda: page.locator("#rvb-result").inner_text().strip() != "", 10000)
+    assert _rvb_wait_done(page, task_id) == "done", "端到端导入未成功"
+    imported_n = _rvb_imported_clause_count("探针块审查 18")
+    assert imported_n > 0, "库里一条都没入库 —— 断言会退化成 0 == 0 的空转"
+    assert preview_n == imported_n, \
+        f"切分预览与入库条数不一致：预览 {preview_n} / 入库 {imported_n}"
+
+
 CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_2_inline_round_trip_is_byte_exact,
                 f13_3_alignment_wrap_unwrap_round_trip,
@@ -2095,7 +2232,11 @@ CASES["f13"] = [f13_1_md_inline_loaded_and_split_lines,
                 f13_11_enter_splits_into_a_new_line_not_a_br,
                 f13_12_preview_lists_clauses_of_the_document,
                 f13_13_editing_a_clause_line_changes_the_preview,
-                f13_14_swallowing_a_clause_line_shows_as_removed]
+                f13_14_swallowing_a_clause_line_shows_as_removed,
+                f13_15_editing_a_block_does_not_let_submit_while_editing,
+                f13_16_submit_sends_the_edited_text_to_phase2,
+                f13_17_submit_without_edits_still_imports,
+                f13_18_preview_count_equals_imported_clause_count]
 
 
 if __name__ == "__main__":

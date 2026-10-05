@@ -137,4 +137,20 @@
             </section>
         </section>
     </div>
+
+    <!-- 提交 / 取消（与源码审查页同构：raw body + 结果区 + htmx 轮询） -->
+    <div class="rvb-submit">
+        <small style="color:var(--pico-muted-color)">审查完毕后点击确认继续导入流程（解析 + 分类 + 索引）</small>
+        <span style="position:relative;display:inline-flex;align-items:center">
+            <span x-show="submitting" x-cloak class="rvb-mask"></span>
+            <button type="button" style="position:relative;z-index:1;margin:0" :disabled="submitting"
+                    @click="confirmImport()" x-text="submitting ? '提交中…' : '✅ 确认并继续导入'"></button>
+        </span>
+        <button type="button" class="secondary" style="margin:0"
+                hx-post="/import/review/{{ task_id }}/cancel"
+                hx-confirm="确定取消本次导入？已上传的文件和识别结果将被删除。">✖ 取消导入</button>
+    </div>
+    <div id="rvb-result" class="rvb-result-slot">
+        <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
+    </div>
 </div>
