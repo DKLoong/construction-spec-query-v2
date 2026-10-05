@@ -105,5 +105,88 @@
         return { ok: true, reason: '' };
     }
 
-    window.tableEditor = { parse, serialize, validate };
+    /** 在 `refCell` 所在行**之前/之后**插一行；新行为**空格**（列数取该行宽度）。 */
+    function insertRow(tableEl, refCell, before) {
+        const tr = refCell.closest('tr');
+        if (!tr) return false;
+        const width = [...tr.children].reduce(
+            (n, c) => n + parseInt(c.getAttribute('colspan') || '1', 10), 0);
+        const fresh = document.createElement('tr');
+        for (let i = 0; i < width; i++) fresh.appendChild(document.createElement('td'));
+        tr.parentNode.insertBefore(fresh, before ? tr : tr.nextSibling);
+        return true;
+    }
+
+    /** 在 `refCell` 所在列之前/之后插一列：**逐行**在对应下标处插入空格。
+     *  ⚠️ 合并格（colspan>1）会让"列下标"与"格下标"不相等 ⇒ 用占位矩阵定位，
+     *     落在合并格范围内时**拒绝**（返回 false，不猜）。 */
+    function insertCol(tableEl, refCell, before) {
+        const g = _grid(tableEl);
+        if (g.err) return false;
+        const tr = refCell.closest('tr');
+        const r = [...tableEl.querySelectorAll('tr')].indexOf(tr);
+        const c = g.grid[r].indexOf(refCell);
+        if (c < 0) return false;
+        const at = before ? c : c + 1;
+        // ⚠️ **必须用 `===`**：「边界落在某个跨列格内部」⇔ 边界两侧是**同一个**合并格
+        //    （`row[at] === row[at-1]`）。计划原文此处写成 `!==` 是**反向**的 —— 对任意
+        //    无合并的普通表，边界两侧恒为不同格 ⇒ `some` 恒真 ⇒ insertCol **永远拒绝**、
+        //    一个格也不插（实测：`insertCol(t, firstTd, false)` 返回 false、行仍 3 列，
+        //    从而 f14_9 要求的 `cols1 == 4` 不可达）。用 `===` 后：普通表放行、边界真正
+        //    落在合并格内部（如 `colspan=2` 的第 1~2 列之间）时才拒绝 —— 与下方注释语义一致。
+        if (g.grid.some((row) => row[at] && row[at] === row[at - 1])) {
+            // 目标列位置落在某个跨列格内部 ⇒ 拒绝
+            return false;
+        }
+        tableEl.querySelectorAll('tr').forEach((row, ri) => {
+            const cell = g.grid[ri] && g.grid[ri][at];
+            // 同一合并格在矩阵里出现多次，只在**该格起始列**处插一次
+            if (cell && g.grid[ri].indexOf(cell) !== at) return;
+            const td = document.createElement('td');
+            const ref = at === 0 ? row.firstChild
+                                 : (g.grid[ri][at - 1] || row.lastChild);
+            if (cell === ref) row.insertBefore(td, cell);
+            else if (ref) row.insertBefore(td, ref.nextSibling);
+            else row.appendChild(td);
+        });
+        return true;
+    }
+
+    /** 删除 `cells` 覆盖到的**全部**行（含只被覆盖一部分的）。 */
+    function deleteRows(tableEl, cells) {
+        const rows = [...tableEl.querySelectorAll('tr')];
+        const doomed = new Set(cells.map((c) => c.closest('tr')));
+        if (doomed.size >= rows.length) return false;      // 不许把表删空
+        doomed.forEach((tr) => tr.remove());
+        return true;
+    }
+
+    /** 删除 `cells` 覆盖到的**全部**列；整列都没了 ⇒ 返回 false（不许删空）。 */
+    function deleteCols(tableEl, cells) {
+        const g = _grid(tableEl);
+        if (g.err) return false;
+        const rows = [...tableEl.querySelectorAll('tr')];
+        const cols = new Set();
+        for (const c of cells) {
+            const r = rows.indexOf(c.closest('tr'));
+            g.grid[r].forEach((cell, ci) => { if (cell === c) cols.add(ci); });
+        }
+        const width = g.grid[0].length;
+        if (cols.size >= width) return false;
+        rows.forEach((row, ri) => {
+            [...cols].sort((a, b) => b - a).forEach((ci) => {
+                const cell = g.grid[ri][ci];
+                if (!cell) return;
+                const start = g.grid[ri].indexOf(cell);
+                if (start !== ci) return;                  // 合并格只在起始列处理一次
+                const cs = parseInt(cell.getAttribute('colspan') || '1', 10);
+                if (cs > 1) cell.setAttribute('colspan', String(cs - 1));
+                else cell.remove();
+            });
+        });
+        return true;
+    }
+
+    window.tableEditor = { parse, serialize, validate,
+                           insertRow, insertCol, deleteRows, deleteCols };
 })();

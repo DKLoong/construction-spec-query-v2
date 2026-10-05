@@ -672,3 +672,13 @@
   2. 清理 `data/outputs/68ad5c7e`、`data/outputs/abdfc8f6` 两个**探针夹具残留目录**（真实库里
      `import_tasks` 无对应行；确认无用后删）。
 - **Blocked by**：无。
+
+## 提醒：`app.css` 的缓存版本号有**两处**消费方（改一处会漂）
+
+- **背景**：`app.css` 由 **两个独立模板**引用 —— `app/templates/base.html` 与 `app/templates/login.html`
+  （登录页不走 `base.html`）。历史上已**漂过两次**：T36 第 9 条修过一次，P3 Task 4 落地时发现
+  `login.html` 又停在 `?v=43`（落后 `base.html` 的 52 近 10 个版本）。
+- **铁律**：动 `app.css` 时，**两处 `?v=N` 必须一起递增到同一个值**（P3 Task 4 已把两处对齐到 53）。
+  只改 `base.html` 会让**登录页**一直吃旧缓存（改样式「登录页没生效」的经典假象）。
+- **延伸**：`base.html` 里其余静态资源（`review-blocks.js` / `table-editor.js` / 其它 `components/*.js`）
+  改动后同样必须递增其 `?v=N`，否则浏览器缓存旧 js（本仓 CLAUDE.md §三.5 已有同款提醒）。

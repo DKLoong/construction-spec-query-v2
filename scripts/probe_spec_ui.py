@@ -2563,14 +2563,18 @@ def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
     # ★ 行编辑专属控件（B/I/S、对齐、「+ 行」/「- 行」）对表格块**必须不可见**：表格块的
     #    `.rvb-lines` 是空的，这些控件对它是死的（「+ 行」/「- 行」会把 null 传进
     #    `_insertLineAfter`/`_deleteLine` —— 已加 null 守卫兜底，但按钮本就不该出现）。
-    #    ⚠️ **必须断到按钮，不能只断容器 `.rvb-line-tools`**：若有人把那个 `<span>` 包裹整体去掉
-    #    （按钮回到 `.rvb-tools` 直系子级），容器定位器会解析成 **0 个元素** ⇒ `is_visible()`
-    #    返回 `False` ⇒ 容器级断言**恒绿**，而 bug 其实已复现（按钮可见、可点、点了是死按钮）。
-    #    断到按钮则「包裹被去掉 ⇒ 按钮可见 ⇒ 红」。（`.rvb-line-tools` 是 `inline-flex` 真实盒子，
-    #    刻意避开 `display:contents` 那类「永远 0×0 ⇒ 断言恒绿」的写法。）
-    #    ⚠️ 按钮在 `x-for` 内**每块一份** ⇒ 必须按**块作用域**取。
-    assert not fix.locator("button:has-text('+ 行')").is_visible(), \
-        "表格块进入了编辑态，「+ 行」等行编辑专属按钮却可见（死按钮）"
+    #    ⚠️ **自 Task 4 起改用容器 `.rvb-line-tools` 口径 + `count() == 1`**：Task 4 的表格工具条里
+    #    也有一个可见的 `+ 行`，而 Playwright 1.62 的 `is_visible()` 以 **strict 模式**解析 ——
+    #    `button:has-text('+ 行')` 在同一表格块内会解析出 **2 个**元素 ⇒ strict mode violation
+    #    报错（Task 3 收紧到按钮级的写法被 Task 4 引爆）。容器口径天然避开同名冲突，附带的
+    #    `count() == 1` 则补回「把 `<span>` 包裹整体去掉 ⇒ 容器定位器 0 个元素 ⇒ `is_visible()`
+    #    为假 ⇒ 恒绿」那个空隙（那正是 Task 3 修过的一类空隙）。
+    #    （`.rvb-line-tools` 是 `inline-flex` 真实盒子，刻意避开 `display:contents` 那类
+    #     「永远 0×0 ⇒ 断言恒绿」的写法。）
+    #    ⚠️ 控件组在 `x-for` 内**每块一份** ⇒ 必须按**块作用域**取。
+    lt = fix.locator(".rvb-line-tools")
+    assert lt.count() == 1, f"行编辑专属控件组应有且仅有一份（实际 {lt.count()} 份）"
+    assert not lt.is_visible(), "表格块进入了编辑态，行编辑专属控件却可见（死按钮）"
     # ★ **反向守卫**：「取消」/「保存」对表格块必须**仍然可见** —— 它们是表格编辑态**唯一**的
     #    保存出口（Task 4 的表格工具条只有结构操作按钮、不含保存）。把整排 `.rvb-tools` 一起
     #    门控掉会让表格**根本无法保存**（本轮实测踩过：f14_6/f14_7 的保存点击 30s 超时）。
@@ -2647,13 +2651,49 @@ def f14_7_save_refuses_a_broken_table_and_keeps_editing(page):
     assert state["edits"] == 0, f"非法结构竟然写进了 edits：{state}"
 
 
+def f14_8_insert_and_delete_row_keep_the_rectangle(page):
+    """★ 插入/删除行后表仍是**矩形**（校验通过），且**插在选区所在行之前**。"""
+    got = page.evaluate("""(html) => {
+        const T = window.tableEditor;
+        const t = T.parse(html);
+        const firstCell = t.querySelector('td');
+        T.insertRow(t, firstCell, true);              // 在第 1 行之前插一行
+        const rows1 = t.querySelectorAll('tr').length;
+        const v1 = T.validate(t);
+        T.deleteRows(t, [t.querySelector('td')]);     // 删掉刚插的那行的首格所在行
+        return { rows1, ok1: v1.ok, reason1: v1.reason,
+                 rows2: t.querySelectorAll('tr').length, ok2: T.validate(t).ok };
+    }""", _TBL_HTML)
+    assert got["rows1"] == 3, f"插入后行数不对：{got}"
+    assert got["ok1"] is True, f"插入后结构非法：{got['reason1']}"
+    assert got["rows2"] == 2 and got["ok2"] is True, f"删除后不对：{got}"
+
+
+def f14_9_insert_and_delete_column_keep_the_rectangle(page):
+    """★ 列同理：插列后每行宽度 +1，删列后恢复，且始终通过校验。"""
+    got = page.evaluate("""(html) => {
+        const T = window.tableEditor;
+        const t = T.parse(html);
+        T.insertCol(t, t.querySelector('td'), false);   // 在第 1 格**之后**插一列
+        const cols1 = t.querySelectorAll('tr')[0].children.length;
+        const ok1 = T.validate(t).ok;
+        T.deleteCols(t, [t.querySelectorAll('tr')[0].children[1]]);
+        return { cols1, ok1, cols2: t.querySelectorAll('tr')[0].children.length,
+                 ok2: T.validate(t).ok };
+    }""", _TBL_HTML)
+    assert got["cols1"] == 4 and got["ok1"] is True, f"插列不对：{got}"
+    assert got["cols2"] == 3 and got["ok2"] is True, f"删列不对：{got}"
+
+
 CASES["f14"] = [f14_1_round_trip_is_byte_identical,
                 f14_2_serialize_strips_editor_artifacts,
                 f14_3_validate_rejects_malformed_tables,
                 f14_4_validate_accepts_well_formed_table,
                 f14_5_entering_edit_on_a_table_shows_an_editable_table,
                 f14_6_saving_an_edited_table_writes_the_md_region,
-                f14_7_save_refuses_a_broken_table_and_keeps_editing]
+                f14_7_save_refuses_a_broken_table_and_keeps_editing,
+                f14_8_insert_and_delete_row_keep_the_rectangle,
+                f14_9_insert_and_delete_column_keep_the_rectangle]
 
 
 if __name__ == "__main__":

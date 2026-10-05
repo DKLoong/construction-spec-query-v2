@@ -125,6 +125,28 @@
                                 <button type="button" @click="cancelEdit()" style="margin:0">取消</button>
                                 <button type="button" @click="saveEdit()" style="margin:0">保存</button>
                             </div>
+                            <!-- 表格工具条（独立一排，仅表格块编辑态可见）。按钮尺寸与行编辑器一致：
+                                 `.rvb-tools button` 已是 0.72rem / padding 1px 6px，故复用该类。
+                                 ⚠️ **与上面那排「并存」是预期的**（不是缺陷）：上面那排此时只剩
+                                 `取消/保存`（行编辑专属控件由 `.rvb-line-tools` 的 `label !== 'table'`
+                                 门控隐藏），而 `取消/保存` 是表格编辑态**唯一**的保存出口 —— 本排只有
+                                 结构操作按钮、**不含保存**。不要把整排 `.rvb-tools` 门控掉，否则表格
+                                 将无法保存（Task 3 修正轮实测踩过：f14_6/f14_7 保存点击 30s 超时）。 -->
+                            <div class="rvb-tools" x-show="editingIdx === i && blocks[i].label === 'table'">
+                                <button type="button" @click="tableOp('insertRowBefore')" style="margin:0"
+                                        title="在选中格所在行之前插入一行">+ 行</button>
+                                <button type="button" @click="tableOp('insertRowAfter')" style="margin:0"
+                                        title="在选中格所在行之后插入一行">行 +</button>
+                                <button type="button" @click="tableOp('insertColBefore')" style="margin:0"
+                                        title="在选中格所在列之前插入一列">+ 列</button>
+                                <button type="button" @click="tableOp('insertColAfter')" style="margin:0"
+                                        title="在选中格所在列之后插入一列">列 +</button>
+                                <span class="rvb-sep"></span>
+                                <button type="button" @click="tableOp('deleteRow')" style="margin:0"
+                                        title="删除选中格所在的整行">- 行</button>
+                                <button type="button" @click="tableOp('deleteCol')" style="margin:0"
+                                        title="删除选中格所在的整列">- 列</button>
+                            </div>
                             <!-- 表格编辑器容器：仅当该块 label === 'table' 时由 JS 填充。
                                  与行编辑器的 `.rvb-lines` 分开，避免 `.rvb-line` 选择器互相干扰。 -->
                             <div class="rvb-table-edit" x-show="editingIdx === i && blocks[i].label === 'table'"></div>

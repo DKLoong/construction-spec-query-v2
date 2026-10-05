@@ -582,6 +582,49 @@ function reviewBlocks() {
             }
         },
 
+        /** 表格结构操作的统一入口：**压快照 → 执行 → 复验**。
+         *
+         * ⚠️ 快照必须在**操作前**压：这是「撤销」按钮唯一的数据来源（spec §2.4）。
+         * ⚠️ 每次结构操作后立刻 `validate`：非法就**整体回滚到刚压的快照**，
+         *    而不是把用户留在半坏的表里（校验器只会在保存时再挡一次，那时已经晚了）。
+         * ⚠️ 选中格回落：本 Task（Task 4）尚无选区概念，暂取「块内第一个格」；
+         *    Task 5 引入 `.rvb-cell-sel` 后会自然改走选中格，届时删掉这个回落即可。
+         */
+        tableOp(name) {
+            const t = this._tableEl();
+            const cell = (t && t.querySelector('.rvb-cell-sel')) || (t && t.querySelector('td,th'));
+            if (!t || !cell) return;
+            const snap = t.outerHTML;
+            let ok = false;
+            switch (name) {
+                case 'insertRowBefore': ok = window.tableEditor.insertRow(t, cell, true); break;
+                case 'insertRowAfter': ok = window.tableEditor.insertRow(t, cell, false); break;
+                case 'insertColBefore': ok = window.tableEditor.insertCol(t, cell, true); break;
+                case 'insertColAfter': ok = window.tableEditor.insertCol(t, cell, false); break;
+                case 'deleteRow': ok = window.tableEditor.deleteRows(t, [cell]); break;
+                case 'deleteCol': ok = window.tableEditor.deleteCols(t, [cell]); break;
+            }
+            const v = window.tableEditor.validate(t);
+            if (!ok || !v.ok) {
+                this._restoreTable(snap);
+                this.tableError = ok ? ('表格结构不合法：' + v.reason) : '该操作在当前选区不可用';
+                return;
+            }
+            this.tableError = '';
+            this._tableSnapshots.push(snap);
+        },
+
+        /** 用快照整体还原表格（结构操作回滚 / 撤销共用）。
+         *  Task 4 只做「还原」；Task 5 会在末尾补一句 `this._selectTable()` 重新绑定选中格。 */
+        _restoreTable(snap) {
+            const host = this._tableHost();
+            const t = window.tableEditor.parse(snap);
+            if (!host || !t) return;
+            t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
+            host.innerHTML = '';
+            host.appendChild(t);
+        },
+
         _resultScroller() {
             const box = document.getElementById('rvb-result');
             for (let s = box && box.parentElement; s; s = s.parentElement) {
