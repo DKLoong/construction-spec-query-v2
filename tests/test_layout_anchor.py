@@ -391,7 +391,12 @@ def test_reanchor_strips_stale_md_html():
           {**_blk(_T_BLK, 1, label="table"), **stale}]          # 已播过 md_html 的两个块
     anchored, _ = anchor_blocks(base, bl)
     assert anchored[1]["start_line"] is None, "前置：表格块应锚不上（md 里没有它）"
-    assert "md_html" not in anchored[0], "非表格块带出了旧的 md_html"
+    # ⚠️ **顺序是有意的**（终审修复的受限复审指出）：块 0 的内容与 md 相同 ⇒ 它走的是**成功**分支，
+    #    所以「块 0 带出旧键」证的是**相邻的**另一处泄漏（成功分支对**非表格**块 `extra == {}`，
+    #    `{**blk, **extra}` 同样会带出旧键）。**本条 finding 自己的分支是块 1 的 missed 分支**，
+    #    故把块 1 的断言放在**前面**，让它成为变异时**首个**报错 ⇒ 该断言的红是**实测**到的，
+    #    而不是靠推演说它「应该会红」。
     assert "md_html" not in anchored[1], (
         "未锚定的表格块把**上一轮的** md_html 原样带出（`{**blk, ...}` 未剥离）；"
         f"它的区间已随重锚改变，这段原文是**过期**的：{anchored[1].get('md_html')!r}")
+    assert "md_html" not in anchored[0], "非表格块带出了旧的 md_html"
