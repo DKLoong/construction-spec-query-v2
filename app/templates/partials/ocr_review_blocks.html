@@ -1,7 +1,9 @@
 <!-- OCR 审查页（版面块 · P1 只读对照）
      左栏原文件（页图 + 高亮框） / 右栏版面块列表。
      编辑能力是 P2 的事；本期**只读**，无任何写路径。 -->
-<div x-data="reviewBlocks()" x-init="init()" class="rvb-root">
+<!-- ⚠️ `@mouseup.window` 挂在**根**上（只注册一份）：拖拽可能在格**外**松开，
+     mouseup 落到哪个元素上不确定 ⇒ 必须在 window 上收尾。若挂进 `x-for` 里会每块注册一份。 -->
+<div x-data="reviewBlocks()" x-init="init()" class="rvb-root" @mouseup.window="onTableCellUp()">
 
     <!-- 降级：没有 layout.json 时给出明确出口，而不是空白或崩溃（spec §13） -->
     <div class="rvb-error" x-show="error" x-cloak>
@@ -170,10 +172,21 @@
                                 <button type="button" @click="tableRemoveImages()" style="margin:0"
                                         title="删除选中格里的图片（不删文件）">删图</button>
                             </div>
+                            <!-- 选区手势的**可发现性**提示（用户实测：只有 Shift+点 能用、界面又没提示
+                                 ⇒ 「选不中多格 ⇒ 合并点不动」）。这段文案就是操作说明，别再删。
+                                 ⚠️ **必须独占一行**，不能塞进上面那排 —— `.rvb-tools` 是
+                                 `flex-wrap: nowrap; overflow-x: auto`，塞进去会溢出并把按钮**压扁成竖排**
+                                 （实测截图：`+行` 变两行、「合并」拆成两个字上下排）。 -->
+                            <div class="rvb-hint"
+                                 x-show="editingIdx === i && blocks[i].label === 'table'">
+                                多选：<kbd>Shift</kbd>+单击，或按住左键拖拽
+                            </div>
                             <!-- 表格编辑器容器：仅当该块 label === 'table' 时由 JS 填充。
                                  与行编辑器的 `.rvb-lines` 分开，避免 `.rvb-line` 选择器互相干扰。 -->
                             <div class="rvb-table-edit" x-show="editingIdx === i && blocks[i].label === 'table'"
-                                 @click="onTableCellClick($event)"></div>
+                                 @click="onTableCellClick($event)"
+                                 @mousedown="onTableCellDown($event)"
+                                 @mouseover="onTableCellOver($event)"></div>
                             <!-- 表格编辑态的**块内**错误提示（spec §2.4：校验失败要保留编辑态、
                                  只在块内报错）。**不要**复用页面级的 `submitError` —— 那个横幅
                                  在提交条下方（已落到折线以下），用户当下看不到。 -->

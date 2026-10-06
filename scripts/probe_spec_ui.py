@@ -2590,6 +2590,19 @@ def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
     #    门控掉会让表格**根本无法保存**（本轮实测踩过：f14_6/f14_7 的保存点击 30s 超时）。
     assert fix.locator("button:has-text('保存')").is_visible(), \
         "表格编辑态下「保存」按钮不可见 —— 表格将无法保存"
+    # ★ 选区手势**提示必须可见**（用户实测：只有 Shift+点 能用、界面又没提示 ⇒
+    #   「选不中多格 ⇒ 合并点不动」；这段文案就是唯一的可发现性来源，删了就等于把坑挖回去）。
+    hint = fix.locator(".rvb-hint")
+    assert hint.count() == 1 and hint.is_visible(), \
+        "表格编辑态没有选区手势提示（用户找不到多选手势）"
+    # ★ 提示**不得挤占工具条**：`.rvb-tools` 是 `flex-wrap: nowrap; overflow-x: auto`，
+    #   把提示塞进那一排会溢出、并把按钮**压扁成竖排**（实测踩过：`+行` 变两行、「合并」竖排）。
+    #   判据用**按钮高度是否一致** —— 被压扁时个别按钮会变高，而横向溢出量测不出来
+    #   （按钮 shrink 之后 `scrollWidth == clientWidth`，那个判据抓不到）。
+    hts = fix.locator(".rvb-tools").last.locator("button").evaluate_all(
+        "els => els.map(e => Math.round(e.getBoundingClientRect().height))")
+    assert len(set(hts)) == 1, \
+        f"表格工具条按钮高度不一致（{sorted(set(hts))}）—— 有按钮被挤成竖排（提示抢了同一行？）"
     # ★ 选区模型（Task 5）：点 = 单格；**Shift+点 = 以锚点到当前格为对角**扩成矩形（spec §2.3）。
     #   ⚠️ 判据必须能分辨「锚点固定」与「锚点漂移到上次点击处」——**只数选中格数分辨不出**
     #      （两次 Shift+点按漂移写法一样能得到 3 格）⇒ 必须断言**具体是哪几格**。
@@ -2609,6 +2622,25 @@ def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
     assert poll_until(page, lambda: sel() == [0, 1, 2], 3000), \
         (f"锚点漂移了：以锚点(0)为对角应得 {{0,1,2}}，实得 {sel()} —— "
          "若得到 {2,5} 即锚点被上次点击(5)带走（spec §2.3 要求锚点固定）")
+    # ★ **拖拽框选**（用户实测：拖拽是选区的**自然手势**，原先完全没实现 ⇒ 拖完选中数为 0
+    #   ⇒ 点「合并」只得「该操作在当前选区不可用」，用户读作"不能同时选中多个单元格"）。
+    #   ⚠️ 必须用**真实鼠标**（move → down → move → up），`locator.click` 造不出拖拽过程。
+    #   ⚠️ 松手后浏览器**必然**补一个 `click` —— 实现里必须抑制它，否则刚拖出的矩形会**当场塌成一格**
+    #      （这正是判据能分辨的两档：期望 {3,4,5}；得 `[]` = 拖拽没实现；得 `[5]` = click 没抑制）。
+    bb3 = cells.nth(3).bounding_box()
+    bb5 = cells.nth(5).bounding_box()
+    assert bb3 and bb5, "取不到单元格坐标（前置不成立）"
+    page.mouse.move(bb3["x"] + bb3["width"] / 2, bb3["y"] + bb3["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(bb5["x"] + bb5["width"] / 2, bb5["y"] + bb5["height"] / 2, steps=8)
+    page.mouse.up()
+    # ⚠️ 本条**只**证明「拖拽能框选」这一件事。实测（MUTANT-1 把 `onTableCellOver` 整个短路掉）：
+    #    失败时选区**停在 `{0,1,2}`** —— 即上一次的选区原封未动，拖拽路径根本没跑。
+    #    ⚠️ **不要**把失败消息写成「得到空数组」：那是**未实测**的说法（实测得到的是上一次的选区）。
+    assert poll_until(page, lambda: sel() == [3, 4, 5], 3000), \
+        (f"拖拽没有框选出整行：期望 {{3,4,5}}，实得 {sel()} —— "
+         "实测：拖拽处理被短路掉时选区会**停在上一次的 {{0,1,2}}**（原封未动），"
+         "因为拖拽路径根本没跑；若实得是其它值说明拖拽跑了一半")
     # ★ **删掉锚点格之后，选区必须能自愈**（Task 5 复审的 out-of-scope 发现，Task 6 带走）。
     #   症状：选中某格 → 点「- 行」删掉它所在行 ⇒ `_selAnchor` 指向**已分离**的节点 ⇒
     #   下一次 Shift+点走 `_selectTable(cell, true)` ⇒ `anchor` 是分离节点 ⇒ `selectRange` 里

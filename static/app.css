@@ -946,3 +946,8 @@
 .rvb-table-edit td:focus, .rvb-table-edit th:focus { outline: 2px solid var(--pico-primary); }
 /* 表格编辑器：单元格选中态（合并/拆分/对齐都作用于选区；序列化前会被 `_scrub` 剥掉） */
 .rvb-cell-sel { background: #fff3e0; outline: 1px solid #e8710a; }
+/* 表格工具条**下方单独一行**的手势提示（选区可发现性）。
+   ⚠️ 不放进 `.rvb-tools`：那排是 `flex-wrap: nowrap; overflow-x: auto`，
+   塞进去会溢出并把按钮压扁成竖排（实测）。字号与工具条按钮（0.72rem）对齐。 */
+.rvb-hint { color: var(--pico-muted-color); font-size: 0.72rem; margin: 0 0 0.3rem; }
+.rvb-hint kbd { font-size: 0.68rem; padding: 0 3px; }

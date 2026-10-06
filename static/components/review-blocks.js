@@ -362,8 +362,53 @@ function reviewBlocks() {
             return host ? host.querySelector('table') : null;
         },
 
+        /** 单元格上按下左键：记录「可能开始拖拽框选」的起点。
+         *
+         * ⚠️ **不 `preventDefault`** —— 点一下必须仍能把光标放进格子里打字。
+         *    只有真的拖到**另一个格**时才升级成框选（见 `onTableCellOver`）。
+         * ⚠️ 顺带清掉上一轮拖拽留下的 `_suppressClick`：拖拽若在格外松开，那次 `click`
+         *    根本不会来，抑制位会一直挂着把**下一次普通单击**吞掉。 */
+        onTableCellDown(ev) {
+            this._suppressClick = false;
+            this._dragged = false;
+            if (ev.button !== 0) { this._dragFrom = null; return; }
+            const t = this._tableEl();
+            const cell = ev.target.closest('td,th');
+            this._dragFrom = (cell && t && t.contains(cell)) ? cell : null;
+        },
+
+        /** 拖拽经过另一个格：以起点为**锚点**实时扩成矩形（用户实测要的就是这个手势）。
+         *
+         * ⚠️ 拖拽时必须 `preventDefault` —— 否则浏览器同时做**原生文字选区**（一片蓝），
+         *    与我们自己的 `.rvb-cell-sel` 打架。 */
+        onTableCellOver(ev) {
+            if (!this._dragFrom) return;
+            if (!ev.buttons) { this._dragFrom = null; return; }   // 在格外松开 ⇒ 放弃本次拖拽
+            const t = this._tableEl();
+            const cell = ev.target.closest('td,th');
+            if (!t || !cell || !t.contains(cell) || cell === this._dragFrom) return;
+            ev.preventDefault();
+            if (!this._dragged) { this._selAnchor = this._dragFrom; this._dragged = true; }
+            this._selectTable(cell, true);
+        },
+
+        /** 松开左键：结束拖拽。
+         *
+         * ⚠️ `_suppressClick` 只对**一种情形**有用，**不要**因为探针删它就当死代码删掉：
+         *    跨格拖拽（起点格 ≠ 松手格）时，浏览器把 `click` 派发到两格的**共同祖先**
+         *    （`<table>`）⇒ `closest('td,th')` 得 null、处理器直接 return，本来就不会塌。
+         *    **实测**：把这行删掉，跨格拖拽那条探针用例**照样全绿**（所以那条用例并不覆盖这里）。
+         *    真正会塌的是「拖出去**再拖回起点格**才松手」—— 那时 `click` 落在起点格本身，
+         *    走「起选」分支把矩形塌成一格。这条路径**目前没有探针覆盖**（已知留白，记在 ledger）。 */
+        onTableCellUp() {
+            if (!this._dragFrom) return;
+            this._dragFrom = null;
+            if (this._dragged) this._suppressClick = true;
+        },
+
         /** 表格单元格的点击 / Shift+点：由容器**事件委托**处理（格是动态生成的，逐个绑会随重建失效） */
         onTableCellClick(ev) {
+            if (this._suppressClick) { this._suppressClick = false; return; }   // 刚拖拽完，见 onTableCellUp
             const cell = ev.target.closest('td,th');
             if (!cell) return;
             const t = this._tableEl();
