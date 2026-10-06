@@ -4,6 +4,7 @@
 <!-- ⚠️ `@mouseup.window` 挂在**根**上（只注册一份）：拖拽可能在格**外**松开，
      mouseup 落到哪个元素上不确定 ⇒ 必须在 window 上收尾。若挂进 `x-for` 里会每块注册一份。 -->
 <div x-data="reviewBlocks()" x-init="init()" class="rvb-root" @mouseup.window="onTableCellUp()"
+     @keydown.escape.window="pickMode && togglePickMode()"
      x-effect="syncEditingUi()">
 
     <!-- 登录失效的出口（见 `review-blocks.js` 的 `_json`）。
@@ -34,9 +35,11 @@
             <div class="rvb-img-err" x-show="pageImgErr" x-cloak>
                 页图加载失败：<a href="/login">登录可能已过期，点此重新登录</a>
             </div>
-            <div class="rvb-viewport" x-ref="vp" @mousedown="startPan($event)">
-                <div class="rvb-canvas" :style="canvasStyle()">
-                    <img class="rvb-img" :src="pageUrl(curPage)"
+            <div class="rvb-viewport" x-ref="vp" @mousedown="startPan($event)"
+                 @contextmenu="confirmPick($event)">
+                <div class="rvb-canvas" :class="pickMode && 'rvb-canvas--pick'"
+                     :style="canvasStyle()" @mousedown="onPickDown($event)">
+                    <img class="rvb-img" x-ref="pgimg" :src="pageUrl(curPage)"
                          @load="onImgLoad(); pageImgErr = false" @error="pageImgErr = true"
                          alt="原文件页图" draggable="false">
                     <!-- 高亮框：bbox 按百分比定位 ⇒ 缩放自动跟随（spec §6.3）
@@ -45,8 +48,16 @@
                         <div class="rvb-box" x-show="hasSpan(b)"
                              :class="activeIdx === b.__i && 'rvb-box--on'"
                              :style="boxStyle(b)"
-                             @click.stop="focusBlock(b.__i)"></div>
+                             @click.stop="pickMode || focusBlock(b.__i)"></div>
                     </template>
+                    <!-- 取图选框（P4 原型）：与 `pickRect` 同单位（画布内 CSS 像素）⇒ 像素定位。
+                         手柄**只作视觉提示** —— 命中判定走 `imagePicker.hitHandle` 的坐标计算
+                         ⇒ 整层 pointer-events:none，不参与事件（也就不会挡住画框的 mousedown）。 -->
+                    <div class="rvb-sel" x-show="pickRect" x-cloak :style="selStyle()">
+                        <template x-for="h in ['nw','n','ne','e','se','s','sw','w']" :key="h">
+                            <span class="rvb-sel-h" :class="'rvb-sel-h--' + h"></span>
+                        </template>
+                    </div>
                 </div>
             </div>
 
@@ -66,6 +77,13 @@
                     <button type="button" class="secondary outline" @click="resetZoom()"
                             title="缩放恢复「适应宽度」">重置</button>
                 </div>
+                <!-- 拖框取图（P4 原型）：**显式模式**。与「拖动查看」共用同一个 mousedown，
+                     进模式后 startPan 让位（见 review-blocks.js 的 startPan 首行）。 -->
+                <button type="button" class="outline rvb-pick" @click="togglePickMode()"
+                        x-text="pickMode ? '退出取图' : '取图'"
+                        :class="pickMode && 'rvb-on'"
+                        title="在页图上拖出矩形取图：可拖动 / 拉角调节，右键单击确认"></button>
+                <span class="rvb-pick-msg" x-show="pickMsg" x-cloak x-text="pickMsg"></span>
                 <span class="rvb-foot-right">
                     <span class="rvb-pageinfo" x-text="curPage + ' / ' + pages.length"></span>
                     <span class="rvb-file" x-text="fileName || '原文件'"></span>
@@ -295,4 +313,16 @@
          见 Step 1 末尾的附带修复。 -->
     <div id="rvb-result" class="rvb-result-slot"></div>
     <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
+
+    <!-- 取图预览（原型：**只预览**，不落盘、不插入）。
+         挂在 `.rvb-root` 下而不是 `.rvb-viewport` 里 —— 视口是 `overflow:auto`，
+         浮层放进去会被裁掉。 -->
+    <div class="rvb-pick-pop" x-show="pickPreview" x-cloak>
+        <div class="rvb-pick-pop-hd">
+            <span x-text="'取图预览 · 第 ' + curPage + ' 页'"></span>
+            <button type="button" class="secondary outline" @click="pickPreview = ''">关闭</button>
+        </div>
+        <img :src="pickPreview" alt="取图预览">
+        <p class="rvb-pick-pop-tip">原型阶段：只预览，未落盘、未插入单元格</p>
+    </div>
 </div>

@@ -873,6 +873,36 @@
 .rvb-box { position: absolute; border: 1.5px solid #4c8bf5; background: rgba(76, 139, 245, .12);
            cursor: pointer; }
 .rvb-box--on { border-color: #e8710a; background: rgba(232, 113, 10, .20); }
+/* ── 拖框取图（P4 原型）────────────────────────────────────────────
+   手柄**只作视觉提示**：命中判定走 image-picker.js 的 hitHandle 坐标计算，
+   故整层 pointer-events:none —— 也就不会挡住画框用的 mousedown。 */
+.rvb-canvas--pick { cursor: crosshair; }
+.rvb-sel { position: absolute; border: 1.5px dashed #e8710a;
+           background: rgba(232, 113, 10, .10); pointer-events: none; z-index: 3; }
+.rvb-sel-h { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px;
+             background: #fff; border: 1.5px solid #e8710a; box-sizing: border-box; }
+.rvb-sel-h--nw { left: 0;    top: 0; }
+.rvb-sel-h--n  { left: 50%;  top: 0; }
+.rvb-sel-h--ne { left: 100%; top: 0; }
+.rvb-sel-h--e  { left: 100%; top: 50%; }
+.rvb-sel-h--se { left: 100%; top: 100%; }
+.rvb-sel-h--s  { left: 50%;  top: 100%; }
+.rvb-sel-h--sw { left: 0;    top: 100%; }
+.rvb-sel-h--w  { left: 0;    top: 50%; }
+/* 与缩放档按钮同高（`margin:0` 是必须的：Pico 的按钮 margin-bottom 会把这一行撑高） */
+.rvb-pick { margin: 0; font-size: 0.78rem; padding: 2px 8px; }
+.rvb-pick-msg { font-size: 0.78rem; color: #c00; }
+/* 取图预览浮层：固定在右下角。挂在 `.rvb-root` 下（视口是 overflow:auto，放里面会被裁）。 */
+.rvb-pick-pop { position: fixed; right: 16px; bottom: 16px; z-index: 60;
+                background: #faf7f3; border: 1px solid var(--pico-muted-border-color);
+                border-radius: 10px; padding: 8px 10px;
+                box-shadow: 0 8px 32px rgba(74, 68, 84, 0.22); max-width: 320px; }
+.rvb-pick-pop-hd { display: flex; align-items: center; justify-content: space-between;
+                   gap: 12px; font-size: 0.8rem; }
+.rvb-pick-pop-hd button { margin: 0; font-size: 0.75rem; padding: 2px 8px; }
+.rvb-pick-pop img { display: block; width: 100%; margin-top: 6px;
+                    border: 1px solid var(--pico-muted-border-color); background: #fff; }
+.rvb-pick-pop-tip { margin: 6px 0 0; font-size: 0.75rem; color: var(--pico-muted-color); }
 .rvb-blocks { flex: 1; overflow: auto; padding-right: 4px; }
 .rvb-block { border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
              padding: 6px 10px; margin-bottom: 8px; cursor: pointer; }

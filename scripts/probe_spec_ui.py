@@ -3236,13 +3236,228 @@ def f15_7_is_usable_rejects_tiny_or_empty_rects(page):
     assert ok(None) is False
 
 
+# ── T2/T3：交互（需要 _rvb_seed 造夹具） ──────────────────────────────
+
+
+def _rvb_pick(page):
+    """取图相关状态快照"""
+    return page.evaluate("""() => { const d = Alpine.$data(document.querySelector('.rvb-root'));
+        return { mode: d.pickMode, rect: d.pickRect, preview: d.pickPreview,
+                 msg: d.pickMsg }; }""")
+
+
+def _rvb_setup_pick(page, suffix):
+    """造夹具 + 放大到 200% 让视口**真的可滚** + 进入取图模式。
+
+    ⚠️ 放大不是装饰：在「适应宽度」下视口往往**没有溢出** ⇒ 平移无处可去，
+    「拖拽没有平移」这条断言会**空转假绿**。故本组一律先制造溢出并**断言溢出存在**。
+    """
+    tid = _rvb_seed(page, suffix)
+    assert tid is not None, "前置不成立：缺少参考夹具"
+    page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).setScaleMode(2.0)")
+    over = page.evaluate("""() => { const v = document.querySelector('.rvb-viewport');
+        return [v.scrollWidth - v.clientWidth, v.scrollHeight - v.clientHeight]; }""")
+    assert over[0] > 10 or over[1] > 10, f"视口无溢出，本组用例会假绿：{over}"
+    page.locator(".rvb-pick").click()
+    assert _rvb_pick(page)["mode"] is True, "「取图」按钮没进入模式"
+    return tid
+
+
+def _drag(page, x0, y0, x1, y1):
+    page.mouse.move(x0, y0)
+    page.mouse.down()
+    page.mouse.move(x1, y1, steps=5)
+    page.mouse.up()
+
+
+def f15_8_pick_drag_draws_rect_and_blocks_pan(page):
+    """进取图模式后拖拽 = 画框，**且不得触发平移**（两者共用同一个 mousedown）"""
+    _rvb_setup_pick(page, "p8")
+    page.evaluate("""() => { const v = document.querySelector('.rvb-viewport');
+        v.scrollLeft = 300; v.scrollTop = 0; }""")
+    before = page.evaluate("""() => { const v = document.querySelector('.rvb-viewport');
+        return [v.scrollLeft, v.scrollTop]; }""")
+    vb = page.locator(".rvb-viewport").bounding_box()
+    ib = page.locator(".rvb-img").first.bounding_box()
+    sx = vb["x"] + vb["width"] * 0.50
+    sy = vb["y"] + 60
+    ex = vb["x"] + vb["width"] * 0.30
+    ey = vb["y"] + 130
+    _drag(page, sx, sy, ex, ey)
+    st = _rvb_pick(page)
+    assert st["rect"] is not None, "拖拽没有产生选框"
+    # 选框以**页图左缘**为原点（与 crop 端点的栅格坐标同源）。
+    # ⚠️ 取 min/max 而不是直接拿起点：本用例是**从右往左**拖的（0.50 → 0.30），
+    #    归一化后左缘来自**终点**。直接拿起点会得到「原点错了」的假红。
+    # 容差 2px：Chrome 把鼠标事件的 clientX/clientY **截断到整数**，亚像素拖不出来。
+    assert abs(st["rect"]["x"] - (min(sx, ex) - ib["x"])) < 2, \
+        f"选框左缘不对：{st['rect']} vs 图左缘 {ib['x']}"
+    assert abs(st["rect"]["y"] - (min(sy, ey) - ib["y"])) < 2, \
+        f"选框上缘不对：{st['rect']} vs 图顶 {ib['y']}"
+    assert abs(st["rect"]["w"] - abs(ex - sx)) < 2, st["rect"]
+    assert abs(st["rect"]["h"] - abs(ey - sy)) < 2, st["rect"]
+    after = page.evaluate("""() => { const v = document.querySelector('.rvb-viewport');
+        return [v.scrollLeft, v.scrollTop]; }""")
+    assert after == before, f"取图模式下不应平移：{before} → {after}"
+
+
+def f15_9_drag_still_pans_outside_pick_mode(page):
+    """回归：非取图模式下拖拽**仍然**平移（别把原手势改坏）"""
+    tid = _rvb_seed(page, "p9")
+    assert tid is not None, "前置不成立"
+    page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).setScaleMode(2.0)")
+    assert page.evaluate("""() => { const v = document.querySelector('.rvb-viewport');
+        return v.scrollWidth - v.clientWidth; }""") > 10, "视口不可横向滚动，本用例会假绿"
+    # 高亮框会抢走 mousedown（startPan 在块上 early-return）⇒ 只测平移，先把框关掉，
+    # 否则「起点恰好落在块上」会假红（那是 f12_4/f12_5 的覆盖面，不是本条）。
+    page.evaluate("() => document.querySelectorAll('.rvb-box').forEach(e => e.style.display = 'none')")
+    page.evaluate("() => { document.querySelector('.rvb-viewport').scrollLeft = 300; }")
+    vb = page.locator(".rvb-viewport").bounding_box()
+    _drag(page, vb["x"] + vb["width"] * 0.60, vb["y"] + 60,
+          vb["x"] + vb["width"] * 0.40, vb["y"] + 60)
+    sl = page.evaluate("() => document.querySelector('.rvb-viewport').scrollLeft")
+    assert sl > 300, f"非取图模式下拖拽应平移（scrollLeft 应增大）：{sl}"
+    assert _rvb_pick(page)["rect"] is None, "非取图模式不应留下选框"
+
+
+def f15_10_reverse_drag_normalizes_and_tiny_drag_is_dropped(page):
+    """边界：反向拖（右下→左上）与正向拖等价；碎拖**丢弃**（不留零尺寸框）"""
+    _rvb_setup_pick(page, "p10")
+    vb = page.locator(".rvb-viewport").bounding_box()
+    ax, ay = vb["x"] + vb["width"] * 0.30, vb["y"] + 60
+    bx, by = vb["x"] + vb["width"] * 0.55, vb["y"] + 150
+    _drag(page, ax, ay, bx, by)
+    fwd = _rvb_pick(page)["rect"]
+    assert fwd is not None and fwd["w"] > 5, f"正向拖没出框：{fwd}"
+    # 清空后反向再拖
+    page.locator(".rvb-pick").click()      # 退出（顺带清空）
+    page.locator(".rvb-pick").click()      # 再进
+    _drag(page, bx, by, ax, ay)
+    rev = _rvb_pick(page)["rect"]
+    assert rev is not None, "反向拖没有产生选框"
+    assert abs(rev["x"] - fwd["x"]) < 2 and abs(rev["y"] - fwd["y"]) < 2, f"反向拖原点没归一化：{rev} vs {fwd}"
+    assert abs(rev["w"] - fwd["w"]) < 2 and abs(rev["h"] - fwd["h"]) < 2, f"反向拖尺寸没归一化：{rev} vs {fwd}"
+    # 碎拖（2px）必须被丢弃
+    page.locator(".rvb-pick").click()
+    page.locator(".rvb-pick").click()
+    _drag(page, ax, ay, ax + 2, ay + 2)
+    assert _rvb_pick(page)["rect"] is None, "碎拖应被丢弃（零尺寸框会送 1×1 请求给 crop 端点）"
+
+
+def f15_11_resize_handle_moves_only_its_edge(page):
+    """调框：拉右下角 ⇒ 左上不动、右下跟着走"""
+    _rvb_setup_pick(page, "p11")
+    vb = page.locator(".rvb-viewport").bounding_box()
+    ax, ay = vb["x"] + vb["width"] * 0.25, vb["y"] + 50
+    bx, by = vb["x"] + vb["width"] * 0.50, vb["y"] + 120
+    _drag(page, ax, ay, bx, by)
+    r0 = _rvb_pick(page)["rect"]
+    assert r0 is not None, "前置：没画出选框"
+    ib = page.locator(".rvb-img").first.bounding_box()
+    # 右下角在页面上的位置 = 图左缘 + r0.x + r0.w
+    cx, cy = ib["x"] + r0["x"] + r0["w"], ib["y"] + r0["y"] + r0["h"]
+    _drag(page, cx, cy, cx + 60, cy + 40)
+    r1 = _rvb_pick(page)["rect"]
+    assert r1 is not None, "拉角后选框消失了"
+    assert abs(r1["x"] - r0["x"]) < 2 and abs(r1["y"] - r0["y"]) < 2, f"拉右下角不该动左上：{r0} → {r1}"
+    assert r1["w"] > r0["w"] + 40 and r1["h"] > r0["h"] + 20, f"右下没跟着走：{r0} → {r1}"
+
+
+def f15_12_toggling_pick_mode_clears_selection(page):
+    """退出模式必须清空选框与预览（否则下次进来还挂着上一次的框）"""
+    _rvb_setup_pick(page, "p12")
+    vb = page.locator(".rvb-viewport").bounding_box()
+    _drag(page, vb["x"] + vb["width"] * 0.3, vb["y"] + 60,
+          vb["x"] + vb["width"] * 0.5, vb["y"] + 140)
+    assert _rvb_pick(page)["rect"] is not None, "前置：没画出选框"
+    page.locator(".rvb-pick").click()
+    st = _rvb_pick(page)
+    assert st["mode"] is False, "没退出模式"
+    assert st["rect"] is None, f"退出后选框应清空：{st['rect']}"
+    assert not st["preview"], "退出后预览应清空"
+
+
+def _q(url):
+    """把预览 URL 的 query 解析成 float 字典"""
+    from urllib.parse import parse_qs, urlparse
+    return {k: float(v[0]) for k, v in parse_qs(urlparse(url).query).items()}
+
+
+def f15_13_confirm_maps_geometry_and_preview_really_loads(page):
+    """★ 把几何**验穿**的那一条：**100% 档下 1 CSS 像素 ≡ 1 栅格像素**
+    （因 `.rvb-canvas` 的 CSS 宽 ≡ 页栅格宽）⇒ 框 300×80、偏移 (40,30)，
+    crop 端点收到的就该是同一组数。
+
+    锚点为什么可靠：它**不依赖实现里的任何换算公式**，只用「100% 档 ⇒ 页图 CSS 宽 = 栅格宽」
+    这个可由 DOM 直接量到的事实。换算若被写反/写错比例，这里立刻对不上。
+
+    随后再验**端到端**：浮层里的图真的加载出来，且**输出尺寸 = 请求尺寸 × scale(1.5)**
+    —— 端点是否真按我们给的矩形裁，只有这一步能证。"""
+    tid = _rvb_seed(page, "p13")
+    assert tid is not None, "前置不成立：缺少参考夹具"
+    page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).setScaleMode(1.0)")
+    page.locator(".rvb-pick").click()
+    page.evaluate("() => { const v = document.querySelector('.rvb-viewport'); v.scrollLeft = 0; v.scrollTop = 0; }")
+    ib = page.locator(".rvb-img").first.bounding_box()
+    pg = page.evaluate("""() => { const d = Alpine.$data(document.querySelector('.rvb-root'));
+        const q = d.pages.find((x) => x.index === d.curPage); return {w: q.width, h: q.height}; }""")
+    assert abs(ib["width"] - pg["w"]) < 1.5, \
+        f"前置不成立：100% 档页图 CSS 宽应 ≡ 栅格宽（{ib['width']} vs {pg['w']}）"
+    ox, oy = ib["x"] + 40, ib["y"] + 30
+    _drag(page, ox, oy, ox + 300, oy + 80)
+    page.mouse.click(ox + 150, oy + 40, button="right")
+    st = _rvb_pick(page)
+    assert st["preview"], "右键确认没有产出预览 URL"
+    q = _q(st["preview"])
+    # 容差 2：Chrome 把鼠标坐标截断到整数，亚像素拖不出来
+    assert abs(q["x"] - 40) < 2 and abs(q["y"] - 30) < 2, f"原点折算不对：{q}（应约 40/30）"
+    assert abs(q["w"] - 300) < 2 and abs(q["h"] - 80) < 2, f"尺寸折算不对：{q}（应约 300/80）"
+    assert abs(q["scale"] - 1.5) < 1e-6, f"scale 应透传 1.5：{q}"
+    # 端到端：浮层里的图真的加载出来（不是只有一个 URL）
+    assert poll_until(page, lambda: page.evaluate(
+        "() => { const im = document.querySelector('.rvb-pick-pop img');"
+        " return !!im && im.naturalWidth > 0; }"), 15000), \
+        "预览图没有加载出来（端点没返回有效 PNG，或浮层没接上）"
+    nat = page.evaluate("""() => { const im = document.querySelector('.rvb-pick-pop img');
+        return [im.naturalWidth, im.naturalHeight]; }""")
+    assert abs(nat[0] - q["w"] * 1.5) <= 4 and abs(nat[1] - q["h"] * 1.5) <= 4, \
+        f"输出尺寸与请求不符：{nat} vs 请求 {q['w']}×{q['h']} × 1.5"
+
+
+def f15_14_no_selection_warns_and_mode_gates_contextmenu(page):
+    """异常与边界：没框就确认 → 给提示而不是出预览；**非取图模式右键不被接管**。"""
+    _rvb_setup_pick(page, "p14")
+    vb = page.locator(".rvb-viewport").bounding_box()
+    page.mouse.click(vb["x"] + vb["width"] * 0.4, vb["y"] + 80, button="right")
+    st = _rvb_pick(page)
+    assert not st["preview"], f"没有选框不该出预览：{st['preview']}"
+    assert st["msg"], "没有选框应给出提示（否则用户不知道什么都没发生）"
+    # 非取图模式：右键**不该被接管** —— 用 defaultPrevented 直接观测，
+    # 而不是靠「没出预览」反推（那样把「没绑定」和「绑定了但没生效」混为一谈）。
+    page.locator(".rvb-pick").click()          # 退出取图模式
+    page.evaluate("""() => { window.__ctxDefault = null;
+        document.addEventListener('contextmenu', (e) => { window.__ctxDefault = e.defaultPrevented; },
+                                  { once: true }); }""")
+    page.mouse.click(vb["x"] + vb["width"] * 0.4, vb["y"] + 80, button="right")
+    page.wait_for_timeout(250)
+    assert page.evaluate("() => window.__ctxDefault") is False, \
+        "非取图模式下右键被 preventDefault 了（浏览器菜单被吃掉）"
+
+
 CASES["f15"] = [f15_1_image_picker_loaded,
                 f15_2_normalize_handles_reverse_drag,
                 f15_3_clamp_rect_keeps_it_inside_the_page,
                 f15_4_hit_handle_picks_corner_over_edge,
                 f15_5_resize_moves_only_the_dragged_edges,
                 f15_6_to_grid_converts_css_px_to_page_raster,
-                f15_7_is_usable_rejects_tiny_or_empty_rects]
+                f15_7_is_usable_rejects_tiny_or_empty_rects,
+                f15_8_pick_drag_draws_rect_and_blocks_pan,
+                f15_9_drag_still_pans_outside_pick_mode,
+                f15_10_reverse_drag_normalizes_and_tiny_drag_is_dropped,
+                f15_11_resize_handle_moves_only_its_edge,
+                f15_12_toggling_pick_mode_clears_selection,
+                f15_13_confirm_maps_geometry_and_preview_really_loads,
+                f15_14_no_selection_warns_and_mode_gates_contextmenu]
 
 
 def _require_isolated_paths():

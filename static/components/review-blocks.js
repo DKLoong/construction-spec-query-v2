@@ -47,6 +47,15 @@ function reviewBlocks() {
         _previewTimer: null,
         _dragging: false,
         _dragFrom: null,
+        // ── 拖框取图（P4 原型）──────────────────────────────────────────
+        // **显式模式**：与「拖动查看」共用同一个 mousedown ⇒ 进模式后 startPan 让位。
+        // 选显式模式而非修饰键，是因为**调框**（拖整体 / 拉边角）需要一个
+        // 「不按任何键也能自由拖」的干净窗口（见 spec §8.4.1 的步骤表）。
+        pickMode: false,
+        pickRect: null,       // 画布内 CSS 像素，**原点 = 页图左上角**（与 crop 端点的栅格坐标同源）
+        pickPreview: '',      // 右键确认后裁出的图 URL（原型：只预览，不落盘不插入）
+        pickMsg: '',          // 模式内提示（框太小 / 页图尺寸未知）
+        _pickDrag: null,
 
         async init() {
             this.taskId = window.location.pathname.split('/').pop();
@@ -144,6 +153,10 @@ function reviewBlocks() {
         setScaleMode(m) {
             this.scaleMode = m;
             this.zoom = (m === 'fit') ? this._fitScale() : m;
+            // 选框存的是**像素**（与 boxStyle 的百分比方案不同）⇒ 缩放档一变就失效。
+            // 与其让它挂在一个错的位置上，不如清掉：宁可重框一次，不可错裁一张。
+            this.pickRect = null;
+            this.pickPreview = '';
             this.$nextTick(() => this._applyFit());
         },
 
@@ -174,6 +187,7 @@ function reviewBlocks() {
 
         /** 放大后拖动查看被遮盖内容：**只在无版面块处**触发（块上的点击留给联动） */
         startPan(e) {
+            if (this.pickMode) return;          // 取图模式下让位给画框（两者共用一个 mousedown）
             if (e.target.closest('.rvb-box')) return;
             const vp = this.$refs.vp;
             if (!vp) return;
@@ -191,6 +205,106 @@ function reviewBlocks() {
             };
             window.addEventListener('mousemove', move);
             window.addEventListener('mouseup', up);
+        },
+
+        /** 进入 / 退出「取图」模式。进出都清空选框与预览 —— 否则下次进来还挂着上次那个框。 */
+        togglePickMode() {
+            this.pickMode = !this.pickMode;
+            this.pickRect = null;
+            this.pickPreview = '';
+            this.pickMsg = '';
+        },
+
+        /** 选框样式：`pickRect` 与画布同单位（内 CSS 像素）⇒ 直接按像素定位。
+         *  ⚠️ 与 `boxStyle()` 的百分比方案不同：这里存**像素**，故缩放档一变就失效
+         *     （`setScaleMode` 会清空选框，而不是让它挂在错的位置上）。 */
+        selStyle() {
+            const r = this.pickRect;
+            if (!r) return '';
+            return `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px`;
+        },
+
+        /** 取图模式下的 mousedown：命中手柄 → 调框；框内 → 整体拖；框外 → 起新框。
+         *
+         *  命中判定走 `imagePicker.hitHandle` 的**坐标计算**，不依赖手柄 DOM
+         *  ⇒ 手柄可以整层 `pointer-events:none`，只作视觉提示。 */
+        onPickDown(e) {
+            if (!this.pickMode || e.button !== 0) return;
+            const img = this.$refs.pgimg;
+            if (!img) return;
+            e.preventDefault();
+            this.pickMsg = '';
+            // 坐标基准 = **页图**的边界框（不是画布）：页图就是页面栅格的等比缩放，
+            // 用同一个 `box` 既量坐标又算换算，避免两处取整不一致。
+            const box = img.getBoundingClientRect();
+            const px = e.clientX - box.left, py = e.clientY - box.top;
+            const ip = window.imagePicker;
+            const handle = this.pickRect ? ip.hitHandle(this.pickRect, px, py, ip.HANDLE_TOL) : null;
+            if (handle === 'move') {
+                this._pickDrag = { mode: 'move', x0: px, y0: py,
+                                   orig: { x: this.pickRect.x, y: this.pickRect.y,
+                                           w: this.pickRect.w, h: this.pickRect.h } };
+            } else if (handle) {
+                this._pickDrag = { mode: 'resize', handle: handle };
+            } else {
+                this.pickRect = ip.normalize(px, py, px, py);
+                this._pickDrag = { mode: 'new', x0: px, y0: py };
+            }
+            const move = (ev) => this._pickMove(ev, box);
+            const up = () => {
+                this._pickDrag = null;
+                window.removeEventListener('mousemove', move);
+                window.removeEventListener('mouseup', up);
+                if (this.pickRect) {
+                    this.pickRect = window.imagePicker.clampRect(this.pickRect, box.width, box.height);
+                    // 碎拖丢弃：留一个 1×1 的框只会让「确认」送出一个无意义的裁切请求
+                    if (!window.imagePicker.isUsable(this.pickRect)) this.pickRect = null;
+                }
+            };
+            window.addEventListener('mousemove', move);
+            window.addEventListener('mouseup', up);
+        },
+
+        _pickMove(ev, box) {
+            const d = this._pickDrag;
+            if (!d) return;
+            const ip = window.imagePicker;
+            const px = ev.clientX - box.left, py = ev.clientY - box.top;
+            if (d.mode === 'new') {
+                this.pickRect = ip.normalize(d.x0, d.y0, px, py);
+            } else if (d.mode === 'resize') {
+                this.pickRect = ip.resize(this.pickRect, d.handle, px, py);
+            } else {
+                // 整体平移：夹的是**位移**而不是矩形 —— 夹矩形会在贴边时把框压小
+                const x = Math.max(0, Math.min(d.orig.x + (px - d.x0), box.width - d.orig.w));
+                const y = Math.max(0, Math.min(d.orig.y + (py - d.y0), box.height - d.orig.h));
+                this.pickRect = { x: x, y: y, w: d.orig.w, h: d.orig.h };
+            }
+            this.pickRect = window.imagePicker.clampRect(this.pickRect, box.width, box.height);
+        },
+
+        /** 右键确认：把选框换算成 OCR 页面栅格坐标，调 **P3 已交付**的裁切端点取图。
+         *
+         *  原型阶段**只预览**：不落盘、不插入单元格（那是 P4 的活）。这一步真正的价值
+         *  是把几何**验穿** —— 裁出来正是圈中的那块，才说明换算正确。
+         *
+         *  ⚠️ 非模式时**不** preventDefault：右键该照常弹浏览器菜单。 */
+        confirmPick(e) {
+            if (!this.pickMode) return;
+            e.preventDefault();
+            if (!this.pickRect) { this.pickMsg = '请先在页图上拖出一个框'; return; }
+            const img = this.$refs.pgimg;
+            const p = this.pages.find((x) => x.index === this.curPage);
+            if (!img || !p || !p.width || !p.height) { this.pickMsg = '页图尺寸未知，无法取图'; return; }
+            const box = img.getBoundingClientRect();
+            const r = window.imagePicker.clampRect(this.pickRect, box.width, box.height);
+            if (!window.imagePicker.isUsable(r)) { this.pickMsg = '选框太小，请重新框选'; return; }
+            const g = window.imagePicker.toGrid(r, box.width, box.height, p.width, p.height);
+            if (!g) { this.pickMsg = '页图尺寸未知，无法取图'; return; }
+            this.pickMsg = '';
+            this.pickPreview = `/import/review/${this.taskId}/crop/${this.curPage}.png`
+                + `?x=${g.x.toFixed(1)}&y=${g.y.toFixed(1)}&w=${g.w.toFixed(1)}`
+                + `&h=${g.h.toFixed(1)}&scale=1.5`;
         },
 
         labelZh(label) {
