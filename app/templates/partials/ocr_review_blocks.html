@@ -3,7 +3,8 @@
      编辑能力是 P2 的事；本期**只读**，无任何写路径。 -->
 <!-- ⚠️ `@mouseup.window` 挂在**根**上（只注册一份）：拖拽可能在格**外**松开，
      mouseup 落到哪个元素上不确定 ⇒ 必须在 window 上收尾。若挂进 `x-for` 里会每块注册一份。 -->
-<div x-data="reviewBlocks()" x-init="init()" class="rvb-root" @mouseup.window="onTableCellUp()">
+<div x-data="reviewBlocks()" x-init="init()" class="rvb-root" @mouseup.window="onTableCellUp()"
+     x-effect="syncEditingUi()">
 
     <!-- 降级：没有 layout.json 时给出明确出口，而不是空白或崩溃（spec §13） -->
     <div class="rvb-error" x-show="error" x-cloak>
@@ -59,8 +60,12 @@
         <section class="rvb-right">
             <div class="rvb-blocks" x-ref="list">
                 <template x-for="(b, i) in blocks" :key="'bk' + i">
-                    <article class="rvb-block" :class="activeIdx === i && 'rvb-block--on'"
-                             :data-block-idx="i" @click="focusBlock(i)">
+                    <!-- ⚠️ 本块**不写**任何读 `editingIdx`/`activeIdx`/`tableError` 的绑定：
+                         那三样是**页面级**状态，而 Alpine 是「谁读过、变量一变谁就重算」⇒
+                         4000 块 × 每块 ~7 个这样的绑定 = 改一次跑 2.8 万遍（实测进编辑 857ms）。
+                         现在由根元素上**唯一一个** `x-effect="syncEditingUi()"` 命令式地只改
+                         「当前块」的 class，显隐交给 `.rvb-block--editing` 的 CSS。 -->
+                    <article class="rvb-block" :data-block-idx="i" @click="focusBlock(i)">
                         <header class="rvb-block-hd">
                             <span class="rvb-tag" x-text="labelZh(b.label)"></span>
                             <!-- 条文号：无归属则不标（spec §11.2） -->
@@ -71,8 +76,8 @@
                             <span class="rvb-page" x-text="'p' + b.page"></span>
                         </header>
                         <!-- 只读态：编辑入口只在**可编辑块**上出现（spec §8.1 的「纠正」） -->
-                        <div class="rvb-block-bd" x-show="editingIdx !== i" x-html="renderBlock(b)"></div>
-                        <div class="rvb-block-meta" x-show="editingIdx !== i">
+                        <div class="rvb-block-bd" x-html="renderBlock(b)"></div>
+                        <div class="rvb-block-meta">
                             <button type="button" class="outline rvb-fix" x-show="canEdit(b)"
                                     @click.stop="enterEdit(i)">纠正</button>
                             <span class="rvb-edited" x-show="isEdited(b)">已修改</span>
@@ -81,7 +86,7 @@
                                   x-text="hasSpan(b) ? '该块类型暂不支持编辑' : '原文件未定位，无法安全回写'"></span>
                         </div>
                         <!-- 编辑态：行级编辑器（行 = contenteditable） -->
-                        <div class="rvb-editor" x-show="editingIdx === i" x-cloak>
+                        <div class="rvb-editor">
                             <div class="rvb-tools">
                                 <!-- ⚠️ **行编辑专属**控件另包一层并带 `label !== 'table'` 门控：表格块的
                                      `.rvb-lines` 是空的，这些控件对它是死的（「+ 行」/「- 行」会把 null
@@ -134,7 +139,7 @@
                                  门控隐藏），而 `取消/保存` 是表格编辑态**唯一**的保存出口 —— 本排只有
                                  结构操作按钮、**不含保存**。不要把整排 `.rvb-tools` 门控掉，否则表格
                                  将无法保存（Task 3 修正轮实测踩过：f14_6/f14_7 保存点击 30s 超时）。 -->
-                            <div class="rvb-tools" x-show="editingIdx === i && blocks[i].label === 'table'">
+                            <div class="rvb-tools" x-show="blocks[i].label === 'table'">
                                 <button type="button" @click="tableOp('insertRowBefore')" style="margin:0"
                                         title="在选中格所在行之前插入一行">+ 行</button>
                                 <button type="button" @click="tableOp('insertRowAfter')" style="margin:0"
@@ -177,21 +182,19 @@
                                  ⚠️ **必须独占一行**，不能塞进上面那排 —— `.rvb-tools` 是
                                  `flex-wrap: nowrap; overflow-x: auto`，塞进去会溢出并把按钮**压扁成竖排**
                                  （实测截图：`+行` 变两行、「合并」拆成两个字上下排）。 -->
-                            <div class="rvb-hint"
-                                 x-show="editingIdx === i && blocks[i].label === 'table'">
+                            <div class="rvb-hint" x-show="blocks[i].label === 'table'">
                                 多选：<kbd>Shift</kbd>+单击，或按住左键拖拽
                             </div>
                             <!-- 表格编辑器容器：仅当该块 label === 'table' 时由 JS 填充。
                                  与行编辑器的 `.rvb-lines` 分开，避免 `.rvb-line` 选择器互相干扰。 -->
-                            <div class="rvb-table-edit" x-show="editingIdx === i && blocks[i].label === 'table'"
+                            <div class="rvb-table-edit" x-show="blocks[i].label === 'table'"
                                  @click="onTableCellClick($event)"
                                  @mousedown="onTableCellDown($event)"
                                  @mouseover="onTableCellOver($event)"></div>
                             <!-- 表格编辑态的**块内**错误提示（spec §2.4：校验失败要保留编辑态、
                                  只在块内报错）。**不要**复用页面级的 `submitError` —— 那个横幅
                                  在提交条下方（已落到折线以下），用户当下看不到。 -->
-                            <p class="rvb-table-err" x-show="editingIdx === i && tableError"
-                               x-text="tableError" style="color:#c00;margin:0.25rem 0 0"></p>
+                            <p class="rvb-table-err" style="color:#c00;margin:0.25rem 0 0"></p>
                             <!-- ⚠️ 不给 `x-ref`：编辑框在 x-for 内，同名 x-ref 会被最后一项
                                  覆盖 ⇒ 组件里的 `_editBox()` 按 data-block-idx 作用域查 -->
                             <div class="rvb-lines"></div>

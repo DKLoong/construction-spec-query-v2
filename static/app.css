@@ -877,6 +877,16 @@
 .rvb-block { border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
              padding: 6px 10px; margin-bottom: 8px; cursor: pointer; }
 .rvb-block--on { border-color: #e8710a; box-shadow: 0 0 0 1px #e8710a inset; }
+/* ── 编辑态显隐**交给 CSS**（配套根元素上唯一的 `syncEditingUi()` x-effect）──
+   ⚠️ **别改回**「每个块一个 `x-show="editingIdx === i"`」：那是每次交互 O(N) 的根因 ——
+   4000 块时模板里有 2.8 万个读页面级 `editingIdx` 的绑定，改一次全跑一遍，实测进编辑 857ms。
+   现在只给“当前编辑的那一块”加/去 `--editing` 类，只动 2 个元素。 */
+.rvb-block .rvb-editor { display: none; }
+.rvb-block--editing .rvb-editor { display: block; }
+.rvb-block--editing > .rvb-block-bd,
+.rvb-block--editing > .rvb-block-meta { display: none; }
+/* 表格错误：只由 JS 写 textContent，空串即整条隐藏（原来是每块一个 x-show + x-text） */
+.rvb-table-err:empty { display: none; }
 .rvb-block-hd { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
                 font-size: 0.75rem; color: var(--pico-muted-color); }
 .rvb-tag { background: var(--pico-muted-border-color); border-radius: 3px; padding: 0 6px; }

@@ -200,6 +200,50 @@ function reviewBlocks() {
             });
         },
 
+        /** 把「编辑态 / 高亮态」从**逐块 Alpine 绑定**改为**一处命令式同步**（性能必需）。
+         *
+         * ⚠️ **为什么不能用逐块绑定**：模板里每个块原本都读**页面级**的 `editingIdx` / `tableError`，
+         *    而 Alpine 的规则是「谁读过、变量一变谁就重算」⇒ 改一次要跑 N 遍。
+         *    实测（4000 块 / 284761 个 DOM 节点 / 28163 个 x-show 元素）：
+         *      进入编辑 **857ms**、取消 **709ms**、单独写一次 `activeIdx` **93ms**，
+         *      全部随块数**线性增长**；而写一个模板不读的字段只要 4ms。
+         *      合并/撤销不动这几个变量 ⇒ 一直 70–90ms，刚好解释用户「进编辑和取消最卡」的观感。
+         *    改成只动**两个**块之后，这几个数都掉到几十毫秒。
+         *
+         * ⚠️ **依赖靠"读"建立**：本方法由根元素上**唯一一个** `x-effect="syncEditingUi()"` 调用，
+         *    开头那三行 `this.xxx` 的**读取**就是依赖声明。
+         *    **不要把这三行挪进别的函数** —— 那样 `x-effect` 追不到依赖，界面就再也不更新了。
+         */
+        syncEditingUi() {
+            const idx = this.editingIdx;          // ← 读（建立依赖），别动
+            const act = this.activeIdx;           // ← 读（建立依赖），别动
+            const err = this.tableError;          // ← 读（建立依赖），别动
+            if (this._uiEditing !== idx) {
+                const prev = this._blockEl(this._uiEditing);
+                if (prev) {
+                    prev.classList.remove('rvb-block--editing');
+                    const pp = prev.querySelector('.rvb-table-err');
+                    if (pp) pp.textContent = '';   // 旧块的块内报错随编辑态一起清掉
+                }
+                this._blockEl(idx)?.classList.add('rvb-block--editing');
+                this._uiEditing = idx;
+            }
+            if (this._uiActive !== act) {
+                this._blockEl(this._uiActive)?.classList.remove('rvb-block--on');
+                this._blockEl(act)?.classList.add('rvb-block--on');
+                this._uiActive = act;
+            }
+            // 表格错误只出现在**当前编辑块**里；`tableError` 变化时本 effect 同样会重跑
+            const p = this._blockEl(idx)?.querySelector('.rvb-table-err');
+            if (p) p.textContent = err || '';
+        },
+
+        /** 按块下标取块元素（下标为 `-1`/非数字时返回 `null`） */
+        _blockEl(idx) {
+            return (typeof idx === 'number' && idx >= 0)
+                ? document.querySelector(`[data-block-idx="${idx}"]`) : null;
+        },
+
         /** 让 `el` 在 `box` **这一个**容器内就位，**不牵动任何外层滚动容器**。
          *
          * ⚠️ **不能改用 `scrollIntoView`**：它会连**所有可滚动祖先**一起滚 —— 外层
