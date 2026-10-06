@@ -877,6 +877,16 @@
 .rvb-block { border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
              padding: 6px 10px; margin-bottom: 8px; cursor: pointer; }
 .rvb-block--on { border-color: #e8710a; box-shadow: 0 0 0 1px #e8710a inset; }
+/* 审查页块列表：**屏幕外的块跳过布局与绘制**。
+   ⚠️ 为什么必须有：4000 块是**一条连续的大流**，中间某块一变高，它**下面的块全要重排** ——
+   实测「编辑最后一块 6ms / 编辑第 1 块 553ms」，差的正是下方待重排的量；
+   点块高亮也从 241ms 掉到 15ms。
+   ⚠️ 它隐式带上 `contain: layout paint`，有三个必须复核的语义：
+     ① 块内溢出会被**裁剪**；② 不参与外边距合并（块间距可能变）；③ `contain-intrinsic-size`
+     是**估算高度**，估偏会让「滚到第 N 块」的落点偏 —— 故 f13_21 配了**落点断言**，
+     并且改动时要跑改前/改后截图对比。**别只看速度。**
+   估高用 `auto`：首次渲染后浏览器会记住该块的真实高度，逐步收敛。 */
+.rvb-block { content-visibility: auto; contain-intrinsic-size: auto 120px; }
 /* ── 编辑态显隐**交给 CSS**（配套根元素上唯一的 `syncEditingUi()` x-effect）──
    ⚠️ **别改回**「每个块一个 `x-show="editingIdx === i"`」：那是每次交互 O(N) 的根因 ——
    4000 块时模板里有 2.8 万个读页面级 `editingIdx` 的绑定，改一次全跑一遍，实测进编辑 857ms。

@@ -2348,6 +2348,24 @@ def f13_21_clicking_a_clause_scrolls_to_its_block(page):
         f"点条号 {no} 后没有块被高亮"
     on = page.locator(".rvb-block--on .rvb-clause").first.inner_text().strip()
     assert on == no, f"高亮的块条号 {on!r} 与被点的 {no!r} 不符"
+    # ★ **落点必须真的滚进可视区**（原用例只断言"高亮了"，没管位置）。
+    #   ⚠️ 这条是 `content-visibility: auto` 的**必配护栏**：屏幕外的块只有**估算高度**
+    #      （`contain-intrinsic-size`），而 `_scrollInto` 是「量一次 rect → 设 scrollTop」的**单趟**做法
+    #      ⇒ 估偏就会把目标块滚到可视区**之外** —— 用户点了条号却看不见那块，比"没高亮"更难发现。
+    #   判据用**像素**而不是比例：块有高有矮（表格块可能比容器还高），比例阈值会误伤。
+    box = page.locator(".rvb-blocks")
+
+    def _visible_px():
+        bb = box.bounding_box()
+        ob = page.locator(".rvb-block--on").bounding_box()
+        if not bb or not ob:
+            return 0.0
+        return max(0.0, min(bb["y"] + bb["height"], ob["y"] + ob["height"])
+                   - max(bb["y"], ob["y"]))
+
+    assert poll_until(page, lambda: _visible_px() >= 40, 3000), \
+        f"点条号后目标块**没滚进可视区**（可见 {_visible_px():.0f}px）—— " \
+        "块高度的估算（contain-intrinsic-size）与实际差太多，_scrollInto 的单趟定位落空了"
 
 
 def f13_22_focused_block_highlights_its_clause_in_the_cut_column(page):
@@ -3108,7 +3126,36 @@ CASES["f14"] = [f14_1_round_trip_is_byte_identical,
                 f14_16_saving_a_table_edit_does_not_change_the_clause_set]
 
 
+def _require_isolated_paths():
+    """开跑前自检**四条隔离路径真的生效**，否则**拒绝运行**。
+
+    ⚠️ **这不是洁癖，是已经踩过的坑**：本套件会**真实上传文件、真实写 layout.json**。
+    隔离变量没生效时它会直接写进**真实** `data/` ——
+      · 2026-10-05 探针夹具 `2d64b993.pdf` 落进真实 `data/uploads` 与 `data/outputs`（事后人工清理）；
+      · 2026-10-06 同一原因导致 `/layout` **404**（探针写 A 目录、服务端读 B 目录），
+        整组用例以「版面列表为空」这种**误导性**方式红，排查了三轮才定位。
+    成因是**命令写法**：把 `export ... && nohup uvicorn ... &` 写成一行时，`&` 作用在**整条链**上
+    ⇒ 那些变量只进了**后台子 shell**，探针进程本身没有 ⇒ 回落到默认路径。
+    ⇒ 与其靠人记住，不如在这里硬拦。
+    """
+    from pathlib import Path as _Path
+    _root = str(_Path(__file__).resolve().parent.parent)
+    if _root not in sys.path:            # 本脚本是以**脚本**方式跑的，仓库根不在 sys.path 上
+        sys.path.insert(0, _root)
+    import app.config as cfg
+    found = {"DATABASE_PATH": cfg.DATABASE_PATH, "UPLOAD_DIR": cfg.UPLOAD_DIR,
+             "OUTPUT_DIR": cfg.OUTPUT_DIR, "LANCE_DB_PATH": cfg.LANCE_DB_PATH}
+    bad = [f"{k} = {v}" for k, v in found.items() if "_probe_" not in str(v)]
+    if bad:
+        raise SystemExit(
+            "探针隔离未生效，**拒绝运行**（否则会写进真实 data/）：\n  "
+            + "\n  ".join(bad)
+            + "\n请确认四条 export 在**前台**执行 —— 不要写成 `export ... && nohup uvicorn ... &`（`&` 会把整条链丢进后台子 shell）。\n"
+            + "正确写法：先单独 export，再单独启动服务，最后单独跑本脚本。")
+
+
 if __name__ == "__main__":
+    _require_isolated_paths()
     which = sys.argv[1] if len(sys.argv) > 1 else "f1"
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome", headless=True)

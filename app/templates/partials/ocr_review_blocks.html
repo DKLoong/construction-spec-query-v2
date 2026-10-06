@@ -139,7 +139,16 @@
                                  门控隐藏），而 `取消/保存` 是表格编辑态**唯一**的保存出口 —— 本排只有
                                  结构操作按钮、**不含保存**。不要把整排 `.rvb-tools` 门控掉，否则表格
                                  将无法保存（Task 3 修正轮实测踩过：f14_6/f14_7 保存点击 30s 超时）。 -->
-                            <div class="rvb-tools" x-show="blocks[i].label === 'table'">
+                            <!-- ⚠️ **表格专属部件整组按块类型渲染**（`x-if`，不是 `x-show`）：
+                                 4000 块里只有 ~24 块是表格，而这一组（16 按钮 + 5 分隔 + 提示 + 表格宿主
+                                 + 块内报错）约 **30 个节点/块** ⇒ 用 `x-show` 等于白带 ~12 万节点
+                                 （实测：编辑器外壳占总 DOM 的 67%、每块约 48 个节点）。
+                                 `x-if` 的条件读 `b.label` —— **页面生命周期内不变**，该 effect 只在初始化时
+                                 跑一次，**不会**重新引入"读全局态 ⇒ 每次交互跑 N 遍"那类问题。
+                                 ⚠️ 外层包一个 `.rvb-tbl-wrap` 是必需的：`template x-if` 只接受**单个**根元素。 -->
+                            <template x-if="b.label === 'table'">
+                            <div class="rvb-tbl-wrap">
+                            <div class="rvb-tools">
                                 <button type="button" @click="tableOp('insertRowBefore')" style="margin:0"
                                         title="在选中格所在行之前插入一行">+ 行</button>
                                 <button type="button" @click="tableOp('insertRowAfter')" style="margin:0"
@@ -182,12 +191,12 @@
                                  ⚠️ **必须独占一行**，不能塞进上面那排 —— `.rvb-tools` 是
                                  `flex-wrap: nowrap; overflow-x: auto`，塞进去会溢出并把按钮**压扁成竖排**
                                  （实测截图：`+行` 变两行、「合并」拆成两个字上下排）。 -->
-                            <div class="rvb-hint" x-show="blocks[i].label === 'table'">
+                            <div class="rvb-hint">
                                 多选：<kbd>Shift</kbd>+单击，或按住左键拖拽
                             </div>
                             <!-- 表格编辑器容器：仅当该块 label === 'table' 时由 JS 填充。
                                  与行编辑器的 `.rvb-lines` 分开，避免 `.rvb-line` 选择器互相干扰。 -->
-                            <div class="rvb-table-edit" x-show="blocks[i].label === 'table'"
+                            <div class="rvb-table-edit"
                                  @click="onTableCellClick($event)"
                                  @mousedown="onTableCellDown($event)"
                                  @mouseover="onTableCellOver($event)"></div>
@@ -195,6 +204,8 @@
                                  只在块内报错）。**不要**复用页面级的 `submitError` —— 那个横幅
                                  在提交条下方（已落到折线以下），用户当下看不到。 -->
                             <p class="rvb-table-err" style="color:#c00;margin:0.25rem 0 0"></p>
+                            </div><!-- /.rvb-tbl-wrap -->
+                            </template>
                             <!-- ⚠️ 不给 `x-ref`：编辑框在 x-for 内，同名 x-ref 会被最后一项
                                  覆盖 ⇒ 组件里的 `_editBox()` 按 data-block-idx 作用域查 -->
                             <div class="rvb-lines"></div>
