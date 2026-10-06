@@ -422,6 +422,13 @@ def anchor_blocks(base_text: str, blocks: list[dict],
     for entry in _sorted_blocks_with_index(blocks):
         idx = entry["idx"]
         blk = {k: v for k, v in entry.items() if k != "idx"}
+        # ⚠️ `md_html` 的**唯一来源**必须是下面的**锚定成功**分支（它按 `lines[s:e]` 重新切出原文）。
+        #    重锚一个**已带** `md_html` 的块时（`scripts/backfill_layout.py` 会重跑本函数），
+        #    两条非成功分支（`idx not in anchorable` / `missed`）走 `{**blk, ...}` 会把**旧值**
+        #    原样带出 ⇒ 一个**未锚定**的表格块仍带着**过期的** md 原文（区间已随重锚改变），
+        #    而前端会拿它当编辑源 ⇒ 违反「只有已锚定的表格块才带 md_html」这条不变量。
+        #    在循环开头剥掉该键，使该不变量由**构造**保证，而不是靠"调用链恰好不会发生"。
+        blk.pop("md_html", None)
 
         if idx not in anchorable:
             out.append({**blk, "start_line": None, "end_line": None,

@@ -374,3 +374,24 @@ def test_unanchored_table_has_no_md_html():
     anchored, _ = anchor_blocks(base, [_blk("正文里没有表格。", 0), _blk(_T_BLK, 1, label="table")])
     assert anchored[1]["start_line"] is None
     assert "md_html" not in anchored[1]
+
+
+def test_reanchor_strips_stale_md_html():
+    """★ **重锚已带 `md_html` 的块**时，未锚定分支不得把**旧值**原样带出（终审 finding #1）。
+
+    `scripts/backfill_layout.py` 会对**已有** layout.json 的块重跑 `anchor_blocks`；
+    而 `md_html` 只在**锚定成功**分支按区间重新切出来。若循环不做剥离，两条非成功分支
+    （`idx not in anchorable` / `missed`）的 `{**blk, ...}` 会把上一轮的 `md_html` 带出 ⇒
+    一个**未锚定**的表格块仍带着**过期的** md 原文（其区间已随重锚改变）⇒ 前端会拿它当编辑源。
+    本用例即那条不变量的护栏：`md_html` 的**唯一来源**是成功分支。
+    """
+    base = "正文里没有表格。"
+    stale = {"md_html": "<table><tr><td>过期的旧表</td></tr></table>"}
+    bl = [{**_blk("正文里没有表格。", 0), **stale},
+          {**_blk(_T_BLK, 1, label="table"), **stale}]          # 已播过 md_html 的两个块
+    anchored, _ = anchor_blocks(base, bl)
+    assert anchored[1]["start_line"] is None, "前置：表格块应锚不上（md 里没有它）"
+    assert "md_html" not in anchored[0], "非表格块带出了旧的 md_html"
+    assert "md_html" not in anchored[1], (
+        "未锚定的表格块把**上一轮的** md_html 原样带出（`{**blk, ...}` 未剥离）；"
+        f"它的区间已随重锚改变，这段原文是**过期**的：{anchored[1].get('md_html')!r}")
