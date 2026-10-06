@@ -2564,7 +2564,12 @@ def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
         "点纠正后没有出现可编辑表格"
     cells = page.locator(".rvb-table-edit table td")
     assert cells.count() == 6, f"单元格数不对：{cells.count()}"
-    assert cells.first.get_attribute("contenteditable") == "true", "单元格不可编辑"
+    # ⚠️ 判据用**渲染态**的 `isContentEditable`，不用 `get_attribute('contenteditable')`：
+    #    属性挂在哪（每个 `<td>`）是**实现细节**，而「格能不能编辑」才是契约
+    #    ⇒ 换实现（例如改成挂到 `<table>` 上）时，这条断言不该跟着假红。
+    assert page.evaluate(
+        "() => document.querySelector('.rvb-table-edit table td').isContentEditable"), \
+        "单元格不可编辑（contenteditable 没挂上，或没生效）"
     # ★ 行编辑专属控件（B/I/S、对齐、「+ 行」/「- 行」）对表格块**必须不可见**：表格块的
     #    `.rvb-lines` 是空的，这些控件对它是死的（「+ 行」/「- 行」会把 null 传进
     #    `_insertLineAfter`/`_deleteLine` —— 已加 null 守卫兜底，但按钮本就不该出现）。
@@ -2624,6 +2629,23 @@ def f14_5_entering_edit_on_a_table_shows_an_editable_table(page):
     assert poll_until(page, lambda: sel() == [2], 3000), \
         (f"删掉锚点格后再 Shift+点没有自愈（应选中被点的格）：{sel()} —— "
          "空数组即 `selectRange` 抛了 TypeError（锚点仍指向已分离的节点）")
+    # ★ **结构操作新造的格也必须可编辑**（用户实测缺陷：拆分后只有原来带内容的格能编辑）。
+    #   根因：`contenteditable` 原先**逐个挂在当时已存在的格**上，而 `insertRow`/`insertCol`/
+    #   `splitCell` 都用 `document.createElement('td')` 造新格 ⇒ 新格**永远挂不上**。
+    #   现改为：**每个**会造新格的操作之后重挂一遍（`_markTableEditable`）⇒ 判据就是
+    #   「**新造**的格也 `isContentEditable`」。
+    #   ⚠️ 必须走**真实组件**（点 `+ 行`）而非纯函数：属性挂载发生在组件里（`enterEdit`/
+    #      `_restoreTable`/`tableOp` 成功分支），纯函数根本不碰它；且 `isContentEditable` 对
+    #      **分离**节点恒为 false（纯函数夹具是分离的）⇒ 在纯函数用例里断言会**假红**。
+    n_before = page.locator(".rvb-table-edit td").count()
+    fix.locator(".rvb-tools").last.locator("button:has-text('+ 行')").first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit td").count() > n_before, 3000), \
+        "「+ 行」没有插入新行（前置不成立）"
+    n_bad = page.evaluate("""() => [...document.querySelectorAll('.rvb-table-edit td')]
+        .filter((c) => !c.isContentEditable).length""")
+    assert n_bad == 0, \
+        (f"结构操作新造的格不可编辑（{n_bad} 个）—— 造新格的操作之后没有重挂 `contenteditable`；"
+         "用户实测的「拆分后只有原来带内容的格能编辑」就是这条")
 
 
 def f14_6_saving_an_edited_table_writes_the_md_region(page):

@@ -287,7 +287,7 @@ function reviewBlocks() {
                 const box = this._editBox();
                 box.innerHTML = '';
                 if (b.label === 'table') {
-                    t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
+                    this._markTableEditable(t);
                     this._tableSnapshots = [t.outerHTML];       // 快照栈的起点（Task 5 起用）
                     this._selAnchor = null;                     // 换表必须重置锚点（旧锚点属别的表 / 已分离）
                     const host = this._tableHost();
@@ -633,6 +633,21 @@ function reviewBlocks() {
             }
         },
 
+        /** 给表里**所有**格挂上可编辑态（`enterEdit` / `_restoreTable` / `tableOp` 成功分支共用）。
+         *
+         * ⚠️ **每一个「会造新格」的操作之后都必须再调一次**：`insertRow` / `insertCol` / `splitCell`
+         *    都用 `document.createElement('td')` 造格，新格**不会**自动带 `contenteditable`
+         *    ⇒ 用户实测到的「已合并的格拆分后，只有原来带内容的格能编辑，新格打不了字」。
+         *
+         * ⚠️ **不要**图省事改成「把属性挂到 `<table>` 上、靠继承覆盖新格」—— 那看着更干净、
+         *    也确实能让新格可编辑，但**实测 `Ctrl+A` 的选区会从「格内文字」(2 字符)
+         *    变成「整张表」(258 字符)** ⇒ 用户在格内全选再打字会**把整张表替换掉**。
+         *    （本轮先按那个写法改，被 `f14_6` 当场抓住，才有上面这段实测数据。）
+         */
+        _markTableEditable(t) {
+            t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
+        },
+
         /** 表格结构操作的统一入口：**压快照 → 执行 → 复验**。
          *
          * ⚠️ 快照必须在**操作前**压：这是「撤销」按钮唯一的数据来源（spec §2.4）。
@@ -688,6 +703,9 @@ function reviewBlocks() {
             //    为锚点、自然自愈。⚠️ **不要**改成无条件 `this._selectTable()` —— 那会把多格选区
             //    塌成单格（用户会莫名其妙丢失选区）。
             if (this._selAnchor && !t.contains(this._selAnchor)) this._selAnchor = null;
+            // ✅ 同理：本操作可能**造出了新格**（插行/插列/拆分都用 `createElement('td')`）——
+            //    新格不带 `contenteditable`，不补挂就会「看得见、打不了字」。
+            this._markTableEditable(t);
             this._tableSnapshots.push(snap);
         },
 
@@ -755,7 +773,7 @@ function reviewBlocks() {
             const host = this._tableHost();
             const t = window.tableEditor.parse(snap);
             if (!host || !t) return;
-            t.querySelectorAll('td,th').forEach((c) => c.setAttribute('contenteditable', 'true'));
+            this._markTableEditable(t);       // 同 `enterEdit`：还原出来的格也要可编辑
             host.innerHTML = '';
             host.appendChild(t);
             // ⚠️ 旧锚点此刻已**分离**（指向被替换掉的旧表）⇒ 必须重置，否则 `selectRange` 里
