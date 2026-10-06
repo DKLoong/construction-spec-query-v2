@@ -465,6 +465,43 @@ def anchor_blocks(base_text: str, blocks: list[dict],
         out.append({**blk, "start_line": s, "end_line": e,
                     "prefix": prefix, "suffix": suffix, **extra})
 
+    # ── 纯图块（`image`）按序锚到 md 里「表格之外」的 `<img>` 行 ──
+    #
+    # **为什么单开这一趟**：`image` 在 `not_in_markdown` 豁免名单里 ⇒ 主循环一律给它
+    # `start_line=None`。但 md 里那些 `<img>` 行**确实存在** —— 实测某 122 页文档：
+    # 表格之外的 `<img>` 行 **132** 行，恰好等于 `image` 块 **132** 个，且一一对应；
+    # 逐块核对「该行落在的条文」与「前后邻块的条文」—— **132/132 完全一致**。
+    # 不给行区间就没有条文号、左栏画不出框、审查页只能挂「原文件未定位」，用户无法判断
+    # 这张图将来会落进哪一条。（**切分本身是对的**，缺的是把这个归属**显示**出来。）
+    #
+    # ⚠️ **只在计数完全相等时才配对**：配对是**按顺序**的，一旦 md 与 OCR 的顺序不一致就会
+    #    整批错标 —— 而**错标比不标更坏**（本仓既有口径）。不等就整趟不做。
+    # ⚠️ 还要**逐块查重叠**：`splice` 对重叠区间直接抛 `ValueError`（宁可这块不标）。
+    # ⚠️ 表格里的 `<img>` 属于该**表块**，不能拿来配图块 ⇒ 按 `table` 块的 span 排除。
+    img_blocks = [b for b in out if b.get("label") == "image"]
+    occupied: set[int] = set()
+    for b in out:
+        if b.get("start_line") is not None:
+            occupied.update(range(b["start_line"], b["end_line"]))
+    table_spans = [(b["start_line"], b["end_line"]) for b in out
+                   if b.get("label") == "table" and b.get("start_line") is not None]
+    loose_img_lines = [
+        i for i, ln in enumerate(lines)
+        if "<img" in ln and not any(s0 <= i < e0 for s0, e0 in table_spans)
+    ]
+    image_paired = 0
+    if img_blocks and len(img_blocks) == len(loose_img_lines):
+        for b, ln_no in zip(img_blocks, loose_img_lines):
+            if ln_no in occupied:            # 与既有区间相撞 ⇒ 这一块不标（不猜）
+                continue
+            b["start_line"] = ln_no
+            b["end_line"] = ln_no + 1
+            b["prefix"] = ""
+            b["suffix"] = ""
+            occupied.add(ln_no)
+            anchored += 1
+            image_paired += 1
+
     return out, {
         "total": len(blocks),
         "exempt": len(cls["exempt"]),
@@ -475,6 +512,7 @@ def anchor_blocks(base_text: str, blocks: list[dict],
         "repeat_candidates": repeat_candidates,
         "residual_miss": residual,
         "not_in_markdown": cls["not_in_markdown"],
+        "image_paired": image_paired,
     }
 
 

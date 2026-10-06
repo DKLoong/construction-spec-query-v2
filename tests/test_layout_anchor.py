@@ -376,6 +376,63 @@ def test_unanchored_table_has_no_md_html():
     assert "md_html" not in anchored[1]
 
 
+_IMG_A = '<div style="text-align: center;"><img src="imgs/a.jpg" /></div>'
+_IMG_B = '<div style="text-align: center;"><img src="imgs/b.jpg" /></div>'
+
+
+def test_image_blocks_pair_to_loose_img_lines_by_order():
+    """★ 纯图块按序锚到 md 里**表格之外**的 `<img>` 行。
+
+    **为什么**：`image` 在 `not_in_markdown` 豁免名单里 ⇒ 主循环给它 `start_line=None`；
+    但没有行区间**就推不出条文号**、左栏画不出框、审查页只能挂「原文件未定位」
+    —— 用户无法判断这张图将来会落进哪一条。而 md 里这些 `<img>` 行是**真实存在**的
+    （实测某 122 页文档：表格外 `<img>` 行 132 行 ↔ `image` 块 132 个，逐块核对
+    「该行落在的条文」与「前后邻块的条文」**132/132 完全一致**）。
+
+    ⚠️ 同时钉住 **`splice` 的无重叠不变量**：区间一旦相撞 `splice` 会抛 `ValueError`
+    （那是"用户那次编辑被悄悄丢掉"的守门人）。不改任何块 ⇒ 必须逐字节相同。
+    """
+    md = "正文一。\n\n" + _IMG_A + "\n\n正文二。\n\n" + _IMG_B + "\n\n正文三。"
+    bl = [_blk("正文一。", 0), _blk("", 1, label="image"),
+          _blk("正文二。", 2), _blk("", 3, label="image"), _blk("正文三。", 4)]
+    anchored, st = anchor_blocks(md, bl)
+    lines = md.split("\n")
+    a_line = lines.index(_IMG_A)
+    b_line = lines.index(_IMG_B)
+    assert st["image_paired"] == 2, f"没有按序配对：{st}"
+    assert (anchored[1]["start_line"], anchored[1]["end_line"]) == (a_line, a_line + 1)
+    assert (anchored[3]["start_line"], anchored[3]["end_line"]) == (b_line, b_line + 1)
+    assert splice(md, anchored, {}) == md, "配图块之后区间重叠了（splice 的无重叠不变量破了）"
+
+
+def test_image_blocks_not_paired_when_counts_differ():
+    """★ **计数不等就整趟不配** —— 配对是按顺序的，顺序一旦不一致就会**整批错标**，
+    而错标比不标更坏（本仓既有口径）。"""
+    md = "正文一。\n\n" + _IMG_A + "\n\n正文二。"
+    bl = [_blk("正文一。", 0), _blk("", 1, label="image"),
+          _blk("", 2, label="image"), _blk("正文二。", 3)]      # 2 个图块 vs 1 行 <img>
+    anchored, st = anchor_blocks(md, bl)
+    assert st["image_paired"] == 0, f"计数不等却配对了：{st}"
+    assert all(b["start_line"] is None for b in anchored if b["label"] == "image")
+    assert splice(md, anchored, {}) == md
+
+
+def test_table_cell_images_are_not_paired_to_image_blocks():
+    """★ **表格里的 `<img>` 归表块**，不能被拿去配图块（否则图块会整体错位一行）。
+
+    判据是按 `table` 块的 span 排除 —— 不是按"这行长什么样"猜。
+    """
+    md = "正文一。\n\n" + _T_MD_1 + "\n\n" + _IMG_A + "\n\n正文二。"
+    bl = [_blk("正文一。", 0), _blk(_T_BLK, 1, label="table"),
+          _blk("", 2, label="image"), _blk("正文二。", 3)]
+    anchored, st = anchor_blocks(md, bl)
+    img = [b for b in anchored if b["label"] == "image"][0]
+    lines = md.split("\n")
+    assert st["image_paired"] == 1, f"配对数目不对：{st}"
+    assert img["start_line"] == lines.index(_IMG_A), \
+        "图块被配到了表格里那行 `<img>`（表格里的图应归表块）"
+
+
 def test_reanchor_strips_stale_md_html():
     """★ **重锚已带 `md_html` 的块**时，未锚定分支不得把**旧值**原样带出（终审 finding #1）。
 
