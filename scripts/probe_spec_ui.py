@@ -3126,6 +3126,125 @@ CASES["f14"] = [f14_1_round_trip_is_byte_identical,
                 f14_16_saving_a_table_edit_does_not_change_the_clause_set]
 
 
+# ═══════════════════════════════════════════
+# f15：左栏拖框取图（P4 第一刀 · 原型）
+# ═══════════════════════════════════════════
+#
+# ⚠️ 本仓无 JS 测试设施 ⇒ 探针是纯函数唯一的宿主；改 `image-picker.js` 必须同步跑 f15。
+# 几何换算（选框的 CSS 像素 → crop 端点的 OCR 页面栅格）唯一的现场证明就在这里。
+#
+# ⚠️ 本组用例**一律钉确切值**，不写「反向等于正向」这类**对称性质** ——
+#   一个恒返回 `{x:0,y:0,w:0,h:0}` 的实现同样满足对称性（假绿），
+#   与 f13_2 的「方向钉」同一个理由。
+
+
+def f15_1_image_picker_loaded(page):
+    """前置：image-picker.js 已加载（否则后面全是空跑）"""
+    page.goto(BASE)
+    assert page.evaluate("() => !!(window.imagePicker && window.imagePicker.toGrid)"), \
+        "image-picker.js 未加载（base.html 未引入，或 ?v=N 没递增）"
+
+
+def f15_2_normalize_handles_reverse_drag(page):
+    """★ 反向拖（右下→左上）归一化成正矩形；并钉住正向拖的确切值"""
+    page.goto(BASE)
+    fwd = page.evaluate("() => window.imagePicker.normalize(10, 20, 30, 50)")
+    assert fwd == {"x": 10, "y": 20, "w": 20, "h": 30}, f"正向拖归一化不对：{fwd}"
+    rev = page.evaluate("() => window.imagePicker.normalize(30, 50, 10, 20)")
+    assert rev == fwd, f"反向拖未被归一化：{rev} != {fwd}"
+
+
+def f15_3_clamp_rect_keeps_it_inside_the_page(page):
+    """越界夹取：左/上出界、右/下出界、完全出界（⇒ 零尺寸，调用方据此丢弃）"""
+    page.goto(BASE)
+    a = page.evaluate("() => window.imagePicker.clampRect({x:-10,y:-5,w:50,h:40}, 200, 100)")
+    assert a == {"x": 0, "y": 0, "w": 40, "h": 35}, f"左上出界夹取不对：{a}"
+    b = page.evaluate("() => window.imagePicker.clampRect({x:180,y:90,w:50,h:40}, 200, 100)")
+    assert b == {"x": 180, "y": 90, "w": 20, "h": 10}, f"右下出界夹取不对：{b}"
+    c = page.evaluate("() => window.imagePicker.clampRect({x:300,y:300,w:50,h:40}, 200, 100)")
+    assert c == {"x": 200, "y": 100, "w": 0, "h": 0}, f"完全出界应得零尺寸：{c}"
+
+
+def f15_4_hit_handle_picks_corner_over_edge(page):
+    """8 个手柄 + move + null；**角优先于边/框内**（否则贴着角拖会退化成拉边）"""
+    page.goto(BASE)
+    rect = {"x": 100, "y": 100, "w": 200, "h": 100}      # 右缘 300、下缘 200、中心 (200,150)
+
+    def hit(px, py):
+        return page.evaluate(
+            "([r, px, py]) => window.imagePicker.hitHandle(r, px, py, 6)", [rect, px, py])
+
+    assert hit(100, 100) == "nw"
+    assert hit(300, 100) == "ne"
+    assert hit(300, 200) == "se"
+    assert hit(100, 200) == "sw"
+    assert hit(200, 100) == "n"
+    assert hit(300, 150) == "e"
+    assert hit(200, 200) == "s"
+    assert hit(100, 150) == "w"
+    assert hit(200, 150) == "move", "框内应判为 move（可整体拖动）"
+    assert hit(106, 106) == "nw", "角附近仍应是角（tol 为 ±tol 的方框，且角优先于 move）"
+    assert hit(200, 40) is None, "框外（离上缘 60px）应判为 null"
+
+
+def f15_5_resize_moves_only_the_dragged_edges(page):
+    """各手柄只动它管的那条边；`move` 必须特判（`'move'.includes('e')` 为真的子串陷阱）"""
+    page.goto(BASE)
+    rect = {"x": 100, "y": 100, "w": 200, "h": 100}
+
+    def rz(handle, px, py):
+        return page.evaluate(
+            "([r, h, px, py]) => window.imagePicker.resize(r, h, px, py)", [rect, handle, px, py])
+
+    # 拉右缘：px 生效、py 是干扰量（故意给 999，若被用上就爆）
+    assert rz("e", 350, 999) == {"x": 100, "y": 100, "w": 250, "h": 100}, rz("e", 350, 999)
+    # 拉上缘：py 生效、px 是干扰量
+    assert rz("n", 999, 60) == {"x": 100, "y": 60, "w": 200, "h": 140}, rz("n", 999, 60)
+    # 左下角：左缘与下缘一起动
+    assert rz("sw", 40, 260) == {"x": 40, "y": 100, "w": 260, "h": 160}, rz("sw", 40, 260)
+    assert rz("move", 500, 500) == rect, "move 被当成了手柄（含 'e' 的子串陷阱）"
+
+
+def f15_6_to_grid_converts_css_px_to_page_raster(page):
+    """★ 几何的核心：选框 CSS 像素 → crop 端点的 OCR 栅格坐标。
+
+    方向钉：元素宽 = 栅格宽的一半时，同样长度在栅格里必须**翻倍**
+    —— 恒等映射与恒零映射都会被这条打红。"""
+    page.goto(BASE)
+    g = page.evaluate(
+        "() => window.imagePicker.toGrid({x:50,y:25,w:100,h:50}, 400, 200, 800, 400)")
+    assert g == {"x": 100, "y": 50, "w": 200, "h": 100}, f"2:1 换算不对：{g}"
+    g1 = page.evaluate(
+        "() => window.imagePicker.toGrid({x:50,y:25,w:100,h:50}, 800, 400, 800, 400)")
+    assert g1 == {"x": 50, "y": 25, "w": 100, "h": 50}, f"1:1 不得改变数值：{g1}"
+    assert page.evaluate(
+        "() => window.imagePicker.toGrid({x:1,y:1,w:1,h:1}, 0, 0, 800, 400)") is None, \
+        "元素尺寸为 0（页图未加载）应返回 null，而不是 NaN/除零"
+
+
+def f15_7_is_usable_rejects_tiny_or_empty_rects(page):
+    """碎拖与空框判否（否则会往 crop 端点送一个 1×1 的请求）"""
+    page.goto(BASE)
+
+    def ok(r):
+        return page.evaluate("(r) => window.imagePicker.isUsable(r)", r)
+
+    assert ok({"x": 10, "y": 10, "w": 40, "h": 30}) is True
+    assert ok({"x": 10, "y": 10, "w": 2, "h": 30}) is False, "宽不够应判否"
+    assert ok({"x": 10, "y": 10, "w": 40, "h": 2}) is False, "高不够应判否"
+    assert ok({"x": 10, "y": 10, "w": 0, "h": 0}) is False
+    assert ok(None) is False
+
+
+CASES["f15"] = [f15_1_image_picker_loaded,
+                f15_2_normalize_handles_reverse_drag,
+                f15_3_clamp_rect_keeps_it_inside_the_page,
+                f15_4_hit_handle_picks_corner_over_edge,
+                f15_5_resize_moves_only_the_dragged_edges,
+                f15_6_to_grid_converts_css_px_to_page_raster,
+                f15_7_is_usable_rejects_tiny_or_empty_rects]
+
+
 def _require_isolated_paths():
     """开跑前自检**四条隔离路径真的生效**，否则**拒绝运行**。
 
