@@ -6,6 +6,15 @@
 <div x-data="reviewBlocks()" x-init="init()" class="rvb-root" @mouseup.window="onTableCellUp()"
      x-effect="syncEditingUi()">
 
+    <!-- 登录失效的出口（见 `review-blocks.js` 的 `_json`）。
+         ⚠️ 必须单独成一条横幅：那时后端是 `302 → /login` 且 `fetch` 静默跟随 ⇒
+         所有接口都返回 **HTTP 200 + 登录页 HTML**，若不识别，用户看到的就是
+         `切分预览失败：SyntaxError: Unexpected token '<'…` —— 实测踩过。 -->
+    <div class="rvb-session" x-show="sessionExpired" x-cloak>
+        <p><strong>登录已过期</strong>，页面数据加载不出来了。
+           请 <a href="/login">重新登录</a> 后再打开本页。</p>
+    </div>
+
     <!-- 降级：没有 layout.json 时给出明确出口，而不是空白或崩溃（spec §13） -->
     <div class="rvb-error" x-show="error" x-cloak>
         <p x-text="error" style="color:#c00"></p>
@@ -18,9 +27,17 @@
             <!-- ⚠️ 视口必须是左栏**第一个**子元素：这样左栏顶部才与中栏（版面编辑）齐平。
                  缩放档与文件名先前压在视口上方，把左栏整体推下去、两栏顶不齐（用户实测）。
                  它们现在在视口**下方**的 `.rvb-foot` 行里 —— 见本元素末尾。 -->
+            <!-- 页图加载失败：**最常见的原因是登录失效**（那时后端 302 到 /login，`<img>` 跟随
+                 重定向后拿到的是 HTML ⇒ 破图）。不提示的话用户只会看到「没有 PDF、只剩压缩的
+                 高亮框」，完全无从判断。⚠️ 必须是视口的**首个子元素 + 吸顶**：放进画布里会被
+                 页面高度带跑（长页滚到下面就看不见了）。 -->
+            <div class="rvb-img-err" x-show="pageImgErr" x-cloak>
+                页图加载失败：<a href="/login">登录可能已过期，点此重新登录</a>
+            </div>
             <div class="rvb-viewport" x-ref="vp" @mousedown="startPan($event)">
                 <div class="rvb-canvas" :style="canvasStyle()">
-                    <img class="rvb-img" :src="pageUrl(curPage)" @load="onImgLoad()"
+                    <img class="rvb-img" :src="pageUrl(curPage)"
+                         @load="onImgLoad(); pageImgErr = false" @error="pageImgErr = true"
                          alt="原文件页图" draggable="false">
                     <!-- 高亮框：bbox 按百分比定位 ⇒ 缩放自动跟随（spec §6.3）
                          未定位的块（start_line 为空）不画框 -->

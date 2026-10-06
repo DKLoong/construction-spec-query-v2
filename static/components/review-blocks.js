@@ -25,7 +25,12 @@ function reviewBlocks() {
         activeIdx: -1,
         cutOpen: true,         // 第三栏（切分预览）折叠态；窄屏可收起让出宽度
         error: '',
+        sessionExpired: false, // 登录失效（拿到 HTML 而非 JSON）时置真，页面顶部给出重新登录出口
+        pageImgErr: false,     // 左栏页图加载失败（同上：多半是登录失效拿到 HTML）
         editableLabels: [],    // 后端下发的可编辑 label 白名单（单一来源，不在此另写一份）
+        // 纯图块（OCR 不给 content，只给 page+bbox）⇒ 由后端按 bbox 裁页图来显示。
+        // 与后端 `layout.py` 的 `not_in_markdown` 里那三个 `*_image` 对应；**只影响显示**。
+        imageLabels: ['image', 'header_image', 'footer_image'],
         editingIdx: -1,        // 正在编辑的块下标（-1 = 无）
         edits: {},             // {块下标: 编辑后的 md}；编辑**不落库**，只存内存
         focusIdx: -1,          // 当前聚焦的**行下标**（-1 = 还没落到任何一行）
@@ -53,7 +58,7 @@ function reviewBlocks() {
                     this.error = '该任务没有版面数据（可能不是扫描件，或用了不产生版面信息的 OCR 后端）。';
                     return;
                 }
-                data = await resp.json();
+                data = await this._json(resp);
             } catch (e) {
                 this.error = '版面数据加载失败：' + e;
                 return;
@@ -72,10 +77,29 @@ function reviewBlocks() {
         async _fileName() {
             try {
                 const r = await fetch(`/import/review/${this.taskId}/content`);
-                return r.ok ? ((await r.json()).file_name || '') : '';
+                if (!r.ok) return '';
+                return ((await this._json(r)).file_name || '');
             } catch (e) {
                 return '';
             }
+        },
+
+        /** 把响应当 JSON 读；**不是 JSON 就翻成人话**。
+         *
+         * ⚠️ 为什么必须单独识别（用户实测踩过）：登录失效后 `AuthMiddleware` 是 `302 → /login`，
+         *    `fetch` **静默跟随** ⇒ 这里拿到的是**登录页 HTML**，而且 **HTTP 状态是 200**、
+         *    `resp.ok` 为真。于是直接 `resp.json()` 抛的是
+         *    `SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid JSON`
+         *    —— 用户只看到这一句，既不知道是登录过期、也没有任何自救出口。
+         *    同一时刻 `<img src=/page/N.png>` 也拿到 HTML ⇒ 左栏变成破图。
+         *    ⇒ 统一在这里识别，置 `sessionExpired` 让页面顶部给出重新登录的链接。 */
+        async _json(resp) {
+            const ct = (resp.headers.get('content-type') || '').toLowerCase();
+            if (!ct.includes('json')) {
+                this.sessionExpired = true;
+                throw new Error('登录已过期（拿到的是登录页而不是数据）');
+            }
+            return await resp.json();
         },
 
         /** 已锚定 = 有行区间 ⇒ 可在原文件上定位、可画框 */
@@ -181,11 +205,35 @@ function reviewBlocks() {
 
         renderBlock(b) {
             try {
+                // `image` 类块的 `content` 是**空串**（OCR 不下发图片本体，图只落在 markdown 里），
+                // 而块自带 `page` + `bbox` ⇒ 交给后端**按 bbox 从该页裁**一张出来显示。
+                // 实测（122 页文档）：132 个 image 块原本全是空白，中栏只剩 1 张表里的 13 张图能看见。
+                const pic = this._cropUrl(b);
+                if (pic) return `<img class="rvb-block-img" src="${pic}" alt="版面图块" loading="lazy">`;
                 return window.mdRender.renderHtml(this.contentOf(b),
                     '/import/review/' + this.taskId + '/');
             } catch (e) {
                 return '<p style="color:#c00">渲染错误</p>';
             }
+        },
+
+        /** `image` 类块的裁切图 URL；不是图块（或它自己有内容）则返回 `null`。
+         *
+         * ⚠️ URL 全部由**数值**与 `taskId`（后端已按 8 位十六进制校验）拼成 ⇒ 无注入面。
+         * ⚠️ `bbox` 是 `[x0, y0, x1, y1]`（OCR 栅格坐标，左右/上下都可能反序）⇒ 必须归一化，
+         *    否则后端拿到负宽高只能 422。 */
+        _cropUrl(b) {
+            if (!this.imageLabels.includes(b.label)) return null;
+            if ((this.contentOf(b) || '').trim()) return null;   // 块自己有内容就按内容渲染
+            const bb = b.bbox;
+            if (!Array.isArray(bb) || bb.length !== 4) return null;
+            const [ax, ay, bx, by] = bb.map(Number);
+            if (![ax, ay, bx, by].every(Number.isFinite)) return null;
+            const x0 = Math.min(ax, bx), y0 = Math.min(ay, by);
+            const w = Math.abs(bx - ax), h = Math.abs(by - ay);
+            if (w < 1 || h < 1) return null;
+            const q = `x=${x0.toFixed(1)}&y=${y0.toFixed(1)}&w=${w.toFixed(1)}&h=${h.toFixed(1)}&scale=1.5`;
+            return `/import/review/${this.taskId}/crop/${b.page}.png?${q}`;
         },
 
         /** ★ 双向联动：两侧定位到**同一块**、同一视觉样式（spec §9） */
@@ -257,6 +305,8 @@ function reviewBlocks() {
             const br = box.getBoundingClientRect();
             if (block === 'center') {
                 box.scrollTop += (er.top - br.top) - (box.clientHeight - er.height) / 2;
+            } else if (block === 'start') {
+                box.scrollTop += er.top - br.top;      // 把元素**顶边**对齐容器顶边
             } else if (er.top < br.top) {
                 box.scrollTop += er.top - br.top;
             } else if (er.bottom > br.bottom) {
@@ -269,10 +319,10 @@ function reviewBlocks() {
             this._scrollInto(vp && vp.querySelector('.rvb-box--on'), vp, 'center');
         },
 
-        _scrollRightTo(idx) {
+        _scrollRightTo(idx, mode) {
             const list = this.$refs.list;
             this._scrollInto(list && list.querySelector(`[data-block-idx="${idx}"]`),
-                             list, 'nearest');
+                             list, mode || 'nearest');
         },
 
         // ── P2：行级编辑（编辑**只写内存** this.edits，不发任何写请求） ──
@@ -337,6 +387,13 @@ function reviewBlocks() {
                     const host = this._tableHost();
                     if (host) { host.innerHTML = ''; host.appendChild(t); }
                     this._selectTable();                        // 默认选中首格（工具条操作都作用于选区）
+                    // ⚠️ 进编辑后必须把**块顶**对准容器顶（用户实测「点纠正后不是到表格首行」）：
+                    //    进编辑会把块体（`.rvb-block-bd`/`.rvb-block-meta`）藏起来 ⇒ 块**变矮** ⇒
+                    //    浏览器的 **scroll anchoring** 补偿式地改 `scrollTop`，把块顶推出视野
+                    //    （实测：块顶 +260 → −36，正好把工具条顶掉）。
+                    //    补两次：一次立刻、一次在下一帧 —— 只补一次会被那笔补偿再推走。
+                    this._scrollRightTo(idx, 'start');
+                    requestAnimationFrame(() => this._scrollRightTo(idx, 'start'));
                     return;
                 }
                 for (const ln of window.mdInline.splitLines(this.contentOf(b))) {
@@ -636,8 +693,8 @@ function reviewBlocks() {
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({edits: this.edits}),
                 });
-                if (!resp.ok) throw new Error((await resp.json()).detail || resp.status);
-                const data = await resp.json();
+                if (!resp.ok) throw new Error((await this._json(resp)).detail || resp.status);
+                const data = await this._json(resp);
                 if (!this.baseline) this.baseline = data.clauses.map((c) => c.clause_no);
                 const now = data.clauses.map((c) => c.clause_no);
                 const baseSet = new Set(this.baseline);
@@ -699,8 +756,8 @@ function reviewBlocks() {
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({edits: this.edits}),
                 });
-                if (!cr.ok) throw new Error((await cr.json()).detail || ('compose ' + cr.status));
-                const md = (await cr.json()).md_text;
+                if (!cr.ok) throw new Error((await this._json(cr)).detail || ('compose ' + cr.status));
+                const md = (await this._json(cr)).md_text;
                 // md 走 raw body（text/plain）：表单字段有 1MB 上限，大规范会被 400 拒掉
                 const resp = await fetch(`/import/review/${this.taskId}/confirm`, {
                     method: 'POST',

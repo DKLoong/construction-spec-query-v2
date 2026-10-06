@@ -2,6 +2,7 @@ import hashlib
 import html
 import json
 import logging
+import math
 import re
 import sqlite3
 import time
@@ -1295,6 +1296,79 @@ async def review_page_image(task_id: str, page_no: int, scale: float = 1.5):
     except (OSError, RuntimeError) as e:
         logger.warning("页图渲染失败 task=%s page=%s: %s", task_id, page_no, e)
         return JSONResponse({"detail": "页图渲染失败"}, status_code=500)
+
+    return FileResponse(str(png), media_type="image/png")
+
+
+@router.get("/import/review/{task_id}/crop/{page_no}.png")
+async def review_block_crop(task_id: str, page_no: int,
+                            x: float, y: float, w: float, h: float,
+                            scale: float = 1.5):
+    """按块的 `bbox` 从该页**裁出**一块 PNG（版面块列表里 `image` 类块要显示的那张图）。
+
+    **为什么需要它**：OCR 的 `parsing_res_list` 里 `image` 类块的 `block_content` 是**空串**
+    —— 图片本体只落在 markdown 里（`<img src="imgs/…">`），而审查页渲染的是**块的 content**
+    ⇒ 这些块在列表里显示为空白（实测：122 页文档 132 个 image 块全空，中栏只剩 1 张表里的 13 张图
+    能显示）。按 `bbox` 裁切**不依赖任何文件名对应关系**、也不用改存量 `layout.json`。
+
+    **坐标系**：`bbox` 用的是 OCR 自己的页面栅格（`layout.pages[].width/height`），
+    而 `fitz` 的 `matrix`/`clip` 以 **PDF 点**为基准 ⇒ 两者之间差一个 `base = 页栅格宽 / 页点宽`。
+    输出分辨率再乘 `scale`。
+
+    `x/y/w/h/scale` 全是**外部输入** ⇒ 逐个校验并**夹到页内**（全局规则 §1.1）。
+    """
+    import fitz
+    from fastapi.responses import FileResponse
+
+    from app.ocr.layout import load_layout
+
+    if not re.fullmatch(r"[0-9a-f]{8}", task_id):
+        return JSONResponse({"detail": "任务ID非法"}, status_code=404)
+    if not 0.25 <= scale <= 4.0:
+        return JSONResponse({"detail": "scale 需在 [0.25, 4.0]"}, status_code=422)
+    for v in (x, y, w, h):
+        if not math.isfinite(v):
+            return JSONResponse({"detail": "裁切参数非法"}, status_code=422)
+    if w <= 0 or h <= 0:
+        return JSONResponse({"detail": "裁切宽高必须为正"}, status_code=422)
+
+    layout = load_layout(Path(OUTPUT_DIR) / task_id)
+    pages = (layout or {}).get("pages") or []
+    pg = next((q for q in pages if q.get("index") == page_no), None)
+    if not pg or not pg.get("width") or not pg.get("height"):
+        return JSONResponse({"detail": "该页没有版面尺寸"}, status_code=404)
+    ow, oh = float(pg["width"]), float(pg["height"])
+
+    # 夹到页内（防止越界/巨大请求把内存吃光）
+    x0 = max(0.0, min(x, ow))
+    y0 = max(0.0, min(y, oh))
+    x1 = max(x0, min(x + w, ow))
+    y1 = max(y0, min(y + h, oh))
+    if x1 - x0 < 1 or y1 - y0 < 1:
+        return JSONResponse({"detail": "裁切区域为空"}, status_code=422)
+
+    task = _get_task(task_id)
+    src_path = Path((task or {}).get("file_path") or "")
+    if not src_path.is_file():
+        return JSONResponse({"detail": "原始文件不存在"}, status_code=404)
+
+    try:
+        with fitz.open(str(src_path)) as doc:
+            if not 1 <= page_no <= len(doc):
+                return JSONResponse({"detail": "页号越界"}, status_code=404)
+            page = doc[page_no - 1]
+            base = ow / page.rect.width if page.rect.width else 1.0
+            out_dir = Path(OUTPUT_DIR) / task_id / "_pages"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            png = out_dir / (f"crop{page_no}_{x0:.0f}_{y0:.0f}_{x1:.0f}_{y1:.0f}"
+                             f"@{scale:.2f}.png")
+            if not png.is_file():
+                clip = fitz.Rect(x0 / base, y0 / base, x1 / base, y1 / base)
+                m = fitz.Matrix(base * scale, base * scale)
+                page.get_pixmap(matrix=m, clip=clip).save(str(png))
+    except (OSError, RuntimeError, ValueError) as e:
+        logger.warning("块裁切失败 task=%s page=%s: %s", task_id, page_no, e)
+        return JSONResponse({"detail": "块裁切失败"}, status_code=500)
 
     return FileResponse(str(png), media_type="image/png")
 

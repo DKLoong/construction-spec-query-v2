@@ -960,7 +960,23 @@
 .rvb-line-tools { display: inline-flex; gap: 0.3rem; align-items: center; }
 
 /* 表格编辑器（P3）：容器与表格本体。 */
-.rvb-table-edit { border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.25rem; }
+.rvb-table-edit { border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 0.25rem;
+                  /* ⚠️ **表格区自己滚动**（用户实测的长表格方案 B）：块可以比列表容器高得多
+                     （实测 76 行的表编辑态 2165px，而列表容器只有 841px）。不限高的话，
+                     用户在表格下段点格子后，上方的**工具条已经滚出视野**，必须先把列表滚回顶部
+                     才能点「合并/拆分」。限高后工具条与表格同屏，表格在自己的区域内滚动。 */
+                  max-height: 60vh; overflow: auto; }
+/* 登录失效横幅 + 页图失败提示（见 `review-blocks.js` 的 `_json`）：
+   这两种情况下后端返回的是**登录页 HTML**，不给出口的话用户只会看到难懂的 JSON 解析错误与破图。 */
+.rvb-session { border: 1px solid #e8710a; background: #fff3e0; border-radius: 6px;
+               padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; }
+.rvb-session p { margin: 0; }
+.rvb-img-err { padding: 6px 8px; margin-bottom: 4px;
+               background: rgba(255, 243, 224, .96); border: 1px solid #e8710a;
+               border-radius: 4px; font-size: 0.85rem; }
+/* 图块的裁切图（后端按块 bbox 从该页裁出来；见 `review_block_crop`） */
+.rvb-block-img { display: block; max-width: 100%; height: auto;
+                 border: 1px solid var(--pico-muted-border-color); border-radius: 4px; }
 .rvb-table-edit table { width: auto; max-width: 100%; }
 .rvb-table-edit td, .rvb-table-edit th { padding: 2px 6px; }
 .rvb-table-edit td:focus, .rvb-table-edit th:focus { outline: 2px solid var(--pico-primary); }
