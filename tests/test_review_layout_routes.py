@@ -70,24 +70,57 @@ def test_layout_endpoint_ships_editable_labels(review_env):
     assert "text" in r.json()["editable_labels"]
 
 
-def test_layout_endpoint_ships_not_in_markdown(review_env):
-    """★ 「不进 markdown 的 label」名单也必须由**后端下发**（单一来源）。
+def test_layout_endpoint_ships_the_task_own_not_in_markdown(review_env):
+    """★ 「不进 markdown 的 label」名单必须取**该任务真实生效**的那份，不是常量。
 
     P4 Task 9（D2 裁定）：块页的跨块搜索**覆盖所有「进 md 的块」**，必须把
     「不进 md 的块」（页码 / 页眉页脚 / 图片 / 公式编号…）排除在计数之外 ——
-    否则会报出**永远改不动**的匹配。判据与 `editable_labels` 同口径：前端从
-    `/layout` 读这份名单，**不得**在 JS 里另写一份（会与后端漂移）。
+    否则会报出**永远改不动**的匹配。
+
+    而「实际生效」的名单**不是** `DEFAULT_NOT_IN_MARKDOWN`，是
+    `DEFAULT_NOT_IN_MARKDOWN | markdownIgnoreLabels`（`classify_labels`），
+    且 `markdownIgnoreLabels` 是**用户可编辑**的 OCR 参数
+    （`app/ocr/paddle_api.py`：`ocr.{backend}.params` 会**整份替换**默认参数）
+    ⇒ 取常量会在「用户给 markdownIgnoreLabels 加了 `table`」这类任务上把**实际不进 md 的块**
+    算进匹配。真实并集已随 `anchor_blocks` 的 stats 落进 `layout.json`。
+
+    本用例把 stats 写成一份**与常量不同**的名单 ⇒ 只有「以 stats 为准」才可能通过。
     """
     from app.ocr.layout import DEFAULT_NOT_IN_MARKDOWN
 
     client, out = review_env
-    _write_layout(out)
+    own = sorted(set(DEFAULT_NOT_IN_MARKDOWN) | {"table", "chart"})   # 模拟用户改过参数
+    _write_layout(out, stats={"anchorable": 1, "anchored": 1, "missed": 0,
+                              "not_in_markdown": own})
     r = client.get(f"/import/review/{TASK_ID}/layout")
+
     assert r.status_code == 200
     body = r.json()
     assert isinstance(body["not_in_markdown"], list), "必须是列表（前端按数组处理）"
-    assert body["not_in_markdown"] == sorted(DEFAULT_NOT_IN_MARKDOWN)
-    assert "number" in body["not_in_markdown"], "页码块必须在不进 md 的名单里"
+    assert body["not_in_markdown"] != sorted(DEFAULT_NOT_IN_MARKDOWN), \
+        "断言对象与常量相同 ⇒ 本用例变成了在测回落分支（失去判别力）"
+    assert body["not_in_markdown"] == own
+    assert "table" in body["not_in_markdown"], "该任务自己的名单被常量覆盖了"
+
+
+def test_layout_endpoint_falls_back_to_default_not_in_markdown(review_env):
+    """回落分支：`stats` 里没有 `not_in_markdown`（或整个 stats 缺失）⇒ 用常量。
+
+    `not_in_markdown` 是**后加**的 stats 键，历史 `layout.json` 不会有它 ⇒ 必须有网兜住，
+    否则老任务的审查页会拿到 `None`（前端 `data.not_in_markdown || []` 会退化成
+    「什么都不过滤」，把永远改不动的匹配全报出来）。
+    """
+    from app.ocr.layout import DEFAULT_NOT_IN_MARKDOWN
+
+    client, out = review_env
+    # 两种历史形状都要兜住：① stats 在、但没这个键；② stats 整个缺失
+    for stats in ({"anchorable": 1, "anchored": 1, "missed": 0}, None):
+        _write_layout(out, stats=stats)
+        r = client.get(f"/import/review/{TASK_ID}/layout")
+        assert r.status_code == 200, f"stats={stats!r} 时端点没兜住：{r.text}"
+        assert r.json()["not_in_markdown"] == sorted(DEFAULT_NOT_IN_MARKDOWN), \
+            f"stats={stats!r} 时没有回落常量"
+    assert "number" in r.json()["not_in_markdown"], "页码块必须在不进 md 的名单里"
 
 
 def test_layout_endpoint_404_without_layout(review_env):

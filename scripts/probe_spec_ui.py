@@ -5267,10 +5267,13 @@ def f18_6_match_and_replaceable_counts_are_both_reported(page):
     info = page.locator(_RVBS_INFO)
     assert poll_until(page, lambda: info.inner_text().strip() == want, 5000), \
         f"两个数不对：界面 {info.inner_text()!r}，期望 {want!r}"
-    # `M < N` 时必须给出可读原因（title），否则用户不知道那 N−M 处为什么改不动
-    title = info.get_attribute("title") or ""
-    assert str(c["N"] - c["M"]) in title, \
-        f"`M < N` 但计数没有说明原因（title={title!r}）"
+    # `M < N` 时必须给出可读原因（title），否则用户不知道那 N−M 处为什么改不动。
+    # ⚠️ **断言整句**而不是 `str(N-M) in title` 那种松散子串：子串断言下 `N-M == 12` 会被
+    #    含 "2" 的任意 title 蒙混（本仓记过「断言别用短串」）。数字仍**现算**。
+    want_title = f"其中 {c['N'] - c['M']} 处所在块不可编辑"
+    title = (info.get_attribute("title") or "").strip()
+    assert title == want_title, \
+        f"`M < N` 的原因说明不对：title={title!r}，期望 {want_title!r}"
 
 
 def _rvb_pick_common_char(page, tid, min_blocks=2, editable_only=False):

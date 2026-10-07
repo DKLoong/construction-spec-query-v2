@@ -1269,7 +1269,16 @@ async def review_layout(task_id: str):
         #   P4 Task 9（D2）：块页跨块搜索只覆盖「进 md 的块」—— 页码/页眉页脚/图片等
         #   不进 md ⇒ 搜出来的命中**永远改不动**，必须排除在计数之外。前端从这里读，
         #   不得在 JS 里另写一份（会与后端漂移）。
-        "not_in_markdown": sorted(DEFAULT_NOT_IN_MARKDOWN),
+        #   ⚠️ **必须取该任务真实生效的那一份，不是常量**：生效名单是
+        #   `DEFAULT_NOT_IN_MARKDOWN | markdownIgnoreLabels`（`classify_labels`），
+        #   而 `markdownIgnoreLabels` 是**用户可编辑**的 OCR 参数（`ocr.{backend}.params`
+        #   会整份替换默认参数）⇒ 取常量会在「用户给 markdownIgnoreLabels 加了 `table`」
+        #   这类任务上，把**实际不进 md 的块**算进匹配 —— 正是 D2 要排除的那一类。
+        #   真实并集随 `anchor_blocks` 的 stats 一并落进 `layout.json`
+        #   （`layout.py` 自己的告诫：**不得把动态参数当固定事实**）。
+        #   旧 `layout.json` 的 stats 可能没有这个键 ⇒ 回落常量（不得空名单）。
+        "not_in_markdown": (layout.get("stats") or {}).get("not_in_markdown")
+                           or sorted(DEFAULT_NOT_IN_MARKDOWN),
     }
 
 
