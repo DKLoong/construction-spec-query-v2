@@ -1399,6 +1399,108 @@ async def review_image(request: Request, task_id: str, filename: str):
     return FileResponse(str(img_path))
 
 
+# ── 图片落盘：图片线的**共用落点**（P4）────────────────────────────
+#
+# 为什么是「收字节」这**一个**端点：图片三入口（点击选文件 / 拖拽 / 粘贴）拿到的是
+# **任意位图**、没有裁切参数可传 ⇒ 它们必然汇到一个收字节的落点；拖框取图那条
+# 先 `GET /crop` 拿 PNG 再回传。若再为拖框单开一个「服务端裁切+落盘」端点，
+# 就出现**两个落点** —— spec §8.4「三者汇到同一落点」当场作废，
+# 且文件名/类型/大小/magic 这四道校验要写两遍（第二把尺子必然与第一把分叉）。
+
+# 单张图上限。10 MB 远超实际（裁切图典型 < 500 KB，用户粘贴的位图也在此量级）。
+# 全局规则 §1.1：外部输入必须限幅。
+_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+
+# Content-Type 白名单 → 扩展名。**不做 gif**：进规范正文的是示意图，动图没有使用场景，
+# 收窄白名单比事后处理省事。
+_IMAGE_EXT_BY_CT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+}
+
+
+def _sniff_image_ext(body: bytes) -> str | None:
+    """按 **magic bytes** 判真实格式，返回扩展名；认不出返回 `None`。
+
+    ⚠️ 只信 `Content-Type` 等于不校验：任何文件都能改个后缀传进来，等被 `<img>`
+    引用、图裂了才发现 —— 那时它**已经写进 md 了**。故与声明的类型交叉比对。
+    """
+    if body[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if body[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if body[:4] == b"RIFF" and body[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
+def _write_image_atomic(data: bytes, path: Path) -> None:
+    """原子写：先写 `.tmp` 再 `replace`（照 `app/ocr/layout.py` 的 `_write_json_atomic`）。
+
+    不原子写的话，写到一半被 `GET .../imgs/{filename}` 服务到就是一张**截断的图**，
+    而 md 里已经引用了它 —— 静默的半成品比拒绝更坏。抽成函数便于单测注入失败。
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+
+
+def _unique_image_name(imgs_dir: Path, ext: str) -> str:
+    """摇一个**不与现有文件冲突**的新文件名（`up_` + 12 位十六进制 + 扩展名）。
+
+    为什么必须查重：uuid4 撞车概率极低，但**目录里可能已经有这个名字**
+    （手工放进去的、或别的进程写的）—— 一旦撞上直接写就是**覆盖**，
+    而 spec §8.4 的落盘策略是「新增文件名、**不覆盖**」。有界重试（规则 1.2）。
+    """
+    for _ in range(8):
+        name = f"up_{uuid.uuid4().hex[:12]}{ext}"
+        if not (imgs_dir / name).exists():
+            return name
+    raise OSError("无法生成唯一文件名")
+
+
+@router.post("/import/review/{task_id}/image")
+async def review_upload_image(request: Request, task_id: str):
+    """把一张图落到 `OUTPUT_DIR/{task_id}/imgs/`，返回可引用的相对路径。
+
+    这是图片线的**唯一落点**：图片三入口与拖框取图都汇到这里。
+    落盘策略见 spec §8.4：**新增文件名、不覆盖原图**。
+    存进 `imgs/` 而不是别处，是为了让 `_copy_ocr_images` 在导入落库时自动把它带走
+    （否则 md 里的 `imgs/…` 引用在条文页会 404）。
+    """
+    if not re.fullmatch(r"[0-9a-f]{8}", task_id):
+        return JSONResponse({"detail": "任务ID非法"}, status_code=404)
+    # 任务不存在就**不落盘**：否则会在悬空目录里留下永远没人引用的文件
+    if _get_task(task_id) is None:
+        return JSONResponse({"detail": "任务不存在或已过期"}, status_code=404)
+
+    ctype = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    ext = _IMAGE_EXT_BY_CT.get(ctype)
+    if ext is None:
+        return JSONResponse({"detail": "仅支持 png/jpg/webp 图片"}, status_code=422)
+
+    body = await request.body()
+    if not body:
+        return JSONResponse({"detail": "图片内容为空"}, status_code=422)
+    if len(body) > _IMAGE_MAX_BYTES:
+        return JSONResponse({"detail": "图片过大"}, status_code=413)
+    if _sniff_image_ext(body) != ext:
+        return JSONResponse({"detail": "图片内容与声明的格式不符"}, status_code=422)
+
+    imgs_dir = Path(OUTPUT_DIR) / task_id / "imgs"
+    try:
+        imgs_dir.mkdir(parents=True, exist_ok=True)
+        name = _unique_image_name(imgs_dir, ext)
+        _write_image_atomic(body, imgs_dir / name)
+    except OSError as e:
+        logger.warning("图片落盘失败 task=%s: %s", task_id, e)
+        return JSONResponse({"detail": "图片保存失败"}, status_code=500)
+
+    return JSONResponse({"filename": name,
+                         "url": f"/import/review/{task_id}/imgs/{name}"})
+
+
 # ── 编辑提交：compose（拼装）+ 其共用前置 ───────────────────────────
 
 # 请求体上限：最重真实产物 617 892 字符（M4）按 UTF-8 中文 3 字节 ≈ 1.9 MB，
