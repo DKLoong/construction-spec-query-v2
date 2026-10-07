@@ -369,7 +369,7 @@
     <div id="rvb-result" class="rvb-result-slot"></div>
     <p x-show="submitError" x-text="submitError" style="color:#c00"></p>
 
-    <!-- 取图预览（原型：**只预览**，不落盘、不插入）。
+    <!-- 取图预览（拖框取图，右键单击确认后落盘并插入当前编辑的单元格）。
          挂在 `.rvb-root` 下而不是 `.rvb-viewport` 里 —— 视口是 `overflow:auto`，
          浮层放进去会被裁掉。 -->
     <div class="rvb-pick-pop" x-show="pickPreview" x-cloak>
@@ -386,6 +386,6 @@
             <img :src="pickPreview" alt="取图预览"
                  @error="pickPreview = ''; pickMsg = '取图预览加载失败'">
         </template>
-        <p class="rvb-pick-pop-tip">原型阶段：只预览，未落盘、未插入单元格</p>
+        <p class="rvb-pick-pop-tip">右键单击确认后落盘，并插入当前编辑的单元格</p>
     </div>
 </div>
