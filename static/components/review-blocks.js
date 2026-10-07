@@ -86,9 +86,19 @@ function reviewBlocks() {
         //    块内读页面级状态 ⇒ 每次交互在 4000 块上各跑一遍（本仓性能铁律，记过 857ms 的事故）。
         searchQuery: '',       // 搜索词（绑在工具条输入框上）
         searchHits: [],        // 命中块：[{blockIdx, __i, count}]（字符串域计数，见 findMatches）
-        searchIdx: -1,         // 当前项下标（Task 10 的上一处/下一处用；本 Task 只维护不消费）
+        // 当前项下标。**Task 10 起语义 = 「全局第几个 `<mark>`」（0 起，高亮域）** ——
+        // `searchHits` 是**块级**、字符串域计数，而上一处/下一处要走的是 DOM 上真实存在的
+        // `<mark>`（`markAt` 的取法），两者不是一套下标，**不要**混用（Task 9 只把它置 0/-1）。
+        searchIdx: -1,
+        searchTotal: 0,        // 本次搜索在 **DOM 里**实际存在的 `<mark>` 数（位置指示 `n/N` 的分母）
+        searchPos: '',         // 位置指示「n/N」（Task 10）；无标记时为空串
+        searchCurBlock: -1,    // 当前命中所在的**块列表下标**（-1 = 无）；供「替换」禁用判据与用例读
         searchInfo: '',        // 计数字样「N 个匹配 · M 个可替换」
         searchMsg: '',         // `M < N` 时的原因说明（挂 `title`，D2 的诚实口径）
+        // ── P4 Task 10：替换（当前 / 全部）──────────────────────────────────────
+        replaceText: '',       // 替换值（绑在替换输入框上）
+        replaceLock: '',       // 「当前命中所在的块不可替换」的原因（**可见**文案，不静默）
+        replaceInfo: '',       // 替换结果 / 被跳过的条数
         _searchTimer: null,    // 搜索防抖（与 `_previewTimer` 分开，勿共用一个句柄）
 
 
@@ -1711,6 +1721,11 @@ function reviewBlocks() {
             this.searchMsg = (q && repl < total) ? `其中 ${total - repl} 处所在块不可编辑` : '';
             // 空词且上一轮也没标过 ⇒ 无事可做（别白建一次 4000 项的 DOM 查询）
             if (q || (prev && prev.length)) this._syncMarks(prev, hits, q);
+            // ★ Task 10：把「当前项」样式与位置指示与本次命中集合对齐。
+            //   ⚠️ 必须排在 `_syncMarks` **之后** —— `_markList()` 数的是**刚标完的** DOM。
+            //   ⚠️ 搜索本身**不滚动**（自动滚动会把用户刚看的位置拽走）；只有显式跳转才滚，
+            //      这条由 `_applyCurrentMark(scroll=false)` 区分。
+            this._afterMarks();
         },
 
         /** 把 DOM 上的 `<mark>` 与本次命中对齐（**命令式**，只碰已渲染的块正文宿主）。
@@ -1754,6 +1769,240 @@ function reviewBlocks() {
                 if (Number.isFinite(i) && bd) map[i] = bd;
             }
             return map;
+        },
+
+        // ── P4 Task 10：上一个/下一个跳转 + 替换（当前 / 全部）─────────────────────
+        //
+        // ★ 下标有两套，**不要混用**（Task 8/9 的接口就是按这套分工设计的）：
+        //   · `searchHits` = **块级**、**字符串域**计数（`{blockIdx, __i, count}`）—— 只用于「N 个匹配 ·
+        //     M 个可替换」那两个数与「替换勾到哪些块」；
+        //   · `searchIdx`（本 Task 起） = **全局第几个 `<mark>`**、**高亮域** —— 只用于上一处/下一处。
+        //   两者数量**本来就可能不等**（跨 `<strong>`/跨表格单元格的命中在字符串域里数得到、
+        //   在高亮域里标不出来）—— 这是 Ruling 31 冻结的**刻意**取舍，不是缺陷。
+
+        /** 当前搜索词对应的 `<mark>` 列表（**高亮域**，顺序 = DOM 文档序）。
+         *
+         *  ⚠️ 必须按 q 过滤一遍：`markInto` 之外的旧标记（换词后尚未清理的）不能参与定位 ——
+         *     与 `markAt` 内部的 q 过滤同一口径（Task 8 留的那条已知形状①）。
+         *  ⚠️ 只在 `.rvb-blocks`（`$refs.list`）里查：标记只会落在块正文宿主中。 */
+        _markList() {
+            const list = this.$refs.list;
+            const rx = window.textSearch.queryRegex(this.searchQuery, 'i');
+            if (!list || !rx) return [];
+            const out = [];
+            for (const m of list.querySelectorAll('mark.' + window.textSearch.MARK_CLASS)) {
+                if (rx.test(m.textContent || '')) out.push(m);   // 不带 /g ⇒ test() 无 lastIndex 副作用
+            }
+            return out;
+        },
+
+        /** 位置指示「n/N」；一个标记都没有 ⇒ 空串（不显示「0/0」这种噪声）。 */
+        _refreshSearchPos() {
+            const n = this.searchTotal || 0;
+            const i = (this.searchIdx < 0) ? 0 : this.searchIdx;
+            this.searchPos = n > 0 ? `${Math.min(i, n - 1) + 1}/${n}` : '';
+        },
+
+        /** 命中集合变过之后的收尾：重算总数 → 夹住下标 → 重新施加「当前项」样式。
+         *  ⚠️ **不滚动**（搜索/替换过程中自动滚动会把用户刚看的位置拽走）；只有显式跳转才滚。 */
+        _afterMarks() {
+            this.searchTotal = this._markList().length;
+            if (this.searchTotal === 0) this.searchIdx = -1;
+            else if (this.searchIdx < 0 || this.searchIdx >= this.searchTotal) this.searchIdx = 0;
+            this._applyCurrentMark(false);
+            this._syncReplaceLock();
+        },
+
+        /** 给第 `searchIdx` 个标记加 `.search-highlight--on`（旧的先摘）；`scroll` 为真时滚动块列表。
+         *
+         *  ⚠️ 一律用 `classList.add` / `classList.remove`，**绝不整体改 `className`** ——
+         *     那会把 `search-highlight` 基类一并冲掉（基类才是「这是一处命中」的语义，
+         *     `--on` 只表示「当前项」）。
+         *  ⚠️ 滚动容器是本页的 `.rvb-blocks`（`$refs.list`），**不是 `window`**：本仓 `window`
+         *     永不滚动（真正滚动的是 `.rvb-blocks`），且 `scrollIntoView` 会连所有可滚动祖先一起滚
+         *     （`_scrollInto` 的注释里记过那次「点条号整页跟着跳」的事故）——故照抄
+         *     `_scrollRightTo` 的做法。
+         *  ⚠️ `markAt` 的 `nth` **不要**传 `null`/`undefined`（`Number(null)` 是 0 ⇒ 会静默
+         *     指向第 1 处，Task 8 评审留的形状②）。 */
+        _applyCurrentMark(scroll) {
+            const list = this.$refs.list;
+            for (const m of (list ? list.querySelectorAll('.search-highlight--on') : [])) {
+                m.classList.remove('search-highlight--on');
+            }
+            this.searchCurBlock = -1;
+            const el = (list && this.searchIdx >= 0)
+                ? window.textSearch.markAt(list, this.searchQuery, this.searchIdx) : null;
+            if (el) {
+                el.classList.add('search-highlight--on');
+                const be = el.closest('.rvb-block');
+                if (be) {
+                    this.searchCurBlock = Number(be.getAttribute('data-block-idx'));
+                    if (scroll) this._scrollInto(be, list, 'nearest');
+                }
+            }
+            this._refreshSearchPos();
+        },
+
+        /** 「替换」按钮的禁用判据 + 原因（**取响应式状态**，不在模板里读 DOM —— 元素不是依赖）。
+         *
+         *  本仓既有口径：不可编辑必须**明说原因**，不得静默隐藏/静默失败（用户裁定）。
+         *  禁用元素不弹 tooltip ⇒ 原因走 `replaceLock` 这条**可见**文案（模板里另有 `title` 备份）。 */
+        _syncReplaceLock() {
+            const b = this.blocks[this.searchCurBlock];
+            this.replaceLock = (b && !this.canEdit(b))
+                ? `当前命中在「${this.labelZh(b.label)}」块上，该块类型不支持替换`
+                : '';
+        },
+
+        replaceCurrentDisabled() {
+            return this.searchCurBlock < 0 || this.replaceLock !== '';
+        },
+
+        /** 「下一个」/「上一个」：环形推进 `searchIdx` 并滚动块列表到该命中（spec §12）。 */
+        nextMatch() { this._stepMatch(1); },
+
+        prevMatch() { this._stepMatch(-1); },
+
+        _stepMatch(delta) {
+            const n = this._markList().length;      // 现取：替换/重渲染之后标记数是会变的
+            this.searchTotal = n;
+            if (n === 0) { this._refreshSearchPos(); return; }   // 无标记 ⇒ 空转（不假成功、不抛）
+            const cur = (this.searchIdx >= 0 && this.searchIdx < n) ? this.searchIdx : 0;
+            this.searchIdx = ((cur + delta) % n + n) % n;        // 环形（两端都要能绕回去）
+            this._applyCurrentMark(true);
+            this._syncReplaceLock();
+        },
+
+        /** 替换的**唯一落笔处**：文本类块直接对 `contentOf(b)` 替换。
+         *
+         *  ⚠️ **替换值必须函数式**（`() => this.replaceText`）：字符串替换值里的 `$&` / `$1`
+         *     会被 JS 当**替换模式**展开 ⇒ 用户输入 `$&X` 会插进「命中原文 + X」（旧页 f11_3
+         *     已修的缺陷，新页同样必须挡住）。函数式返回值一律**字面**写入。
+         *  返回 'changed' | 'none'。 */
+        _replaceInText(b) {
+            const cur = this.contentOf(b);
+            const rx = window.textSearch.queryRegex(this.searchQuery, 'gi');
+            if (!rx) return 'none';
+            const next = cur.replace(rx, () => this.replaceText);   // ← 函数式（见上）
+            if (next === cur) return 'none';
+            this.edits[b.__i] = next;
+            return 'changed';
+        },
+
+        /** 表格块：`parse` → **只在文本节点上**替换 → `serialize` 回写。
+         *
+         *  ⚠️ **绝不能对 `content` / `md_html` 直接做字符串替换**：那是**原始 HTML**，
+         *     字符串替换会命中标签与属性（搜 `td` 会把 `<td>` 变成 `<ZZ>`，表格当场塌掉；
+         *     这是 T46 登记在案的边界，Task 10 的用例 f18_11 钉住它）。
+         *  ⚠️ 源串取 `edits[i] ?? b.md_html`（与 `enterEdit` 同口径），**不取活 DOM**：
+         *     活 DOM 里已经插了搜索用的 `<mark>`，从它取源会把高亮标记写进 md。
+         *  返回 'changed' | 'none'。 */
+        _replaceInTable(b) {
+            const rx = window.textSearch.queryRegex(this.searchQuery, 'gi');
+            if (!rx) return 'none';
+            const t = window.tableEditor.parse(this.edits[b.__i] ?? b.md_html);
+            if (!t) return 'none';
+            const nodes = [];
+            const walker = document.createTreeWalker(t, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) nodes.push(node);   // 先收集再改：边走边改会踩到新节点
+            let changed = false;
+            for (const tn of nodes) {
+                const before = tn.nodeValue || '';
+                const after = before.replace(rx, () => this.replaceText);
+                if (after !== before) { tn.nodeValue = after; changed = true; }
+            }
+            if (!changed) return 'none';
+            this.edits[b.__i] = this._relImgs(window.tableEditor.serialize(t));
+            return 'changed';
+        },
+
+        /** 公式块：替换后逐行 `formulaEditor.validate`，**不合法就整块跳过**（绝不静默产生非法公式）。
+         *  返回 'changed' | 'skipped-formula' | 'none'。 */
+        _replaceInFormula(b) {
+            const rx = window.textSearch.queryRegex(this.searchQuery, 'gi');
+            if (!rx) return 'none';
+            const cur = this.contentOf(b);
+            const next = cur.replace(rx, () => this.replaceText);
+            if (next === cur) return 'none';
+            let touched = false;
+            for (const ln of window.mdInline.splitLines(next)) {
+                // 先剥对齐包裹再解析（与 `_buildFormulaEditor` 同口径：`edits[i]` 可能带 span 包裹）
+                const p = window.formulaEditor.parseLine(window.mdInline.parseLine(ln).inner);
+                if (!p) continue;                                  // 该行不是公式行 ⇒ 不参与判定
+                if (!window.formulaEditor.validate(p.tex, p.display).ok) return 'skipped-formula';
+                touched = true;
+            }
+            // 替换后行里**再也找不到一条合法公式行** ⇒ 说明它把公式结构也改掉了，同样跳过（不猜）
+            if (!touched) return 'skipped-formula';
+            this.edits[b.__i] = next;
+            return 'changed';
+        },
+
+        /** 按块类型分派替换。返回 'changed' | 'skipped-formula' | 'none'。 */
+        _replaceBlock(b) {
+            if (b.label === 'table') return this._replaceInTable(b);
+            if (b.label === 'display_formula') return this._replaceInFormula(b);
+            return this._replaceInText(b);
+        },
+
+        /** 替换后的收尾：**重建高亮** → 刷新切分预览。
+         *
+         *  ⚠️ 重建必须等 `$nextTick`：`edits[i] = …` 只是排了一次 Alpine 渲染 effect，
+         *     这一刻 DOM 还是旧的；**立刻**重标会被随后的 `x-html` 重渲染整块抹掉。
+         *  ⚠️ `schedulePreview()` 里那次防抖重扫（400ms 后）**也会**重建高亮，但它太慢、且属于
+         *     另一条路径；「替换路径自己负责重建」这件事必须有网（f18_13 把防抖掐掉后再断言）。 */
+        _afterReplace(affectedI) {
+            this.schedulePreview();
+            this.$nextTick(() => {
+                const bds = this._blockBds();
+                for (const i of affectedI) {
+                    const host = bds[i];
+                    if (host) window.textSearch.markInto(host, this.searchQuery);   // 自带 clearMarks ⇒ 幂等
+                }
+                this._afterMarks();
+            });
+        },
+
+        /** 「替换」：只作用于**当前命中所在的块**，且该块必须可编辑（否则按钮已禁用 + 给出原因）。 */
+        replaceCurrent() {
+            const b = this.blocks[this.searchCurBlock];
+            if (!b) { this.replaceInfo = '没有可替换的命中：请先搜索，并用「下一个」定位到某一处'; return; }
+            if (!this.canEdit(b)) {          // 按钮已禁用；这里再挡一次（禁用态被绕过时不静默写坏内容）
+                this.replaceInfo = this.replaceLock || '当前命中所在的块不支持替换';
+                return;
+            }
+            const st = this._replaceBlock(b);
+            if (st === 'skipped-formula') {
+                this.replaceInfo = '当前块的替换会破坏公式，已跳过';
+                return;
+            }
+            if (st !== 'changed') { this.replaceInfo = '当前块里没有可替换的内容'; return; }
+            this.replaceInfo = `已替换 1 个块（${this.labelZh(b.label)}）`;
+            this._afterReplace([b.__i]);
+        },
+
+        /** 「全部替换」：遍历**所有可编辑块**，按块类型分派。
+         *
+         *  ⚠️ 遍历的是「所有可编辑块」而不是 `searchHits`：命中集合是**字符串域**的，
+         *     而替换要落在各自**可改写的落点**上（表格走文本节点、公式要过 KaTeX 校验）——
+         *     两套口径不是一回事，混用就会「数得到却改不了 / 改得了却没数到」。
+         *  ⚠️ 替换是**用户显式动作**，不防抖（与「输入即搜」不同）。
+         *  ⚠️ 结束后必须报出**被跳过的条数**（不得静默少改几块）。 */
+        replaceAll() {
+            if (!this.searchQuery) { this.replaceInfo = '请先输入搜索词'; return; }
+            const affected = [];
+            let skipped = 0;
+            for (const b of this.blocks) {
+                if (!this.canEdit(b)) continue;            // D2：替换只作用于可编辑块
+                const st = this._replaceBlock(b);
+                if (st === 'changed') affected.push(b.__i);
+                else if (st === 'skipped-formula') skipped++;
+            }
+            if (!affected.length && !skipped) { this.replaceInfo = '没有可替换的内容'; return; }
+            this.replaceInfo = `已替换 ${affected.length} 个块`
+                + (skipped ? `（${skipped} 处因会破坏公式被跳过）` : '');
+            this._afterReplace(affected);
         },
 
         // ── P2：提交链路（compose → confirm → 轮询） ──

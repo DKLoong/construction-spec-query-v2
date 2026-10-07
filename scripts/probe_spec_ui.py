@@ -5068,6 +5068,15 @@ CASES["f17"] = [f17_1_formula_block_offers_a_working_fix_entry,
 _RVBS_BOX = ".rvb-search-box"
 _RVBS_INFO = ".rvb-search-info"
 _RVBS_MARKS = ".rvb-block-bd mark.search-highlight"
+# Task 10 的控件选择器（用**稳定的 class**而不是按钮文案：文案会改，选择器不该跟着改）
+_RVBS_POS = ".rvb-search-pos"          # 位置指示「第 n/N 处」
+_RVBS_PREV = ".rvb-search-prev"        # ◀ 上一个
+_RVBS_NEXT = ".rvb-search-next"        # 下一个 ▶
+_RVBS_REPLBOX = ".rvb-replace-box"     # 替换为…
+_RVBS_REPLONE = ".rvb-replace-one"     # 替换
+_RVBS_REPLALL = ".rvb-replace-all"     # 全部替换
+_RVBS_RINFO = ".rvb-replace-info"      # 替换结果 / 跳过条数文案
+_RVBS_RLOCK = ".rvb-replace-lock"      # 「当前命中所在的块不可替换」的原因说明
 
 
 def _rvb_pick_keyword(page, tid):
@@ -5264,12 +5273,361 @@ def f18_6_match_and_replaceable_counts_are_both_reported(page):
         f"`M < N` 但计数没有说明原因（title={title!r}）"
 
 
+def _rvb_pick_common_char(page, tid, min_blocks=2, editable_only=False):
+    """挑一个**跨块最广**的中文单字（落在最多块上的那个）；不足 `min_blocks` 块则返回空串。
+
+    ⚠️ 为什么是**单字**而不是两字词：跳转用例要的是「命中**散布在很多块**上」—— 单字的跨块
+    覆盖率通常远大于任何两字词，这样「从第 1 处环形退到最后一处」才必然把列表滚下去。
+    `editable_only=True` 时只统计**可编辑块**（替换用例要的是「多个可编辑块同时命中」）。
+    """
+    return page.evaluate("""async ({tid, minb, ed}) => {
+        const d = await (await fetch(`/import/review/${tid}/layout`)).json();
+        const notIn = new Set(d.not_in_markdown || []);
+        const editable = new Set(d.editable_labels || []);
+        const per = {};                       // 字 -> 含它的块数
+        for (const b of (d.blocks || [])) {
+            if (notIn.has(b.label)) continue;
+            if (ed) {
+                const hasSpan = b.start_line !== null && b.start_line !== undefined;
+                if (!hasSpan || !editable.has(b.label)) continue;
+            }
+            const seen = new Set();
+            for (const ch of (b.content || '')) {
+                if (ch >= '\\u4e00' && ch <= '\\u9fa5') seen.add(ch);
+            }
+            for (const ch of seen) per[ch] = (per[ch] || 0) + 1;
+        }
+        let best = '', bestN = 0;
+        for (const ch in per) { if (per[ch] > bestN) { bestN = per[ch]; best = ch; } }
+        return bestN >= minb ? best : '';
+    }""", {"tid": tid, "minb": min_blocks, "ed": editable_only})
+
+
+def _rvb_sample_block(page, label, key):
+    """找 `with_search_samples` 造出的样本块 —— 返回 `{idx, i}`（列表下标 / `__i`），没有则 None。"""
+    return page.evaluate("""({label, key}) => {
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
+        const i = d.blocks.findIndex((b) => b.label === label && (b.content || '').includes(key));
+        return i < 0 ? null : {idx: i, i: d.blocks[i].__i};
+    }""", {"label": label, "key": key})
+
+
+def _rvb_cur_block(page):
+    """当前命中所在的块（组件状态 `searchCurBlock`）；没有则 None。"""
+    return page.evaluate(f"""() => {{ const d = ({_Q})();
+        const b = d.blocks[d.searchCurBlock];
+        return b ? {{idx: d.searchCurBlock, i: b.__i, label: b.label}} : null; }}""")
+
+
+def f18_7_next_prev_moves_the_current_item_and_scrolls_the_block_list(page):
+    """★ 上一个/下一个：位置计数更新、当前项高亮可辨，且**滚动容器是 `.rvb-blocks`**。
+
+    判别性（本仓铁律）：本页 `window` **永不滚动**（真正滚动的是 `.rvb-blocks`，
+    `flex:1; overflow:auto`）⇒ 断言 `.rvb-blocks.scrollTop` **变化** 且 `window.scrollY === 0`。
+    把滚动写到 `window`（或 `scrollIntoView` 连带滚外层）的实现会在这两条上红。
+
+    夹具口径：挑一个**跨 ≥3 个块**的常见字 —— 从第 1 处点「上一个」会**环形**退到最后一处
+    （在列表底部），必然产生正向滚动；否则「已在视野内 ⇒ 不滚」会让本用例空转假绿。
+    """
+    tid = _rvb_seed(page, "s7")
+    assert tid is not None, "前置不成立：缺少参考夹具"
+    q = _rvb_pick_common_char(page, tid, min_blocks=3)
+    assert q, "没能挑出「跨 ≥3 个块」的常见字 ⇒ 本用例失去判别力（关键词 {q!r}）"
+
+    page.fill(_RVBS_BOX, q)
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() > 1, 8000), \
+        "搜索后高亮不足 2 处"
+    assert page.locator(_RVBS_POS).count() == 1, "工具条里没有位置指示（第 n/N 处）"
+    pos0 = page.locator(_RVBS_POS).inner_text().strip()
+    assert "/" in pos0, f"位置指示形状不对：{pos0!r}"
+
+    # 列表滚到顶：点「上一个」⇒ 环形退到**最后一处**（列表底部）⇒ 必然滚动
+    page.evaluate("() => { document.querySelector('.rvb-blocks').scrollTop = 0; }")
+    st0 = page.evaluate("() => document.querySelector('.rvb-blocks').scrollTop")
+
+    page.click(_RVBS_PREV)
+
+    assert poll_until(page, lambda: page.evaluate(
+        "() => document.querySelector('.rvb-blocks').scrollTop") > st0, 5000), \
+        f"点「上一个」没有滚动 `.rvb-blocks`（scrollTop 仍为 {st0}）—— 滚错容器 / 根本没滚"
+    assert page.evaluate("() => window.scrollY") == 0, \
+        "跳转滚动了 window（本页 window 永不滚动，应只滚 .rvb-blocks）"
+    pos1 = page.locator(_RVBS_POS).inner_text().strip()
+    assert pos1 != pos0, f"跳转后位置计数没更新（{pos0!r} → {pos1!r}）"
+    # 当前项：**加** class（不是整体改 className —— 那会把 search-highlight 基类冲掉）
+    assert page.evaluate("() => document.querySelectorAll("
+                         "'.rvb-block-bd mark.search-highlight--on').length") == 1, \
+        "当前项不是恰好一处 `.search-highlight--on`"
+    assert page.evaluate("() => document.querySelectorAll("
+                         "'.rvb-block-bd mark.search-highlight--on.search-highlight').length") == 1, \
+        "当前项丢了 `search-highlight` 基类（整体改 className 会把基类冲掉）"
+
+    # 环形：再点「下一个」回到第 1 处
+    page.click(_RVBS_NEXT)
+    assert poll_until(
+        page, lambda: page.locator(_RVBS_POS).inner_text().strip() == pos0, 5000), \
+        f"「下一个」没有环形回到第 1 处（期望 {pos0!r}，实为 {page.locator(_RVBS_POS).inner_text()!r}）"
+
+
+def f18_8_replace_current_writes_only_the_editable_block(page):
+    """★ 「替换」只作用于**可编辑块**，且新值真的落进 `edits[b.__i]`。
+
+    夹具用 `with_search_samples=True`：两块同含关键词，一块可编辑（label=text）、一块不可编辑
+    （label=chart）⇒ 一次断言两件事：可编辑块被改、不可编辑块**一个字节都没动**。
+    """
+    tid = _rvb_seed(page, "s8", with_search_samples=True)
+    assert tid is not None, "前置不成立：缺少参考夹具"
+    q = _RVBS_KEYWORD
+    page.fill(_RVBS_BOX, q)
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() > 0, 5000), \
+        "前置：搜索后没有高亮"
+    cur = _rvb_cur_block(page)
+    assert cur and cur["label"] == "text", f"当前命中不在可编辑样本块上：{cur!r}（夹具漂移？）"
+
+    page.fill(_RVBS_REPLBOX, "已替换甲")
+    page.click(_RVBS_REPLONE)
+
+    got = page.evaluate(f"() => ({_Q})().edits[{cur['i']}]")
+    assert got and "已替换甲" in got, f"「替换」没把新值写进 edits：{got!r}"
+    assert q not in got, f"替换后原文里的关键词仍在：{got!r}"
+    lock = _rvb_sample_block(page, "chart", "不可编辑行")
+    assert lock, "夹具里没有不可编辑样本块"
+    assert page.evaluate(f"() => Object.prototype.hasOwnProperty.call("
+                         f"({_Q})().edits, {lock['i']})") is False, \
+        "「替换」改动了**不可编辑**块"
+
+
+def f18_9_replacement_value_is_literal_not_a_js_pattern(page):
+    """★ 替换值**字面生效**：替换值填 `$&X` ⇒ `edits` 里就是**字面** `$&X`。
+
+    依据（旧页已修的缺陷）：字符串替换值里的 `$&` / `$1` 会被 JS 当替换模式展开 ——
+    用户输入 `$&X` 会插进「命中原文 + X」。必须用**函数式**替换值 `() => this.replaceText`。
+    判别性：改成字符串写法后 `'跨块搜索样本 可编辑行'.replace(rx, '$&X')` 得到
+    `'跨块搜索样本X 可编辑行'` ⇒ 本用例两条断言（含字面 `$&X` / 原词已不在）同时红。
+    """
+    tid = _rvb_seed(page, "s9", with_search_samples=True)
+    assert tid is not None, "前置不成立"
+    q = _RVBS_KEYWORD
+    page.fill(_RVBS_BOX, q)
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() > 0, 5000), \
+        "前置：搜索后没有高亮"
+    cur = _rvb_cur_block(page)
+    assert cur and cur["label"] == "text", f"当前命中不在可编辑样本块上：{cur!r}"
+
+    page.fill(_RVBS_REPLBOX, "$&X")
+    page.click(_RVBS_REPLONE)
+
+    got = page.evaluate(f"() => ({_Q})().edits[{cur['i']}]")
+    assert got and "$&X" in got, \
+        f"替换值被当成替换模式展开了（edits 里没有字面 `$&X`）：{got!r}"
+    assert q not in got, f"替换后原关键词仍在：{got!r}"
+
+
+def f18_10_replace_all_changes_multiple_blocks(page):
+    """★ 「全部替换」跨块生效：≥2 个块被改，且切分条数与替换前一致。
+
+    夹具口径：挑一个跨 ≥2 个**可编辑块**的常见字（现挑，不写死）⇒ 替换必然跨块。
+    切分条数一致 = 「替换普通正文不产生新的编号行」这条语义的现成网。
+    """
+    tid = _rvb_seed(page, "s10")
+    assert tid is not None, "前置不成立"
+    q = _rvb_pick_common_char(page, tid, min_blocks=2, editable_only=True)
+    assert q, "没能挑出「跨 ≥2 个可编辑块」的常见字 ⇒ 本用例失去判别力"
+    base = page.evaluate(f"() => ({_Q})().preview.count")
+    assert base > 0, "前置：切分预览条数为 0"
+
+    page.fill(_RVBS_BOX, q)
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() > 0, 8000), \
+        "前置：没有高亮"
+    page.fill(_RVBS_REPLBOX, "Z")
+    page.click(_RVBS_REPLALL)
+
+    n_edits = lambda: page.evaluate(f"() => Object.keys(({_Q})().edits).length")   # noqa: E731
+    assert poll_until(page, lambda: n_edits() >= 2, 8000), \
+        f"「全部替换」只改了 {n_edits()} 个块（应 ≥2）"
+    # 只改可编辑块（不可编辑块不该出现 edits —— 与「替换只作用于可编辑块」同一条 D2）
+    bad = page.evaluate(f"""() => {{ const d = ({_Q})();
+        return Object.keys(d.edits).filter((k) => {{
+            const b = d.blocks.find((x) => x.__i === Number(k));
+            return !b || !d.canEdit(b);
+        }}); }}""")
+    assert not bad, f"「全部替换」改动了不可编辑块：{bad}"
+    # 条数不变（替换的是普通正文，不产生新的编号行）
+    now_count = lambda: page.evaluate(f"() => ({_Q})().preview.count")     # noqa: E731
+    assert poll_until(page, lambda: now_count() == base, 8000), \
+        f"替换后切分条数变了（基线 {base} → {now_count()}）"
+
+
+def f18_11_table_replace_does_not_touch_html_tags(page):
+    """★ 表格块替换**只作用在文本节点**上，绝不碰标签与属性。
+
+    关键词故意取 `td` —— 它在本夹具里**只出现在 HTML 标签中**（`<td>…</td>`，共 12 处），
+    任何文本节点里都没有。于是：
+      · 正确实现（`tableEditor.parse` → 文本节点替换 → `serialize`）在表格上**无可替换文本**、
+        一个字节都不写（`edits` 不出现该块）；
+      · 「对 HTML 串直接 replace」的实现会把 `<td>` 写成 `<ZZ>` ⇒ 表格塌掉、`<td>` 数为 0。
+    """
+    tid = _rvb_seed(page, "s11", with_table=True)
+    assert tid is not None, "前置不成立（合成表没进去）"
+    ti = page.evaluate(f"() => ({_Q})().blocks.findIndex("
+                       f"(b) => b.label === 'table' && b.start_line !== null)")
+    assert ti >= 0, "夹具里没有已锚定的 table 块"
+    before = page.evaluate(f"""() => {{ const d = ({_Q})(); const b = d.blocks[{ti}];
+        const t = window.tableEditor.parse(b.md_html);
+        return t ? {{tds: t.querySelectorAll('td').length,
+                     rows: t.querySelectorAll('tr').length}} : null; }}""")
+    assert before and before["tds"] >= 2, f"前置不成立：合成表解析异常 {before!r}"
+
+    page.fill(_RVBS_BOX, "td")
+    page.fill(_RVBS_REPLBOX, "ZZ")
+    page.click(_RVBS_REPLALL)
+
+    after = page.evaluate(f"""() => {{ const d = ({_Q})(); const b = d.blocks[{ti}];
+        const eff = d.contentOf(b);
+        const t = window.tableEditor.parse(eff);
+        return {{wrote: Object.prototype.hasOwnProperty.call(d.edits, b.__i),
+                 tds: t ? t.querySelectorAll('td').length : -1,
+                 rows: t ? t.querySelectorAll('tr').length : -1,
+                 raw: eff}}; }}""")
+    assert after["tds"] == before["tds"], \
+        f"替换碰坏了表格：<td> 数 {before['tds']} → {after['tds']}（把 HTML 串当普通文本替换了）"
+    assert after["rows"] == before["rows"], \
+        f"替换碰坏了表格行：{before['rows']} → {after['rows']}"
+    assert "<ZZ" not in after["raw"] and "ZZ" not in after["raw"], \
+        f"替换写进了表格的 HTML（应只在文本节点上替换）：{after['raw'][:120]!r}"
+    assert after["wrote"] is False, \
+        "表格里没有可替换的**文本**却写了 edits（未改动不得写，否则凭空出现「已修改」）"
+
+
+def _rvb_formula_skip_count(page, tid, q, repl):
+    """现算「全部替换」里**会被跳过**的公式块数（探针自己遍历 `/layout` 算，不读组件状态）。
+
+    ⚠️ 口径说明（Task 9 评审核过的边界）：这里用**未编辑状态**的 `b.content` 现算 ——
+    `contentOf(b)` 在有 `edits[i]` 时会优先返回编辑后的值，因此 `_rvb_counts` 那一类
+    「按原始 content 现算」的期望值**只在不写 edits 时**与组件同口径。本函数在 f18_12 里
+    是**替换之前**调的（尚无 edits）⇒ 两侧同源；替换之后要断言的量一律走
+    `edits[...]` 直接字符串比对或 `/preview` 条数，**不**再用 content 现算。
+    """
+    return page.evaluate("""async ({tid, q, repl}) => {
+        const d = await (await fetch(`/import/review/${tid}/layout`)).json();
+        const editable = new Set(d.editable_labels || []);
+        const rx = window.textSearch.queryRegex(q, 'gi');
+        if (!rx) return 0;
+        let skipped = 0;
+        for (const b of (d.blocks || [])) {
+            if (b.label !== 'display_formula') continue;
+            const hasSpan = b.start_line !== null && b.start_line !== undefined;
+            if (!hasSpan || !editable.has(b.label)) continue;
+            const cur = b.content || '';
+            const next = cur.replace(rx, () => repl);
+            if (next === cur) continue;                  // 这一块本来就没有命中
+            let bad = false;
+            for (const ln of window.mdInline.splitLines(next)) {
+                const p = window.formulaEditor.parseLine(window.mdInline.parseLine(ln).inner);
+                if (p && !window.formulaEditor.validate(p.tex, p.display).ok) { bad = true; break; }
+            }
+            if (bad) skipped++;
+        }
+        return skipped;
+    }""", {"tid": tid, "q": q, "repl": repl})
+
+
+def f18_12_formula_replace_that_would_break_latex_is_skipped_and_reported(page):
+    """★ 公式块：替换后若 LaTeX **不合法** ⇒ 跳过该块、**不得**静默产生非法公式，并报出跳过条数。
+
+    夹具口径：关键词与替换值都**从夹具现推**（不写死）——
+    关键词取 tex 里的一条**控制序列**（连前导反斜杠一起），替换值取一个**未定义控制序列**
+    （KaTeX 严格模式必抛）。开跑前先**在探针里现证**「原公式合法 ∧ 这个替换确实会破坏它」，
+    否则本用例会空转（本仓「存在性断言放过内容错误」的教训）。
+    """
+    import re as _re
+    tid = _rvb_seed(page, "s12", with_formula=True)
+    assert tid is not None, "前置不成立"
+    fi = page.evaluate(f"() => ({_Q})().blocks.findIndex("
+                       f"(b) => b.label === 'display_formula' && b.start_line !== null)")
+    assert fi >= 0, "夹具里没有已锚定的 display_formula 块"
+    meta = page.evaluate(f"""() => {{ const d = ({_Q})(); const b = d.blocks[{fi}];
+        const line = d.contentOf(b);
+        const p = window.formulaEditor.parseLine(window.mdInline.parseLine(line).inner);
+        return {{i: b.__i, line: line, tex: p ? p.tex : null}}; }}""")
+    assert meta["tex"], "夹具的公式块不是标准公式行（前置不成立）"
+    # 源码里不写反斜杠字面量（避免转义歧义）：一律用 chr(92) 拼
+    _bs = chr(92)
+    # ⚠️ 关键词**必须连前导反斜杠一起取**（`_bs + "mathrm"`，不是裸 `mathrm`）：只取字母时，
+    #    原文 `t_{` + `_bs` + `mathrm{…}}` 里那个反斜杠不在匹配范围内、会被留在原处 ⇒
+    #    替换后得到 `_bs*2 + "zzzq"`，而「两个反斜杠」是 KaTeX 的**换行命令**（合法）⇒
+    #    公式照样合法、本用例空转（第一版实测踩过）。
+    m = _re.search(_bs + _bs + r"[A-Za-z]{2,}", meta["tex"])
+    assert m, f"公式里没有可用的 LaTeX 控制序列：{meta['tex']!r}"
+    q = m.group(0)
+    repl = _bs + "zzzq"             # 未定义控制序列 ⇒ KaTeX 严格模式必抛
+    pre = page.evaluate("""({line, q, repl}) => {
+        const p0 = window.formulaEditor.parseLine(window.mdInline.parseLine(line).inner);
+        const next = line.replace(window.textSearch.queryRegex(q, 'gi'), () => repl);
+        const p1 = window.formulaEditor.parseLine(window.mdInline.parseLine(next).inner);
+        return {ok0: window.formulaEditor.validate(p0.tex, p0.display).ok,
+                broke: !p1 || !window.formulaEditor.validate(p1.tex, p1.display).ok};
+    }""", {"line": meta["line"], "q": q, "repl": repl})
+    assert pre["ok0"] is True, "夹具公式本来就不合法（前置不成立）"
+    assert pre["broke"] is True, f"该替换没能破坏公式 ⇒ 本用例空转（关键词 {q!r}）"
+
+    page.fill(_RVBS_BOX, q)
+    page.fill(_RVBS_REPLBOX, repl)
+    page.click(_RVBS_REPLALL)
+
+    assert page.evaluate(f"() => Object.prototype.hasOwnProperty.call("
+                         f"({_Q})().edits, {meta['i']})") is False, \
+        "会破坏 LaTeX 的替换没有被跳过（公式块被写了 edits）"
+    # ★ 断言的是**整句**（含现算出来的跳过条数），不是「含『跳过』二字」这种松散子串
+    #   （Task 9 评审就挑过 f18_6 的松散子串断言，同类问题不在本组重犯）。
+    want_skip = _rvb_formula_skip_count(page, tid, q, repl)
+    assert want_skip >= 1, "现算出的跳过条数为 0 ⇒ 本用例失去判别力（夹具/关键词漂了）"
+    msg = lambda: page.locator(_RVBS_RINFO).inner_text().strip()        # noqa: E731
+    assert poll_until(page, lambda: msg() != "", 3000), "替换后没有任何结果文案"
+    assert _re.fullmatch(r"已替换 \d+ 个块（%d 处因会破坏公式被跳过）" % want_skip, msg()), \
+        f"跳过条数文案不对：界面 {msg()!r}，期望整句 `已替换 N 个块（{want_skip} 处因会破坏公式被跳过）`"
+
+
+def f18_13_highlight_is_rebuilt_after_replacement(page):
+    """★ 替换后高亮**自动重建**（`x-html` 重渲染会销毁块内的 `<mark>`）。
+
+    ⚠️ 必须**先把防抖重扫掐掉**再替换：`schedulePreview()` 会顺带排一次 400ms 后的全量重扫，
+    那次重扫会**顺带**把高亮补回来 ⇒ 不掐掉的话，一个「替换路径完全不重建高亮」的实现
+    也会在 400ms 后变绿（**假绿**，本仓记过这类陷阱）。掐掉后才逼出「替换路径自己负责重建」。
+    """
+    tid = _rvb_seed(page, "s13", with_search_samples=True)
+    assert tid is not None, "前置不成立"
+    q = _RVBS_KEYWORD
+    page.fill(_RVBS_BOX, q)
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() > 0, 5000), \
+        "前置：搜索后没有高亮"
+    # 替换值仍含关键词 ⇒ 替换后该块仍应命中（否则「重建高亮」无从断言）
+    page.fill(_RVBS_REPLBOX, q + "X")
+    page.evaluate(f"() => {{ const d = ({_Q})(); d.scheduleSearch = () => {{}}; }}")
+    page.click(_RVBS_REPLALL)
+
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() > 0, 2000), \
+        "替换后高亮没有重建（x-html 重渲染销毁了 <mark>，而替换路径没有重新施加）"
+    cur = _rvb_sample_block(page, "text", "可编辑行")
+    assert cur, "夹具里没有可编辑样本块"
+    n = page.evaluate(f"""() => document.querySelectorAll(
+        '[data-block-idx="{cur['idx']}"] .rvb-block-bd mark.search-highlight').length""")
+    assert n > 0, "被替换过的块里没有重建高亮"
+
+
 CASES["f18"] = [f18_1_toolbar_search_reports_a_count_matching_recomputation,
                 f18_2_hits_are_highlighted_and_the_table_stays_a_table,
                 f18_3_clearing_the_box_drops_marks_and_leaves_block_text_intact,
                 f18_4_repeating_the_search_does_not_nest_marks,
                 f18_5_blocks_not_in_markdown_are_not_counted,
-                f18_6_match_and_replaceable_counts_are_both_reported]
+                f18_6_match_and_replaceable_counts_are_both_reported,
+                f18_7_next_prev_moves_the_current_item_and_scrolls_the_block_list,
+                f18_8_replace_current_writes_only_the_editable_block,
+                f18_9_replacement_value_is_literal_not_a_js_pattern,
+                f18_10_replace_all_changes_multiple_blocks,
+                f18_11_table_replace_does_not_touch_html_tags,
+                f18_12_formula_replace_that_would_break_latex_is_skipped_and_reported,
+                f18_13_highlight_is_rebuilt_after_replacement]
 
 
 def _require_isolated_paths():

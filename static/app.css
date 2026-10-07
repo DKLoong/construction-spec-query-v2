@@ -954,8 +954,17 @@
    形态复用 `.review-toolbar`（控件同行、等高 36px、基线对齐），这里只补两样本页特有的东西：
    ① 不参与 flex 收缩（否则列表一变长，工具条会被压扁）；
    ② 计数字样（`.search-highlight` 的样式在 P4 Task 8 已加，**不要**在这里重复定义）。 */
-.rvb-search { flex: 0 0 auto; padding: 0 0 6px; }
+/* ⚠️ `flex-wrap: wrap` 是 Task 10 加的、**必需的**：`.review-toolbar` 的默认口径是
+   `nowrap`，而本排到 Task 10 已有 9 个控件（搜索框 200 + 上一个 + 下一个 + 位置 + 清空 +
+   计数 + 替换框 200 + 替换 + 全部替换 + 两份文案）⇒ `nowrap` 会把按钮**挤出右栏**、
+   横向溢出（按钮 `white-space:nowrap` 也压不动）。放开换行只影响本排，
+   `.review-toolbar` 其余实例口径不变（仍是同行等高 36px）。 */
+.rvb-search { flex: 0 0 auto; flex-wrap: wrap; padding: 0 0 6px; }
 .rvb-search small { color: var(--pico-muted-color); white-space: nowrap; }
+/* 位置指示「n/N」：等宽数字 ⇒ 跳转时数字变化不会让后面的控件左右抖 */
+.rvb-search-pos { font-variant-numeric: tabular-nums; }
+/* 「当前命中所在的块不可替换」的可见原因（禁用按钮不弹 tooltip，故必须是文案） */
+.rvb-replace-lock { color: #c08552; }
 .rvb-block { border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
              padding: 6px 10px; margin-bottom: 8px; cursor: pointer; }
 .rvb-block--on { border-color: #e8710a; box-shadow: 0 0 0 1px #e8710a inset; }
@@ -1084,5 +1093,10 @@
    等「当前/选中态」同一支，本文件里已有 9 处），**不新造色板**。
    mark 自带底色+字色 ⇒ 自带对比度，深色主题下同样可读，不需要 @media 深色分支。 */
 .search-highlight { background: #f2d8a7; color: #5c4a20; border-radius: 2px; padding: 0 1px; }
-/* 当前项（上一处/下一处定位用，Task 10）：比周边高亮更醒目 */
-.search-highlight--on { background: #e8710a; color: #fff; outline: 1px solid #c85a05; }
+/* 当前项（上一处/下一处定位用，Task 10）：比周边高亮更醒目。
+   ⚠️ **字色是深色而不是白**（Task 10 顺手修的对比度）：底色仍是既有强调橙 `#e8710a`
+   （与 .rvb-box--on / .rvb-block--on / .rvb-sel / .rvb-cell-sel / .rvb-session 同一支，
+   不新造色板），但白字压橙底只有 **3.09:1**（低于 WCAG AA 的 4.5:1）；
+   换成 `#1a1a1a` 后 **5.63:1** ⇒ 达标，且底色一个像素没动。
+   （这两个数是**现算**的 WCAG 相对亮度比，不是手估：报告 `manual_t10` 那一节有算法与输出。） */
+.search-highlight--on { background: #e8710a; color: #1a1a1a; outline: 1px solid #c85a05; }

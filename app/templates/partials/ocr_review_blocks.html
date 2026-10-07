@@ -100,17 +100,44 @@
                     会让每次输入在 4000 块上各跑一遍（本仓记过 2.8 万遍 / 进编辑 857ms 的事故）。
                  ⚠️ `width:200px` 内联写死是必需的：Pico 全局规则给 `input` 加了 `width:100%`，
                     不覆盖会把整条工具条独吞（与旧页同一处理）。
-                 ⚠️ 本 Task 只放「搜索框 + 计数 + 清空」；**上一个/下一个/替换是 Task 10 的事**。 -->
+                 ⚠️ Task 9 放了「搜索框 + 计数 + 清空」；Task 10 在此**同一排**补上
+                    「◀ 上一个 / 下一个 ▶ + 位置指示 + 替换框 + 替换 / 全部替换 + 结果文案」。
+                 ⚠️ 控件变多（9 个）后 `nowrap` 会把工具栏挤出右栏 ⇒ `app.css` 给 `.rvb-search`
+                    单独放开换行（`.review-toolbar` 其余实例仍是 `nowrap`，口径没变）。 -->
             <div class="review-toolbar rvb-search">
                 <input type="search" class="rvb-search-box" x-model="searchQuery"
                        @input="scheduleSearch()" placeholder="跨块搜索…" aria-label="跨块搜索"
                        style="width:200px" autocomplete="off">
+                <!-- 上一个 / 下一个（Task 10）：环形跳转，并把**块列表**（`.rvb-blocks`）滚到该块。
+                     ⚠️ 滚动容器不是 `window`（本页 window 永不滚动），见组件 `_applyCurrentMark`。 -->
+                <button type="button" class="secondary outline rvb-search-prev" @click="prevMatch()"
+                        title="上一个命中（到头会绕回最后一处）">◀ 上一个</button>
+                <button type="button" class="secondary outline rvb-search-next" @click="nextMatch()"
+                        title="下一个命中（到尾会绕回第一处）">下一个 ▶</button>
+                <!-- 位置指示「n/N」：N 是**高亮域**里真实存在的命中数（`N 个匹配` 是字符串域）——
+                     两个数都刻意保留（Ruling 31：高亮数低于计数是预期的，不为此去改任一侧）。 -->
+                <small class="rvb-search-pos" x-text="searchPos"
+                       title="当前位置 / 页面里已标出的命中数"></small>
                 <button type="button" class="secondary outline" @click="clearSearch()"
                         title="清空搜索并撤掉高亮">清空</button>
                 <!-- 计数：「N 个匹配 · M 个可替换」（D2 的两个口径必须分别说清）。
                      `M < N` 时 title 说明「其中 N−M 处所在块不可编辑」—— 否则用户不知道
                      那些命中为什么改不动。title 由状态下发，不在模板里算。 -->
                 <small class="rvb-search-info" x-text="searchInfo" :title="searchMsg"></small>
+                <!-- ── 替换（Task 10）──────────────────────────────────────────────
+                     替换**只作用于可编辑块**（D2）。当前命中落在不可编辑块上时「替换」**禁用**
+                     并给出可见原因（`replaceLock`）—— 本仓口径：不可编辑必须**明说**，不得静默。
+                     禁用元素不弹 tooltip ⇒ 原因走 `replaceLock` 的可见文案，按钮另带一份 `title`。 -->
+                <input type="text" class="rvb-replace-box" x-model="replaceText"
+                       placeholder="替换为…" aria-label="替换为" style="width:200px" autocomplete="off">
+                <button type="button" class="rvb-replace-one" @click="replaceCurrent()"
+                        :disabled="replaceCurrentDisabled()"
+                        :title="replaceLock || '替换当前命中所在的块'">替换</button>
+                <button type="button" class="secondary outline rvb-replace-all" @click="replaceAll()"
+                        title="替换所有可编辑块里的命中（表格只改单元格文本；会破坏公式的跳过）">全部替换</button>
+                <!-- 结果 / 跳过条数（不得静默少改几块） -->
+                <small class="rvb-replace-info" x-text="replaceInfo"></small>
+                <small class="rvb-replace-lock" x-show="replaceLock" x-cloak x-text="replaceLock"></small>
             </div>
             <div class="rvb-blocks" x-ref="list">
                 <template x-for="(b, i) in blocks" :key="'bk' + i">
