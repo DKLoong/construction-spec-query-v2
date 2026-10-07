@@ -1510,6 +1510,12 @@ _RVBI_VISIBLE = 3
 # 与 `with_image` 同手法：**不新增块**（display_formula 走行级配对，`content` 与 md 行
 # 逐字节相同；新增块会打破 21 vs 21 的配对关系），只把前几个的 page/bbox 挪进切片内。
 _RVBF_VISIBLE = 3
+# `with_formula_degraded` 的样本内容：**不是**标准公式行（不含 `$$`）。
+# 用途 = 让 `_buildFormulaEditor` 的**降级分支**（`formulaEditor.parseLine` 返 `null`）
+# 有真实样本跑到（此前只有代码级保证）。实测（node 直接调 `static/katex/katex.min.js`，
+# 与浏览器同库）：这串 CJK 在 KaTeX 严格模式下**只告警不抛**（`unicodeTextInMathMode`
+# 是 warn）⇒ `formulaError` 保持空、`.rvb-fml-err` 不出现，用例不会红在与被测行为无关处。
+_RVBF_DEGRADED_LINE = "这不是标准公式行"
 
 
 def _rvb_make_pdf(path, pages):
@@ -1575,17 +1581,20 @@ def _probe_png(w=160, h=120):
 
 
 def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False,
-              with_formula=False):
+              with_formula=False, with_formula_degraded=False):
     """造一个**带 layout.json** 的待审查任务并打开审查页；前置不成立返回 None。
 
-    `extra_md` / `with_table` / `with_image` / `with_formula` 均为 **opt-in**：
-    默认与原先逐字一致（不影响 f12/f13 的夹具计数）。
+    `extra_md` / `with_table` / `with_image` / `with_formula` / `with_formula_degraded`
+    均为 **opt-in**：默认与原先逐字一致（不影响 f12/f13 的夹具计数）。
     `with_image=True` 时把 9 个 image 块中的前几个挪进切片（另物化被引用的文件），
     供 f16 使用 —— 见函数内注释里「计数必须严格相等」那条。
     `with_table=True` 时追加一张**合成表格**（md 原文 + 对应块），供 f14 使用 ——
     真实夹具里唯一的 table 块在第 29 页，而本探针只切到 `_RVB_PAGES` 页，会被过滤掉。
     `with_formula=True` 时把前几个 display_formula 块的 page/bbox 挪进切片，供 f17 使用 ——
     真实夹具的 21 个公式块全在第 21~54 页，切片后为 0。**同样是挪而非新增**。
+    `with_formula_degraded=True` 时**追加**一块「label 是 display_formula 但内容不是标准
+    公式行」的已锚定块（+ 对应 md 行），供 f17_15 打**降级分支** ——
+    ⚠️ 与 `with_formula` **分开**：后者被 f17_1…f17_14 全部复用，往里加块会扰动既有用例。
     """
     import json as _json
     from pathlib import Path as _Path
@@ -1672,6 +1681,20 @@ def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False,
                         "bbox": None, "order": 10000, "global_block_id": 10000,
                         "start_line": _ts, "end_line": _ts + 1, "prefix": "", "suffix": "",
                         "clause_no": None, "md_html": _lines[_ts]})
+
+    if with_formula_degraded:
+        # 追加一个「不是标准公式行」的 display_formula 块（+ 对应 md 行），打降级分支。
+        # ⚠️ **必须新增一行 md 再锚定**，不能去蹭 md 里现成的空行：上面两条门槛隔离样本
+        #   已占用 [0,1) 与 [1,2)，任何再落在同一行的块都会与之**区间重叠** ⇒ `splice`
+        #   抛 ValueError ⇒ 该夹具的 compose/preview 一律 500（已在 :1649 记过这条）。
+        # ⚠️ 追加在**末尾**：该行是 md 的最后一行 ⇒ 与所有真实块的区间天然不重叠，
+        #   且 `aligned` 的追加顺序与 md 行号递增一致（阅读顺序不乱）。
+        md = md + "\n\n" + _RVBF_DEGRADED_LINE
+        _dl = len(md.split("\n")) - 1           # 追加 ⇒ 必是最后一行
+        aligned.append({"label": "display_formula", "content": _RVBF_DEGRADED_LINE,
+                        "page": 1, "bbox": None, "order": 10001, "global_block_id": 10001,
+                        "start_line": _dl, "end_line": _dl + 1, "prefix": "", "suffix": "",
+                        "clause_no": None})
 
     task_id = _make_review_task(page, f"PROBE-RVB {suffix}", f"探针块审查 {suffix}",
                                 ext=".pdf")
@@ -4099,6 +4122,48 @@ def _rvb_compose_lines(page, tid, edits):
     }""", [tid, edits])
 
 
+def _rvb_compose_md(page, tid, edits):
+    """调 `/compose` 拿拼装后的 **md 全文**（`_rvb_compose_lines` 的同源兄弟）。
+
+    f17_9 要的是**逐字节**比对，行数不够 —— 行数相同而某行被重写照样绿。"""
+    return page.evaluate("""async ([tid, edits]) => {
+        const r = await fetch('/import/review/' + tid + '/compose', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({edits})});
+        const j = await r.json();
+        return j.md_text;
+    }""", [tid, edits])
+
+
+def _rvb_task_md(tid):
+    """直查隔离库读回任务的 `md_text`（**提交链路的落库那一端**，不经任何接口）。"""
+    from app.database import get_db
+    with get_db() as conn:
+        row = conn.execute("SELECT md_text FROM import_tasks WHERE task_id=?",
+                           (tid,)).fetchone()
+    return row[0] if row else None
+
+
+def _rvb_task_status(tid):
+    """任务状态（`pending` ⇒ 还没提交；`processing`/`done` ⇒ confirm 已把 md 落库）。"""
+    from app.database import get_db
+    with get_db() as conn:
+        row = conn.execute("SELECT status FROM import_tasks WHERE task_id=?",
+                           (tid,)).fetchone()
+    return row[0] if row else None
+
+
+def _first_diff(a, b):
+    """两串第一个不同之处（返回可读片段，供断言消息用）。相同返回 None。"""
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i, a[max(0, i - 40):i + 40], b[max(0, i - 40):i + 40]
+    if len(a) != len(b):
+        return n, a[max(0, n - 40):], b[max(0, n - 40):]
+    return None
+
+
 def f16_15_image_align_is_single_line_and_keeps_clause_split(page):
     """★ 图片对齐（spec §8.6 左/中/右）：保存后 md 是**单行** span 包裹，
     且**条文数与条号序列不变**。
@@ -4304,6 +4369,96 @@ def f17_4_alignment_survives_reentering_edit_and_resaving(page):
         f"④ 改动后对齐被**静默丢掉**（重进编辑态没恢复对齐 / 保存时没带回去）：{second!r}"
 
 
+def _f17_assert_invalid_tex_is_blocked(page, idx, i, bad_tex, tag):
+    """「非法 LaTeX 被拦」的共用主体（f17_5 与 f17_6 同一条拦截路径，只换样本）。
+
+    断言**三条一起**（缺一即失去分辨力）：
+      ① 保存后**仍在编辑态**（`editingIdx` 未复位）—— 只断言「有报错」会被
+         「保存失败但已退出编辑态」蒙混，那等于**用户的改动丢了**；
+      ② 块内出现**可读**错误（`.rvb-fml-err` 有文案且可见）；
+      ③ `edits` **未被写入**（`hasOwnProperty` 为 false）。
+
+    ⚠️ ②**单独**不具分辨力：`formulaPreview()` 在 `@input` 上就实时把错误写进
+       `.rvb-fml-err`，故「点保存之前」它已是可见的 —— 它在这里只用来证「用户看得到
+       为什么被拒」，分辨力在 ① 与 ③。
+    ⚠️ ①**也不能单独**真：若保存按钮压根没被点到（选择器写错），① 平凡为真 ⇒ 假绿。
+       故本函数末尾做一次**正对照**：把公式改回合法再保存，必须退出编辑态**且**写出
+       `edits` —— 这才证明「上面那次没退出、没写 edits」是被拦，不是没跑。
+    """
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    blk.locator("button:has-text('纠正')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000), \
+        f"{tag}：没进公式编辑态"
+    blk.locator(".rvb-fml-src").fill(bad_tex)
+    blk.locator("button:has-text('保存')").click()
+
+    # ① 仍在编辑态
+    still = page.evaluate(f"() => ({_Q})().editingIdx")
+    assert still == idx, \
+        f"{tag}：非法公式被拒却**退出了编辑态**（editingIdx={still}）—— 用户的改动丢了"
+    # ② 块内可读错误
+    err = page.evaluate(f"""() => {{ const p = document.querySelector(
+        '[data-block-idx="{idx}"] .rvb-fml-err');
+        return p ? {{ text: p.textContent, display: getComputedStyle(p).display }} : null; }}""")
+    assert err is not None, f"{tag}：公式块内没有错误行这个部件"
+    assert err["text"].strip(), f"{tag}：非法公式被拒却没有在块内报错（用户不知道哪里错）"
+    assert err["display"] != "none", f"{tag}：错误文案写了但不可见（display={err['display']}）"
+    # ③ 未写 edits
+    has = page.evaluate(f"""() => Object.prototype.hasOwnProperty.call(({_Q})().edits, {i})""")
+    assert has is False, f"{tag}：非法公式被拒**却写进了 edits**（md 已被污染）"
+    # 用户输入的原文必须还在框里（被拒 ≠ 被清空）
+    val = page.evaluate(
+        f"""() => document.querySelector('[data-block-idx="{idx}"] .rvb-fml-src').value""")
+    assert val == bad_tex, f"{tag}：被拒后编辑框内容变了（用户白填一遍）：{val!r}"
+
+    # ⚠️ 正对照（见 docstring）：同一条保存路径在合法输入上必须**真的跑通**
+    blk.locator(".rvb-fml-src").fill("E_1")
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000), \
+        f"{tag}：正对照不成立 —— 合法公式保存后也没退出编辑态（保存路径没跑到）"
+    good = page.evaluate(f"() => ({_Q})().edits[{i}]")
+    assert good and "E_1" in good, \
+        f"{tag}：正对照不成立 —— 合法公式保存后没写 edits（上面的「被拦」无法成立）：{good!r}"
+
+
+def f17_5_invalid_latex_is_blocked_and_keeps_the_edit_state(page):
+    """★ 非法 LaTeX（`\\frac{1`，花括号不闭合）⇒ 保存被拦：**仍在编辑态 + 块内报错 + 不写 edits**。
+
+    三条断言与分辨力说明见 `_f17_assert_invalid_tex_is_blocked` 的 docstring。"""
+    idx, i, _tid = _rvb_seed_formula(page, "17e")
+    # 前置：该样本的公式体**本身合法**（否则「非法」这个条件不是我们造的 ⇒ 断言无意义）
+    ok = page.evaluate(f"""() => window.formulaEditor.validate(
+        window.formulaEditor.parseLine(({_Q})().contentOf(({_Q})().blocks[{idx}])).tex, true)""")
+    assert ok["ok"] is True, f"前置不成立：样本公式原本就非法：{ok}"
+    bad = "\\frac{1"                     # 花括号不闭合 ⇒ KaTeX 严格模式必抛
+    assert page.evaluate(
+        "(t) => window.formulaEditor.validate(t, true).ok", bad) is False, \
+        f"前置不成立：`{bad}` 在 KaTeX 严格模式下没被判非法（样本选错了）"
+    _f17_assert_invalid_tex_is_blocked(page, idx, i, bad, "f17_5")
+
+
+def f17_6_unknown_but_wellformed_command_is_blocked_too(page):
+    """★ 边界：**语法合法**但 KaTeX 不认的命令（`\\notacommand`）走**同一条**拦截路径。
+
+    目的是证拦截**不是**「只有空串/残缺花括号才拦」—— 这一条在 KaTeX 里的报错是
+    `Undefined control sequence`（与 f17_5 的 `Unexpected end of input…` 属**两类**不同
+    错误），而 `validate` 走的是 `throwOnError:true` 的**原始 LaTeX** ⇒ 未知命令同样抛、
+    拦截口径天然覆盖这类输入。
+
+    分辨力：若实现把「非法」窄化成某几种形态（或改用 `throwOnError:false`），本条红。"""
+    idx, i, _tid = _rvb_seed_formula(page, "17f")
+    bad = "\\notacommand"               # 实测 KaTeX：Undefined control sequence ⇒ 抛
+    assert page.evaluate(
+        "(t) => window.formulaEditor.validate(t, true).ok", bad) is False, \
+        f"前置不成立：`{bad}` 在 KaTeX 严格模式下没被判非法（样本选错了）"
+    # 前置（钉住「是**哪一类**非法」）：报错必须是「未知命令」，不是残缺花括号那类 ——
+    # 否则本条与 f17_5 其实是同一个样本，边界语义不成立。
+    err = page.evaluate("(t) => window.formulaEditor.validate(t, true).error", bad)
+    assert "Undefined control sequence" in err, \
+        f"前置不成立：`{bad}` 的报错不是「未知命令」类（样本选错了）：{err!r}"
+    _f17_assert_invalid_tex_is_blocked(page, idx, i, bad, "f17_6")
+
+
 def f17_7_formula_align_keeps_single_line_and_still_renders_katex(page):
     """★ 公式对齐「中」：存进 `edits` 的仍是**单行**同行 span，且**重渲染后仍被 KaTeX 渲染**。
 
@@ -4396,6 +4551,146 @@ def f17_8_formula_align_keeps_clause_split_and_line_count(page):
     assert after_lines == before_lines, \
         (f"对齐改变了拼装后的行数（{before_lines} → {after_lines}）——「新增行」是切分地基上"
          f"被实测证伪过的形态，md={md!r}")
+
+
+def f17_9_untouched_formula_block_keeps_md_byte_identical(page):
+    """★ 未编辑的公式块：**保存后 md 逐字节不变**（走真实 UI + 提交链路，不是调纯函数）。
+
+    ⚠️ 为什么**不能**只调 `formulaEditor.buildLine` 之类的纯函数：本仓已记过教训 ——
+       「纯函数往返不经过组件层的绝对化 ⇒ 等于没网」（曾有一条「计划以为有网、实测摘掉
+       基线重取照样全绿」的事故）。这里的 `edits` 必须是**真实点击「保存」**产出的那一份。
+    ⚠️ 为什么还要**落库那一端**（`confirm` 把拼装后的 md 原样写进 `import_tasks.md_text`）：
+       只比 `/compose` 的两次返回仍是「同一条接口的两次调用」；`confirm` 是提交链路里
+       **真正写库**的咽喉，且它还会再跑一次 `normalize_md`（声称幂等）—— 那一层也一并钉住。
+
+    ★ 实测记录（本轮，见报告）：本夹具 21 个 `display_formula` 块的 `b.content` 与 md 对应
+       行**逐字节相同（21/21，含 ` $$ … $$ ` 的首尾空格）**；本条断言的是**拼装后的 md**，
+       即「无论 `contentOf(b)` 回落到 `b.content` 还是走 `edits[i]`，落库的字节都不变」。
+
+    ⚠️ **重跑前必须重拷 `data/_probe_spec.db`**（本轮做变异取证时实测踩到）：本条是 f17 组里
+       **唯一**真的点「确认并继续导入」的用例 ⇒ 它的 code（`PROBE-RVB 17i`）会进
+       `specifications` ⇒ **同一份 DB 上再跑**时，上传会被前端判重命中（`import.js` 的
+       `if (this.duplicates.length && !this.dupConfirmed) window.confirm(...)`），而 headless
+       下 `window.confirm` 自动返回 false ⇒ 上传压根没发生 ⇒ 报错却是
+       「上传后任务号未落到 sessionStorage（响应头 X-Import-Task-Id 未接通？）」——
+       **误导性红**，与 flaky 不可分辨。故本组的环境前提写死在跑法里：每轮重拷 DB。
+    """
+    idx, i, tid = _rvb_seed_formula(page, "17i")
+    before = _rvb_compose_md(page, tid, {})          # 基线：同一条后端链路（提交链路的同一函数）
+
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    blk.locator("button:has-text('纠正')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000), \
+        "没进公式编辑态"
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000), \
+        "保存后没退出编辑态"
+
+    # 把**真实 UI 产出的那份 edits** 原样送进 compose（空对象即「一个字节都没写」）
+    edits = page.evaluate(f"() => ({_Q})().edits")
+    after = _rvb_compose_md(page, tid, edits)
+    d = _first_diff(before, after)
+    assert d is None, (f"未编辑直接保存改变了下游 md：第一个不同处在字符 {d[0]}\n"
+                       f"  前：…{d[1]!r}\n  后：…{d[2]!r}\n  edits 键={sorted(edits.keys())}")
+
+    # ── 提交链路（真实点击「确认并继续导入」）⇒ 落库的 md 必须与基线逐字节相同
+    #    ⚠️ 用 `_click_confirm_programmatically`（本仓口径：真实鼠标点击的 focus 滚动会
+    #       把容器带到底端 ⇒ 那类断言会假绿；这里虽不测滚动，但保持同一入口）。
+    #    front-end 提交 = compose（拼装）→ confirm（raw body）⇒ confirm 里再 `normalize_md`
+    #    一次（声称幂等）后写 `import_tasks.md_text`。
+    _click_confirm_programmatically(page)
+    ok = poll_until(page, lambda: _rvb_task_status(tid) in ("processing", "done"), 15000)
+    status = _rvb_task_status(tid)
+    assert ok, f"提交后任务没有进入 processing（status={status}）—— confirm 没跑到？"
+    stored = _rvb_task_md(tid)
+    assert stored is not None, "提交后库里读不到 md_text（任务被清了？）"
+    d2 = _first_diff(before, stored)
+    assert d2 is None, (f"提交链路把未编辑的 md 改写了：第一个不同处在字符 {d2[0]}\n"
+                        f"  基线：…{d2[1]!r}\n  落库：…{d2[2]!r}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# f17_15：`_buildFormulaEditor` 的**降级分支**补网（Ruling 20）
+# ═══════════════════════════════════════════════════════════════════
+# 背景：`display_formula` 标签下**并非一定是公式行**（实测有合成块）⇒ 剥掉对齐包裹后
+#       `formulaEditor.parseLine` 仍可能返 `null`；实现此时把**整行内容**当公式本体、
+#       `display = true`、并在块内给一条 `.rvb-fml-note` 说明。这条分支此前**只有代码级
+#       保证**（真实参考夹具的 21 个公式块全都是标准公式行，没有样本跑到过）。
+# 造法：`_rvb_seed(..., with_formula_degraded=True)` —— **独立 flag**，默认关闭；
+#       只追加「一个 md 行 + 一个 label == display_formula 但内容不含 `$$` 的**已锚定**块」。
+#       ⚠️ 不塞进 `with_formula`：那个 flag 被 f17_1…f17_14 全部复用，加块会扰动既有用例
+#          （例如按 label 取块的下标假设）。
+#       ⚠️ 必须**新增 md 行**再锚定：既有两条合成样本已占 [0,1) 与 [1,2)，同一行的第三块
+#          会与之区间重叠 ⇒ `splice` 抛 ValueError ⇒ 整份夹具的 compose/preview 全 500。
+# 为什么这条能验到「降级」：`_buildFormulaEditor` 的降级与否**只由内容形态决定**，
+#       而无真实样本时「不给降级说明」与「给了」在真实夹具上不可分辨（都走正常分支）⇒
+#       必须有这样一个样本才能把它从代码级保证变成**有断言**。
+# 分辨力来自**变异**（本轮报告，变异乙）：把降级分支去掉（`parseLine` 为 null 时直接
+#       `return`，不建编辑器）⇒ 本条**红在②**（编辑框是空的 `''`）。①仍绿属预期：
+#       块确实进了编辑态、编辑框也可见，只是没被灌值 —— 这正是②不可省的理由。
+
+
+def _rvb_seed_formula_degraded(page, suffix):
+    """造「display_formula 但不是标准公式行」的样本，返回 `(blocks 下标, task_id)`。"""
+    tid = _rvb_seed(page, suffix, with_formula_degraded=True)
+    assert tid is not None, "前置不成立：缺少参考夹具"
+    idx = page.evaluate(f"""() => ({_Q})().blocks.findIndex(
+        (b) => b.label === 'display_formula' && b.content === {_RVBF_DEGRADED_LINE!r})""")
+    assert idx >= 0, "夹具里没有降级样本块（with_formula_degraded 没生效？）"
+    return idx, tid
+
+
+def f17_15_formula_block_that_is_not_a_formula_line_degrades_visibly(page):
+    """★ 降级分支：`display_formula` 块的内容**不是**标准公式行时，整行被当公式本体，
+    且用户**看得到**「这不是标准公式行」的说明（此前只有代码级保证）。
+
+    三条一起断言：
+      ① 进编辑态**不抛异常**（用 `page.on('pageerror')` 捕获，页面仍在、编辑态成立）；
+      ② `.rvb-fml-src` 的值 = 该块内容**整体**（整行被当成本体，没被 `parseLine` 截掉）；
+      ③ `.rvb-fml-note` **可见且有文案**（用户能知道这条不是标准公式行）。
+    """
+    idx, _tid = _rvb_seed_formula_degraded(page, "17q")
+    # ── 前置：块已锚定（否则进不了编辑态，会红在与被测行为无关的地方）
+    assert page.evaluate(f"() => ({_Q})().hasSpan(({_Q})().blocks[{idx}])") is True, \
+        "降级样本块没有行区间（进不了编辑态 ⇒ 用例会以误导性方式红）"
+    # ── 前置：内容**确实**不是标准公式行（否则根本没走降级分支 ⇒ 断言会假绿）
+    parsed = page.evaluate(f"""() => window.formulaEditor.parseLine(
+        ({_Q})().contentOf(({_Q})().blocks[{idx}]))""")
+    assert parsed is None, f"前置不成立：该块内容能被 parseLine 解析 ⇒ 不是降级样本：{parsed!r}"
+
+    errs = []
+
+    def handler(e):
+        errs.append(str(e))
+
+    page.on("pageerror", handler)
+    try:
+        blk = page.locator(f'[data-block-idx="{idx}"]')
+        blk.locator("button:has-text('纠正')").click()
+        entered = poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000)
+        visible = blk.locator(".rvb-fml-src").is_visible()
+        page.wait_for_timeout(100)                   # 让可能的异常冒到 pageerror
+        assert entered, "① 点了纠正没进编辑态（降级分支把整块卡住了？）"
+        assert visible, "① 编辑态成立但公式编辑框不可见（降级分支没建出编辑器？）"
+        assert not errs, f"① 进编辑态抛了页面异常（降级分支没做 null 守卫？）：{errs}"
+
+        # ② 整行内容**整体**被当成本体
+        val = page.evaluate(f"""() => document.querySelector(
+            '[data-block-idx="{idx}"] .rvb-fml-src').value""")
+        assert val == _RVBF_DEGRADED_LINE, \
+            f"② 编辑框没装进整行内容（降级分支把内容截掉/取错了源）：{val!r}"
+
+        # ③ 可见的降级说明
+        note = page.evaluate(f"""() => {{ const p = document.querySelector(
+            '[data-block-idx="{idx}"] .rvb-fml-note');
+            return p ? {{ text: p.textContent,
+                          display: getComputedStyle(p).display }} : null; }}""")
+        assert note is not None, "③ 块内没有降级说明这个部件（.rvb-fml-note）"
+        assert note["text"].strip(), "③ 走了降级分支却没有文案（用户不知道这条不是标准公式行）"
+        assert note["display"] != "none", \
+            f"③ 降级文案写了但不可见（display={note['display']}）：{note['text']!r}"
+    finally:
+        page.remove_listener("pageerror", handler)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -4628,7 +4923,17 @@ def f17_14_modal_is_not_clipped_by_any_container(page):
     ⚠️ 另附**结构**断言（挂在 `.rvb-root` 之下）：只按矩形判，若把弹窗塞进
        `.rvb-block`（`content-visibility:auto` 隐式带 `contain: layout paint` ⇒ 是 fixed
        后代的**包含块**，块离开视口即被裁）那一类祖先，矩形在**当前**滚动位置下仍可能
-       恰好落在视口内 ⇒ 矩形一条不具判别力。"""
+       恰好落在视口内 ⇒ 矩形一条不具判别力。
+    ⚠️ `inClipHost` 是 Task 5 复审补的**第二条**结构断言（`inRoot` 也挡不住的那一类）：
+       把 `<template x-if="fmlModalOpen">` 整块移进 `.rvb-viewport`（`app.css` 里是
+       `overflow:auto`）或 `.rvb-img-stage` —— 两处都**没有** `transform/filter/contain`
+       ⇒ `position:fixed` 逃出 overflow 裁剪 ⇒ 矩形仍在视口内、`elementFromPoint` 仍返回
+       弹窗、`closest('.rvb-root')` 仍为真 ⇒ **上面五条断言全绿**（评审给出的反例）。
+       而「浮层别放进 `overflow:auto`」正是模板与 `review-blocks.js` 里都记过的既有教训
+       ⇒ 必须直接判**祖先链**：`.rvb-viewport / .rvb-blocks / .rvb-img-stage / .rvb-block`
+       一个都不许出现在它上面。
+       分辨力来自**变异**（本轮报告，变异戊）：把那块模板移进 `.rvb-viewport` ⇒ 本条红、
+       上面五条仍绿。"""
     _idx, _i, blk = _rvbt_seed(page, "17o")
     _rvbt_open_modal(blk, page)
     r = page.evaluate("""() => { const m = document.querySelector('.rvb-fml-modal');
@@ -4638,6 +4943,7 @@ def f17_14_modal_is_not_clipped_by_any_container(page):
                  vw: window.innerWidth, vh: window.innerHeight,
                  visible: getComputedStyle(m).display !== 'none',
                  inRoot: !!m.closest('.rvb-root'),
+                 inClipHost: !m.closest('.rvb-viewport, .rvb-blocks, .rvb-img-stage, .rvb-block'),
                  topAtCenter: !!(mid && mid.closest('.rvb-fml-modal') === m) }; }""")
     assert r["visible"] is True, f"弹窗不可见：{r}"
     assert r["w"] > 0 and r["h"] > 0, f"弹窗尺寸退化（0×0 ⇒ 被裁剪/未布局？）：{r}"
@@ -4645,6 +4951,10 @@ def f17_14_modal_is_not_clipped_by_any_container(page):
         and r["x"] + r["w"] <= r["vw"] and r["y"] + r["h"] <= r["vh"], \
         f"弹窗越出视口（被某个容器裁掉/推出了可视区）：{r}"
     assert r["inRoot"], "弹窗没有挂在 `.rvb-root` 之下（浮层必须挂根，别挂进块/容器里）"
+    assert r["inClipHost"], \
+        ("弹窗被挂进了会裁剪的宿主容器（应直挂 `.rvb-root`）—— "
+         "`.rvb-viewport`/`.rvb-blocks`/`.rvb-img-stage`/`.rvb-block` 都在祖先链上："
+         f"{r}")
     assert r["topAtCenter"], "弹窗中心点的最上层元素不是弹窗（被别的元素盖住 / 不可交互）"
 
 
@@ -4652,14 +4962,21 @@ CASES["f17"] = [f17_1_formula_block_offers_a_working_fix_entry,
                 f17_2_formula_editor_prefills_the_tex_body_only,
                 f17_3_saving_unchanged_formula_block_writes_nothing,
                 f17_4_alignment_survives_reentering_edit_and_resaving,
+                f17_5_invalid_latex_is_blocked_and_keeps_the_edit_state,
+                f17_6_unknown_but_wellformed_command_is_blocked_too,
                 f17_7_formula_align_keeps_single_line_and_still_renders_katex,
                 f17_8_formula_align_keeps_clause_split_and_line_count,
+                f17_9_untouched_formula_block_keeps_md_byte_identical,
                 # Task 5：表格内公式弹窗（编号分工已裁定：5/6/9/15 留给 Task 6）
                 f17_10_table_formula_button_blocks_when_no_cell_is_selected,
                 f17_11_modal_inserts_inline_formula_and_it_renders_after_save,
                 f17_12_modal_prefills_and_replaces_the_existing_formula_in_place,
                 f17_13_modal_refuses_invalid_latex,
-                f17_14_modal_is_not_clipped_by_any_container]
+                f17_14_modal_is_not_clipped_by_any_container,
+                # Task 6：降级分支补网（Ruling 20）。⚠️ 计划表第 15 行（「变异证伪 ⇒ f17_3 必红」）
+                # 按 Ruling 8 属**报告里的变异记录**、不是常驻用例 —— 本组条数以 runner 自报
+                # 那一行为准（`1–9` + `10–14` + 降级用例 = 15；派单里写的「14」是少算了一条）。
+                f17_15_formula_block_that_is_not_a_formula_line_degrades_visibly]
 
 
 def _require_isolated_paths():
