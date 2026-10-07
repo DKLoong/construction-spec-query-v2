@@ -748,3 +748,26 @@ md 里那张表 **0 个 `<img>`**、该表所在两页 **0 个 `image` 块**；�
 无法从对照图里单独抠出某一行的图例格，它只省"看"不解决"取"。2026-10-06 讨论后放弃。
 
 - **Blocked by**：P4 开工。
+
+## T45 — `anchor_blocks` 给 image 块补下发 `md_html`：存量 `layout.json` 需重锚（2026-10-07 登记）
+
+**背景**：P4 图片线要让「图片块」可编辑（替换 / 删除 / 对齐）。而图片块的 `content` 是**空串**
+（OCR 不下发图片本体）⇒ 前端唯一能读到「这块当前引用的是哪张图、有没有对齐包裹」的地方，
+就是它在 md 里的那一行。故 `anchor_blocks` 的**纯图块配对那一趟**现在一并下发 `md_html`
+（与表格块同一条理由）。
+
+**这是落盘产物结构的变更** ⇒ 改 `anchor_blocks` **只影响新导入**；存量 `layout.json` 里
+**已锚定**的 image 块**不带** `md_html`，前端的图片块编辑对它们不可用（表格格路径不受影响）。
+
+**交付**：对既有任务跑
+`D:/Python/python.exe scripts/backfill_layout.py --apply`
+—— 该脚本已有三条护栏（`base_sha256` 指纹校验、幂等、默认 dry-run），且**同时**补条文号
+（顺序不可颠倒：`clause_no` 由 `start_line` 推出）。
+
+**判据**：`layout.json` 里某个 `label == "image"` 且 `start_line is not None` 的块，
+有没有 `md_html` 键。
+
+**现状**：截至登记时 `import_tasks` **为空**（TTL 清扫已清空台账）⇒ **当前无待回填对象**。
+本条是给「将来恢复旧任务目录、或又出现存量任务」时用的指针。
+
+- **Blocked by**：无。

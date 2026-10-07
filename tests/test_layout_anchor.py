@@ -361,8 +361,9 @@ def test_table_block_carries_md_html():
     assert tb["md_html"] == _T_MD_1, "md_html 不等于 md 里那段原文"
 
 
-def test_non_table_block_has_no_md_html():
-    """★ md_html **只给表格块** —— 别的 label 带上它会让 payload 无谓膨胀。"""
+def test_text_block_has_no_md_html():
+    """★ md_html 只给**已锚定的表格块与图片块** —— 文本块带上它只会让 payload 无谓膨胀
+    （文本块的 `content` 与 md 行本就等价：锚定判据就是按行比对的）。"""
     base = "正文一。\n\n正文二。"
     anchored, _ = anchor_blocks(base, [_blk("正文一。", 0), _blk("正文二。", 1)])
     assert all("md_html" not in b for b in anchored)
@@ -413,6 +414,29 @@ def test_image_blocks_not_paired_when_counts_differ():
           _blk("", 2, label="image"), _blk("正文二。", 3)]      # 2 个图块 vs 1 行 <img>
     anchored, st = anchor_blocks(md, bl)
     assert st["image_paired"] == 0, f"计数不等却配对了：{st}"
+
+
+def test_anchored_image_block_carries_its_md_line():
+    """★ 已锚定的 `image` 块也要带 `md_html`（P4 图片编辑的前提）。
+
+    图片块的 `content` 是**空串**（OCR 不下发图片本体）⇒ 前端想知道「这块当前引用的是哪张图、
+    有没有对齐包裹」，唯一来源就是它在 md 里的那一行。没有它，图片块的「删除 / 对齐」
+    只能**重新造一个引用**，那就把原有的 `width` / `alt` / 对齐包裹全丢了。"""
+    md = "正文一。\n\n" + _IMG_A + "\n\n正文二。"
+    bl = [_blk("正文一。", 0), _blk("", 1, label="image"), _blk("正文二。", 2)]
+    anchored, st = anchor_blocks(md, bl)
+    assert st["image_paired"] == 1, f"前置不成立（没配上就不必谈 md_html）：{st}"
+    assert anchored[1]["md_html"] == _IMG_A, f"图片块没带它那行原文：{anchored[1]}"
+
+
+def test_unanchored_image_block_has_no_md_html():
+    """计数不等 ⇒ 整趟不配 ⇒ **不得**凭空带 md_html（没有 span 就没有「它在 md 里的原文」）"""
+    md = "正文一。\n\n" + _IMG_A + "\n\n正文二。"
+    bl = [_blk("正文一。", 0), _blk("", 1, label="image"),
+          _blk("", 2, label="image"), _blk("正文二。", 3)]      # 2 个图块 vs 1 行 <img>
+    anchored, st = anchor_blocks(md, bl)
+    assert st["image_paired"] == 0
+    assert all("md_html" not in b for b in anchored if b.get("label") == "image")
     assert all(b["start_line"] is None for b in anchored if b["label"] == "image")
     assert splice(md, anchored, {}) == md
 

@@ -426,7 +426,7 @@ def anchor_blocks(base_text: str, blocks: list[dict],
         #    重锚一个**已带** `md_html` 的块时（`scripts/backfill_layout.py` 会重跑本函数），
         #    两条非成功分支（`idx not in anchorable` / `missed`）走 `{**blk, ...}` 会把**旧值**
         #    原样带出 ⇒ 一个**未锚定**的表格块仍带着**过期的** md 原文（区间已随重锚改变），
-        #    而前端会拿它当编辑源 ⇒ 违反「只有已锚定的表格块才带 md_html」这条不变量。
+        #    而前端会拿它当编辑源 ⇒ 违反「只有**已锚定**的表格块 / 图片块才带 md_html」这条不变量。
         #    在循环开头剥掉该键，使该不变量由**构造**保证，而不是靠"调用链恰好不会发生"。
         blk.pop("md_html", None)
 
@@ -498,6 +498,11 @@ def anchor_blocks(base_text: str, blocks: list[dict],
             b["end_line"] = ln_no + 1
             b["prefix"] = ""
             b["suffix"] = ""
+            # 与表格块同一条理由：块的 `content` 是**空串**（OCR 不下发图片本体），
+            # 前端要知道「这块当前引用的是哪张图、有没有对齐包裹」，唯一来源就是这一行。
+            # 没有它，P4 图片编辑的「删除 / 对齐」只能**重造引用** —— 那会把原有的
+            # `width` / `alt` / 对齐包裹全丢掉。
+            b["md_html"] = "\n".join(lines[b["start_line"]:b["end_line"]])
             occupied.add(ln_no)
             anchored += 1
             image_paired += 1
