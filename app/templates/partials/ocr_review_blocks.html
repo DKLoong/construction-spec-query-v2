@@ -229,6 +229,14 @@
                                 <span class="rvb-sep"></span>
                                 <button type="button" @click="tableRemoveImages()" style="margin:0"
                                         title="删除选中格里的图片（不删文件）">删图</button>
+                                <!-- 表格内公式（P4 Task 5）：插入/替换**选中格**里的一段公式。
+                                     ⚠️ 插入锚点**写死**在「删图」之后：本工具条里 `.rvb-sep` 有多处
+                                     （行编辑器那排 + 本排前面三枚），按 `.rvb-sep` 定位会插错位置。
+                                     ⚠️ `@mousedown.prevent` **不是可选项**：点按钮会让格失焦、
+                                     光标塌掉 ⇒ 弹窗拿不到「插入到哪儿」（与 B/I/S 同一条理由）。 -->
+                                <button type="button" style="margin:0" @mousedown.prevent
+                                        @click="openFormulaModal()"
+                                        title="在选中格里插入或修改公式（格内已有公式就地替换）">公式</button>
                             </div>
                             <!-- 选区手势的**可发现性**提示（用户实测：只有 Shift+点 能用、界面又没提示
                                  ⇒ 「选不中多格 ⇒ 合并点不动」）。这段文案就是操作说明，别再删。
@@ -424,4 +432,43 @@
         </template>
         <p class="rvb-pick-pop-tip">右键单击确认后落盘，并插入当前编辑的单元格</p>
     </div>
+
+    <!-- 表格内公式弹窗（P4 Task 5，D1 = 方案 A）：**页面级单例**。
+         ⚠️ 必须挂在 `.rvb-root` 之下：`position:fixed` 的浮层放进 `.rvb-img-stage` /
+         任何 `overflow:auto` 的容器会被裁掉（同 `.rvb-pick-pop` 的教训，也别放进 `.rvb-block`
+         —— 它带 `content-visibility:auto`，隐式 `contain: layout paint` 会成为 fixed 后代的
+         包含块并在块离开视口时把它裁掉）。
+         ⚠️ 用 `x-if` 控**存在性**而不是只 `x-show`（同取图预览的教训：只切 display 时
+         隐藏元素照样在 DOM 里，多余的内容/请求与「到底开没开」在 DOM 上不可分辨）。
+         ⚠️ 它**挂在 `x-for` 之外**是刻意的：`fmlModal*` 是页面级状态，块内读页面级状态
+         会让每次交互跑 N 遍（性能铁律）—— 这里读它是合适的。
+         ⚠️ 错误文案一律走 `x-text`（= `textContent`），**不得** `innerHTML`：错误里含
+         用户输入的 LaTeX（KaTeX 会把原文回显进 message）⇒ 拼 HTML 就是自伤型 XSS 面。 -->
+    <template x-if="fmlModalOpen">
+        <div class="rvb-fml-modal" @keydown.escape.stop="closeFormulaModal()">
+            <div class="rvb-fml-modal-hd">
+                <strong x-text="fmlModalTitle()"></strong>
+            </div>
+            <!-- 输入框装的是**公式本体**（不含 `$`/`$$` 定界符）—— 定界符由「行内/块级」决定 -->
+            <input class="rvb-fml-modal-src" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="LaTeX（不含 $ 定界符）" x-model="fmlModalTex"
+                   @input="fmlModalPreview()">
+            <p class="rvb-fml-err" x-text="fmlModalError" style="color:#c00"></p>
+            <div class="rvb-fml-modal-preview"></div>
+            <div class="rvb-fml-modal-row">
+                <span class="rvb-fml-modal-lb">样式</span>
+                <button type="button" style="margin:0" title="行内公式：$…$"
+                        :class="!fmlModalDisplay && 'rvb-on'"
+                        @click="fmlModalSetDisplay(false)">行内</button>
+                <button type="button" style="margin:0" title="块级公式：$$…$$"
+                        :class="fmlModalDisplay && 'rvb-on'"
+                        @click="fmlModalSetDisplay(true)">块级</button>
+            </div>
+            <div class="rvb-fml-modal-actions">
+                <button type="button" style="margin:0" @click="fmlModalOk()">确定</button>
+                <button type="button" class="secondary" style="margin:0"
+                        @click="closeFormulaModal()">取消</button>
+            </div>
+        </div>
+    </template>
 </div>

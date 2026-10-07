@@ -926,6 +926,29 @@
 .rvb-fml-err { margin: 0.25rem 0 0; font-size: 0.8rem; }
 /* 与 `.rvb-table-err:empty` 同写法：空串即整条隐藏 */
 .rvb-fml-err:empty { display: none; }
+/* ── 表格内公式弹窗（P4 Task 5）：页面级**单例**浮层 ─────────────────────
+   ⚠️ `position: fixed` 是硬要求（挂 `.rvb-root` 之下）：放进任何被裁剪的容器都会看不见
+      （同 `.rvb-pick-pop` 的教训）。尺寸口径复用既有 `.rvb-*`：边框/圆角同 `.rvb-table-edit`，
+      预览底色/输入框字体同 `.rvb-fml-src`，不另起一套。 */
+.rvb-fml-modal { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+                 z-index: 70; width: min(30rem, calc(100vw - 2rem)); box-sizing: border-box;
+                 background: #faf7f3; border: 1px solid var(--pico-muted-border-color);
+                 border-radius: 10px; padding: 10px 12px;
+                 box-shadow: 0 8px 32px rgba(74, 68, 84, 0.22); }
+.rvb-fml-modal-hd { font-size: 0.8rem; margin-bottom: 6px; }
+.rvb-fml-modal-src { width: 100%; box-sizing: border-box; margin: 0; font-size: 0.85rem;
+                     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace; }
+.rvb-fml-modal-preview { margin-top: 6px; padding: 0.3rem 0.5rem; min-height: 2.2em;
+                         overflow-x: auto;
+                         background: var(--pico-code-background-color, #f6f6f6);
+                         border: 1px solid var(--pico-muted-border-color); border-radius: 6px; }
+.rvb-fml-modal-row { display: flex; align-items: center; gap: 0.3rem; margin-top: 6px;
+                     font-size: 0.78rem; color: var(--pico-muted-color); }
+.rvb-fml-modal-row button { margin: 0; font-size: 0.72rem; padding: 1px 6px; }
+/* 选中档的高亮：既有 `.rvb-on` 只写在 `.rvb-zoom` 作用域下，这里补本组件自己的那份 */
+.rvb-fml-modal-row button.rvb-on { border-color: var(--pico-primary); color: var(--pico-primary); }
+.rvb-fml-modal-actions { display: flex; justify-content: flex-end; gap: 0.3rem; margin-top: 8px; }
+.rvb-fml-modal-actions button { margin: 0; font-size: 0.78rem; padding: 2px 10px; }
 .rvb-blocks { flex: 1; overflow: auto; padding-right: 4px; }
 .rvb-block { border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
              padding: 6px 10px; margin-bottom: 8px; cursor: pointer; }
@@ -965,7 +988,13 @@
    缩字号 + 缩内边距 + 允许不换行（用户裁定）。 */
 .rvb-tools { display: flex; gap: 0.3rem; align-items: center; flex-wrap: nowrap;
              margin-bottom: 0.5rem; overflow-x: auto; }
-.rvb-tools button { margin: 0; font-size: 0.72rem; padding: 1px 6px; }
+/* ⚠️ `white-space: nowrap` **不是装饰**：`.rvb-tools` 是 `flex-wrap: nowrap; overflow-x: auto`
+   的**单行**工具条，而 flex 子项默认 `flex-shrink:1` ⇒ 放不下时按钮被横向压扁、两字标签
+   （`合并`/`删图`/`公式`…）**折成两行** ⇒ 高度从 20px 变 35px（实测：表格那排加到 17 个按钮后
+   `wrap.clientWidth == scrollWidth == 598`，两字按钮全变 35px）。这正是 f14_5 守的那条
+   「按钮不得被挤成竖排」。禁止折行后，放不下就**横向滚动**（`overflow-x:auto` 本来就是为
+   此写的），单个按钮始终保持一行高度。 */
+.rvb-tools button { margin: 0; font-size: 0.72rem; padding: 1px 6px; white-space: nowrap; }
 .rvb-sep { flex: 0 0 1px; height: 16px; background: var(--pico-muted-border-color); }
 /* 斜体按钮的 I 用**衬线**斜体：等宽无衬线的大写 I 倾斜后就是一根斜杠 */
 .rvb-btn-i { font-family: Georgia, "Times New Roman", serif; font-style: italic; }

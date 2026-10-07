@@ -4398,12 +4398,268 @@ def f17_8_formula_align_keeps_clause_split_and_line_count(page):
          f"被实测证伪过的形态，md={md!r}")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# f17_10…f17_14：**表格内**公式弹窗（P4 Task 5，用户裁定 D1 = 方案 A）
+# ═══════════════════════════════════════════════════════════════════
+#
+# 夹具：`_rvb_seed(..., with_table=True, with_formula=True)`。表格是**合成表**（真实产物
+# 里唯一的 table 块在 `_RVB_PAGES` 切片之外，同 f14）；`with_formula=True` 只把前 3 个公式块
+# 的 page 挪进切片，与本组互不干扰（选择器一律**按块作用域**取）。
+#
+# ★ Task 5 第一步实测（命令与原始输出见本轮报告）：
+#   **表格编辑态里，格内就是字面的 `$…$`，不是 `.katex`** —— 用**真实产物** `7c5b6ac9`
+#   的 table 块 `md_html`（30 个 `$`）走**真实 UI** 进编辑态，实测：
+#     {"katexInEditor": 0, "katexInCells": 0, "cells": 32, "cellsWithDollar": 10,
+#      "sampleText": "边坡高度  $ H $ (m)", "sampleHtml": "边坡高度  $ H $ (m)"}
+#   （纯函数侧 `window.tableEditor.parse(真实 md_html)` 同样 0 个 `.katex`、30 个 `$`。）
+#   成因：`enterEdit` 的表格分支把 **md 原文** `md_html` 交给 `window.tableEditor.parse`
+#   （`box.innerHTML = src`，不经过 KaTeX）⇒ 预填**从格内文本读**即可，
+#   不必去解 `<annotation encoding="application/x-tex">`（方案 A 的第一条前提成立）。
+
+
+def _rvbt_seed(page, suffix):
+    """表格（+公式块）夹具并进入表格编辑态，返回 `(块下标, __i, 块 locator)`。
+
+    前置不成立一律 assert 报错，不静默（本仓口径）。
+    """
+    assert _rvb_seed(page, suffix, with_table=True, with_formula=True) is not None, \
+        "前置不成立：合成表没进去（_rvb_seed(with_table=True) 返回 None）"
+    idx = page.evaluate("""() => Alpine.$data(document.querySelector('.rvb-root'))
+        .blocks.findIndex((b) => b.label === 'table' && b.start_line !== null)""")
+    assert idx >= 0, "前置不成立：找不到可编辑（已锚定）的表格块"
+    i = page.evaluate(f"() => ({_Q})().blocks[{idx}].__i")
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    blk.locator("button:has-text('纠正')").first.click()
+    assert poll_until(page, lambda: page.locator(".rvb-table-edit table").count() == 1, 5000), \
+        "点纠正后没有出现可编辑表格"
+    return idx, i, blk
+
+
+def _rvbt_fml_btn(blk):
+    """表格工具条里的「公式」按钮。
+
+    ⚠️ 必须按**表格那排**取：`.rvb-tools` 在块内有**两份**（行编辑那排在前、表格那排在后）
+    ⇒ `.last` 才是表格工具条 —— 与 f14_5/f14_16 的既有口径一致；页面级定位器在
+    Playwright 的 strict 模式下会因解析出多个元素直接报错。"""
+    return blk.locator(".rvb-tools").last.locator("button:has-text('公式')")
+
+
+def _rvbt_open_modal(blk, page):
+    """点「公式」并等弹窗出现（未出现即报错，不静默）。"""
+    _rvbt_fml_btn(blk).click()
+    assert poll_until(page, lambda: page.locator(".rvb-fml-modal").count() == 1, 3000), \
+        "点了表格工具条的「公式」按钮，弹窗没出现"
+
+
+def _rvbt_cell_text(page, n):
+    """第 n 个格（文档序）的**文本**（不含 HTML 标签）。"""
+    return page.evaluate(
+        "(n) => document.querySelectorAll('.rvb-table-edit table td')[n].textContent", n)
+
+
+def _rvbt_clear_cell(page, cell):
+    """把一格清空（真实键盘操作：点格 → Ctrl+A → Delete）—— 造「空格」场景。"""
+    cell.click()
+    page.keyboard.press("Control+A")
+    page.keyboard.press("Delete")
+
+
+def f17_10_table_formula_button_blocks_when_no_cell_is_selected(page):
+    """★ 表格工具条有「公式」按钮；**没有选中格**时点它 ⇒ 拦住 + 可见提示 + **弹窗不出现**。
+
+    ⚠️ 三条**必须一起**断言。只断言「按钮存在」是**假网**：按钮在、点它静默无反应照样绿，
+       而用户视角「点了没反应」与「功能坏了」不可分辨 —— 与取图「无编辑目标就拦住、
+       不静默」同口径（用户裁定过）。
+    分辨力：坏实现（无选中格仍开弹窗 / 或什么都不给）会红在第二、三条上。"""
+    _idx, _i, blk = _rvbt_seed(page, "17k")
+    btn = _rvbt_fml_btn(blk)
+    assert btn.count() == 1, f"表格工具条里没有「公式」按钮（count={btn.count()}）"
+    assert btn.is_visible(), "「公式」按钮存在但不可见"
+    # 前置：进编辑态默认选中首格（`enterEdit` 末尾的 `_selectTable()`）⇒ 必须先清掉选区
+    n_sel = page.evaluate(
+        "() => document.querySelectorAll('.rvb-table-edit .rvb-cell-sel').length")
+    assert n_sel == 1, f"前置不成立：进表格编辑态应默认选中 1 格（实得 {n_sel}）"
+    page.evaluate("() => document.querySelectorAll('.rvb-table-edit .rvb-cell-sel')"
+                  ".forEach((c) => c.classList.remove('rvb-cell-sel'))")
+    btn.click()
+    assert page.locator(".rvb-fml-modal").count() == 0, \
+        "没有选中格却打开了公式弹窗（应拦住、不打开）"
+    hint = page.evaluate("""() => { const p = document.querySelector('.rvb-table-err');
+        return p ? { text: p.textContent, display: getComputedStyle(p).display } : null; }""")
+    assert hint and hint["text"].strip(), f"没有选中格时没给任何可见提示：{hint}"
+    assert hint["display"] != "none", \
+        f"提示写了但不可见（display={hint['display']}）：{hint['text']!r} —— 用户看不到下一步"
+
+
+def f17_11_modal_inserts_inline_formula_and_it_renders_after_save(page):
+    """★ 选中**空格** → 开弹窗 → 输入 → 确定 ⇒ 格内出现 `$…$`（**行内**默认），
+    且**保存重渲染后**该公式真的被 KaTeX 渲染出来（`.katex` 出现）。
+
+    ⚠️ 两条**必须一起**断言。只断言「格内出现 `$…$`」会漏掉真正要证的失效面：
+       表格的 md 行是 **HTML 块**，而 KaTeX（`renderMathInElement`）扫的是文本节点
+       ⇒ 它在 `<td>` 里是否仍生效**必须实测**；且 `throwOnError:false` 会让「渲染失败」
+       静默保留字面 `$…$`（既不抛也不报错）⇒ 光看格内字符串分辨不出。
+    读序：**先**断言编辑前该块只读态 0 个 `.katex`（否则是旧 DOM 的渲染结果 ⇒ 假绿），
+       **后**轮询等重渲染把 `.katex` 变出来。"""
+    idx, i, blk = _rvbt_seed(page, "17l")
+    assert page.locator(f'[data-block-idx="{idx}"] .rvb-block-bd .katex').count() == 0, \
+        "前置不成立：该表块只读态本来就有 .katex（后面的断言会假绿）"
+    cells = page.locator(".rvb-table-edit table td")
+    assert cells.count() == 6, f"前置不成立：合成表应有 6 格（实得 {cells.count()}）"
+    _rvbt_clear_cell(page, cells.nth(5))
+    assert _rvbt_cell_text(page, 5).strip() == "", "前置不成立：没把该格清空"
+
+    _rvbt_open_modal(blk, page)
+    page.locator(".rvb-fml-modal-src").fill("E_0")
+    # 行内是默认（无原公式时）—— 这条在**点确定之前**断言，避免「碰巧用了块级」被后置抵消
+    assert page.evaluate(f"() => ({_Q})().fmlModalDisplay") is False, \
+        "无原公式时弹窗默认不是「行内」"
+    # ★ 实时预览必须真的渲染出来（`renderPreview` 写进预览宿主）：只断言「弹窗里有预览区
+    #   这个盒子」是假网 —— 宿主在、里面空的（接线断了 / 时序不对）照样绿，而用户看到的
+    #   是一块空白，无从判断自己写对没写对。
+    kx = lambda: page.locator(".rvb-fml-modal-preview .katex").count()  # noqa: E731
+    assert poll_until(page, lambda: kx() >= 1, 5000), \
+        f"弹窗预览区没有渲染出 KaTeX（.katex={kx()}）—— 输入→预览这条线没接上"
+    page.locator(".rvb-fml-modal button:has-text('确定')").click()
+    assert poll_until(page, lambda: page.locator(".rvb-fml-modal").count() == 0, 3000), \
+        "合法公式点「确定」后弹窗没关"
+    text = _rvbt_cell_text(page, 5)
+    assert text.strip() == "$E_0$", \
+        f"格内不是行内公式 `$E_0$`（定界符/取值不对）：{text!r}"
+
+    # 保存（走既有唯一出口）⇒ 只读态重渲染
+    blk.locator("button:has-text('保存')").first.click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000), \
+        "保存后没退出编辑态"
+    saved = page.evaluate(f"() => ({_Q})().edits[{i}]")
+    assert saved and "$E_0$" in saved, f"保存出来的 md 里没有该公式：{str(saved)[:200]!r}"
+    cnt = lambda: page.evaluate(  # noqa: E731
+        f"() => document.querySelectorAll('[data-block-idx=\"{idx}\"] .rvb-block-bd .katex')"
+        f".length")
+    ok = poll_until(page, lambda: cnt() >= 1, 15000)
+    html = page.evaluate(
+        f"() => document.querySelector('[data-block-idx=\"{idx}\"] .rvb-block-bd').innerHTML")
+    assert ok, (f"重渲染后公式**没有被 KaTeX 渲染**（.katex={cnt()}）—— 存了却渲染不出来"
+                f"（md={saved!r}）：{html[:200]!r}")
+
+
+def f17_12_modal_prefills_and_replaces_the_existing_formula_in_place(page):
+    """★ 格内**已有**公式 ⇒ 开弹窗**预填**它；改后确定 ⇒ 格内**只有一个**公式。
+
+    ⚠️ 「只有一个」必须用**格内 `$` 的个数**判（一个行内公式恰好 2 个）：只断言
+       「含新公式」的话，「替换」被写成「**追加**」照样绿 —— 而用户会看到格内两个公式
+       叠在一起（真实语料里格内公式极常见：某产物单表 40 个 `$`）。
+    分辨力来自**变异**（本轮报告）：把「替换 `[start,end)`」改成「在光标处追加」⇒ 本条红。"""
+    _idx, _i, blk = _rvbt_seed(page, "17m")
+    cell = page.locator(".rvb-table-edit table td").nth(5)
+    _rvbt_clear_cell(page, cell)
+    page.keyboard.type("$ E_0 $")            # 真实语料形态：带空格的行内公式
+    assert _rvbt_cell_text(page, 5).strip() == "$ E_0 $", \
+        f"前置不成立：没能在格内造出已有公式：{_rvbt_cell_text(page, 5)!r}"
+
+    _rvbt_open_modal(blk, page)
+    tex = page.evaluate(f"() => ({_Q})().fmlModalTex")
+    assert tex == " E_0 ", f"弹窗没有预填格内已有的公式本体：{tex!r}"
+    assert page.evaluate(f"() => ({_Q})().fmlModalDisplay") is False, \
+        "原公式是**行内**（`$…$`），弹窗却默认成块级（`$$…$$`）"
+
+    page.locator(".rvb-fml-modal-src").fill(" E_0 + 1 ")
+    page.locator(".rvb-fml-modal button:has-text('确定')").click()
+    assert poll_until(page, lambda: page.locator(".rvb-fml-modal").count() == 0, 3000), \
+        "合法公式点「确定」后弹窗没关"
+    text = _rvbt_cell_text(page, 5)
+    assert "E_0 + 1" in text, f"改动没落进格内：{text!r}"
+    assert text.count("$") == 2, \
+        (f"格内公式数不对（`$` 的个数={text.count('$')}，一个行内公式应为 2）—— "
+         f"「替换」被写成了「追加」？：{text!r}")
+    assert "$ E_0 + 1 $" in text, f"替换结果不是行内公式（应保留原定界符类型）：{text!r}"
+
+    # ── 第二轮：「行内/块级」开关是最终裁决（spec §8.5 要「按原公式是行内还是块级分别输出」，
+    #    用户手里的开关可以覆盖原样式）⇒ 切成块级后定界符必须变 `$$…$$`，且**仍然只有一个**公式。
+    _rvbt_open_modal(blk, page)
+    assert page.evaluate(f"() => ({_Q})().fmlModalDisplay") is False, \
+        "重开弹窗时格内是行内公式，默认却不是「行内」"
+    page.locator(".rvb-fml-modal button:has-text('块级')").click()
+    assert page.evaluate(f"() => ({_Q})().fmlModalDisplay") is True, \
+        "点「块级」没有切到块级"
+    page.locator(".rvb-fml-modal button:has-text('确定')").click()
+    assert poll_until(page, lambda: page.locator(".rvb-fml-modal").count() == 0, 3000), \
+        "切块级后点「确定」，弹窗没关"
+    text2 = _rvbt_cell_text(page, 5)
+    assert text2.strip() == "$$ E_0 + 1 $$", \
+        f"切「块级」后格内不是块级公式（也没再多出一个公式）：{text2!r}"
+    # 反向：原公式已是**块级** ⇒ 重开弹窗的默认样式必须是块级（「按原公式」的另一半）
+    _rvbt_open_modal(blk, page)
+    assert page.evaluate(f"() => ({_Q})().fmlModalDisplay") is True, \
+        "格内公式已是块级，重开弹窗却默认成「行内」"
+    tex2 = page.evaluate(f"() => ({_Q})().fmlModalTex")
+    assert tex2 == " E_0 + 1 ", f"块级公式的预填本体不对（定界符没剥干净？）：{tex2!r}"
+    page.locator(".rvb-fml-modal button:has-text('取消')").click()
+
+
+def f17_13_modal_refuses_invalid_latex(page):
+    """★ 非法 LaTeX：点「确定」⇒ 弹窗**不关**、弹窗内**报错**、格内**一个字符都不变**。
+
+    三条**必须一起**断言：只断言「报错了」漏掉「弹窗被关掉、用户白填一遍」；
+    只断言「弹窗没关」漏掉「悄悄写进去了半截公式」。"""
+    _idx, _i, blk = _rvbt_seed(page, "17n")
+    _rvbt_clear_cell(page, page.locator(".rvb-table-edit table td").nth(5))
+    assert _rvbt_cell_text(page, 5).strip() == "", "前置不成立：没把该格清空"
+    _rvbt_open_modal(blk, page)
+    page.locator(".rvb-fml-modal-src").fill("\\frac{1}{")      # 花括号不闭合 ⇒ KaTeX 必抛
+    page.locator(".rvb-fml-modal button:has-text('确定')").click()
+    assert page.locator(".rvb-fml-modal").count() == 1, \
+        "非法公式点「确定」把弹窗关掉了（用户白填一遍、且看不出为什么）"
+    err = page.evaluate("""() => { const p = document.querySelector('.rvb-fml-modal .rvb-fml-err');
+        return p ? { text: p.textContent, display: getComputedStyle(p).display } : null; }""")
+    assert err is not None, "弹窗里没有错误行这个部件"
+    assert err["text"].strip(), "非法公式被拒却没有在弹窗内报错（用户不知道哪里错）"
+    assert err["display"] != "none", f"错误文案写了但不可见（display={err['display']}）"
+    assert _rvbt_cell_text(page, 5).strip() == "", \
+        f"非法公式被拒，却还是写进了格内：{_rvbt_cell_text(page, 5)!r}"
+
+
+def f17_14_modal_is_not_clipped_by_any_container(page):
+    """★ 弹窗**不被容器裁剪**：`getBoundingClientRect()` 完整落在视口内（浮层挂错祖先的
+    判别性用例）。
+
+    ⚠️ 判据取**矩形**而不是「元素存在」：`x-show`/隐藏祖先下元素照样在 DOM 里、断言恒绿。
+      这里同时钉住尺寸非退化（0×0 的矩形会让「在视口内」平凡成立）。
+    ⚠️ 另附**结构**断言（挂在 `.rvb-root` 之下）：只按矩形判，若把弹窗塞进
+       `.rvb-block`（`content-visibility:auto` 隐式带 `contain: layout paint` ⇒ 是 fixed
+       后代的**包含块**，块离开视口即被裁）那一类祖先，矩形在**当前**滚动位置下仍可能
+       恰好落在视口内 ⇒ 矩形一条不具判别力。"""
+    _idx, _i, blk = _rvbt_seed(page, "17o")
+    _rvbt_open_modal(blk, page)
+    r = page.evaluate("""() => { const m = document.querySelector('.rvb-fml-modal');
+        const b = m.getBoundingClientRect();
+        const mid = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+        return { x: b.x, y: b.y, w: b.width, h: b.height,
+                 vw: window.innerWidth, vh: window.innerHeight,
+                 visible: getComputedStyle(m).display !== 'none',
+                 inRoot: !!m.closest('.rvb-root'),
+                 topAtCenter: !!(mid && mid.closest('.rvb-fml-modal') === m) }; }""")
+    assert r["visible"] is True, f"弹窗不可见：{r}"
+    assert r["w"] > 0 and r["h"] > 0, f"弹窗尺寸退化（0×0 ⇒ 被裁剪/未布局？）：{r}"
+    assert r["x"] >= 0 and r["y"] >= 0 \
+        and r["x"] + r["w"] <= r["vw"] and r["y"] + r["h"] <= r["vh"], \
+        f"弹窗越出视口（被某个容器裁掉/推出了可视区）：{r}"
+    assert r["inRoot"], "弹窗没有挂在 `.rvb-root` 之下（浮层必须挂根，别挂进块/容器里）"
+    assert r["topAtCenter"], "弹窗中心点的最上层元素不是弹窗（被别的元素盖住 / 不可交互）"
+
+
 CASES["f17"] = [f17_1_formula_block_offers_a_working_fix_entry,
                 f17_2_formula_editor_prefills_the_tex_body_only,
                 f17_3_saving_unchanged_formula_block_writes_nothing,
                 f17_4_alignment_survives_reentering_edit_and_resaving,
                 f17_7_formula_align_keeps_single_line_and_still_renders_katex,
-                f17_8_formula_align_keeps_clause_split_and_line_count]
+                f17_8_formula_align_keeps_clause_split_and_line_count,
+                # Task 5：表格内公式弹窗（编号分工已裁定：5/6/9/15 留给 Task 6）
+                f17_10_table_formula_button_blocks_when_no_cell_is_selected,
+                f17_11_modal_inserts_inline_formula_and_it_renders_after_save,
+                f17_12_modal_prefills_and_replaces_the_existing_formula_in_place,
+                f17_13_modal_refuses_invalid_latex,
+                f17_14_modal_is_not_clipped_by_any_container]
 
 
 def _require_isolated_paths():

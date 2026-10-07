@@ -67,6 +67,15 @@ function reviewBlocks() {
         _fmlAlignBaseline: null, // 进编辑态时**恢复出来的**对齐；守卫比的是它与 `_fmlAlign`
         _fmlSrcLine: null,    // 块 md 原文整行（`buildLine` 用它保留首尾空白）
         _fmlDisplay: true,    // 公式是行间($$)还是行内($)：标准公式行取 `p.display`，降级取 true
+        // ── 表格内公式弹窗（P4 Task 5）：**页面级单例**（挂在 `x-for` 之外）──────
+        // ⚠️ 这几项**只许**被根层/弹窗自身的绑定读；**不得**写进 `x-for` 里的块绑定
+        //    （块内读页面级状态 ⇒ 每次交互跑 N 遍，本仓性能铁律）。
+        fmlModalOpen: false,   // 弹窗存在性（模板用 `x-if`，不是 `x-show`）
+        fmlModalTex: '',       // 弹窗输入框内容（公式本体，不含定界符）
+        fmlModalDisplay: false, // false = 行内 `$…$`；true = 块级 `$$…$$`
+        fmlModalError: '',     // 弹窗内的错误行（**只由「确定」写**；实时渲染错误走预览宿主）
+        fmlModalCell: null,    // 打开时的目标格（DOM 元素，**不进响应式**：同 `_cropImg`）
+        _fmlCaretAt: null,     // 打开时的光标位置（用**文本偏移**存，不存 Range 对象）
         cropMode: false,      // 裁剪模式（在编辑态里的图上再拖一个要保留的矩形）
         cropRect: null,       // 裁剪框：**显示坐标**（CSS 像素，原点 = 图左上角）
         _cropDrag: null,
@@ -740,6 +749,195 @@ function reviewBlocks() {
         /** 公式对齐：**只记，不写行**（保存时统一落 —— 与文本行「保存时统一落」口径一致）。 */
         formulaAlign(v) {
             this._fmlAlign = v;
+        },
+
+        // ── P4 公式线：**表格内**公式弹窗（页面级**单例**，D1 = 方案 A）──────────
+        //
+        // 与公式块（上面那节）的分工：公式块是「一块 = 一行公式」的就地编辑；这里是
+        // 「表格某个**格**里的一段 `$…$`」的插入/替换 —— 落点是 `contenteditable` 的格。
+        //
+        // ★ 前提已**实测**（2026-10-07，Task 5 第一步）：表格编辑态里格内是**字面 `$…$`**，
+        //   不是 `.katex` —— `enterEdit` 的表格分支把 **md 原文** `md_html` 交给
+        //   `window.tableEditor.parse`（`box.innerHTML = src`，全程不经 KaTeX）。
+        //   真实产物 `7c5b6ac9` 的 table 块 md_html（30 个 `$`）走真实 UI 进编辑态实测：
+        //   `{katexInEditor: 0, katexInCells: 0, cells: 32, cellsWithDollar: 10}`。
+        //   ⇒ 预填**从格内文本读**（`formulaEditor.findInText`），不必解 MathML。
+        //
+        // ⚠️ 定位**一律用 `formulaEditor.findInText`**，不在这里另写一套 `$…$` 扫描：
+        //   `$$…$$` 优先、空公式不选、区间含定界符，这三条口径只该有一份实现。
+        // ⚠️ 写入**不序列化、不写 `edits`** —— 表格仍由用户点「保存」走 `saveEdit` 的表格分支
+        //   落库（与「编辑期只改活 DOM、保存才落 edits」的既有语义一致）。
+
+        /** 弹窗预览宿主 / 输入框：弹窗是页面级**单例**（不在 `x-for` 内）⇒ 按文档查是安全的
+         *  （`x-for` 里同名 `x-ref` 会被最后一项覆盖，那是另一条坑，见 `_editBox`）。 */
+        _fmlModalInput() {
+            return document.querySelector('.rvb-fml-modal .rvb-fml-modal-src');
+        },
+
+        _fmlModalPreviewHost() {
+            return document.querySelector('.rvb-fml-modal .rvb-fml-modal-preview');
+        },
+
+        /** 弹窗标题：写明作用在**哪一格**（用户要知道自己在改哪）。 */
+        fmlModalTitle() {
+            const cell = this.fmlModalCell;
+            const t = this._tableEl();
+            if (!cell || !t) return '表格公式';
+            const rows = [...t.querySelectorAll('tr')];
+            const tr = cell.closest('tr');
+            const r = rows.indexOf(tr) + 1;
+            const c = tr ? [...tr.children].filter((x) => /^(TD|TH)$/i.test(x.tagName)).indexOf(cell) + 1 : 0;
+            return (r > 0 && c > 0) ? `表格公式 · 第 ${r} 行第 ${c} 格` : '表格公式';
+        },
+
+        /** 当前光标在 `cell` 内的**文本偏移**（不在格里 ⇒ null）。
+         *
+         *  ⚠️ 存**偏移**而不是 `Range` 对象：打开弹窗后焦点会移到输入框，活选区那一刻就没了；
+         *    而 `Range` 一旦落进 Alpine 状态就有被套 Proxy 的风险（本仓已有
+         *    「DOM 元素放进响应式状态会出 Illegal invocation」的记载，能绕开就绕开）。
+         *    偏移在确定时由 `_fmlTextRange` 还原成 `Range` —— 与「替换原公式」共用同一条映射。 */
+        _fmlCaretOffsets(cell) {
+            try {
+                const sel = window.getSelection();
+                if (!sel || !sel.rangeCount) return null;
+                const r = sel.getRangeAt(0);
+                if (!cell.contains(r.startContainer) || !cell.contains(r.endContainer)) return null;
+                const pre = document.createRange();
+                pre.selectNodeContents(cell);
+                pre.setEnd(r.startContainer, r.startOffset);
+                const mid = document.createRange();
+                mid.selectNodeContents(cell);
+                mid.setEnd(r.endContainer, r.endOffset);
+                return { start: pre.toString().length, end: mid.toString().length };
+            } catch (e) {
+                return null;      // 光标取不到不是错误（下面会回落到「格内容末尾」）
+            }
+        },
+
+        /** 把 `cell` 文本里的 `[start, end)` 偏移映射成 `Range`（映射不到 ⇒ null）。
+         *
+         *  只走**文本节点**，与 `Element.textContent` 的口径严格一致（`<br>`/元素边界都不产生
+         *  字符）—— 用 `Range.toString()` 量偏移、再用同一套走法还原，两侧同源。 */
+        _fmlTextRange(cell, start, end) {
+            const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT, null);
+            const rng = document.createRange();
+            let pos = 0, node, gotStart = false, gotEnd = false;
+            while ((node = walker.nextNode())) {
+                const len = node.nodeValue.length;
+                if (!gotStart && start <= pos + len) {
+                    rng.setStart(node, Math.max(0, start - pos));
+                    gotStart = true;
+                }
+                if (!gotEnd && end <= pos + len) {
+                    rng.setEnd(node, Math.max(0, end - pos));
+                    gotEnd = true;
+                }
+                if (gotStart && gotEnd) return rng;
+                pos += len;
+            }
+            return null;
+        },
+
+        /** 开弹窗。**没有选中格就拦住并给出下一步** —— 与取图「无编辑目标就拦住、不静默」
+         *  同口径（用户裁定过）：不假装成功、不静默、也不打开一个没有落点的弹窗。 */
+        openFormulaModal() {
+            const t = this._tableEl();
+            const cell = t ? t.querySelector('.rvb-cell-sel') : null;
+            if (!cell) {
+                this.tableError = '请先在表格里点选一个单元格（公式要写进选中的那一格）';
+                return;
+            }
+            this.tableError = '';
+            // 命中原公式 ⇒ 预填本体、并按**原定界符**定默认样式；未命中 ⇒ 空 + 行内（spec §8.5）
+            const hit = window.formulaEditor.findInText(cell.textContent);
+            this.fmlModalCell = cell;
+            this.fmlModalTex = hit ? hit.tex : '';
+            this.fmlModalDisplay = hit ? !!hit.display : false;
+            this.fmlModalError = '';
+            this._fmlCaretAt = this._fmlCaretOffsets(cell);
+            this.fmlModalOpen = true;
+            this.$nextTick(() => {
+                const box = this._fmlModalInput();
+                if (box) {
+                    // 灌值 + 选中：用户多数是想**改**已有公式，全选省一次手工 Ctrl+A
+                    box.value = this.fmlModalTex;
+                    box.focus();
+                    box.select();
+                }
+                this.fmlModalPreview();
+            });
+        },
+
+        closeFormulaModal() {
+            this.fmlModalOpen = false;
+            this.fmlModalError = '';
+            this.fmlModalCell = null;      // 不留悬空引用（表格可能已被还原/重建）
+            this._fmlCaretAt = null;
+            const host = this._fmlModalPreviewHost();
+            if (host) host.textContent = '';   // 下次打开是新的预览，别留上一次的渲染结果
+        },
+
+        /** 行内 / 块级二选一：**改样式即重渲染预览**（`$$…$$` 与 `$…$` 的排版不同，用户要看得到）。 */
+        fmlModalSetDisplay(v) {
+            this.fmlModalDisplay = !!v;
+            this.fmlModalPreview();
+        },
+
+        /** 实时预览：非法时 `renderPreview` 把错误文案写进预览宿主而**不抛**
+         *  （`formulaEditor` 的既有契约）。⚠️ 它**不**写 `fmlModalError` —— 错误行是
+         *  「点确定被拦」的专用出口，两者各司其职，别把实时渲染的抱怨混进去。 */
+        fmlModalPreview() {
+            window.formulaEditor.renderPreview(this._fmlModalPreviewHost(),
+                                               this.fmlModalTex, this.fmlModalDisplay);
+        },
+
+        /** 确定：校验不过就**保持弹窗、只在弹窗内报错、什么都不写**；
+         *  通过才落进格内，然后关弹窗。 */
+        fmlModalOk() {
+            const tex = this.fmlModalTex;
+            const display = this.fmlModalDisplay;
+            const r = window.formulaEditor.validate(tex, display);
+            if (!r.ok) {
+                this.fmlModalError = r.error;
+                return;                       // ⚠️ 不关弹窗：用户填的内容不能被丢弃
+            }
+            const err = this._fmlWriteIntoCell(tex, display);
+            if (err) { this.fmlModalError = err; return; }
+            this.closeFormulaModal();
+        },
+
+        /** 把公式写进选中格。返回错误文案（无错返回空串）。
+         *
+         *  落点两档（spec §8.5）：
+         *    · 格内**已有**公式 ⇒ **原地替换** `[start, end)`（区间含定界符，`findInText` 给的）；
+         *    · 没有 ⇒ 落到**打开弹窗时的光标处**（取不到光标才回落到格内容末尾，绝不静默丢弃）。
+         *  ⚠️ 写入走 `document.execCommand('insertText')` —— 与行编辑器 `exec` **同一条既有
+         *    通道**（contenteditable 的插入/替换都靠它，且自带浏览器撤销栈）。
+         *  ⚠️ 定界符按当前选择，不按「原来是什么」：用户手里的「行内/块级」开关就是最终裁决
+         *    （默认值已按原公式给好 ⇒ 不改开关时**保留原定界符类型**）。
+         *  ⚠️ **不序列化、不写 `edits`**：表格仍由用户点「保存」走 `saveEdit` 的表格分支落库。 */
+        _fmlWriteIntoCell(tex, display) {
+            const cell = this.fmlModalCell;
+            const t = this._tableEl();
+            if (!cell || !t || !t.contains(cell)) {
+                return '目标单元格已不在表格里了（表格被还原或重建过），请关掉弹窗重新点选';
+            }
+            const body = display ? '$$' + tex + '$$' : '$' + tex + '$';
+            const hit = window.formulaEditor.findInText(cell.textContent);
+            const at = hit || this._fmlCaretAt;
+            let rng = at ? this._fmlTextRange(cell, at.start, at.end) : null;
+            if (!rng) {
+                rng = document.createRange();
+                rng.selectNodeContents(cell);
+                rng.collapse(false);          // 回落到格内容末尾（比"什么都不发生"诚实）
+            }
+            cell.focus();
+            const sel = window.getSelection();
+            if (!sel) return '浏览器没有可用的选区，无法写入';
+            sel.removeAllRanges();
+            sel.addRange(rng);
+            document.execCommand('insertText', false, body);
+            return '';
         },
 
         /** 图片块：删除图片（**只解除引用，不删文件**）。
