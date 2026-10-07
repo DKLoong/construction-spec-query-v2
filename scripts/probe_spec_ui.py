@@ -1580,6 +1580,55 @@ def _probe_png(w=160, h=120):
             + chunk(b"IEND", b""))
 
 
+def _rvb_task_code(suffix):
+    """上传用的**规范编号**。
+
+    ⚠️ 抽出来只为一个理由：`suffix → 编号/名称` 的拼接**只该有一份实现** —— 否则
+    `f17_9` 的脏库前置守卫（见 `_rvb_assert_suffix_not_in_library`）与 `_rvb_seed`
+    两处会各自漂移，守卫就悄悄检查错了编号（那比没有守卫更坏）。
+    """
+    return f"PROBE-RVB {suffix}"
+
+
+def _rvb_task_title(suffix):
+    """上传用的**规范名称**（同上：与 `_rvb_task_code` 成对，勿在别处手写字面量）。"""
+    return f"探针块审查 {suffix}"
+
+
+def _rvb_assert_suffix_not_in_library(suffix):
+    """前置守卫：**做真实提交**的用例在跑之前，该 `suffix` 的编号/名称不得已在
+    `specifications` 里。
+
+    ⚠️ 为什么必须有（Task 6 评审 Important F1）：真实提交（`confirm` → Phase 2）会把编号
+       落进 `specifications` ⇒ **同一份副本库上重跑**时，上传会被前端判重门挡下
+       （`static/components/import.js`：`if (this.duplicates.length && !this.dupConfirmed)
+       window.confirm(...)`），而 headless 下 `window.confirm` 自动返回 false ⇒
+       **上传压根没发生** —— 用例却会红在 `_upload_probe_file` 的
+       「上传后任务号未落到 sessionStorage（响应头 X-Import-Task-Id 未接通？）」，
+       即**指向一个无关子系统**，与真正的 flake 不可分辨（本仓已被「脏探针库造成假红」
+       烧过一次：2026-10-05/06 那两回，一次误诊就是一整天）。
+       故在**上传之前**先问「这道门现在会不会拦我」，命中就以**指向根因**的信息失败。
+    ⚠️ 用后端 `find_duplicate_specs` 而不是自己 `SELECT`：判重口径（编号归一 + 名称归一 +
+       或关系）**只该有一份实现**，直查库必然把口径复制一遍、且迟早漂移。
+    ⚠️ 不做「把命中行 DELETE 掉」的兜底：那会**掩盖重导语义**（同码并排新增是本仓既有
+       裁定，见 `import-additive-semantics`），把一条真实语义问题伪装成环境问题。
+    """
+    from pathlib import Path as _Path
+    _root = str(_Path(__file__).resolve().parent.parent)
+    if _root not in sys.path:       # 探针以**脚本**方式跑（`python scripts/...`）⇒ 仓库根不在
+        sys.path.insert(0, _root)   # `sys.path` 上，须自行补（同 `_rvb_seed` 里那一段）
+    from app.routes.import_routes import find_duplicate_specs
+    code, title = _rvb_task_code(suffix), _rvb_task_title(suffix)
+    dups = find_duplicate_specs(code, title)
+    assert not dups, (
+        f"库已被上一轮污染：`{code}` / `{title}` 已在 specifications"
+        f"（命中 {[{k: d.get(k) for k in ('id', 'code', 'title', 'status')} for d in dups]}）"
+        " ⇒ 本次上传会被前端判重门（`import.js` 的 `window.confirm`，headless 下自动取消）"
+        "挡下，**上传不会发生**，而这个红会**指向无关的『响应头 X-Import-Task-Id』子系统**。"
+        "⇒ 请重拷副本库后重跑：`cp data/spec_query.db data/_probe_spec.db`（并重启 8123 实例）。"
+        "**别把它当 flaky**。")
+
+
 def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False,
               with_formula=False, with_formula_degraded=False):
     """造一个**带 layout.json** 的待审查任务并打开审查页；前置不成立返回 None。
@@ -1696,7 +1745,7 @@ def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False,
                         "start_line": _dl, "end_line": _dl + 1, "prefix": "", "suffix": "",
                         "clause_no": None})
 
-    task_id = _make_review_task(page, f"PROBE-RVB {suffix}", f"探针块审查 {suffix}",
+    task_id = _make_review_task(page, _rvb_task_code(suffix), _rvb_task_title(suffix),
                                 ext=".pdf")
     # 原文件换成 2 页（页尺寸与 layout.pages 一致，否则 page/2.png 404 或框画歪）
     _rvb_make_pdf(_Path(UPLOAD_DIR) / f"{task_id}.pdf", pages)
@@ -4573,8 +4622,14 @@ def f17_9_untouched_formula_block_keeps_md_byte_identical(page):
        `if (this.duplicates.length && !this.dupConfirmed) window.confirm(...)`），而 headless
        下 `window.confirm` 自动返回 false ⇒ 上传压根没发生 ⇒ 报错却是
        「上传后任务号未落到 sessionStorage（响应头 X-Import-Task-Id 未接通？）」——
-       **误导性红**，与 flaky 不可分辨。故本组的环境前提写死在跑法里：每轮重拷 DB。
+       **误导性红**，与 flaky 不可分辨。
+    ✅ 该风险已由**前置守卫**接管（Task 6 评审 Important F1）：下面第一行的
+       `_rvb_assert_suffix_not_in_library("17i")` 在**上传之前**就判「这道判重门现在会不会
+       拦我」，命中即以**指向根因**的信息失败（而不是让人去查响应头接线）。故跑法里那条
+       「每轮重拷」即使被偏离，得到的也是**缺一步的提示**，不是误诊。
     """
+    # ⚠️ 必须在 `_rvb_seed_formula` **之前**：上传发生在 `_rvb_seed` 里。
+    _rvb_assert_suffix_not_in_library("17i")
     idx, i, tid = _rvb_seed_formula(page, "17i")
     before = _rvb_compose_md(page, tid, {})          # 基线：同一条后端链路（提交链路的同一函数）
 
