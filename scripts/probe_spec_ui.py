@@ -4174,11 +4174,14 @@ def _rvb_seed_formula(page, suffix):
 def f17_1_formula_block_offers_a_working_fix_entry(page):
     """★ 公式块有**可用**的「纠正」入口 —— 点进去开的是**公式编辑器**（不是行编辑器兜底）。
 
-    ⚠️ 为什么不能只断言「纠正按钮可见」：`display_formula` 自 P4 Task 1 起就进了
-       `EDITABLE_TEXT_LABELS`（后端 `/layout` 下发的白名单）⇒ 只要块已锚定，按钮**本就可见**，
-       单看可见性这条用例**修前就绿**、失去分辨力。真正要钉的是「点进去落到公式分支」：
-       修前 `enterEdit` 会掉进行编辑器兜底（`.rvb-lines` 里长出 contenteditable），
-       而**没有** `.rvb-fml-src` ⇒ 本用例修前必红。"""
+    ⚠️ 两条**都不能**作为判据的东西（本轮评审 Finding 2 记）：
+       ① 「纠正按钮可见」：`display_formula` 自 P4 Task 1 起就进了 `EDITABLE_TEXT_LABELS`
+          （后端 `/layout` 下发的白名单）⇒ 只要块已锚定，按钮**本就可见**。
+       ② 「`.rvb-fml-src` 可见」：该部件由 `x-if="b.label === 'display_formula'"` 渲染、
+          显隐由 `.rvb-block--editing` 类控制 ⇒ **只要模板在，坏的实现下它也可见**。
+       ⇒ 二者都是**假网**。真正有分辨力的是「**没有**行编辑器兜底的签名」：坏实现（`enterEdit`
+       漏掉公式分派）会掉进行编辑器兜底、在 `.rvb-lines` 里长出 `.rvb-line`，而公式块不该有。
+       （本轮修复前的 RED 是在**模板尚不存在**时拿到的 ⇒ 那是 trivially red，不算分辨力。）"""
     idx, _, _tid = _rvb_seed_formula(page, "17a")
     blk = page.locator(f'[data-block-idx="{idx}"]')
     assert blk.locator("button:has-text('纠正')").is_visible(), \
@@ -4188,6 +4191,10 @@ def f17_1_formula_block_offers_a_working_fix_entry(page):
         "点了纠正但没进编辑态"
     assert blk.locator(".rvb-fml-src").is_visible(), \
         "公式块没有进入公式编辑态（掉进了行编辑器兜底？）"
+    # ★ 有分辨力的那条：**不得**出现行编辑器的行元素（漏掉公式分派就会长出它们）。
+    n = page.evaluate(f"""() => document.querySelectorAll(
+        '[data-block-idx="{idx}"] .rvb-lines .rvb-line').length""")
+    assert n == 0, f"公式块落了 {n} 个行编辑器行（enterEdit 掉进了行编辑器兜底？）"
 
 
 def f17_2_formula_editor_prefills_the_tex_body_only(page):
@@ -4235,6 +4242,66 @@ def f17_3_saving_unchanged_formula_block_writes_nothing(page):
     has = page.evaluate(f"""() => Object.prototype.hasOwnProperty.call(
         ({_Q})().edits, {i})""")
     assert has is False, "未改动直接保存却写了 edits"
+
+
+def f17_4_alignment_survives_reentering_edit_and_resaving(page):
+    """★ 「纠正 → 点「中」→ 保存 → **再**纠正」这条**普通操作**往返（评审 Finding 1）。
+
+    存进 `edits[i]` 的是 `mdInline.wrap(line, 'center')` =
+    `<span style="display:block;text-align:center"> $$…$$ </span>`；`contentOf(b)` 一旦
+    `edits[i]` 存在就优先返回它 ⇒ 若不**先剥掉外层包裹**，`formulaEditor.parseLine`（整行锚定、
+    定界符外只允许空白）会判 `null` ⇒ 误命中降级分支：编辑框装进**原始 span HTML**、
+    `formulaNote` 谎报「不是标准公式行」，用户再改一个字保存时对齐被**静默丢掉**。
+
+    ★ 判别性断言（缺一不可）：
+      ① 重进后编辑框装的是**公式本体**（不含 `$$`、不含 `<span`）；
+      ② `formulaNote` 为空（不再谎报降级）；
+      ③ 恢复出的对齐是「中」（`_fmlAlign === 'center'`）；
+      ④ **改一个字再保存 ⇒ `edits[i]` 仍带 `text-align:center`** —— 这条是「静默丢对齐」的
+         唯一判别点（只断言「保存成功」坏实现照样绿）。
+
+    分辨力来自**变异**（本修复轮报告）：去掉 `_buildFormulaEditor` 里的剥包裹一步 ⇒ 本条红
+    （红在断言①：编辑框里出现 `<span`）。"""
+    idx, i, _tid = _rvb_seed_formula(page, "17d")
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    blk.locator("button:has-text('纠正')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000), \
+        "没进公式编辑态"
+    # 第一次：设成居中并保存（不带任何文本改动 —— 只点对齐就足以写 edits）
+    blk.locator(".rvb-fml-wrap button[title='居中']").click()
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000), \
+        "第一次保存后没退出编辑态"
+    first = page.evaluate(f"() => ({_Q})().edits[{i}]")
+    assert first and "text-align:center" in first, f"前置不成立：第一次保存没落对齐：{first!r}"
+
+    # 第二次进编辑态：必须**先剥包裹**再喂给 parseLine
+    blk.locator("button:has-text('纠正')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000), \
+        "第二次点纠正没进编辑态"
+    val = page.evaluate(f"""() => document.querySelector(
+        '[data-block-idx="{idx}"] .rvb-fml-src').value""")
+    assert "<span" not in val, f"① 编辑框装进了原始 span HTML（没剥对齐包裹）：{val!r}"
+    assert "$$" not in val, f"① 编辑框里混进了定界符（应只装公式本体）：{val!r}"
+    assert val.strip() != "", "① 编辑框是空的"
+    note = page.evaluate(f"() => ({_Q})().formulaNote")
+    assert note == "", f"② 对合法公式谎报降级（formulaNote={note!r}）"
+    align = page.evaluate(f"() => ({_Q})()._fmlAlign")
+    assert align == "center", f"③ 重进编辑态没恢复出对齐（_fmlAlign={align!r}）"
+
+    # 改一个字再保存 ⇒ 对齐必须仍在（静默丢对齐的判别点）
+    new_tex = val.rstrip() + "+1"
+    page.evaluate("""([sel, t]) => { const a = document.querySelector(sel);
+        a.value = t; a.dispatchEvent(new Event('input', {bubbles:true})); }""",
+        [f'[data-block-idx="{idx}"] .rvb-fml-src', new_tex])
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000), \
+        "第二次保存后没退出编辑态"
+    second = page.evaluate(f"() => ({_Q})().edits[{i}]")
+    assert second is not None, "改了公式却没写 edits"
+    assert "+1" in second, f"④ 改动没落进 md：{second!r}"
+    assert "text-align:center" in second, \
+        f"④ 改动后对齐被**静默丢掉**（重进编辑态没恢复对齐 / 保存时没带回去）：{second!r}"
 
 
 def f17_7_formula_align_keeps_single_line_and_still_renders_katex(page):
@@ -4334,6 +4401,7 @@ def f17_8_formula_align_keeps_clause_split_and_line_count(page):
 CASES["f17"] = [f17_1_formula_block_offers_a_working_fix_entry,
                 f17_2_formula_editor_prefills_the_tex_body_only,
                 f17_3_saving_unchanged_formula_block_writes_nothing,
+                f17_4_alignment_survives_reentering_edit_and_resaving,
                 f17_7_formula_align_keeps_single_line_and_still_renders_katex,
                 f17_8_formula_align_keeps_clause_split_and_line_count]
 

@@ -64,6 +64,7 @@ function reviewBlocks() {
         formulaNote: '',      // 降级说明（`display_formula` 下不是标准公式行时可见）
         _fmlBaseline: null,   // 进公式编辑态时的 tex 快照，用于判「到底改没改」
         _fmlAlign: null,      // 公式对齐（'center'|'right'|null）；**保存时统一落**，与文本行一致
+        _fmlAlignBaseline: null, // 进编辑态时**恢复出来的**对齐；守卫比的是它与 `_fmlAlign`
         _fmlSrcLine: null,    // 块 md 原文整行（`buildLine` 用它保留首尾空白）
         _fmlDisplay: true,    // 公式是行间($$)还是行内($)：标准公式行取 `p.display`，降级取 true
         cropMode: false,      // 裁剪模式（在编辑态里的图上再拖一个要保留的矩形）
@@ -686,13 +687,25 @@ function reviewBlocks() {
 
         /** 构建公式块编辑器：把**公式本体**（tex）灌进 textarea 并渲染一次预览。
          *
+         *  ⚠️ **必须先剥掉对齐包裹**（评审 Finding 1，`纠正 → 中 → 保存 → 再纠正`）：
+         *    保存后 `edits[i]` 是 `mdInline.wrap(line, align)` 的产物 =
+         *    `<span style="display:block;text-align:X"> $$…$$ </span>`；而 `contentOf` 一旦
+         *    `edits[i]` 存在就优先返回它。`formulaEditor.parseLine` 是**整行锚定**、要求
+         *    定界符之外只有空白 ⇒ 不剥包裹就判 `null` ⇒ 误命中降级分支（编辑框装进原始
+         *    span HTML、谎报「不是标准公式行」），且**保存时对齐被静默丢掉**。
+         *    文本行走的是同一路（`_makeLine` 用 `mdInline.parseLine` 恢复 `el.dataset.align`）
+         *    —— 公式这条路径此前缺了同样的恢复，属**不对称**缺陷。
+         *  ⚠️ 恢复出的对齐写进 `_fmlAlign`，但守卫比的是它与 `_fmlAlignBaseline`
+         *    （**不能**靠 `_fmlAlign === null` 判「没改过」：那时「已对齐但没改公式」会被
+         *    误判成改过 ⇒ 凭空写一条 edits）。
          *  ⚠️ **降级分支不可省**：`display_formula` 标签下**并非一定是公式行**（实测有若干例
-         *    来自合成块）⇒ `parseLine` 可能返回 `null`。此时把整行原文当公式本体让用户能修，
-         *    **绝不**直接取 `p.tex` 而抛；并在块内可见地说明「这不是标准公式行」。
-         *  ⚠️ `_fmlSrcLine` 存的是**块 md 原文整行**（含首尾空白）—— `buildLine` 靠它把
+         *    来自合成块）⇒ 剥包裹后 `parseLine` 仍可能返回 `null`。此时把整行内容当公式本体
+         *    让用户能修，**绝不**直接取 `p.tex` 而抛；并在块内可见地说明「这不是标准公式行」。
+         *  ⚠️ `_fmlSrcLine` 存的是**剥包裹后的那一行**（含首尾空白）—— `buildLine` 靠它把
          *    ` $$ … $$ ` 前后的空格逐字节还回去（真实夹具 21/21 都是这种形态）。 */
         _buildFormulaEditor(b) {
-            const src = this.contentOf(b);
+            const al = window.mdInline.parseLine(this.contentOf(b));
+            const src = al.inner;              // ← 剥掉外层对齐包裹（无包裹时 = 原文）
             const p = window.formulaEditor.parseLine(src);
             let tex, display, note;
             if (p) {
@@ -702,7 +715,8 @@ function reviewBlocks() {
             }
             this._fmlBaseline = tex;
             this._fmlSrcLine = src;
-            this._fmlAlign = null;
+            this._fmlAlign = al.align;              // 恢复出的对齐（重进编辑态即带上）
+            this._fmlAlignBaseline = al.align;      // 基线：守卫比的是「对齐有没有被动过」
             this._fmlDisplay = display;
             this.formulaError = '';
             this.formulaNote = note;
@@ -1314,10 +1328,13 @@ function reviewBlocks() {
                 if (!box) return;
                 const tex = box.value;
                 const display = this._fmlDisplay;
-                // ★ **未改动且未点过对齐 ⇒ 一律不写 `edits`**（与图片块同口径）。
+                // ★ **未改动且对齐没被动过 ⇒ 一律不写 `edits`**（与图片块同口径）。
                 //   写了会凭空出现「已修改」，且 compose 会把该行重写一遍 —— 任何序列化差异
                 //   都会**静默改写**用户没动过的公式行（真实夹具的 ` $$ … $$ ` 首尾空格极脆）。
-                if (tex === this._fmlBaseline && this._fmlAlign === null) {
+                //   ⚠️ 比的是 `_fmlAlignBaseline`（进编辑态时**恢复出来的**对齐），不是 null：
+                //      重进一个**已对齐**的公式时 `_fmlAlign` 初值就是 'center'，拿 null 比会
+                //      误判成「改过」⇒ 未改动也写一条 edits。
+                if (tex === this._fmlBaseline && this._fmlAlign === this._fmlAlignBaseline) {
                     this.formulaError = '';
                     this.editingIdx = -1;
                     this.schedulePreview();
