@@ -4052,6 +4052,42 @@ def f16_14_crop_saves_a_new_file_and_keeps_the_original(page):
         f"裁出来的不是右下那块（左上角像素 {px[:3]}，应为右下象限的白 [255,255,255]）"
 
 
+def _rvb_preview(page, tid, edits):
+    """调 `/preview` 拿 (条数, 条号序列)。`edits` 形如 `{块下标: md}`（可为空）。"""
+    return page.evaluate("""async ([tid, edits]) => {
+        const r = await fetch('/import/review/' + tid + '/preview', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({edits})});
+        const j = await r.json();
+        return [j.count, j.clauses.map((c) => c.clause_no)];
+    }""", [tid, edits])
+
+
+def f16_15_image_align_is_single_line_and_keeps_clause_split(page):
+    """★ 图片对齐（spec §8.6 左/中/右）：保存后 md 是**单行** span 包裹，
+    且**条文数与条号序列不变**。
+
+    「切分不变」是硬要求：对齐若用**独占行**的 div 表达，`parse_markdown` 会多切出一条
+    伪条文（spec §8.6 实测③：3 条 vs 2 条）。只验「md 里有 text-align」抓不住这个。"""
+    idx, i, tid = _rvb_enter_img_edit(page, "16w")
+    before = _rvb_preview(page, tid, {})
+
+    page.locator(f'[data-block-idx="{idx}"] .rvb-img-wrap button:has-text("中")').click()
+    html_edit = page.evaluate("() => document.querySelector('.rvb-img-edit').innerHTML")
+    assert html_edit.startswith('<span style="display:block;text-align:center">'), \
+        f"编辑态里没换成对齐 span（或套成了两层）：{html_edit[:120]}"
+
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("保存")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000)
+    md = page.evaluate(f"() => ({_Q})().edits[{i}]")
+    assert md and "\n" not in md, f"对齐后必须是**单行**（多行会多切出伪条文）：{md!r}"
+    assert 'src="imgs/' in md, f"对齐不该动图片引用：{md!r}"
+    assert "/import/review/" not in md, f"对齐把绝对路径写进了 md：{md!r}"
+
+    after = _rvb_preview(page, tid, {str(i): md})
+    assert after == before, f"对齐改变了切分（条号序列 前{len(before[1])}条 → 后{len(after[1])}条）"
+
+
 CASES["f16"] = [f16_1_upload_endpoint_roundtrip,
                 f16_2_image_block_enters_edit_and_shows_current_image,
                 f16_3_saving_unchanged_image_block_writes_nothing,
@@ -4065,7 +4101,8 @@ CASES["f16"] = [f16_1_upload_endpoint_roundtrip,
                 f16_11_pick_blocked_on_text_block,
                 f16_12_unmodified_table_save_keeps_md_byte_identical,
                 f16_13_crop_geometry_maps_display_px_to_natural,
-                f16_14_crop_saves_a_new_file_and_keeps_the_original]
+                f16_14_crop_saves_a_new_file_and_keeps_the_original,
+                f16_15_image_align_is_single_line_and_keeps_clause_split]
 
 
 def _require_isolated_paths():

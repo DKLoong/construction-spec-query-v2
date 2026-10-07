@@ -730,6 +730,29 @@ function reviewBlocks() {
             if (f) this._imgApplyBlob(f);
         },
 
+        /** 图片块的对齐（spec §8.6，左 / 中 / 右）。
+         *
+         *  用 `mdInline.wrap` 的**同行 span** 形式：
+         *  `<span style="display:block;text-align:X">…</span>` —— **单行、不新增行**，
+         *  故对 `parse_markdown` 的切分零风险（spec §8.6 实测③：独占行的 div 会多切出一条伪条文）。
+         *  语料里的图片行本就是单行包裹形态（`<div style="text-align: center;">…</div>`），
+         *  这里统一改写成本仓的 span 形式。
+         *
+         *  ⚠️ 取 `img.outerHTML` 而不是把整串重新包一层：容器里原本的对齐包裹（div 或旧 span）
+         *  会被**替换掉**；若用整串包，就会套成 span>div 两层，而内层 div 的居中仍然生效 ——
+         *  「改成左对齐」看着毫无变化。 */
+        imgAlign(v) {
+            const host = this._imgHost();
+            if (!host) return;
+            const img = host.querySelector('img');
+            if (!img) {
+                this.imgError = '此地没有图片可对齐（先用「选文件」或取图放一张）';
+                return;
+            }
+            this.imgError = '';
+            host.innerHTML = window.mdInline.wrap(img.outerHTML, v || null);
+        },
+
         /** 入口三：粘贴（截图 / 复制的位图） */
         imgReplaceFromPaste(e) {
             const items = (e.clipboardData && e.clipboardData.items) || [];

@@ -265,6 +265,15 @@
                                             title="在图上拖出要保留的区域，确认后**另存为新文件**（原图不动）">裁剪</button>
                                     <button type="button" @click="imgDelete()" style="margin:0"
                                             title="只解除本块的图片引用，原文件保留；点「取消」可撤回">删除图片</button>
+                                    <span class="rvb-sep"></span>
+                                    <!-- 对齐：用**同行 span** 表达（单行、不新增行）⇒ 不改变切分。
+                                         语料里图片行原本的 div 包裹会被这个 span 替换掉。 -->
+                                    <button type="button" @click="imgAlign(null)" style="margin:0"
+                                            title="左对齐">左</button>
+                                    <button type="button" @click="imgAlign('center')" style="margin:0"
+                                            title="居中">中</button>
+                                    <button type="button" @click="imgAlign('right')" style="margin:0"
+                                            title="右对齐">右</button>
                                     <template x-if="cropMode">
                                         <span>
                                             <button type="button" @click="imgDoCrop()" style="margin:0">确认裁剪</button>
