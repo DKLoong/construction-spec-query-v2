@@ -1633,7 +1633,10 @@ def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False):
     #   `ValueError: layout 区间重叠：[0, 1) 与游标 1` ⇒ **compose/preview 对该夹具一律 500**。
     #   第 1 行是空行，取 (1, 2) 实测：splice 通过、空 edits 逐字节等价、基线仍 138 条、
     #   该样本仍有 span 且非白名单 ⇒ 隔离语义不变。
-    aligned.append({"label": "display_formula", "content": "非白名单但有 span", "page": 1,
+    # ⚠️ label 用 `chart`（**不是** `display_formula`，它是 P4 前的旧值）：`display_formula`
+    #   已在 P4 Task 1 进 `EDITABLE_TEXT_LABELS` ⇒ 再用它就**不再是「非白名单」样本**、
+    #   隔离语义失效。`chart` 既不在白名单、也不在 `DEFAULT_NOT_IN_MARKDOWN` ⇒ 语义不变。
+    aligned.append({"label": "chart", "content": "非白名单但有 span", "page": 1,
                     "bbox": None, "order": 9999, "global_block_id": 9999,
                     "start_line": 1, "end_line": 2, "prefix": "", "suffix": "",
                     "clause_no": None})
@@ -1990,7 +1993,8 @@ def f13_7_unlocated_and_non_text_blocks_offer_no_fix_button(page):
     ⚠️ 为什么不能只断言「存在被锁的块」（Task 6 评审实测）：真实夹具切片里 76 块恰好是
     「66 个 白名单∧有 span」+「10 个 `number`（既非白名单、又无 span）」，**没有一块只违反
     其中一个条件** ⇒ 单独删掉任一条件，原断言照样绿（它实际只证明 canEdit 不是恒真）。
-    为此 `_rvb_seed` 补了两块**门槛隔离**样本（见上）。
+    为此 `_rvb_seed` 补了两块**门槛隔离**样本（见上）：`text`（白名单但无 span）与
+    `chart`（非白名单但有 span）。
     """
     assert _rvb_seed(page, "7") is not None, "前置不成立"
     # ⚠️ 一律按**可见性**数：x-show 控制的元素永远在 DOM 里（只数存在性 = 空转恒绿）

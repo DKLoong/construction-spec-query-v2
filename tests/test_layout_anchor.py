@@ -481,3 +481,38 @@ def test_reanchor_strips_stale_md_html():
         "未锚定的表格块把**上一轮的** md_html 原样带出（`{**blk, ...}` 未剥离）；"
         f"它的区间已随重锚改变，这段原文是**过期**的：{anchored[1].get('md_html')!r}")
     assert "md_html" not in anchored[0], "非表格块带出了旧的 md_html"
+
+
+# ══ 公式块可编辑（P4；spec R1 实测结论：label = display_formula） ══════════
+
+def test_display_formula_is_editable():
+    """★ 公式块必须进可编辑白名单 —— 它是 P4 的出口判据之一。
+
+    为什么不是 spec §7.2 猜的 `formula` / `equation`：真实夹具实测 label 只有
+    `display_formula`（21 块）与 `formula_number`（21 块，不进 md）。若照抄旧猜测，
+    前端白名单与分支会**全部漏判**、公式块永远显示「暂不支持编辑」。
+    """
+    from app.ocr.layout import EDITABLE_TEXT_LABELS
+    assert "display_formula" in EDITABLE_TEXT_LABELS
+
+
+def test_formula_number_stays_out_of_editable_and_markdown():
+    """★ 公式**编号**不得顺手也放开：它不进 md（`DEFAULT_NOT_IN_MARKDOWN`）⇒ 没有可回写的行。"""
+    from app.ocr.layout import DEFAULT_NOT_IN_MARKDOWN, EDITABLE_TEXT_LABELS
+    assert "formula_number" in DEFAULT_NOT_IN_MARKDOWN
+    assert "formula_number" not in EDITABLE_TEXT_LABELS
+
+
+def test_formula_block_content_equals_md_line():
+    """★ 公式块的 `content` 与 md 那一行**逐字节相同**（实测 21/21）⇒ 前端无需 md_html 字段。
+
+    这条钉住「不必给公式块新增落盘字段」这个决定：一旦哪天 OCR 的 content 变成去样式版，
+    前端拿到的就不是可回写的原文了，必须同时补 `md_html`（图片块走的就是那条路）。
+    """
+    base = "正文一。\n $$ a=b $$ \n正文二。"
+    bl = [_blk("正文一。", 0), _blk(" $$ a=b $$ ", 1, label="display_formula"),
+          _blk("正文二。", 2)]
+    anchored, _ = anchor_blocks(base, bl)
+    fb = anchored[1]
+    assert fb["start_line"] is not None, "公式块没锚上（前置不成立）"
+    assert fb["content"] == " $$ a=b $$ ", "content 不等于 md 那一段原文"

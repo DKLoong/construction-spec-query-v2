@@ -48,10 +48,17 @@ DEFAULT_NOT_IN_MARKDOWN = frozenset({
 # 审查页 P2 可**行级编辑**的 label —— **单一来源**（前端从 /layout 拿，不在 JS 里另写一份）。
 # 依据：2026-10-05 实测夹具 label 分布（text 477 / paragraph_title 47 / figure_title 9 /
 # content 4 / vision_footnote 3，全部有 span），其余 label 各归其期：
-# display_formula → P4；table / chart → P3；image / number / formula_number → 不进 markdown（豁免）。
+# display_formula → P4 已交付；table / chart → P3；image / number / formula_number → 不进 markdown（豁免）。
 # 注意 `chart` 虽是纯文本 5 行，但**未锚定**（夹具 idx 522）⇒ 会被 canEdit 的 span 判据挡下。
+# ⚠️ 公式块的 label 名以**实测**为准（2026-10-07，真实夹具 `data/_ocr_reference/raw.jsonl`
+#    经 `extract_layout`）：是 `display_formula`（21 块，**全部已锚定**），**不是** spec §7.2
+#    旧猜的 `formula` / `equation`（夹具里根本不存在，照抄会全部漏判）。`formula_number`（21 块）
+#    是公式**编号**，在 `DEFAULT_NOT_IN_MARKDOWN` 里 ⇒ 无行可回写，**不得**放进本名单。
 EDITABLE_TEXT_LABELS = frozenset({
     "doc_title", "paragraph_title", "content", "text", "figure_title", "vision_footnote",
+    # P4：公式块（实测 label = `display_formula`）。其 `content` 与 md 对应行**逐字节相同**
+    # （实测 21/21）、span 恒为单行 ⇒ 直接走行级编辑器，前端无需额外落盘字段。
+    "display_formula",
     # P3：表格块走**自己的编辑器**（不是行级），但仍须在白名单里 —— `canEdit` 的白名单
     # 是"这块能不能改"的唯一判据，`enterEdit` 再按 label 分派到行编辑器或表格编辑器。
     "table",
