@@ -913,6 +913,19 @@
 .rvb-img-empty { color: var(--pico-muted-color); font-size: 0.85rem; margin: 0; }
 .rvb-crop-sel { position: absolute; border: 1.5px dashed #e8710a;
                 background: rgba(232, 113, 10, .12); pointer-events: none; }
+/* ── 公式块编辑态（P4）────────────────────────────────────────────
+   独立分支 + 独立宿主（见 `review-blocks.js` 的 `_buildFormulaEditor`）。尺寸口径与既有
+   `.rvb-*` 一致：边框/圆角同 `.rvb-table-edit`，提示/底色用 Pico 变量，不另起一套。 */
+.rvb-fml-src { width: 100%; box-sizing: border-box; min-height: 4.5em; resize: vertical;
+               margin: 0; font-size: 0.85rem; line-height: 1.4;
+               font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace; }
+.rvb-fml-preview { margin-top: 4px; padding: 0.3rem 0.5rem; min-height: 2.2em; overflow-x: auto;
+                   background: var(--pico-code-background-color, #f6f6f6);
+                   border: 1px solid var(--pico-muted-border-color); border-radius: 6px; }
+.rvb-fml-note { margin: 0 0 0.25rem; font-size: 0.75rem; color: var(--pico-muted-color); }
+.rvb-fml-err { margin: 0.25rem 0 0; font-size: 0.8rem; }
+/* 与 `.rvb-table-err:empty` 同写法：空串即整条隐藏 */
+.rvb-fml-err:empty { display: none; }
 .rvb-blocks { flex: 1; overflow: auto; padding-right: 4px; }
 .rvb-block { border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
              padding: 6px 10px; margin-bottom: 8px; cursor: pointer; }

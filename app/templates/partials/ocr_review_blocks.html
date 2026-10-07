@@ -132,10 +132,13 @@
                                      且是表格编辑态**唯一**的保存出口（Task 4 的表格工具条只有结构操作
                                      按钮、不含保存）—— 整排门控会让表格**无法保存**。
                                      包一层 `inline-flex` 容器保持与原先相同的排布（gap 同为 0.3rem）。 -->
-                                <!-- 行编辑专属控件：表格块与**图片块**都不适用（图片块里没有"行"，
-                                     点「+ 行」会把 null 传进 `_insertLineAfter`）。 -->
+                                <!-- 行编辑专属控件：表格块、**图片块**与**公式块**都不适用（三者里都没有"行"，
+                                     点「+ 行」会把 null 传进 `_insertLineAfter`，B/I/S 也无的放矢）。
+                                     ⚠️ 公式块若不一并门控，会与公式部件自己的「左/中/右」并排成**两排
+                                     重复按钮**，且第一排全是死控件（实测：strict 选择器撞 2 个「中」）。 -->
                                 <span class="rvb-line-tools"
                                       x-show="blocks[i].label !== 'table'
+                                              && blocks[i].label !== 'display_formula'
                                               && !imageLabels.includes(blocks[i].label)">
                                     <!-- ⚠️ `@mousedown.prevent` 不是可选项：点按钮会让 contenteditable **失焦**、
                                          选区塌掉，execCommand 就作用不到任何东西（点了 B 没反应）。
@@ -294,6 +297,39 @@
                                     <div class="rvb-crop-sel" x-show="cropMode && cropRect" x-cloak
                                          :style="cropSelStyle()"></div>
                                 </div>
+                            </div>
+                            </template>
+                            <!-- 公式块编辑态（P4）：**独立分支 + 独立编辑器宿主**。
+                                 ⚠️ **绝不能**落进 `.rvb-lines` 行编辑器：`md-inline.js` 的 `domToMd`
+                                 只认 `b/strong`、`i/em`、`s/strike/del`、`br`，**不认 `span`** ——
+                                 KaTeX 渲染出的 `<span class="katex">` 一旦进去，其内文本节点会被
+                                 展平拼回 md ⇒ **保存后才可见的静默损坏**（公式被毁）。
+                                 与表格/图片同理用 `x-if` 而非 `x-show`（公式块只占少数，`x-show` 会白带节点）。
+                                 「取消 / 保存」**复用**上面那排既有按钮（对所有 label 可见），此处不再放。 -->
+                            <template x-if="b.label === 'display_formula'">
+                            <div class="rvb-fml-wrap">
+                                <div class="rvb-tools">
+                                    <!-- 对齐作用于公式行（同行 span 包裹，保存时统一落）：
+                                         `formulaAlign(null)` = 回到无包裹（与图片块 `imgAlign(null)` 同语义）。 -->
+                                    <button type="button" @click="formulaAlign(null)" style="margin:0"
+                                            title="左对齐">左</button>
+                                    <button type="button" @click="formulaAlign('center')" style="margin:0"
+                                            title="居中">中</button>
+                                    <button type="button" @click="formulaAlign('right')" style="margin:0"
+                                            title="右对齐">右</button>
+                                </div>
+                                <!-- 降级说明：`display_formula` 标签下并非一定是公式行（实测有合成块）
+                                     ⇒ 走降级分支时在这里可见地告知，用户要知道这条不是标准公式行。 -->
+                                <p class="rvb-fml-note" x-show="formulaNote" x-cloak x-text="formulaNote"></p>
+                                <!-- ⚠️ **不用 `x-model`**：编辑源由 JS 在进编辑态时 `.value =` 灌入、
+                                     保存时读回（与图片块 `_imgHost`/`_imgBaseline` 同模式）——
+                                     `x-model` 会与 Alpine 的页面级响应式纠缠。 -->
+                                <textarea class="rvb-fml-src" @input="formulaPreview()"
+                                          spellcheck="false"></textarea>
+                                <p class="rvb-fml-err" x-show="formulaError" x-cloak x-text="formulaError"
+                                   style="color:#c00"></p>
+                                <!-- 实时预览宿主：由 `formulaEditor.renderPreview` 写入（非法时显示错误而不抛） -->
+                                <div class="rvb-fml-preview"></div>
                             </div>
                             </template>
                             <!-- ⚠️ 不给 `x-ref`：编辑框在 x-for 内，同名 x-ref 会被最后一项

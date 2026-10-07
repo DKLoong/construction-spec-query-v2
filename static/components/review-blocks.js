@@ -59,6 +59,13 @@ function reviewBlocks() {
         _pickSeq: 0,          // 取图请求序号：连点两次时只认最后一次的结果（初值必须给，否则 NaN）
         imgError: '',         // 图片块编辑态的**块内**错误提示（与 tableError 同口径）
         _imgBaseline: '',     // 进图片编辑态时的宿主快照，用于判「到底改没改」
+        // ── 公式块编辑态（P4）──────────────────────────────────────────
+        formulaError: '',     // 公式块编辑态的**块内**错误提示（与 tableError/imgError 同口径）
+        formulaNote: '',      // 降级说明（`display_formula` 下不是标准公式行时可见）
+        _fmlBaseline: null,   // 进公式编辑态时的 tex 快照，用于判「到底改没改」
+        _fmlAlign: null,      // 公式对齐（'center'|'right'|null）；**保存时统一落**，与文本行一致
+        _fmlSrcLine: null,    // 块 md 原文整行（`buildLine` 用它保留首尾空白）
+        _fmlDisplay: true,    // 公式是行间($$)还是行内($)：标准公式行取 `p.display`，降级取 true
         cropMode: false,      // 裁剪模式（在编辑态里的图上再拖一个要保留的矩形）
         cropRect: null,       // 裁剪框：**显示坐标**（CSS 像素，原点 = 图左上角）
         _cropDrag: null,
@@ -656,6 +663,71 @@ function reviewBlocks() {
             this._imgBaseline = host.innerHTML;
         },
 
+        // ── P4 公式线：公式块的编辑态（独立分支 + 独立宿主，**不落行编辑器**）──────
+
+        /** 公式编辑部件宿主（同样**按块下标**取 —— `x-ref` 在 `x-for` 里会被最后一项覆盖） */
+        _fmlHost() {
+            const list = this.$refs.list;
+            return list
+                ? list.querySelector(`[data-block-idx="${this.editingIdx}"] .rvb-fml-wrap`)
+                : null;
+        },
+
+        /** 公式编辑框（textarea）。编辑源由 JS 管：进编辑态 `.value =` 灌入，保存时读回。 */
+        _fmlSrc() {
+            const host = this._fmlHost();
+            return host ? host.querySelector('.rvb-fml-src') : null;
+        },
+
+        _fmlPreviewHost() {
+            const host = this._fmlHost();
+            return host ? host.querySelector('.rvb-fml-preview') : null;
+        },
+
+        /** 构建公式块编辑器：把**公式本体**（tex）灌进 textarea 并渲染一次预览。
+         *
+         *  ⚠️ **降级分支不可省**：`display_formula` 标签下**并非一定是公式行**（实测有若干例
+         *    来自合成块）⇒ `parseLine` 可能返回 `null`。此时把整行原文当公式本体让用户能修，
+         *    **绝不**直接取 `p.tex` 而抛；并在块内可见地说明「这不是标准公式行」。
+         *  ⚠️ `_fmlSrcLine` 存的是**块 md 原文整行**（含首尾空白）—— `buildLine` 靠它把
+         *    ` $$ … $$ ` 前后的空格逐字节还回去（真实夹具 21/21 都是这种形态）。 */
+        _buildFormulaEditor(b) {
+            const src = this.contentOf(b);
+            const p = window.formulaEditor.parseLine(src);
+            let tex, display, note;
+            if (p) {
+                tex = p.tex; display = p.display; note = '';
+            } else {
+                tex = src; display = true; note = '这一块不是标准的公式行，已按整行内容编辑';
+            }
+            this._fmlBaseline = tex;
+            this._fmlSrcLine = src;
+            this._fmlAlign = null;
+            this._fmlDisplay = display;
+            this.formulaError = '';
+            this.formulaNote = note;
+            const box = this._fmlSrc();
+            if (box) box.value = tex;
+            this.formulaPreview();          // 进编辑态立刻渲染一次（用户要能看见当前公式）
+        },
+
+        /** 实时校验 + 预览：读 textarea 的**当前值**（编辑源在 DOM，不在响应式状态里）。
+         *  非法时把错误写进 `formulaError`（并在预览宿主里也显示错误），合法则清空。 */
+        formulaPreview() {
+            const box = this._fmlSrc();
+            if (!box) return;
+            const tex = box.value;
+            const display = this._fmlDisplay;
+            const r = window.formulaEditor.validate(tex, display);
+            this.formulaError = r.ok ? '' : r.error;
+            window.formulaEditor.renderPreview(this._fmlPreviewHost(), tex, display);
+        },
+
+        /** 公式对齐：**只记，不写行**（保存时统一落 —— 与文本行「保存时统一落」口径一致）。 */
+        formulaAlign(v) {
+            this._fmlAlign = v;
+        },
+
         /** 图片块：删除图片（**只解除引用，不删文件**）。
          *
          *  只动编辑器宿主，真正的落库发生在「保存」时 ⇒ 用户点「取消」即可撤回
@@ -933,11 +1005,14 @@ function reviewBlocks() {
             if (t) this._absTableImgs(t);   // ⚠️ 必须在 `_markTableEditable` **之前**（见该函数注释）
             this.tableError = '';          // 清掉上一次的表格报错（否则会跟着下一块显示）
             this.imgError = '';
+            this.formulaError = '';        // 同上：清掉上一条公式块的残留错误/降级说明
+            this.formulaNote = '';
             this.editingIdx = idx;
             this.$nextTick(() => {
                 const box = this._editBox();
                 if (box) box.innerHTML = '';
                 if (isImg) { this._buildImgEditor(b); return; }
+                if (b.label === 'display_formula') { this._buildFormulaEditor(b); return; }
                 if (b.label === 'table') {
                     this._markTableEditable(t);
                     this._tableSnapshots = [t.outerHTML];       // 快照栈的起点（Task 5 起用）
@@ -1234,6 +1309,33 @@ function reviewBlocks() {
                 this.schedulePreview();
                 return;
             }
+            if (b && b.label === 'display_formula') {
+                const box = this._fmlSrc();
+                if (!box) return;
+                const tex = box.value;
+                const display = this._fmlDisplay;
+                // ★ **未改动且未点过对齐 ⇒ 一律不写 `edits`**（与图片块同口径）。
+                //   写了会凭空出现「已修改」，且 compose 会把该行重写一遍 —— 任何序列化差异
+                //   都会**静默改写**用户没动过的公式行（真实夹具的 ` $$ … $$ ` 首尾空格极脆）。
+                if (tex === this._fmlBaseline && this._fmlAlign === null) {
+                    this.formulaError = '';
+                    this.editingIdx = -1;
+                    this.schedulePreview();
+                    return;
+                }
+                // 校验失败 ⇒ 保持编辑态、只在块内报错、不写 edits
+                // （沿用表格编辑态「校验失败保留编辑态、块内报错」的既有形状）
+                const r = window.formulaEditor.validate(tex, display);
+                if (!r.ok) { this.formulaError = r.error; return; }
+                this.formulaError = '';
+                // 先组回整行（`buildLine` 保留原行首尾空白），再按对齐做**同行 span** 包裹
+                // （`mdInline.wrap` 单行、不新增行 ⇒ 对 `parse_markdown` 的切分零风险）。
+                const line = window.formulaEditor.buildLine(tex, display, this._fmlSrcLine);
+                this.edits[b.__i] = window.mdInline.wrap(line, this._fmlAlign);
+                this.editingIdx = -1;
+                this.schedulePreview();
+                return;
+            }
             const box = this._editBox();
             const els = [...box.querySelectorAll('.rvb-line')];
             const md = els.map((el) => window.mdInline.wrap(
@@ -1252,6 +1354,8 @@ function reviewBlocks() {
             if (imgHost) imgHost.innerHTML = '';
             this.tableError = '';
             this.imgError = '';
+            this.formulaError = '';
+            this.formulaNote = '';
             this.editingIdx = -1;
             this.schedulePreview();
         },

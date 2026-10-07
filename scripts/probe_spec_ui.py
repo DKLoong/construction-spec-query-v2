@@ -1505,6 +1505,11 @@ _RVB_PAGES = 10
 # `with_image` 里挪进切片内的 image 块个数。参考夹具的 9 个 image 块全在第 22~54 页，
 # 全被切片滤掉 ⇒ 只挪前几个进来（**不能新增块**：配对要求图块数与 `<img>` 行数严格相等）。
 _RVBI_VISIBLE = 3
+# `with_formula` 里挪进切片内的 display_formula 块个数。实测参考夹具的 21 个
+# display_formula 块**全在第 21~54 页** ⇒ 不挪的话切片后公式块为 0（f17 无从跑）。
+# 与 `with_image` 同手法：**不新增块**（display_formula 走行级配对，`content` 与 md 行
+# 逐字节相同；新增块会打破 21 vs 21 的配对关系），只把前几个的 page/bbox 挪进切片内。
+_RVBF_VISIBLE = 3
 
 
 def _rvb_make_pdf(path, pages):
@@ -1569,15 +1574,18 @@ def _probe_png(w=160, h=120):
             + chunk(b"IEND", b""))
 
 
-def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False):
+def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False,
+              with_formula=False):
     """造一个**带 layout.json** 的待审查任务并打开审查页；前置不成立返回 None。
 
-    `extra_md` / `with_table` / `with_image` 均为 **opt-in**：默认与原先逐字一致
-    （不影响 f12/f13 的夹具计数）。
-    `with_image=True` 时补 9 个**合成 image 块**（走真实配对路径，另物化被引用的文件），
+    `extra_md` / `with_table` / `with_image` / `with_formula` 均为 **opt-in**：
+    默认与原先逐字一致（不影响 f12/f13 的夹具计数）。
+    `with_image=True` 时把 9 个 image 块中的前几个挪进切片（另物化被引用的文件），
     供 f16 使用 —— 见函数内注释里「计数必须严格相等」那条。
     `with_table=True` 时追加一张**合成表格**（md 原文 + 对应块），供 f14 使用 ——
     真实夹具里唯一的 table 块在第 29 页，而本探针只切到 `_RVB_PAGES` 页，会被过滤掉。
+    `with_formula=True` 时把前几个 display_formula 块的 page/bbox 挪进切片，供 f17 使用 ——
+    真实夹具的 21 个公式块全在第 21~54 页，切片后为 0。**同样是挪而非新增**。
     """
     import json as _json
     from pathlib import Path as _Path
@@ -1615,6 +1623,16 @@ def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False):
         for _b in _imgs[:_RVBI_VISIBLE]:
             _b["page"] = 1
             _b["bbox"] = [20, 20, 120, 90]
+    if with_formula:
+        # 同 `with_image`：**不要新增块**。参考夹具**本来就有** 21 个 display_formula 块
+        # ↔ md 里 21 行 ` $$ … $$ `（`content` 与 md 行逐字节相同，实测 21/21；span 恒为
+        # 单行）。真实对的 21 个块**全在第 21~54 页** ⇒ 被 `_RVB_PAGES` 的切片全部滤掉
+        # ⇒ 只把前几个的 `page`（与 bbox，让左栏也画框）挪进切片内，配对关系与真实数据都不动。
+        _fmls = [b for b in lay["blocks"] if b.get("label") == "display_formula"]
+        assert _fmls, "参考夹具里没有 display_formula 块，with_formula 无从造"
+        for _b in _fmls[:_RVBF_VISIBLE]:
+            _b["page"] = 1
+            _b["bbox"] = [20, 40, 320, 90]
     pages = [p for p in lay["pages"] if p["index"] <= _RVB_PAGES]
     anchored, _ = anchor_blocks(md, lay["blocks"])
     aligned, _ = align_clauses(md, anchored)
@@ -4107,6 +4125,107 @@ CASES["f16"] = [f16_1_upload_endpoint_roundtrip,
                 f16_13_crop_geometry_maps_display_px_to_natural,
                 f16_14_crop_saves_a_new_file_and_keeps_the_original,
                 f16_15_image_align_is_single_line_and_keeps_clause_split]
+
+
+# ═══════════════════════════════════════════
+# f17：公式线（P4）—— 公式块**就地展开**的编辑态 / 保存 / 校验拦截 / 对齐
+# ═══════════════════════════════════════════
+#
+# 夹具：`_rvb_seed(..., with_formula=True)` —— 把前 3 个 display_formula 块的 page 挪进
+# 切片（真实 21 个全在第 21~54 页，不挪则切片后为 0）。
+# ⚠️ 公式块走**独立分支 + 独立编辑器宿主**（与图片块同模式）：`md-inline.js` 的 `domToMd`
+#    不认 `span`，KaTeX 渲染出的 `.katex` 若落进 `.rvb-lines`，其文本会被展平拼回 md
+#    ⇒ 保存后**静默毁掉公式**。故 f17_2 专门钉「`.rvb-lines` 为空」。
+# ⚠️ 选样本避开已知坏例：`data/outputs/7c5b6ac9` 第 658 块花括号不平衡（validate 恒非法）。
+#    本夹具前 3 个公式块（第 480 / 628 / 637 行）均正常。
+
+
+def _rvb_formula_idx(page):
+    """第一个「已锚定」的 display_formula 块在 blocks 里的下标（没锚上则为 -1）"""
+    return page.evaluate(f"""() => {{ const d = ({_Q})();
+        return d.blocks.findIndex((b) => b.label === 'display_formula'
+                                        && b.start_line !== null); }}""")
+
+
+def _rvb_seed_formula(page, suffix):
+    """造带公式块的夹具并返回 (blocks 下标, __i, task_id)。"""
+    tid = _rvb_seed(page, suffix, with_formula=True)
+    assert tid is not None, "前置不成立：缺少参考夹具"
+    idx = _rvb_formula_idx(page)
+    assert idx >= 0, "夹具里没有已锚定的 display_formula 块（切片没生效？夹具问题，不是实现问题）"
+    i = page.evaluate(f"() => ({_Q})().blocks[{idx}].__i")
+    return idx, i, tid
+
+
+def f17_1_formula_block_offers_a_working_fix_entry(page):
+    """★ 公式块有**可用**的「纠正」入口 —— 点进去开的是**公式编辑器**（不是行编辑器兜底）。
+
+    ⚠️ 为什么不能只断言「纠正按钮可见」：`display_formula` 自 P4 Task 1 起就进了
+       `EDITABLE_TEXT_LABELS`（后端 `/layout` 下发的白名单）⇒ 只要块已锚定，按钮**本就可见**，
+       单看可见性这条用例**修前就绿**、失去分辨力。真正要钉的是「点进去落到公式分支」：
+       修前 `enterEdit` 会掉进行编辑器兜底（`.rvb-lines` 里长出 contenteditable），
+       而**没有** `.rvb-fml-src` ⇒ 本用例修前必红。"""
+    idx, _, _tid = _rvb_seed_formula(page, "17a")
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    assert blk.locator("button:has-text('纠正')").is_visible(), \
+        "公式块没有「纠正」入口（canEdit 或模板门控没接上）"
+    blk.locator("button:has-text('纠正')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000), \
+        "点了纠正但没进编辑态"
+    assert blk.locator(".rvb-fml-src").is_visible(), \
+        "公式块没有进入公式编辑态（掉进了行编辑器兜底？）"
+
+
+def f17_2_formula_editor_prefills_the_tex_body_only(page):
+    """★ 进编辑态后 `.rvb-fml-src` 预填的是**公式本体**（不含 `$$` 定界符），
+    且 `.rvb-lines` 为空 —— 后者钉住「没把公式送进行编辑器」。"""
+    idx, _, _tid = _rvb_seed_formula(page, "17b")
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    blk.locator("button:has-text('纠正')").click()
+    assert poll_until(page, lambda: blk.locator(".rvb-fml-src").is_visible(), 5000), \
+        "没进公式编辑态"
+    val = page.evaluate(f"""() => document.querySelector(
+        '[data-block-idx="{idx}"] .rvb-fml-src').value""")
+    assert "$$" not in val, f"编辑框里混进了定界符（应只装公式本体）：{val!r}"
+    assert val.strip() != "", "编辑框是空的（公式本体没灌进去）"
+    # 预填的必须正是该块 md 原文去掉定界符后的本体（逐字符，不 trim）—— 定界符由
+    # `buildLine` 保存时统一补回，编辑框只管本体。
+    expect = page.evaluate(f"""() => {{
+        const d = ({_Q})();
+        return window.formulaEditor.parseLine(d.contentOf(d.blocks[{idx}])).tex; }}""")
+    assert val == expect, f"预填内容不是公式本体：{val!r} != {expect!r}"
+    # ★ 钉住「没落进行编辑器」：KaTeX 的 span 若进去，domToMd 会把它展平 ⇒ 保存静默毁公式。
+    n = page.evaluate(f"""() => document.querySelectorAll(
+        '[data-block-idx="{idx}"] .rvb-lines .rvb-line').length""")
+    assert n == 0, f"公式块落了 {n} 个行编辑器行（应走独立宿主、.rvb-lines 为空）"
+    # ★ 行编辑专属工具行（B/I/S、+行/-行、行对齐）对公式块必须**隐藏**：公式块里没有"行"，
+    #   它与公式部件自己的「左/中/右」并排会成两排重复按钮，且第一排全是死控件。
+    tools_visible = page.evaluate(f"""() => {{
+        const t = document.querySelector('[data-block-idx="{idx}"] .rvb-line-tools');
+        return t ? getComputedStyle(t).display !== 'none' : false; }}""")
+    assert tools_visible is False, "公式块编辑态露出了行编辑专属工具行（应有且仅有公式那一排）"
+
+
+def f17_3_saving_unchanged_formula_block_writes_nothing(page):
+    """★ 进编辑后**不改直接保存**，不得写 `edits`（与图片块 f16_3 同口径）。
+
+    写了会凭空出现「已修改」标记，且 `compose` 会把该行重写一遍（任何序列化差异
+    都会**静默改写**用户没动过的公式行）。"""
+    idx, i, _tid = _rvb_seed_formula(page, "17c")
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    blk.locator("button:has-text('纠正')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000)
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000), \
+        "保存后没退出编辑态"
+    has = page.evaluate(f"""() => Object.prototype.hasOwnProperty.call(
+        ({_Q})().edits, {i})""")
+    assert has is False, "未改动直接保存却写了 edits"
+
+
+CASES["f17"] = [f17_1_formula_block_offers_a_working_fix_entry,
+                f17_2_formula_editor_prefills_the_tex_body_only,
+                f17_3_saving_unchanged_formula_block_writes_nothing]
 
 
 def _require_isolated_paths():
