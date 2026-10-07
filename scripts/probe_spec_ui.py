@@ -3441,8 +3441,9 @@ def f15_13_confirm_maps_geometry_and_preview_really_loads(page):
 
     随后再验**端到端**：浮层里的图真的加载出来，且**输出尺寸 = 请求尺寸 × scale(1.5)**
     —— 端点是否真按我们给的矩形裁，只有这一步能证。"""
-    tid = _rvb_seed(page, "p13")
-    assert tid is not None, "前置不成立：缺少参考夹具"
+    # ⚠️ P4/T7 起：**没有编辑落点就不取图**（先判目标再取）⇒ 本用例必须先进入一个落点，
+    #    否则它红在「请先点某个块的『纠正』」上，与被测的换算**毫无关系**。
+    _idx, _i, _tid = _rvb_enter_img_edit(page, "p13")
     page.evaluate("() => Alpine.$data(document.querySelector('.rvb-root')).setScaleMode(1.0)")
     page.locator(".rvb-pick").click()
     page.evaluate("() => { const v = document.querySelector('.rvb-viewport'); v.scrollLeft = 0; v.scrollTop = 0; }")
@@ -3506,7 +3507,9 @@ def f15_15_crop_failure_is_surfaced_not_silent(page):
 
     这里用与清扫器**同一套**应用函数（`delete_task` + `_cleanup_task_artifacts`）制造该状态，
     而不是自己删文件 —— 避免"造出来的故障"与线上那一种不是同一回事。"""
-    tid = _rvb_setup_pick(page, "p15")
+    # 同 f15_13：T7 起必须先有编辑落点，否则会在「没有目标」那一步就被拦住、根本走不到取图。
+    _idx, _i, tid = _rvb_enter_img_edit(page, "p15")
+    page.locator(".rvb-pick").click()
     vb = page.locator(".rvb-viewport").bounding_box()
     ax, ay = vb["x"] + vb["width"] * 0.30, vb["y"] + 60
 
@@ -3801,6 +3804,141 @@ def _rvb_dispatch_with_file(page, kind, suffix):
         f"{kind} 保存后 edits 必须是相对引用：{md!r}"
 
 
+def _rvb_pick_once(page, dx=0.30, dy=60, w=180, h=120):
+    """进取图模式并在左栏拖一个框、右键确认。返回 `_rvb_pick` 的状态快照。"""
+    page.locator(".rvb-pick").click()
+    vb = page.locator(".rvb-viewport").bounding_box()
+    ox, oy = vb["x"] + vb["width"] * dx, vb["y"] + dy
+    _drag(page, ox, oy, ox + w, oy + h)
+    page.mouse.click(ox + w / 2, oy + h / 2, button="right")
+    return vb
+
+
+def _rvb_up_files(task_id):
+    """该任务的 `imgs/` 下 `up_*`（落盘端点写的新图）文件集合 —— 用来证明"有没有落盘"。"""
+    from pathlib import Path as _P
+
+    from app.config import OUTPUT_DIR
+    d = _P(OUTPUT_DIR) / task_id / "imgs"
+    return {p.name for p in d.glob("up_*")} if d.is_dir() else set()
+
+
+def f16_9_pick_inserts_into_current_table_cell(page):
+    """★ **头条验收**：左栏拖框 → 右键确认 → 图**落盘**并插入**当前编辑的单元格**。
+
+    端到端钉四条：编辑器里立即可见且真的加载出来、保存后 md 里是**相对**引用、
+    只读态能渲染出新图、磁盘上确有该文件。
+    只验「格子里多了个 `<img>`」会放过后面三条（相对引用写错、文件没落盘，都要到导入后才炸）。"""
+    task_id = _rvb_seed(page, "16i", with_table=True)
+    assert task_id is not None, "前置不成立：缺少参考夹具"
+    tidx = page.evaluate(f"""() => {{ const d = ({_Q})();
+        return d.blocks.findIndex((b) => b.label === 'table' && b.start_line !== null); }}""")
+    assert tidx >= 0, "夹具里没有已锚定的表格块"
+    ti = page.evaluate(f"() => ({_Q})().blocks[{tidx}].__i")
+    page.locator(f'[data-block-idx="{tidx}"] button:has-text("纠正")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == tidx, 5000), \
+        "没进表格编辑态"
+    # 选一格（模板表第 3 格是「说 明」列，非图片格 ⇒ 新图能一眼区分出来）
+    page.evaluate(f"""() => {{ const d = ({_Q})(); d._selectTable(d._tableEl().querySelectorAll('td')[2], false); }}""")
+    before = page.evaluate("() => document.querySelectorAll('.rvb-table-edit td img').length")
+    before_files = _rvb_up_files(task_id)
+
+    _rvb_pick_once(page)
+    assert poll_until(page, lambda: page.evaluate(
+        "() => document.querySelectorAll('.rvb-table-edit td img').length") > before, 15000), \
+        "取图后当前单元格里没有出现新图"
+    info = page.evaluate("""() => { const im = document.querySelector('.rvb-table-edit td img[src^="/import/review/"]');
+        return im ? [im.getAttribute('src'), im.naturalWidth] : null; }""")
+    assert info is not None, "单元格里那张图的 src 不是绝对路径（编辑态会破图）"
+    assert poll_until(page, lambda: page.evaluate(
+        """() => { const im = document.querySelector('.rvb-table-edit td img[src^="/import/review/"]');
+           return im ? im.naturalWidth : 0; }""") > 0, 10000), f"格子里的新图没加载出来：{info}"
+    assert _rvb_up_files(task_id) - before_files, "取图没有在服务端落盘（imgs/ 下没有新文件）"
+
+    page.locator(f'[data-block-idx="{tidx}"] button:has-text("保存")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000)
+    md = page.evaluate(f"() => ({_Q})().edits[{ti}]")
+    assert md and 'src="imgs/' in md, f"保存后的 md 里必须是相对引用：{str(md)[:160]!r}"
+    assert "/import/review/" not in md, "保存后的 md 里混进了绝对路径（不可移植）"
+    html = page.evaluate(f"() => ({_Q})().renderBlock(({_Q})().blocks[{tidx}])")
+    assert "imgs/" in html, f"只读态没渲染出取来的图：{html[:160]}"
+
+
+def f16_10_pick_blocked_when_not_editing(page):
+    """★ 不在任何编辑态时取图 ⇒ **拦住并说下一步**，且**不取图、不落盘**。
+
+    「不落盘」要单独证：只看 `pickMsg` 有字，会放过"其实已经 fetch 并上传了"的实现
+    —— 那会往 `imgs/` 里堆没人引用的垃圾文件，而用户只看到一句提示。"""
+    task_id = _rvb_seed(page, "16j")
+    assert task_id is not None, "前置不成立"
+    before_files = _rvb_up_files(task_id)
+    _rvb_pick_once(page)
+    # ⚠️ 先等一会儿再断言**落盘**：拦截是同步的、而"照旧取图并上传"是**异步**的。
+    #    不等的话，畸形实现会红在「提示为空」上（时序问题），
+    #    而真正要抓的「被拦住却仍然落了盘」永远轮不到 —— 判据的诊断力就丢了。
+    page.wait_for_timeout(1500)
+    assert _rvb_up_files(task_id) == before_files, \
+        "被拦住了却仍然落了盘（不取图/不上传是这条的核心）"
+    st = _rvb_pick(page)
+    assert st["msg"], "非编辑态取图必须给出下一步提示（不得静默）"
+    assert not st["preview"], f"非编辑态不该取图：{st['preview']}"
+    assert not page.evaluate(f"() => Object.keys(({_Q})().edits).length"), "被拦住了却写了 edits"
+
+
+def f16_11_pick_blocked_on_text_block(page):
+    """★ 在**文本块**编辑态里取图 ⇒ 明确拒绝。
+
+    文本块的行编辑器在保存时**没有处理图片的分支**（`mdInline.domToMd` 不认 `img`）——
+    放进去会当场看着"进去了"，一保存**静默消失**。这是本仓最不能接受的那类失效，
+    所以宁可在取图那一刻就拒绝并说清能放哪里。"""
+    task_id = _rvb_seed(page, "16k")
+    assert task_id is not None, "前置不成立"
+    tidx = page.evaluate(f"""() => {{ const d = ({_Q})();
+        return d.blocks.findIndex((b) => d.canEdit(b)); }}""")
+    assert tidx >= 0, "夹具里没有可编辑的文本块"
+    page.locator(f'[data-block-idx="{tidx}"] button:has-text("纠正")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == tidx, 5000)
+    before_files = _rvb_up_files(task_id)
+    _rvb_pick_once(page)
+    page.wait_for_timeout(1500)      # 同 f16_10：给"照旧上传"留出时间再判落盘
+    assert _rvb_up_files(task_id) == before_files, \
+        "文本块被拦住了却仍然落了盘（文本块插图会静默丢失，绝不该走到落盘）"
+    st = _rvb_pick(page)
+    assert "文本块" in st["msg"], f"文本块应被明确拒绝并说明去处：{st['msg']!r}"
+    assert not st["preview"], "文本块不该取图"
+
+
+def f16_12_unmodified_table_save_keeps_md_byte_identical(page):
+    """★ R1 的**真**判别用例：进表格编辑态（表内图 src 会被绝对化）→ 什么都不改 → 保存，
+    写进 `edits` 的必须与原始 `md_html` **逐字节相同**。
+
+    ⚠️ 为什么不能靠 f14_1：那条是**纯函数**往返（页面里直接调
+    `tableEditor.parse/serialize`），**不经过 `_absTableImgs`** —— 对它做「摘掉重取 baseline」
+    的变异**照样全绿**（实测验证过，我原本以为它守得住 R1，是错的）。
+    绝对化是**组件层**做的事，判别用例就必须在组件层走一遍。
+
+    失效后果：用户什么都没改，只点了一下「纠正」再「保存」，md 就被从原始串
+    改写成归一化 HTML（且带着绝对路径）—— 一次点击静默污染全文。"""
+    task_id = _rvb_seed(page, "16u", with_table=True)
+    assert task_id is not None, "前置不成立：缺少参考夹具"
+    idx = page.evaluate(f"""() => {{ const d = ({_Q})();
+        return d.blocks.findIndex((b) => b.label === 'table' && b.start_line !== null); }}""")
+    assert idx >= 0, "夹具里没有已锚定的表格块"
+    src = page.evaluate(f"() => ({_Q})().blocks[{idx}].md_html")
+    assert "<img" in src, f"前置不成立：夹具表里要含 <img>（否则绝对化无从发生）：{src[:120]}"
+    i = page.evaluate(f"() => ({_Q})().blocks[{idx}].__i")
+
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("纠正")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000), \
+        "没进表格编辑态"
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("保存")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000)
+    got = page.evaluate(f"() => ({_Q})().edits[{i}]")
+    assert got == src, (
+        "未改动保存却改写了 md（绝对化没被还原，或绝对化后没重取 `_rvbBaseline`）：\n"
+        f"  得到 {got!r}\n  原文 {src!r}")
+
+
 CASES["f16"] = [f16_1_upload_endpoint_roundtrip,
                 f16_2_image_block_enters_edit_and_shows_current_image,
                 f16_3_saving_unchanged_image_block_writes_nothing,
@@ -3808,7 +3946,11 @@ CASES["f16"] = [f16_1_upload_endpoint_roundtrip,
                 f16_5_delete_unlinks_only_and_keeps_the_file,
                 f16_6_replace_via_file_picker,
                 f16_7_replace_via_drop,
-                f16_8_replace_via_paste]
+                f16_8_replace_via_paste,
+                f16_9_pick_inserts_into_current_table_cell,
+                f16_10_pick_blocked_when_not_editing,
+                f16_11_pick_blocked_on_text_block,
+                f16_12_unmodified_table_save_keeps_md_byte_identical]
 
 
 def _require_isolated_paths():

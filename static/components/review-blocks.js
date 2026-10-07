@@ -296,6 +296,18 @@ function reviewBlocks() {
         confirmPick(e) {
             if (!this.pickMode) return;
             e.preventDefault();
+            // ★ 先解析**落点**：没有编辑目标就**不取图、不上传**，直接告诉用户下一步。
+            //   顺序不能颠倒 —— 先抓图再发现没地方放，用户白等一次网络往返，而且文件
+            //   已经落进 `imgs/` 了（留下一个没人引用的垃圾文件）。
+            const target = this._pickTarget();
+            if (target.kind === 'none') {
+                this.pickMsg = '请先点某个块的「纠正」进入编辑态，再框选取图';
+                return;
+            }
+            if (target.kind === 'text') {
+                this.pickMsg = '文本块不支持插图，请改为在表格单元格或图片块编辑态下取图';
+                return;
+            }
             if (!this.pickRect) { this.pickMsg = '请先在页图上拖出一个框'; return; }
             const img = this.$refs.pgimg;
             const p = this.pages.find((x) => x.index === this.curPage);
@@ -305,20 +317,58 @@ function reviewBlocks() {
             if (!window.imagePicker.isUsable(r)) { this.pickMsg = '选框太小，请重新框选'; return; }
             const g = window.imagePicker.toGrid(r, box.width, box.height, p.width, p.height);
             if (!g) { this.pickMsg = '页图尺寸未知，无法取图'; return; }
-            this._loadPreview(`/import/review/${this.taskId}/crop/${this.curPage}.png`
+            this._pickAndInsert(`/import/review/${this.taskId}/crop/${this.curPage}.png`
                 + `?x=${g.x.toFixed(1)}&y=${g.y.toFixed(1)}&w=${g.w.toFixed(1)}`
-                + `&h=${g.h.toFixed(1)}&scale=1.5`);
+                + `&h=${g.h.toFixed(1)}&scale=1.5`, target);
         },
 
-        /** 取图：**先自行 fetch 验一次，成功才把 URL 交给 `<img>`**。
+        /** 取图的**落点**。四种结果：cell（表格格）/ image（图片块）/ text（不支持）/ none。
          *
-         * ⚠️ 为什么不直接把 URL 塞给 `<img>`（2026-10-07 事故）：`<img>` 加载失败时
-         *    **不给你任何错误信息** —— 页面上只剩一个破图占位，`pickMsg` 也是空的，
-         *    用户只能得出「功能坏了」的结论。真实原因是**任务被 TTL 清扫器删掉**后
-         *    crop 端点返回 `404 {"detail":"该页没有版面尺寸"}`。
-         *    自己 fetch 一次就能拿到**状态码与后端给的原因**并翻成人话；
-         *    代价是一次请求（服务端裁切结果有缓存，随后 `<img>` 那次命中同一份）。 */
-        async _loadPreview(url) {
+         *  ⚠️ 表格的「当前格」口径 = 既有惯用式（第一个 `.rvb-cell-sel`，回落首个 `td,th`），
+         *  **不是** `_selAnchor` —— 那是 Shift 扩选的锚点，语义不同（`tableOp` 等三处同口径）。 */
+        _pickTarget() {
+            if (this.editingIdx < 0) return { kind: 'none' };
+            const b = this.blocks[this.editingIdx];
+            if (!b) return { kind: 'none' };
+            if (this.imageLabels.indexOf(b.label) >= 0) {
+                const host = this._imgHost();
+                return host ? { kind: 'image', host: host } : { kind: 'none' };
+            }
+            if (b.label === 'table') {
+                const t = this._tableEl();
+                if (!t) return { kind: 'none' };
+                const cell = t.querySelector('.rvb-cell-sel') || t.querySelector('td,th');
+                return cell ? { kind: 'cell', cell: cell } : { kind: 'none' };
+            }
+            return { kind: 'text' };
+        },
+
+        /** 把取到（并已落盘）的图放进落点。返回是否成功。
+         *
+         *  ⚠️ 传进来的 `url` 是**绝对**路径（编辑态要立即可见）；相对化发生在保存时。 */
+        _insertInto(target, url) {
+            if (target.kind === 'image') return this._putImgInHost(target.host, url);
+            if (target.kind === 'cell') {
+                const img = document.createElement('img');
+                img.setAttribute('src', url);
+                img.setAttribute('alt', 'Image');
+                target.cell.appendChild(img);
+                return true;
+            }
+            return false;
+        },
+
+        /** 取图 → **落盘** → 插入落点。先取一张当预览（用户要能看见自己圈的是哪块），
+         *  再上传、再插入；两步各自失败都给出可读原因（裁切失败=任务/页面问题，上传失败=落盘问题）。
+         *
+         * ⚠️ 为什么自己 fetch 而不是直接把 URL 塞给 `<img>`（2026-10-07 事故）：
+         *    `<img>` 加载失败**不给你任何错误信息** —— 只剩一个破图占位、`pickMsg` 也是空的，
+         *    用户只能得出「功能坏了」。真实原因是任务被 TTL 清扫器删掉后 crop 端点返回
+         *    `404 {"detail":"该页没有版面尺寸"}`；自己 fetch 就能拿到状态码与后端给的原因。
+         *
+         * ⚠️ 拿到的必须是 **Blob 再 POST 给落盘端点**：这样三入口（粘贴 / 拖文件 / 取图）
+         *    汇到同一个落点、共用同一套校验（spec §8.4）。 */
+        async _pickAndInsert(url, target) {
             const seq = ++this._pickSeq;     // 连点两次时，只认最后一次的结果
             this.pickPreview = '';           // 先撤掉旧图：留着会与「失败」提示自相矛盾
             this.pickMsg = '';
@@ -337,7 +387,17 @@ function reviewBlocks() {
                     this.pickMsg = '取图失败：登录已过期，请重新登录后再试';
                     return;
                 }
-                this.pickPreview = url;
+                const blob = await resp.blob();          // ← 落盘要有字节
+                if (seq !== this._pickSeq) return;
+                this.pickPreview = url;                  // 视觉确认：圈中的就是这块
+                const filename = await this._uploadImage(blob);
+                if (seq !== this._pickSeq) return;
+                if (!this._insertInto(target, this.imgAbsBase() + filename)) {
+                    this.pickMsg = '取到了图，却没有可插入的位置（编辑态可能已经关掉了）';
+                    return;
+                }
+                this.pickMsg = '已插入'
+                    + (target.kind === 'cell' ? '当前单元格' : '当前图片块') + '，点「保存」生效';
             } catch (e) {
                 if (seq !== this._pickSeq) return;
                 this.pickMsg = '取图失败：' + e;
@@ -535,6 +595,24 @@ function reviewBlocks() {
                 .split('src="imgs/').join('src="' + this.imgAbsBase());
         },
 
+        /** 表格编辑态：把表内的 `imgs/…` 就地绝对化，**并重取 `_rvbBaseline`**。
+         *
+         *  ⚠️ 两步缺一不可：
+         *  ① 不绝对化 ⇒ 相对路径按页 URL（`/import/review/{tid}`，无尾斜杠）解析成
+         *     `/import/review/imgs/…` ⇒ **编辑态里表内所有既有的图都是破图**（既有缺陷）。
+         *  ② 不重取 baseline ⇒ `tableEditor.serialize` 的 `html === _rvbBaseline` 判据失效
+         *     （基线是 parse 时的相对形态）⇒ **用户什么都没改，保存一次也会把 md
+         *     从原始串改写成归一化 HTML**（R1：逐字节往返被打破）。
+         *  且重取必须发生在**挂 `contenteditable` / 打选中态之前** —— 否则基线里会混进
+         *  编辑器痕迹，`_scrub` 一剥就永远对不上（等于没重取）。 */
+        _absTableImgs(t) {
+            for (const im of t.querySelectorAll('img')) {
+                const s = im.getAttribute('src') || '';
+                if (s.indexOf('imgs/') === 0) im.setAttribute('src', this.imgAbsBase() + s.slice(5));
+            }
+            t._rvbBaseline = t.outerHTML;
+        },
+
         /** 保存时：绝对 → 相对。md 里必须存**相对**引用才可移植
          *  （长期目录与分发包都按 `imgs/…` 解析）。 */
         _relImgs(html) {
@@ -605,25 +683,27 @@ function reviewBlocks() {
             this.imgError = '';
             try {
                 const filename = await this._uploadImage(blob);
-                const host = this._imgHost();
-                if (!host) return;
-                const url = this.imgAbsBase() + filename;
-                const img = host.querySelector('img');
-                if (img) {
-                    img.setAttribute('src', url);          // 立即可见（绝对路径）
-                } else {
-                    // 本来是**空壳**（未引用任何图 / 刚删过）：补一个进去。
-                    // 对齐包裹若还在，就塞进它的内部，别把包裹丢了。
-                    const shell = host.firstElementChild;
-                    const tpl = document.createElement('img');
-                    tpl.setAttribute('src', url);
-                    tpl.setAttribute('alt', 'Image');
-                    if (shell && shell.tagName !== 'IMG') shell.appendChild(tpl);
-                    else host.appendChild(tpl);
-                }
+                this._putImgInHost(this._imgHost(), this.imgAbsBase() + filename);
             } catch (e) {
                 this.imgError = String((e && e.message) || e);
             }
+        },
+
+        /** 把一个 img 放进图片块编辑宿主（有则换 src，无则补一个）。
+         *
+         *  补的时候若已有**对齐包裹**（`<span>` / `<div>`），要塞进包裹内部 ——
+         *  直接 append 到宿主会把包裹挤到一边，保存时对齐就丢了。 */
+        _putImgInHost(host, url) {
+            if (!host) return false;
+            const img = host.querySelector('img');
+            if (img) { img.setAttribute('src', url); return true; }
+            const shell = host.firstElementChild;
+            const neu = document.createElement('img');
+            neu.setAttribute('src', url);
+            neu.setAttribute('alt', 'Image');
+            if (shell && shell.tagName !== 'IMG') shell.appendChild(neu);
+            else host.appendChild(neu);
+            return true;
         },
 
         /** 入口一：点击选文件（按钮 → 隐藏的 `<input type=file>`） */
@@ -704,6 +784,7 @@ function reviewBlocks() {
             const src = this.edits[b.__i] ?? b.md_html;
             const t = (b.label === 'table') ? window.tableEditor.parse(src) : null;
             if (b.label === 'table' && !t) return;
+            if (t) this._absTableImgs(t);   // ⚠️ 必须在 `_markTableEditable` **之前**（见该函数注释）
             this.tableError = '';          // 清掉上一次的表格报错（否则会跟着下一块显示）
             this.imgError = '';
             this.editingIdx = idx;
@@ -994,7 +1075,9 @@ function reviewBlocks() {
                 const v = window.tableEditor.validate(t);
                 if (!v.ok) { this.tableError = '表格结构不合法：' + v.reason; return; }
                 this.tableError = '';      // 成功路径也清（与失败分支对称，不留陈旧状态）
-                this.edits[b.__i] = window.tableEditor.serialize(t);
+                // 相对化：编辑态里的 src 是绝对的（见 `_absTableImgs`），写进 md 必须还原成
+                // `imgs/…`。对「未改动」返回的 `_rvbSource` 是幂等的（它本就是相对串）。
+                this.edits[b.__i] = this._relImgs(window.tableEditor.serialize(t));
                 // ⚠️ **退出编辑态必须释放表格编辑 DOM**：`.rvb-table-edit` 只靠 `x-show` 隐藏，
                 //    不释放的话那张 `contenteditable` 表会**留在 DOM 里**（隐藏但存在）⇒
                 //    「是否还在编辑态」在 DOM 上不可分辨（f14_16 的 exit 判据正是数它）。

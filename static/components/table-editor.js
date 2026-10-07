@@ -41,13 +41,30 @@
         return el;
     }
 
+    /** 剥掉编辑器加的类名。
+     *
+     * ⚠️ **去掉最后一个类名后，`class=""` 这个空属性会留在元素上**（DOM 规范：`classList.remove`
+     *    不清属性）⇒ scrub 后的串与 parse 时的基线**差一个空属性** ⇒ `serialize` 判成"用户改过"
+     *    ⇒ **用户只点了一下「纠正」再「保存」（一个字没改），md 就被改写成归一化 HTML**。
+     *    实测（2026-10-07）：`_selectTable` 会给首格打 `rvb-cell-sel`，所以**每次进表格编辑态
+     *    都会走到这条路**；而基线是打选中态**之前**取的，必然对不上。
+     *    故类名被剥空时连属性一起删掉。 */
+    function _stripEditorClasses(el) {
+        if (!el.classList) return;
+        for (const c of EDITOR_CLASSES) {
+            if (!el.classList.contains(c)) continue;
+            el.classList.remove(c);
+            if (!el.getAttribute('class')) el.removeAttribute('class');
+        }
+    }
+
     function _scrub(el) {
         el.removeAttribute('contenteditable');
         for (const a of EDITOR_ATTRS) el.removeAttribute(a);
-        for (const c of EDITOR_CLASSES) el.classList.remove(c);
+        _stripEditorClasses(el);
         el.querySelectorAll('*').forEach((n) => {
             for (const a of EDITOR_ATTRS) n.removeAttribute(a);
-            for (const c of EDITOR_CLASSES) n.classList.remove(c);
+            _stripEditorClasses(n);
         });
         return el;
     }
