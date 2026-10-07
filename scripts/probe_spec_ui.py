@@ -1532,12 +1532,19 @@ _RVBT_CONTENT = ('<table><tr><td>序号</td><td>图 形</td><td>说 明</td></tr
                  '<td>探针表格</td></tr></table>')
 
 
-def _probe_png(w=8, h=6):
-    """迷你 PNG（**真合法**，浏览器能解码）。
+def _probe_png(w=160, h=120):
+    """探针用的 PNG（**真合法**，浏览器能解码）。
 
     探针里凡需要「一张真图」的地方都用它。不能用「看着像 PNG 的字节」凑：那样 magic
     过了、解码却失败 ⇒ 用例会红在**图没加载**上，而红的地方与被测行为无关（假红）。
-    """
+
+    ⚠️ 默认尺寸**不能太小**：裁剪用例拖半个图，自然像素下若不足 `imageCrop.MIN_SIZE`(4)，
+    实现会**正确地**判否 —— 于是用例红在「区域太小」上，看着像实现坏了。
+    实测：8×6 的图在 251px 宽下半个框只有约 3 自然像素。
+
+    **四个象限各一种颜色**（左上红 / 右上绿 / 左下蓝 / 右下白）：裁剪用例靠它验证
+    「裁的是**哪一块**」，而不只是尺寸对不对 —— 一个「永远从左上角裁」的实现，
+    光验尺寸是抓不住的。"""
     import struct
     import zlib
 
@@ -1545,7 +1552,17 @@ def _probe_png(w=8, h=6):
         c = tag + data
         return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xffffffff)
 
-    raw = b"".join(b"\x00" + b"\x33\x66\x99" * w for _ in range(h))
+    def quad(x, y):
+        top, left = y < h // 2, x < w // 2
+        if top and left:
+            return b"\xff\x00\x00"      # 左上：红
+        if top:
+            return b"\x00\xff\x00"      # 右上：绿
+        if left:
+            return b"\x00\x00\xff"      # 左下：蓝
+        return b"\xff\xff\xff"          # 右下：白
+
+    raw = b"".join(b"\x00" + b"".join(quad(x, y) for x in range(w)) for y in range(h))
     return (b"\x89PNG\r\n\x1a\n"
             + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw))
@@ -3704,11 +3721,19 @@ def f16_5_delete_unlinks_only_and_keeps_the_file(page):
 
 
 def _rvb_enter_img_edit(page, suffix):
-    """造带图片块的夹具并进图片块编辑态，返回 (blocks 下标, __i, task_id)"""
+    """造带图片块的夹具并进图片块编辑态，返回 (blocks 下标, __i, task_id)。
+
+    ⚠️ 这里**等图加载完**再返回：`naturalWidth`/`getBoundingClientRect()` 在图没加载时
+    分别是 0 和 0 高 ⇒ 后面凡是量尺寸/拖框的用例都会以「前置不成立」的样子红，
+    而红的地方与被测行为无关（实测踩过）。"""
     idx, i, tid = _rvb_seed_image(page, suffix)
     page.locator(f'[data-block-idx="{idx}"] button:has-text("纠正")').click()
     assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000), \
         "点了纠正但没进编辑态"
+    assert poll_until(page, lambda: page.evaluate(
+        "() => { const im = document.querySelector('.rvb-img-edit img');"
+        " return !!im && im.naturalWidth > 0; }"), 10000), \
+        "编辑态里的图没加载出来（相对路径没绝对化？文件没物化？）"
     return idx, i, tid
 
 
@@ -3939,6 +3964,94 @@ def f16_12_unmodified_table_save_keeps_md_byte_identical(page):
         f"  得到 {got!r}\n  原文 {src!r}")
 
 
+def f16_13_crop_geometry_maps_display_px_to_natural(page):
+    """★ 裁剪的**唯一换算入口**：显示坐标 → **自然像素**。
+
+    方向钉：显示宽是自然宽的两倍时，同样的长度在自然坐标里必须**减半**
+    （恒等映射 / 恒零映射都会被这条打红）。"""
+    page.goto(BASE)
+    assert page.evaluate("() => !!(window.imageCrop && window.imageCrop.toNatural)"), \
+        "image-crop.js 未加载（base.html 未引入，或 ?v=N 没递增）"
+    # 显示 200 宽 = 自然 100 ⇒ 显示坐标要**除以 2**
+    g = page.evaluate("() => window.imageCrop.toNatural({x:10,y:10,w:50,h:20}, 200, 200, 100, 100)")
+    assert g == {"x": 5, "y": 5, "w": 25, "h": 10}, f"2:1 换算不对：{g}"
+    # 1:1 不得改动数值
+    g1 = page.evaluate("() => window.imageCrop.toNatural({x:10,y:10,w:50,h:20}, 100, 100, 100, 100)")
+    assert g1 == {"x": 10, "y": 10, "w": 50, "h": 20}, f"1:1 不得改变数值：{g1}"
+    # 越界夹到图内（`drawImage` 的源矩形越界会静默取到边缘像素，是个很难查的错位源）
+    gc = page.evaluate("() => window.imageCrop.toNatural({x:190,y:0,w:50,h:50}, 200, 200, 100, 100)")
+    assert gc == {"x": 95, "y": 0, "w": 5, "h": 25}, f"越界夹取不对：{gc}"
+    # 自然尺寸为 0（图还没加载完）⇒ null，而不是 NaN
+    assert page.evaluate("() => window.imageCrop.toNatural({x:1,y:1,w:5,h:5}, 100, 100, 0, 0)") is None
+    # 碎拖（自然像素下小于 4）⇒ null：裁出一张 1×1 的图没有意义
+    assert page.evaluate("() => window.imageCrop.toNatural({x:0,y:0,w:2,h:2}, 100, 100, 100, 100)") is None
+
+
+def f16_14_crop_saves_a_new_file_and_keeps_the_original(page):
+    """★ 裁剪**另存为新文件**（spec §8.4）：新文件名 ≠ 原文件、**原文件仍在**、
+    新图的像素尺寸对得上裁掉的区域。
+
+    只验「编辑态里的图变了」会放过两条：把原文件覆盖掉（不可逆），
+    或裁的位置/尺寸算错（新图看着有，其实是别处剪来的）。"""
+    idx, i, tid = _rvb_enter_img_edit(page, "16v")
+    info = page.evaluate("""() => { const im = document.querySelector('.rvb-img-edit img');
+        const r = im.getBoundingClientRect();
+        return { nat: [im.naturalWidth, im.naturalHeight],
+                 box: [r.left, r.top, r.width, r.height],
+                 src: im.getAttribute('src') }; }""")
+    nat_w, nat_h = info["nat"]
+    assert nat_w > 0 and nat_h > 0, f"前置：编辑态里的图没加载出来：{info}"
+    orig_name = info["src"].split("/imgs/")[1]
+    orig_url = f"/import/review/{tid}/imgs/{orig_name}"
+
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("裁剪")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().cropMode") is True, 3000), \
+        "点了裁剪但没进裁剪模式"
+    # ⚠️ 必须在**进入裁剪模式之后**再量图的位置：那一排会多出「确认/取消裁剪」两枚按钮，
+    #    工具条可能折行 ⇒ 图整体下移。用进入**之前**量的坐标去拖会**打空**
+    #    （实测：cropRect 始终是 null，报「请先在图上拖出要保留的区域」）。
+    box = page.evaluate("""() => { const im = document.querySelector('.rvb-img-edit img');
+        const r = im.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; }""")
+    left, top, w, h = box
+    # 保留**右下**半。期望值**从实际拖的矩形反推**，不写死"一半"：起止点都带 2% 的余量。
+    # ⚠️ 特意裁**右下**而不是左上：左上那块与"从原点起算"的结果**恰好相同** ⇒
+    #    一个「永远从左上角裁」的实现照样全绿。右下象限是白，错裁会露出红。
+    dx0, dy0 = left + w * 0.5, top + h * 0.5
+    dx1, dy1 = left + w * 0.98, top + h * 0.98
+    exp_w = round((dx1 - dx0) * nat_w / w)
+    exp_h = round((dy1 - dy0) * nat_h / h)
+    _drag(page, dx0, dy0, dx1, dy1)
+    page.evaluate("(s) => { window.__rvbOrigSrc = s; }", info["src"])
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("确认裁剪")').click()
+    assert poll_until(page, lambda: page.evaluate(
+        "() => { const im = document.querySelector('.rvb-img-edit img');"
+        " return !!im && im.getAttribute('src') !== window.__rvbOrigSrc; }"), 15000), \
+        "确认裁剪后编辑态里的图没换"
+
+    after = page.evaluate("""async () => { const im = document.querySelector('.rvb-img-edit img');
+        if (im && !im.complete) await new Promise((r) => { im.onload = im.onerror = r; });
+        return { src: im.getAttribute('src'), nat: [im.naturalWidth, im.naturalHeight] }; }""")
+    new_name = after["src"].split("/imgs/")[1]
+    assert new_name != orig_name, f"裁剪没有另存为新文件（覆盖了原图）：{new_name}"
+    assert new_name.startswith("up_"), f"新文件名不像落盘端点产出的：{new_name}"
+    assert page.evaluate("async (u) => (await fetch(u)).status", orig_url) == 200, \
+        "裁剪把**原文件**删/覆盖了 —— spec §8.4 要求另存为新文件"
+    assert abs(after["nat"][0] - exp_w) <= 2 and abs(after["nat"][1] - exp_h) <= 2, \
+        f"新图尺寸与裁掉的区域对不上：{after['nat']}，预期约 {exp_w}×{exp_h}"
+    # ★ 验**裁的是哪一块**：夹具图四象限分色，保留右下半 ⇒ 新图左上角应是**白**。
+    #   只验尺寸的话，「永远从左上角裁」的实现照样全绿。
+    px = page.evaluate("""async (u) => {
+        const im = new Image();
+        await new Promise((res, rej) => { im.onload = res; im.onerror = rej; im.src = u; });
+        const c = document.createElement('canvas');
+        c.width = im.naturalWidth; c.height = im.naturalHeight;
+        const ctx = c.getContext('2d'); ctx.drawImage(im, 0, 0);
+        return Array.from(ctx.getImageData(1, 1, 1, 1).data);
+    }""", after["src"])
+    assert px[:3] == [255, 255, 255], \
+        f"裁出来的不是右下那块（左上角像素 {px[:3]}，应为右下象限的白 [255,255,255]）"
+
+
 CASES["f16"] = [f16_1_upload_endpoint_roundtrip,
                 f16_2_image_block_enters_edit_and_shows_current_image,
                 f16_3_saving_unchanged_image_block_writes_nothing,
@@ -3950,7 +4063,9 @@ CASES["f16"] = [f16_1_upload_endpoint_roundtrip,
                 f16_9_pick_inserts_into_current_table_cell,
                 f16_10_pick_blocked_when_not_editing,
                 f16_11_pick_blocked_on_text_block,
-                f16_12_unmodified_table_save_keeps_md_byte_identical]
+                f16_12_unmodified_table_save_keeps_md_byte_identical,
+                f16_13_crop_geometry_maps_display_px_to_natural,
+                f16_14_crop_saves_a_new_file_and_keeps_the_original]
 
 
 def _require_isolated_paths():

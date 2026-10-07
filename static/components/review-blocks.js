@@ -59,6 +59,10 @@ function reviewBlocks() {
         _pickSeq: 0,          // 取图请求序号：连点两次时只认最后一次的结果（初值必须给，否则 NaN）
         imgError: '',         // 图片块编辑态的**块内**错误提示（与 tableError 同口径）
         _imgBaseline: '',     // 进图片编辑态时的宿主快照，用于判「到底改没改」
+        cropMode: false,      // 裁剪模式（在编辑态里的图上再拖一个要保留的矩形）
+        cropRect: null,       // 裁剪框：**显示坐标**（CSS 像素，原点 = 图左上角）
+        _cropDrag: null,
+        _cropImg: null,       // 加进裁剪模式的那张 `<img>`（DOM 元素**不进响应式**）
 
 
         async init() {
@@ -734,6 +738,125 @@ function reviewBlocks() {
                     this._imgApplyBlob(it.getAsFile());
                     return;
                 }
+            }
+        },
+
+        // ── 裁剪（spec §8.4：前端 canvas 裁切 → **另存为新文件**）──────────
+
+        /** 进入裁剪模式。图没加载完就**不进** —— 那时 `naturalWidth` 是 0，
+         *  换算不出自然像素，拖出来的框会裁到错的地方。 */
+        imgStartCrop() {
+            const host = this._imgHost();
+            const img = host && host.querySelector('img');
+            if (!img) { this.imgError = '当前没有可裁剪的图片（先用「选文件」或取图放一张）'; return; }
+            if (!img.complete || !img.naturalWidth) { this.imgError = '图片还没加载完，稍后再试'; return; }
+            this.imgError = '';
+            this.cropMode = true;
+            this.cropRect = null;
+            this._cropImg = img;
+        },
+
+        imgCancelCrop() {
+            this.cropMode = false;
+            this.cropRect = null;
+            this._cropDrag = null;
+            this._cropImg = null;
+        },
+
+        /** 裁剪框的定位。`cropRect` 以**图**为原点，而覆盖层挂在 **stage** 上
+         *  ⇒ 必须加上「图在 stage 内的偏移」。
+         *
+         *  ⚠️ 不能假定图贴着 stage 左上角：语料里的图片行本就带
+         *  `<div style="text-align: center;">` ⇒ 图是**水平居中**的。
+         *  实测：251px 宽的图在 598px 宽的 stage 里左偏 173px —— 直接按 rect 定位，
+         *  覆盖层整体右移一大截（拖左半边，框却画在右半边）。 */
+        cropSelStyle() {
+            const r = this.cropRect;
+            const im = this._cropImg;
+            if (!r || !im) return 'display:none';
+            const stage = im.closest('.rvb-img-stage');
+            let ox = 0, oy = 0;
+            if (stage) {
+                const sb = stage.getBoundingClientRect();
+                const ib = im.getBoundingClientRect();
+                ox = ib.left - sb.left;
+                oy = ib.top - sb.top;
+            }
+            return `left:${ox + r.x}px;top:${oy + r.y}px;width:${r.w}px;height:${r.h}px`;
+        },
+
+        /** 裁剪框的手势与选框**共用** `imagePicker` 的纯几何（normalize / hitHandle / resize /
+         *  clampRect）—— 同一套交互在两处出现，没有理由写两份实现。 */
+        onCropDown(e) {
+            if (!this.cropMode || e.button !== 0) return;
+            const img = this._cropImg;
+            if (!img) return;
+            e.preventDefault();
+            const box = img.getBoundingClientRect();
+            const px = e.clientX - box.left, py = e.clientY - box.top;
+            const ip = window.imagePicker;
+            const handle = this.cropRect ? ip.hitHandle(this.cropRect, px, py, ip.HANDLE_TOL) : null;
+            if (handle === 'move') {
+                this._cropDrag = { mode: 'move', x0: px, y0: py,
+                                   orig: { x: this.cropRect.x, y: this.cropRect.y,
+                                           w: this.cropRect.w, h: this.cropRect.h } };
+            } else if (handle) {
+                this._cropDrag = { mode: 'resize', handle: handle };
+            } else {
+                this.cropRect = ip.normalize(px, py, px, py);
+                this._cropDrag = { mode: 'new', x0: px, y0: py };
+            }
+            const move = (ev) => this._cropMove(ev, box);
+            const up = () => {
+                this._cropDrag = null;
+                window.removeEventListener('mousemove', move);
+                window.removeEventListener('mouseup', up);
+                if (this.cropRect) {
+                    this.cropRect = window.imagePicker.clampRect(this.cropRect, box.width, box.height);
+                }
+            };
+            window.addEventListener('mousemove', move);
+            window.addEventListener('mouseup', up);
+        },
+
+        _cropMove(ev, box) {
+            const d = this._cropDrag;
+            if (!d) return;
+            const ip = window.imagePicker;
+            const px = ev.clientX - box.left, py = ev.clientY - box.top;
+            if (d.mode === 'new') {
+                this.cropRect = ip.normalize(d.x0, d.y0, px, py);
+            } else if (d.mode === 'resize') {
+                this.cropRect = ip.resize(this.cropRect, d.handle, px, py);
+            } else {
+                // 整体平移：夹的是**位移**而不是矩形（夹矩形会在贴边时把框压小）
+                const x = Math.max(0, Math.min(d.orig.x + (px - d.x0), box.width - d.orig.w));
+                const y = Math.max(0, Math.min(d.orig.y + (py - d.y0), box.height - d.orig.h));
+                this.cropRect = { x: x, y: y, w: d.orig.w, h: d.orig.h };
+            }
+            this.cropRect = ip.clampRect(this.cropRect, box.width, box.height);
+        },
+
+        /** 确认裁剪：显示坐标 → 自然像素 → 画到新画布 → **走共用落盘端点** → 换 src。
+         *  原图不动（新文件名保证），所以「取消」就能撤回。 */
+        async imgDoCrop() {
+            const img = this._cropImg;
+            if (!img || !this.cropRect) { this.imgError = '请先在图上拖出要保留的区域'; return; }
+            const box = img.getBoundingClientRect();
+            const nat = window.imageCrop.toNatural(this.cropRect, box.width, box.height,
+                                                   img.naturalWidth, img.naturalHeight);
+            if (!nat) { this.imgError = '裁剪区域太小（或图还没加载完）'; return; }
+            this.imgError = '';
+            try {
+                const canvas = window.imageCrop.drawCrop(img, nat);
+                const blob = await new Promise((res, rej) => {
+                    canvas.toBlob((b) => b ? res(b) : rej(new Error('画布导出失败')), 'image/png');
+                });
+                const filename = await this._uploadImage(blob);
+                this._putImgInHost(this._imgHost(), this.imgAbsBase() + filename);
+                this.imgCancelCrop();
+            } catch (e) {
+                this.imgError = '裁剪失败：' + String((e && e.message) || e);
             }
         },
 

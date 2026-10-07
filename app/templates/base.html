@@ -6,7 +6,7 @@
     <title>规范智能检索与问答系统</title>
     <link rel="stylesheet" href="/static/pico.min.css">
     <link rel="stylesheet" href="/static/pico.custom.css?v=1">
-    <link rel="stylesheet" href="/static/app.css?v=58">
+    <link rel="stylesheet" href="/static/app.css?v=59">
     <link rel="stylesheet" href="/static/katex/katex.min.css">
     <script src="/static/htmx.min.js"></script>
     <script src="/static/alpine.min.js" defer></script>
@@ -81,7 +81,9 @@
     <script src="/static/components/table-editor.js?v=6"></script>
     <!-- 拖框取图的纯几何层（无状态）。必须先于 review-blocks.js 加载 -->
     <script src="/static/components/image-picker.js?v=1"></script>
-    <script src="/static/components/review-blocks.js?v=29"></script>
+    <!-- 裁剪的纯几何 + canvas 包装。同样必须先于 review-blocks.js 加载 -->
+    <script src="/static/components/image-crop.js?v=1"></script>
+    <script src="/static/components/review-blocks.js?v=30"></script>
     <script src="/static/components/specs.js?v=4"></script>
     <script src="/static/components/field-hint.js?v=2"></script>
 </body>

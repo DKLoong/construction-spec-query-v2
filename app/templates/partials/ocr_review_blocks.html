@@ -260,15 +260,31 @@
                                            @change="imgReplaceFromFile($event)">
                                     <button type="button" @click="imgChooseFile($event)" style="margin:0"
                                             title="从本机选一张图替换（也可直接把文件拖到下方，或粘贴截图）">选文件</button>
+                                    <button type="button" @click="imgStartCrop()" style="margin:0"
+                                            :disabled="cropMode"
+                                            title="在图上拖出要保留的区域，确认后**另存为新文件**（原图不动）">裁剪</button>
                                     <button type="button" @click="imgDelete()" style="margin:0"
                                             title="只解除本块的图片引用，原文件保留；点「取消」可撤回">删除图片</button>
+                                    <template x-if="cropMode">
+                                        <span>
+                                            <button type="button" @click="imgDoCrop()" style="margin:0">确认裁剪</button>
+                                            <button type="button" @click="imgCancelCrop()" style="margin:0">取消裁剪</button>
+                                        </span>
+                                    </template>
                                 </div>
                                 <p class="rvb-img-err" x-show="imgError" x-cloak x-text="imgError"
                                    style="color:#c00;margin:0.25rem 0 0"></p>
-                                <!-- `tabindex` 是**粘贴入口**的前提：不加则宿主不可聚焦、收不到 paste -->
-                                <div class="rvb-img-edit" tabindex="0"
-                                     @dragover.prevent @drop.prevent="imgReplaceFromDrop($event)"
-                                     @paste="imgReplaceFromPaste($event)"></div>
+                                <!-- 裁剪框的坐标以**图**为原点，故覆盖层与图必须在同一个定位祖先里，
+                                     且图要贴在该祖先的左上角（`.rvb-img-stage` 不带内边距、图不带外边距）。 -->
+                                <div class="rvb-img-stage" :class="cropMode && 'rvb-img-stage--crop'"
+                                     @mousedown="onCropDown($event)">
+                                    <!-- `tabindex` 是**粘贴入口**的前提：不加则宿主不可聚焦、收不到 paste -->
+                                    <div class="rvb-img-edit" tabindex="0"
+                                         @dragover.prevent @drop.prevent="imgReplaceFromDrop($event)"
+                                         @paste="imgReplaceFromPaste($event)"></div>
+                                    <div class="rvb-crop-sel" x-show="cropMode && cropRect" x-cloak
+                                         :style="cropSelStyle()"></div>
+                                </div>
                             </div>
                             </template>
                             <!-- ⚠️ 不给 `x-ref`：编辑框在 x-for 内，同名 x-ref 会被最后一项
