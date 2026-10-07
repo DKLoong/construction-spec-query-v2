@@ -4085,6 +4085,20 @@ def _rvb_preview(page, tid, edits):
     }""", [tid, edits])
 
 
+def _rvb_compose_lines(page, tid, edits):
+    """调 `/compose` 拿拼装后 md 的**行数**（`_rvb_preview` 的兄弟：同端点族、同一 body 形状）。
+
+    ⚠️ `compose` 与 `preview` 同源（后端共用一个 `_compose_or_error`）⇒ 这里量到的就是
+    「真提交上去会入库的那份文本」。"""
+    return page.evaluate("""async ([tid, edits]) => {
+        const r = await fetch('/import/review/' + tid + '/compose', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({edits})});
+        const j = await r.json();
+        return j.md_text.split('\\n').length;
+    }""", [tid, edits])
+
+
 def f16_15_image_align_is_single_line_and_keeps_clause_split(page):
     """★ 图片对齐（spec §8.6 左/中/右）：保存后 md 是**单行** span 包裹，
     且**条文数与条号序列不变**。
@@ -4223,9 +4237,105 @@ def f17_3_saving_unchanged_formula_block_writes_nothing(page):
     assert has is False, "未改动直接保存却写了 edits"
 
 
+def f17_7_formula_align_keeps_single_line_and_still_renders_katex(page):
+    """★ 公式对齐「中」：存进 `edits` 的仍是**单行**同行 span，且**重渲染后仍被 KaTeX 渲染**。
+
+    ⚠️ 两条**必须一起**断言。「edits 里含 `text-align:center`」单独一条是**假网** ——
+       它会漏掉本 Task 真正要证的失效面：`md-inline.js:23` 那句「span 不是 HTML 块标签
+       ⇒ 行内 markdown 仍被解析」的结论是从**图片**（靠 `<img>` 标签自身渲染）外推的，
+       而公式靠 KaTeX 的 `renderMathInElement` **扫描文本节点**找 `$$…$$`；多套一层带
+       `display:block` 的 `<span>` 之后**是否仍被渲染必须实测**（计划 Task 4 Step 3
+       点名的「必须实测的一点」）。
+
+    ⚠️ 第二条的**判读次序**不能反：重渲染**之前**的旧 DOM（未对齐的原文）**本来就带
+       `.katex`** ⇒ 直接轮询 `.katex` 会在旧 DOM 上立刻为真（假绿）。故先等到 DOM 里
+       出现对齐 span（= 新 md 真的重渲染了），**再**数 `.katex`。
+
+    分辨力来自**变异**（Task 4 报告）：A（保存分支去掉 `mdInline.wrap`）⇒ 本条红。"""
+    idx, i, _tid = _rvb_seed_formula(page, "17g")
+    base = page.evaluate(f"() => ({_Q})().contentOf(({_Q})().blocks[{idx}])")
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    blk.locator("button:has-text('纠正')").click()
+    assert poll_until(page, lambda: blk.locator(".rvb-fml-src").is_visible(), 5000), \
+        "没进公式编辑态"
+    blk.locator(".rvb-fml-wrap button[title='居中']").click()
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000), \
+        "保存后没退出编辑态"
+
+    md = page.evaluate(f"() => ({_Q})().edits[{i}]")
+    assert md is not None, "点了「中」再保存却没写 edits（对齐没落进 md）"
+
+    # ① 单行：换行数必须与原行**一致**（同行包裹，绝不新增行）。
+    assert md.count("\n") == base.count("\n") == 0, \
+        (f"对齐后的块 md 不是单行（原行 {base.count(chr(10))} 个换行 / "
+         f"新 md {md.count(chr(10))} 个换行）：{md!r}")
+    assert "text-align:center" in md, f"存进去的 md 里没有居中对齐包裹：{md!r}"
+
+    # ② 先等新 md 重渲染落位（DOM 里出现对齐 span），再数 `.katex`。
+    aligned_dom = poll_until(page, lambda: page.evaluate(f"""() => {{
+        const bd = document.querySelector('[data-block-idx="{idx}"] .rvb-block-bd');
+        if (!bd) return false;
+        return [...bd.querySelectorAll('span')].some(
+            (el) => (el.getAttribute('style') || '').indexOf('text-align') >= 0);
+    }}"""), 15000)
+    katex_n = page.evaluate(f"""() => document.querySelectorAll(
+        '[data-block-idx="{idx}"] .rvb-block-bd .katex').length""")
+    html = page.evaluate(f"""() => document.querySelector(
+        '[data-block-idx="{idx}"] .rvb-block-bd').innerHTML""")
+    assert aligned_dom, \
+        f"对齐后的块体没有重渲染出对齐 span（.katex={katex_n}，md={md!r}）：{html[:200]!r}"
+    assert katex_n >= 1, \
+        f"对齐包裹后 KaTeX 不再渲染（.katex={katex_n}，公式退化成字面文本）：{html[:200]!r}"
+
+
+def f17_8_formula_align_keeps_clause_split_and_line_count(page):
+    """★ 公式对齐前后：`/preview` 的**条文数与条号序列不变**（复用 `_rvb_preview`），
+    且拼装后的 md **行数不变** —— 这是 spec §8.6 / §15.1 的切分地基判据。
+
+    ⚠️ 为什么在「条数 + 序列」之外还要一条行数（**本 Task 变异 B 实测逼出来的**）：
+       在本夹具上，「新增行」的写法（span 前后插 `\\n` / `<div>` 独占行）**并不改变
+       条数与条号序列** —— 被包裹的公式行落在某条条文的正文里，多出的空行只并入该条的
+       content，不产生新条。spec §8.6 的「3 条 vs 2 条」是在**小合成文档**上量的：那里
+       被包裹行位于**首个候选行之前**，多出的那一行成了**孤儿块**（`flush()` 改动⑤）。
+       ⇒ 只断言条数/序列，本条对「新增行」**没有分辨力**；而 `normalize_md` 的既有结构性
+       保证正是「**不改行数**」（`app/parser/ocr_clean.py:112`：「两项都不新增/删除换行符
+       —— 这是「规范化不改切分」的结构性保证」）。故行数是「新增行」的**唯一**判据。
+
+    分辨力来自**变异**（Task 4 报告）：B（`mdInline.wrap` 在 span 前后各插一个 `\\n`）⇒ 本条红。"""
+    idx, i, tid = _rvb_seed_formula(page, "17h")
+    before = _rvb_preview(page, tid, {})
+    before_lines = _rvb_compose_lines(page, tid, {})
+
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    blk.locator("button:has-text('纠正')").click()
+    assert poll_until(page, lambda: blk.locator(".rvb-fml-src").is_visible(), 5000), \
+        "没进公式编辑态"
+    blk.locator(".rvb-fml-wrap button[title='居中']").click()
+    blk.locator("button:has-text('保存')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000), \
+        "保存后没退出编辑态"
+    md = page.evaluate(f"() => ({_Q})().edits[{i}]")
+    assert md is not None, "点了「中」再保存却没写 edits（对齐没落进 md）"
+
+    after = _rvb_preview(page, tid, {str(i): md})
+    after_lines = _rvb_compose_lines(page, tid, {str(i): md})
+    assert after[0] == before[0], \
+        (f"对齐改变了条文数：{before[0]} → {after[0]}；"
+         f"条号序列前 {before[1][:10]} → 后 {after[1][:10]}")
+    assert after[1] == before[1], \
+        (f"对齐改变了条号序列：前 {len(before[1])} 条 → 后 {len(after[1])} 条；"
+         f"{before[1][:10]} vs {after[1][:10]}")
+    assert after_lines == before_lines, \
+        (f"对齐改变了拼装后的行数（{before_lines} → {after_lines}）——「新增行」是切分地基上"
+         f"被实测证伪过的形态，md={md!r}")
+
+
 CASES["f17"] = [f17_1_formula_block_offers_a_working_fix_entry,
                 f17_2_formula_editor_prefills_the_tex_body_only,
-                f17_3_saving_unchanged_formula_block_writes_nothing]
+                f17_3_saving_unchanged_formula_block_writes_nothing,
+                f17_7_formula_align_keeps_single_line_and_still_renders_katex,
+                f17_8_formula_align_keeps_clause_split_and_line_count]
 
 
 def _require_isolated_paths():
