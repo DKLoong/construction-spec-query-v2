@@ -713,11 +713,16 @@ Markdown 段落**没有对齐语法** ⇒ 必须以 HTML 包裹表达。实测�
 ### R1 实测结论（✅ 已解决，2026-10-07）
 
 - **公式块 label = `display_formula`**；**公式编号块 = `formula_number`**。
-- **依据**：真实夹具 `data/_ocr_reference/raw.jsonl`（19 页切片）与 `full.raw.jsonl`（57 页），
-  经 `extract_layout` 后 label 分布**一致** —— `display_formula` **21 块**、`formula_number` **21 块**；
-  **无 `formula`、无 `equation`**（spec 原猜的两个**都是错的**）。
-- `formula_number` 在 `DEFAULT_NOT_IN_MARKDOWN` 里 ⇒ **不进 md、恒不可锚定**（实测 21 个全部
+- **依据**：真实夹具 `data/_ocr_reference/raw.jsonl` —— **19 条 record / 57 页**
+  （⚠️ 该夹具与 `full.raw.jsonl` 是**同一个文件**：md5 均为 `0d42be0b…`、字节数相同；
+  「19」是 **record 条数**、**不是页数**）。经 `extract_layout` 后的 label 分布为 ——
+  `display_formula` **21 块**、`formula_number` **21 块**；**无 `formula`、无 `equation`**
+  （spec 原猜的两个**都是错的**）。
+- `formula_number` 在 `DEFAULT_NOT_IN_MARKDOWN` 里 ⇒ **不进 md** ⇒ **恒不可锚定**（实测 21 个全部
   `start_line=None`）⇒ 公式**编号不可编辑，属预期**。
+  ⚠️ **注（该规则不普遍成立）**：同在 `DEFAULT_NOT_IN_MARKDOWN` 里的 `image` **可以**被锚定 ——
+  它走的是 `anchor_blocks` 里**专用配对**那一趟（`app/ocr/layout.py:475-480`，注释实测 `132/132`）；
+  `formula_number` **没有**这样的专用通道 ⇒ 才恒不可锚定。故「在该集合里 ⇒ 恒不可锚定」**不能**当成通则。
 - **另一个坑**：原始 JSONL 里有 **129 个** `"label": "inline_formula"`，但它在
   `result.layoutParsingResults[].prunedResult.layout_det_res.boxes[].label` —— 那是**原始检测框列表**，
   `extract_layout` 只读 `parsing_res_list[].block_label`、**不读它** ⇒ 不是 `block_label`，与公式块无关。

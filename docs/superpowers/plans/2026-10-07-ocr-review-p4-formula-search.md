@@ -34,8 +34,9 @@ P4 因此可以整体归档。
 spec §16 把「公式块 `block_label` 名未实测」列为 **R1 未决风险**，并猜 `formula` / `equation`。
 **实测答案是 `display_formula`**，旧猜测两个都是错的：
 
-- 真实夹具 `data/_ocr_reference/raw.jsonl`（19 页切片）与 `full.raw.jsonl`（57 页），经
-  `extract_layout` 后 label 分布一致：`text` 477 / `number` 57 / `paragraph_title` 47 /
+- 真实夹具 `data/_ocr_reference/raw.jsonl` —— **19 条 record / 57 页**
+  （⚠️ 它与 `full.raw.jsonl` 是**同一个文件**，md5 相同 ⇒ 不是两份、不能互相佐证），经
+  `extract_layout` 后 label 分布：`text` 477 / `number` 57 / `paragraph_title` 47 /
   **`display_formula` 21** / **`formula_number` 21** / `image` 9 / `figure_title` 9 /
   `content` 4 / `vision_footnote` 3 / `table` 1 / `chart` 1。**无 `formula`、无 `equation`**。
 - `app/ocr/layout.py:51` 的注释原文即写 **「display_formula → P4」**；`review-blocks.js:436` 已有
@@ -85,7 +86,7 @@ spec §16 把「公式块 `block_label` 名未实测」列为 **R1 未决风险*
   `LONE_TILDE = /(?<!~)~(?![~])/g` 对**整篇 md** 生效，包括 `$$…$$` 内部；而 `~` 在 LaTeX 里是
   不断行空格。实测 `data/outputs/7c5b6ac9/7c5b6ac9.md` 的第 34 个块级公式
   （`…\mathrm{~}…`）被换成私有区哨兵字符 U+E000 后才交给 KaTeX ⇒ 该公式渲染成未知字符。
-  77 个块级公式里命中 **1** 个；19 页夹具命中 0 个。
+  77 个块级公式里命中 **1** 个；该夹具（19 条 record / 57 页）命中 0 个。
   **本期处置：登记 TODOS，不在本期修**（改 `protectTildes` 需重新验证整条渲染管线，
   收益 1/77；且本期的公式预览走**原始 LaTeX**，不受此影响）。
 - **陈旧文案**：`app/templates/partials/ocr_review_blocks.html:389` 仍写
@@ -596,7 +597,10 @@ pyright          # 仓库根执行，期望 0 error
 | 既有教训②：替换值用 `() => this.replaceText` | Task 10 Step 4；f18_9 钉住 |
 
 **§15 测试策略**：公式与搜索各一组探针（Task 6 / Task 11）；关键路径用**变异测试**证明有网
-（f17_15、f18_14、f18_15）。
+（**计划原表**里的变异行：`f17_15`「`_fmlBaseline` 比较」、`f18_14`「替换值函数式→字符串」、
+`f18_15`「滚动容器 `.rvb-blocks`→`window`」—— 按约定**只作报告记录、不注册为常驻用例**。
+⚠️ 其中 **`f18_14` 是「计划原表」的编号**，与最终**注册进常驻用例**的同号 `f18_14`
+（覆盖「命中在不可编辑块 ⇒ 替换禁用 + 可见原因」）**无关** —— 见 Task 11 表下的说明）。
 
 ## 会被打破 / 需要复核的既有测试与探针
 
@@ -637,5 +641,5 @@ pyright          # 仓库根执行，期望 0 error
 | 8 | `feat: text-search.js 共享搜索层 + .search-highlight 样式` |
 | 9 | `feat: 块页跨块搜索（计数 + 高亮 + 上一下一）` |
 | 10 | `feat: 跨块替换（当前/全部，表格走 DOM 文本节点，公式非法则跳过）` |
-| 11 | `test: f18 跨块搜索探针组（15 条）` |
+| 11 | `test: f18 跨块搜索探针组（14 条）` |
 | 12 | `docs: P4 公式 + 跨块搜索交付归档（spec §8.5/§12/§16/§18 + TODOS）` |
