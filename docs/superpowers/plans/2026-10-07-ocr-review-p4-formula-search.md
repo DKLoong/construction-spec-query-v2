@@ -396,6 +396,9 @@ Run（隔离实例下）：`D:/Python/python.exe scripts/probe_spec_ui.py f13` �
 | f17_14 | 弹窗不被容器裁剪 | 断言弹窗的 `getBoundingClientRect()` 在视口内（浮层挂错祖先的判别性用例） |
 | f17_15 | 变异证伪：把 `_fmlBaseline` 比较去掉（改成「总是写 edits」）⇒ f17_3 必须变红 | 手工变异一次并记录（本仓要求关键路径有网） |
 
+> ⚠️ **上表末行（变异证伪）按本期约定只作报告记录、不注册为常驻用例**（Ruling 8）⇒ 常驻条数
+> 以 runner 自报那一行为准（`1–9` + `10–14` + 降级用例 = **15**）。
+
 ### Task 7: 阶段一收尾
 
 - [ ] 跑 `f12`→`f13`→`f14`→`f15`→`f16`→`f17` 全绿；`pyright` 0 error；`pytest tests/ -q` 全绿。
@@ -495,6 +498,10 @@ Run（隔离实例下）：`D:/Python/python.exe scripts/probe_spec_ui.py f13` �
 | f18_14 | 变异证伪：把替换值的函数式写法改成字符串写法 ⇒ f18_9 必红 | 手工变异一次并记录 |
 | f18_15 | 变异证伪：把跳转的滚动容器从 `.rvb-blocks` 改成 `window` ⇒ f18_7 必红 | 手工变异一次并记录 |
 
+> ⚠️ **上表 f18_14 / f18_15 两行是「变异程序」，按本期约定只作报告记录、不注册为常驻用例**
+> ⇒ 常驻 **13 条** + 后来补的 1 条（`f18_14`，覆盖「命中在不可编辑块 ⇒ 替换禁用 + 可见原因」）
+> = **14 条**（故「端到端验证」一节的 f18 期望值订正为 **14/14**）。
+
 ### Task 12: 文档收尾
 
 - [ ] 上游 spec `docs/superpowers/specs/2026-10-04-ocr-review-block-editor-design.md`：
@@ -530,7 +537,7 @@ D:/Python/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8123 &
 
 ```bash
 D:/Python/python.exe scripts/probe_spec_ui.py f17   # 公式，期望 15/15
-D:/Python/python.exe scripts/probe_spec_ui.py f18   # 搜索/替换，期望 15/15
+D:/Python/python.exe scripts/probe_spec_ui.py f18   # 搜索/替换，期望 14/14
 # 回归（本轮改动面涉及共享常量与块页模板，这几组必须重跑）
 D:/Python/python.exe scripts/probe_spec_ui.py f12   # 只读对照
 D:/Python/python.exe scripts/probe_spec_ui.py f13   # 块编辑能力（含被改的夹具样本）
