@@ -113,11 +113,13 @@
                         <!-- 只读态：编辑入口只在**可编辑块**上出现（spec §8.1 的「纠正」） -->
                         <div class="rvb-block-bd" x-html="renderBlock(b)"></div>
                         <div class="rvb-block-meta">
-                            <button type="button" class="outline rvb-fix" x-show="canEdit(b)"
+                            <!-- 图片块走 `canEditImage`（不在文本白名单里，但有 span 就能回写） -->
+                            <button type="button" class="outline rvb-fix"
+                                    x-show="canEdit(b) || canEditImage(b)"
                                     @click.stop="enterEdit(i)">纠正</button>
                             <span class="rvb-edited" x-show="isEdited(b)">已修改</span>
                             <!-- 不可编辑必须**明说原因**，不得静默隐藏（Global Constraint 6） -->
-                            <span class="rvb-locked" x-show="!canEdit(b)"
+                            <span class="rvb-locked" x-show="!canEdit(b) && !canEditImage(b)"
                                   x-text="hasSpan(b) ? '该块类型暂不支持编辑' : '原文件未定位，无法安全回写'"></span>
                         </div>
                         <!-- 编辑态：行级编辑器（行 = contenteditable） -->
@@ -130,7 +132,11 @@
                                      且是表格编辑态**唯一**的保存出口（Task 4 的表格工具条只有结构操作
                                      按钮、不含保存）—— 整排门控会让表格**无法保存**。
                                      包一层 `inline-flex` 容器保持与原先相同的排布（gap 同为 0.3rem）。 -->
-                                <span class="rvb-line-tools" x-show="blocks[i].label !== 'table'">
+                                <!-- 行编辑专属控件：表格块与**图片块**都不适用（图片块里没有"行"，
+                                     点「+ 行」会把 null 传进 `_insertLineAfter`）。 -->
+                                <span class="rvb-line-tools"
+                                      x-show="blocks[i].label !== 'table'
+                                              && !imageLabels.includes(blocks[i].label)">
                                     <!-- ⚠️ `@mousedown.prevent` 不是可选项：点按钮会让 contenteditable **失焦**、
                                          选区塌掉，execCommand 就作用不到任何东西（点了 B 没反应）。
                                          prevent 掉 mousedown ⇒ 焦点与选区都留在当前行。 -->
@@ -241,6 +247,17 @@
                             <p class="rvb-table-err" style="color:#c00;margin:0.25rem 0 0"></p>
                             </div><!-- /.rvb-tbl-wrap -->
                             </template>
+                            <!-- 图片块编辑态（P4）：宿主里放**整行 md HTML**（对齐包裹、width/alt
+                                 都在里面），src 由 JS 绝对化 —— 页 URL 无尾斜杠，相对 `imgs/…`
+                                 会解析到 `/import/review/imgs/…` ⇒ 编辑态必破图。
+                                 与表格同理用 `x-if` 而非 `x-show`：图块只占少数，`x-show` 会白带节点。 -->
+                            <template x-if="imageLabels.includes(b.label)">
+                            <div class="rvb-img-wrap">
+                                <p class="rvb-img-err" x-show="imgError" x-cloak x-text="imgError"
+                                   style="color:#c00;margin:0.25rem 0 0"></p>
+                                <div class="rvb-img-edit"></div>
+                            </div>
+                            </template>
                             <!-- ⚠️ 不给 `x-ref`：编辑框在 x-for 内，同名 x-ref 会被最后一项
                                  覆盖 ⇒ 组件里的 `_editBox()` 按 data-block-idx 作用域查 -->
                             <div class="rvb-lines"></div>
@@ -322,10 +339,15 @@
             <span x-text="'取图预览 · 第 ' + curPage + ' 页'"></span>
             <button type="button" class="secondary outline" @click="pickPreview = ''">关闭</button>
         </div>
-        <!-- `@error` 是兜底：正常路径已由 `_loadPreview` 的 fetch 验过，此处只在
-             「fetch 成功但随后文件没了」这类竞态下触发，免得留一个破图不看不管。 -->
-        <img :src="pickPreview" alt="取图预览"
-             @error="pickPreview = ''; pickMsg = '取图预览加载失败'">
+        <!-- ⚠️ 必须 `x-if`（按需存在），不能只靠外层 `x-show`（只切 display）：
+             `pickPreview` 为空串时 `<img :src="">` 会把**页面 URL** 当成图去请求 ⇒
+             `@error` 随即把「取图预览加载失败」写进 `pickMsg` —— 用户一进页面就看到
+             一条红字，以为坏了（实测截图抓到；隐藏元素上的 DOM 断言发现不了它）。
+             `x-if` 之后这张 `<img>` 只在真有预览时才存在，`@error` 也只剩真失败会触发。 -->
+        <template x-if="pickPreview">
+            <img :src="pickPreview" alt="取图预览"
+                 @error="pickPreview = ''; pickMsg = '取图预览加载失败'">
+        </template>
         <p class="rvb-pick-pop-tip">原型阶段：只预览，未落盘、未插入单元格</p>
     </div>
 </div>

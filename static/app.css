@@ -903,6 +903,11 @@
 .rvb-pick-pop img { display: block; width: 100%; margin-top: 6px;
                     border: 1px solid var(--pico-muted-border-color); background: #fff; }
 .rvb-pick-pop-tip { margin: 6px 0 0; font-size: 0.75rem; color: var(--pico-muted-color); }
+/* ── 图片块编辑态（P4）────────────────────────────────────────────
+   宿主里放**整行 md HTML**（对齐包裹、width/alt 都在里面），src 由 JS 绝对化。 */
+.rvb-img-edit { margin-top: 4px; }
+.rvb-img-edit img { max-width: 100%; height: auto; }
+.rvb-img-empty { color: var(--pico-muted-color); font-size: 0.85rem; margin: 0; }
 .rvb-blocks { flex: 1; overflow: auto; padding-right: 4px; }
 .rvb-block { border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
              padding: 6px 10px; margin-bottom: 8px; cursor: pointer; }

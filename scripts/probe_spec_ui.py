@@ -1502,6 +1502,9 @@ _RVB = ".rvb-root"
 # 取 10 页：前两页只有 11 个块（封面 + 编制名单），样本太小验不出列表行为；
 # 10 页约 110 块（实测 57 页 650 块，约 11.4 块/页）。
 _RVB_PAGES = 10
+# `with_image` 里挪进切片内的 image 块个数。参考夹具的 9 个 image 块全在第 22~54 页，
+# 全被切片滤掉 ⇒ 只挪前几个进来（**不能新增块**：配对要求图块数与 `<img>` 行数严格相等）。
+_RVBI_VISIBLE = 3
 
 
 def _rvb_make_pdf(path, pages):
@@ -1529,10 +1532,33 @@ _RVBT_CONTENT = ('<table><tr><td>序号</td><td>图 形</td><td>说 明</td></tr
                  '<td>探针表格</td></tr></table>')
 
 
-def _rvb_seed(page, suffix, extra_md="", with_table=False):
+def _probe_png(w=8, h=6):
+    """迷你 PNG（**真合法**，浏览器能解码）。
+
+    探针里凡需要「一张真图」的地方都用它。不能用「看着像 PNG 的字节」凑：那样 magic
+    过了、解码却失败 ⇒ 用例会红在**图没加载**上，而红的地方与被测行为无关（假红）。
+    """
+    import struct
+    import zlib
+
+    def chunk(tag, data):
+        c = tag + data
+        return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xffffffff)
+
+    raw = b"".join(b"\x00" + b"\x33\x66\x99" * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
+
+
+def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False):
     """造一个**带 layout.json** 的待审查任务并打开审查页；前置不成立返回 None。
 
-    `extra_md` / `with_table` 均为 **opt-in**：默认与原先逐字一致（不影响 f12/f13 的夹具计数）。
+    `extra_md` / `with_table` / `with_image` 均为 **opt-in**：默认与原先逐字一致
+    （不影响 f12/f13 的夹具计数）。
+    `with_image=True` 时补 9 个**合成 image 块**（走真实配对路径，另物化被引用的文件），
+    供 f16 使用 —— 见函数内注释里「计数必须严格相等」那条。
     `with_table=True` 时追加一张**合成表格**（md 原文 + 对应块），供 f14 使用 ——
     真实夹具里唯一的 table 块在第 29 页，而本探针只切到 `_RVB_PAGES` 页，会被过滤掉。
     """
@@ -1560,6 +1586,18 @@ def _rvb_seed(page, suffix, extra_md="", with_table=False):
     lay = extract_layout([_json.loads(l) for l in
                           (ref / "raw.jsonl").read_text(encoding="utf-8").split("\n")
                           if l.strip()])
+    if with_image:
+        # ⚠️ **不要新增块**。参考夹具**本来就有** 9 个 image 块 ↔ md 里 9 行 `<img>`
+        #    （配对要求两侧**严格相等**，实测天然 9 vs 9）。第一版我只看「切片后 0 个
+        #    image 块」就补了 9 个 ⇒ 变成 18 vs 9 ⇒ **整趟不配**、一个都锚不上，
+        #    症状是「夹具里没有已锚定的 image 块」。真相是那 9 个块**全在第 22~54 页**，
+        #    只是被 `_RVB_PAGES` 的切片滤掉了。
+        # ⇒ 只把前几个的 `page` 挪进切片内：配对路径与真实数据都不动。
+        _imgs = [b for b in lay["blocks"] if b.get("label") == "image"]
+        assert _imgs, "参考夹具里没有 image 块，with_image 无从造"
+        for _b in _imgs[:_RVBI_VISIBLE]:
+            _b["page"] = 1
+            _b["bbox"] = [20, 20, 120, 90]
     pages = [p for p in lay["pages"] if p["index"] <= _RVB_PAGES]
     anchored, _ = anchor_blocks(md, lay["blocks"])
     aligned, _ = align_clauses(md, anchored)
@@ -1614,6 +1652,16 @@ def _rvb_seed(page, suffix, extra_md="", with_table=False):
         "base_sha256": base_sha256(md),
         "stats": {"anchorable": len(aligned), "anchored": len(aligned), "missed": 0},
     }, out)
+
+    if with_image:
+        # 让编辑器里能看到**真图**：把 md 引用的文件名逐个物化到 imgs/。
+        # 不物化的话 src 全 404 ⇒ 「进编辑态能看到当前图」这条会在
+        # **图没加载**上红，而红的地方与被测行为无关（假红），骗自己也骗后来人。
+        _imgs = out / "imgs"
+        _imgs.mkdir(parents=True, exist_ok=True)
+        _names = [s.split('"', 1)[0] for s in md.split('src="imgs/')[1:]]
+        for _n in {n for n in _names if n and "/" not in n}:
+            (_imgs / _n).write_bytes(_probe_png())
 
     page.goto(f"{BASE}/import/review/{task_id}")
     assert poll_until(page, lambda: page.locator(_RVB).count() > 0, 10000), \
@@ -3484,6 +3532,19 @@ def f15_15_crop_failure_is_surfaced_not_silent(page):
     assert page.locator(".rvb-pick-pop").is_hidden(), "失败时不该残留上一张预览浮层"
 
 
+def f15_16_no_spurious_message_before_any_pick(page):
+    """★ 刚打开页面、还没取过图时，`pickMsg` 必须是**空的**。
+
+    踩过（2026-10-07，由**实拍截图**抓到，DOM 断言发现不了）：预览浮层的
+    `<img :src="pickPreview">` 在 `pickPreview` 为空串时，仍会把**页面 URL** 当图去请求
+    ⇒ `@error` 随即把「取图预览加载失败」写进 `pickMsg`。用户一进页面就看到一条红字。
+    浮层是隐藏的，所以「浮层可见吗」这类断言对它完全无感。"""
+    _rvb_seed(page, "p16")
+    st = _rvb_pick(page)
+    assert st["msg"] == '', f"页面刚打开就有取图提示（虚假红字）：{st['msg']!r}"
+    assert not st["preview"], st["preview"]
+
+
 CASES["f15"] = [f15_1_image_picker_loaded,
                 f15_2_normalize_handles_reverse_drag,
                 f15_3_clamp_rect_keeps_it_inside_the_page,
@@ -3498,7 +3559,123 @@ CASES["f15"] = [f15_1_image_picker_loaded,
                 f15_12_toggling_pick_mode_clears_selection,
                 f15_13_confirm_maps_geometry_and_preview_really_loads,
                 f15_14_no_selection_warns_and_mode_gates_contextmenu,
-                f15_15_crop_failure_is_surfaced_not_silent]
+                f15_15_crop_failure_is_surfaced_not_silent,
+                f15_16_no_spurious_message_before_any_pick]
+
+
+# ═══════════════════════════════════════════
+# f16：图片线（P4）—— 图片块编辑态 / 落盘端点 / 三入口 / 删除 / 裁剪 / 对齐
+# ═══════════════════════════════════════════
+#
+# 夹具：`_rvb_seed(..., with_image=True)` —— 补 9 个合成 image 块 + **物化**被引用的图。
+# ⚠️ 图片块的编辑入口只在**已锚定**（`start_line != null`）时出现；没配上就是
+#    「原文件未定位」，那是夹具问题而不是实现问题 —— 故下面每组都先断言前置。
+
+_Q = "() => Alpine.$data(document.querySelector('.rvb-root'))"
+
+
+def _rvb_image_idx(page):
+    """第一个「已锚定」的 image 块在 blocks 里的下标（没锚上则为 -1）"""
+    return page.evaluate(f"""() => {{ const d = ({_Q})();
+        return d.blocks.findIndex((b) => d.imageLabels.includes(b.label)
+                                        && b.start_line !== null); }}""")
+
+
+def _rvb_seed_image(page, suffix):
+    """造带图片块的夹具并返回 (blocks 下标, __i)。"""
+    assert _rvb_seed(page, suffix, with_image=True) is not None, "前置不成立：缺少参考夹具"
+    idx = _rvb_image_idx(page)
+    assert idx >= 0, "夹具里没有已锚定的 image 块（配对计数不等？夹具问题，不是实现问题）"
+    i = page.evaluate(f"() => ({_Q})().blocks[{idx}].__i")
+    return idx, i
+
+
+def f16_1_upload_endpoint_roundtrip(page):
+    """★ 落盘端点从**浏览器侧**走一遍：POST 一个真 PNG → 200 + url 可 GET 到真图。
+
+    后端已有 pytest 覆盖（含不覆盖、magic、上限）；这里验的是**前端要用的那条路** ——
+    同源 fetch 带 blob、返回的 url 能被 `<img>` 加载（`naturalWidth > 0`）。"""
+    from base64 import b64encode
+    tid = _rvb_seed(page, "16a")
+    assert tid is not None, "前置不成立"
+    b64 = b64encode(_probe_png()).decode()
+    res = page.evaluate("""async ([tid, b64]) => {
+        const bin = atob(b64); const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        const r = await fetch('/import/review/' + tid + '/image',
+            { method: 'POST', headers: {'Content-Type': 'image/png'}, body: arr });
+        return { status: r.status, body: await r.json() };
+    }""", [tid, b64])
+    assert res["status"] == 200, res
+    url = res["body"]["url"]
+    assert url == f"/import/review/{tid}/imgs/{res['body']['filename']}", res
+    nat = page.evaluate("""(u) => new Promise((res) => {
+        const im = new Image();
+        im.onload = () => res([im.naturalWidth, im.naturalHeight]);
+        im.onerror = () => res(null);
+        im.src = u; })""", url)
+    assert nat and nat[0] > 0, f"落盘后的 url 加载不出图：{nat}"
+
+
+def f16_2_image_block_enters_edit_and_shows_current_image(page):
+    """★ 图片块可进编辑态，且编辑态里**能看到当前图**（不是破图）。
+
+    ⚠️ 断言 `src` 必须是**绝对**路径：页 URL 是 `/import/review/{tid}`（无尾斜杠），
+    相对 `imgs/…` 会解析成 `/import/review/imgs/…` ⇒ 404。只读态靠 `mdRender.rewriteImg`
+    修，编辑态**没有**那层 —— 所以「能加载」与「src 是绝对的」要一起钉。"""
+    idx, _ = _rvb_seed_image(page, "16b")
+    blk = page.locator(f'[data-block-idx="{idx}"]')
+    # 断言**可见性**而不是 count：按钮一直在 DOM 里（`x-show` 只切 display），
+    # 数它等于没测入口 —— 实测第一版就是这么放过了「按钮存在但不可见」，
+    # 失败表现成 Playwright 点击超时（红得难看且指向不清）。
+    assert blk.locator("button:has-text('纠正')").is_visible(), \
+        "图片块没有「纠正」入口（canEditImage 或模板门控没接上）"
+    blk.locator("button:has-text('纠正')").click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000), \
+        "点了纠正但没进编辑态"
+    info = page.evaluate("""() => { const im = document.querySelector('.rvb-img-edit img');
+        return im ? [im.naturalWidth, im.naturalHeight, im.getAttribute('src')] : null; }""")
+    assert info is not None, "编辑态里没有图片宿主内容"
+    assert info[2].startswith("/import/review/"), f"编辑态 img 的 src 不是绝对路径：{info[2]}"
+    assert poll_until(page, lambda: (page.evaluate(
+        "() => { const im = document.querySelector('.rvb-img-edit img');"
+        " return im ? im.naturalWidth : 0; }")) > 0, 8000), \
+        "编辑态里当前图没加载出来（相对路径没绝对化 / 文件没物化）"
+
+
+def f16_3_saving_unchanged_image_block_writes_nothing(page):
+    """★ 进编辑后**不改直接保存**，不得写 `edits`。
+
+    写了会同时坏两件事：凭空出现「已修改」标记；`_cropUrl` 的 edited-guard 生效
+    ⇒ 只读态本该显示的 bbox 裁图**消失**（用户什么都没做，图却变了）。"""
+    idx, i = _rvb_seed_image(page, "16c")
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("纠正")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000)
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("保存")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000), \
+        "保存后没退出编辑态"
+    has = page.evaluate(f"""() => Object.prototype.hasOwnProperty.call(
+        ({_Q})().edits, {i})""")
+    assert has is False, "未改动直接保存却写了 edits"
+
+
+def f16_4_edited_empty_image_block_does_not_fall_back_to_bbox_crop(page):
+    """★ 编辑过的图块**一律不回落 bbox 裁图**（R4 的判别点之一）。
+
+    只按「内容非空」判会漏掉**删除**：删除后 `edits[i]` 是**空串**，
+    空串会落回 bbox 裁图 ⇒ **删了又冒出来**，用户以为删除失败。"""
+    idx, i = _rvb_seed_image(page, "16d")
+    before = page.evaluate(f"() => ({_Q})().renderBlock(({_Q})().blocks[{idx}])")
+    assert "crop" in before, f"前置不成立：未编辑的图块本应显示 bbox 裁图：{before[:120]}"
+    page.evaluate(f"() => {{ ({_Q})().edits[{i}] = ''; }}")
+    after = page.evaluate(f"() => ({_Q})().renderBlock(({_Q})().blocks[{idx}])")
+    assert "crop" not in after, f"编辑过（删除）的图块回落到了 bbox 裁图：{after[:160]}"
+
+
+CASES["f16"] = [f16_1_upload_endpoint_roundtrip,
+                f16_2_image_block_enters_edit_and_shows_current_image,
+                f16_3_saving_unchanged_image_block_writes_nothing,
+                f16_4_edited_empty_image_block_does_not_fall_back_to_bbox_crop]
 
 
 def _require_isolated_paths():

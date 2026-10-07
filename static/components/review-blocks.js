@@ -57,6 +57,8 @@ function reviewBlocks() {
         pickMsg: '',          // 模式内提示（框太小 / 页图尺寸未知 / 取图失败）
         _pickDrag: null,
         _pickSeq: 0,          // 取图请求序号：连点两次时只认最后一次的结果（初值必须给，否则 NaN）
+        imgError: '',         // 图片块编辑态的**块内**错误提示（与 tableError 同口径）
+        _imgBaseline: '',     // 进图片编辑态时的宿主快照，用于判「到底改没改」
 
 
         async init() {
@@ -342,6 +344,27 @@ function reviewBlocks() {
             }
         },
 
+        /** 把一张图落到服务端（图片线的**共用落点**），返回**文件名**。
+         *
+         *  图片三入口（点击选文件 / 拖拽 / 粘贴）、裁剪另存、拖框取图**都走这里** ——
+         *  「新增文件名、不覆盖」由后端保证（见 `POST /import/review/{id}/image`）。
+         *  失败时**抛出**带可读原因的 Error，由调用方就近显示；不在这里吞。 */
+        async _uploadImage(blob) {
+            const resp = await fetch(`/import/review/${this.taskId}/image`, {
+                method: 'POST',
+                headers: { 'Content-Type': (blob && blob.type) || 'image/png' },
+                body: blob,
+            });
+            if (!resp.ok) {
+                let detail = '';
+                try { detail = ((await resp.json()) || {}).detail || ''; } catch (e) { detail = ''; }
+                throw new Error(`上传失败（HTTP ${resp.status}）` + (detail ? `：${detail}` : ''));
+            }
+            const data = await this._json(resp);       // 非 JSON ⇒ 置 sessionExpired 并抛
+            if (!data || !data.filename) throw new Error('上传成功但没拿到文件名');
+            return data.filename;
+        },
+
         labelZh(label) {
             const m = {
                 doc_title: '文档标题', paragraph_title: '段落标题', text: '正文',
@@ -373,6 +396,10 @@ function reviewBlocks() {
          *    否则后端拿到负宽高只能 422。 */
         _cropUrl(b) {
             if (!this.imageLabels.includes(b.label)) return null;
+            // ★ **编辑过的块一律不回落 bbox 裁图** —— 判据不能只看「内容非空」：
+            //   用户点「删除图片」后 `edits[i]` 是**空串**，按"内容非空"判的话空串会落回
+            //   bbox 裁图 ⇒ **删了又冒出来**，用户以为删除失败。
+            if (this.isEdited(b)) return null;
             if ((this.contentOf(b) || '').trim()) return null;   // 块自己有内容就按内容渲染
             const bb = b.bbox;
             if (!Array.isArray(bb) || bb.length !== 4) return null;
@@ -481,6 +508,72 @@ function reviewBlocks() {
             return this.hasSpan(b) && this.editableLabels.indexOf(b.label) >= 0;
         },
 
+        // ── P4 图片线：图片块的编辑态 ────────────────────────────────
+
+        /** 图片块可编辑 = **有行区间**（能安全回写）且是图片类 label。
+         *
+         *  为什么与 `canEdit` 分开：图片块的 `content` 是**空串**、也不在
+         *  `EDITABLE_TEXT_LABELS` 里；但后端 `compose` 的写入守卫**只查 `start_line`**
+         *  （不查 label 白名单），`splice` 也只枚举有 span 的块 ⇒ 只要锚上了就能安全回写。
+         *  没锚上就绝不能进编辑态（那样保存会被 422 拒）。 */
+        canEditImage(b) {
+            return !!b && this.hasSpan(b) && this.imageLabels.indexOf(b.label) >= 0;
+        },
+
+        /** 编辑态里图片 src 的**绝对前缀**。
+         *
+         *  ⚠️ 必需：页 URL 是 `/import/review/{taskId}`（**无尾斜杠**），相对 `imgs/…`
+         *  会解析成 `/import/review/imgs/…` ⇒ 404。只读态靠 `mdRender.rewriteImg` 修，
+         *  编辑态**没有**那一层 ⇒ 表内/图块内的图在编辑态本来全是破图。 */
+        imgAbsBase() {
+            return `/import/review/${this.taskId}/imgs/`;
+        },
+
+        /** 进编辑态：相对 → 绝对（幂等：已经是绝对的再调是 no-op） */
+        _absImgs(html) {
+            return String(html == null ? '' : html)
+                .split('src="imgs/').join('src="' + this.imgAbsBase());
+        },
+
+        /** 保存时：绝对 → 相对。md 里必须存**相对**引用才可移植
+         *  （长期目录与分发包都按 `imgs/…` 解析）。 */
+        _relImgs(html) {
+            return String(html == null ? '' : html)
+                .split('src="' + this.imgAbsBase()).join('src="imgs/');
+        },
+
+        /** 图片块的当前 md 原文：有编辑用编辑，否则用 layout 下发的 `md_html`。
+         *  ⚠️ **不能**回落 `b.content` —— 图片块的 content 是空串。 */
+        _imgSource(b) {
+            return this.edits[b.__i] ?? b.md_html ?? '';
+        },
+
+        /** 图片编辑宿主（同样**按块下标**取 —— `x-ref` 在 `x-for` 里会被最后一项覆盖） */
+        _imgHost() {
+            const list = this.$refs.list;
+            return list
+                ? list.querySelector(`[data-block-idx="${this.editingIdx}"] .rvb-img-edit`)
+                : null;
+        },
+
+        /** 构建图片块编辑器：宿主里放**整行 HTML**（含对齐包裹等），src 绝对化。
+         *
+         *  为什么放整行而不是只放 `<img>`：对齐包裹与 `width`/`alt` 都长在这一行上，
+         *  只放 `<img>` 会在保存时把它们全丢掉（用户没动过对齐，保存一次却没了）。 */
+        _buildImgEditor(b) {
+            const host = this._imgHost();
+            if (!host) return;
+            const src = this._imgSource(b);
+            host.innerHTML = src.trim()
+                ? this._absImgs(src)
+                : '<p class="rvb-img-empty">此图块当前没有图片引用</p>';
+            // 进编辑态时的快照 —— 保存时据此判「用户到底改没改」。
+            // ⚠️ 不能直接拿 `_relImgs(host.innerHTML)` 与源串比：innerHTML 会把
+            //    `<img … />` 归一成 `<img …>`、属性顺序也可能变 ⇒ 未改动也会判成"改了"，
+            //    于是凭空写一条 edits ⇒ 只读态的 bbox 裁图被 edited-guard 挡掉。
+            this._imgBaseline = host.innerHTML;
+        },
+
         /** 块的当前内容：有编辑用编辑，否则用 OCR 原文（渲染与编辑共用同一取值）。
          *
          * ⚠️ **必须先读一次 `this.edits[i]`**（Task 6 实现者仪表化实测逼出）：Alpine 的响应式
@@ -503,7 +596,11 @@ function reviewBlocks() {
 
         enterEdit(idx) {
             const b = this.blocks[idx];
-            if (!b || !this.canEdit(b)) return;
+            if (!b) return;
+            // 图片块走**另一条**准入判据（见 `canEditImage`）：它不在文本白名单里，
+            // 但只要有 span 就能安全回写。两条判据都要求 `hasSpan`。
+            const isImg = this.imageLabels.indexOf(b.label) >= 0;
+            if (isImg ? !this.canEditImage(b) : !this.canEdit(b)) return;
             // ⚠️ 表格块**解析不出 `<table>` 就不进编辑态**（缺 `md_html`、或 `md_html` 里根本没有表），
             //    且守卫必须在 `editingIdx` 赋值**之前** —— 放在下面 `$nextTick` 里会变成
             //    "已进编辑态、编辑器却是空的"（用户看到空白框，且行编辑器工具条会一并露出来）。
@@ -525,10 +622,12 @@ function reviewBlocks() {
             const t = (b.label === 'table') ? window.tableEditor.parse(src) : null;
             if (b.label === 'table' && !t) return;
             this.tableError = '';          // 清掉上一次的表格报错（否则会跟着下一块显示）
+            this.imgError = '';
             this.editingIdx = idx;
             this.$nextTick(() => {
                 const box = this._editBox();
-                box.innerHTML = '';
+                if (box) box.innerHTML = '';
+                if (isImg) { this._buildImgEditor(b); return; }
                 if (b.label === 'table') {
                     this._markTableEditable(t);
                     this._tableSnapshots = [t.outerHTML];       // 快照栈的起点（Task 5 起用）
@@ -791,6 +890,21 @@ function reviewBlocks() {
 
         saveEdit() {
             const b = this.blocks[this.editingIdx];
+            if (b && this.imageLabels.indexOf(b.label) >= 0) {
+                const host = this._imgHost();
+                if (!host) return;
+                // ★ **没动过就不写 `edits`**：写了会凭空出现「已修改」，且 `_cropUrl` 的
+                //   edited-guard 会让只读态本该显示的 bbox 裁图**消失** ——
+                //   用户什么都没做，图却变了。
+                if (host.innerHTML !== this._imgBaseline) {
+                    this.edits[b.__i] = this._relImgs(host.innerHTML);
+                }
+                // 与表格分支同口径：退出编辑态必须**释放编辑 DOM**（`x-show` 只是隐藏）
+                host.innerHTML = '';
+                this.editingIdx = -1;
+                this.schedulePreview();
+                return;
+            }
             if (b && b.label === 'table') {
                 const t = this._tableEl();
                 if (!t) return;
@@ -822,7 +936,10 @@ function reviewBlocks() {
             // `x-show` 隐藏、节点仍在 ⇒ 不释放则「否在编辑态」在 DOM 上不可分辨）。行编辑块该容器本就是空的。
             const host = this._tableHost();
             if (host) host.innerHTML = '';
+            const imgHost = this._imgHost();
+            if (imgHost) imgHost.innerHTML = '';
             this.tableError = '';
+            this.imgError = '';
             this.editingIdx = -1;
             this.schedulePreview();
         },
