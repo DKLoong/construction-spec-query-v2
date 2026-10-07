@@ -70,6 +70,26 @@ def test_layout_endpoint_ships_editable_labels(review_env):
     assert "text" in r.json()["editable_labels"]
 
 
+def test_layout_endpoint_ships_not_in_markdown(review_env):
+    """★ 「不进 markdown 的 label」名单也必须由**后端下发**（单一来源）。
+
+    P4 Task 9（D2 裁定）：块页的跨块搜索**覆盖所有「进 md 的块」**，必须把
+    「不进 md 的块」（页码 / 页眉页脚 / 图片 / 公式编号…）排除在计数之外 ——
+    否则会报出**永远改不动**的匹配。判据与 `editable_labels` 同口径：前端从
+    `/layout` 读这份名单，**不得**在 JS 里另写一份（会与后端漂移）。
+    """
+    from app.ocr.layout import DEFAULT_NOT_IN_MARKDOWN
+
+    client, out = review_env
+    _write_layout(out)
+    r = client.get(f"/import/review/{TASK_ID}/layout")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body["not_in_markdown"], list), "必须是列表（前端按数组处理）"
+    assert body["not_in_markdown"] == sorted(DEFAULT_NOT_IN_MARKDOWN)
+    assert "number" in body["not_in_markdown"], "页码块必须在不进 md 的名单里"
+
+
 def test_layout_endpoint_404_without_layout(review_env):
     """无 layout.json（老任务 / .md / 非扫描件）⇒ 404，前端据此降级（spec §13）。
 

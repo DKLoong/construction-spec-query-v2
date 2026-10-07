@@ -950,6 +950,12 @@
 .rvb-fml-modal-actions { display: flex; justify-content: flex-end; gap: 0.3rem; margin-top: 8px; }
 .rvb-fml-modal-actions button { margin: 0; font-size: 0.78rem; padding: 2px 10px; }
 .rvb-blocks { flex: 1; overflow: auto; padding-right: 4px; }
+/* 块审查页：跨块搜索工具条（右栏顶部，P4 Task 9）。
+   形态复用 `.review-toolbar`（控件同行、等高 36px、基线对齐），这里只补两样本页特有的东西：
+   ① 不参与 flex 收缩（否则列表一变长，工具条会被压扁）；
+   ② 计数字样（`.search-highlight` 的样式在 P4 Task 8 已加，**不要**在这里重复定义）。 */
+.rvb-search { flex: 0 0 auto; padding: 0 0 6px; }
+.rvb-search small { color: var(--pico-muted-color); white-space: nowrap; }
 .rvb-block { border: 1px solid var(--pico-muted-border-color); border-radius: 6px;
              padding: 6px 10px; margin-bottom: 8px; cursor: pointer; }
 .rvb-block--on { border-color: #e8710a; box-shadow: 0 0 0 1px #e8710a inset; }

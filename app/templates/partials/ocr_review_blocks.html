@@ -93,6 +93,25 @@
 
         <!-- ══ 右栏：版面块列表 ══ -->
         <section class="rvb-right">
+            <!-- 跨块搜索工具条（P4 Task 9，D2 = 方案 A）：放**右栏顶部**、块列表之前。
+                 复用既有 `.review-toolbar`（控件同行、等高、基线对齐 —— `app.css` 已定义）。
+                 计数用 `<small>`（与旧源码审查页同构，便于用户迁移直觉）。
+                 ⚠️ **本处（`x-for` 之外）是唯一允许读页面级搜索状态的地方**：块内读页面级状态
+                    会让每次输入在 4000 块上各跑一遍（本仓记过 2.8 万遍 / 进编辑 857ms 的事故）。
+                 ⚠️ `width:200px` 内联写死是必需的：Pico 全局规则给 `input` 加了 `width:100%`，
+                    不覆盖会把整条工具条独吞（与旧页同一处理）。
+                 ⚠️ 本 Task 只放「搜索框 + 计数 + 清空」；**上一个/下一个/替换是 Task 10 的事**。 -->
+            <div class="review-toolbar rvb-search">
+                <input type="search" class="rvb-search-box" x-model="searchQuery"
+                       @input="scheduleSearch()" placeholder="跨块搜索…" aria-label="跨块搜索"
+                       style="width:200px" autocomplete="off">
+                <button type="button" class="secondary outline" @click="clearSearch()"
+                        title="清空搜索并撤掉高亮">清空</button>
+                <!-- 计数：「N 个匹配 · M 个可替换」（D2 的两个口径必须分别说清）。
+                     `M < N` 时 title 说明「其中 N−M 处所在块不可编辑」—— 否则用户不知道
+                     那些命中为什么改不动。title 由状态下发，不在模板里算。 -->
+                <small class="rvb-search-info" x-text="searchInfo" :title="searchMsg"></small>
+            </div>
             <div class="rvb-blocks" x-ref="list">
                 <template x-for="(b, i) in blocks" :key="'bk' + i">
                     <!-- ⚠️ 本块**不写**任何读 `editingIdx`/`activeIdx`/`tableError` 的绑定：

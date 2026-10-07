@@ -1517,6 +1517,15 @@ _RVBF_VISIBLE = 3
 # 是 warn）⇒ `formulaError` 保持空、`.rvb-fml-err` 不出现，用例不会红在与被测行为无关处。
 _RVBF_DEGRADED_LINE = "这不是标准公式行"
 
+# `with_search_samples=True` 的样本（P4 Task 9）：两块**同含一个关键词**、都进 md，
+# 但一块**可编辑**、一块**不可编辑** ⇒ 造出 `N > M` 的搜索计数场景（D2 要分别报两个数）。
+#   ⚠️ 与 `_RVBF_DEGRADED_LINE` 同手法：**必须新增 md 行**再锚定 —— 不能去蹭现成的空行
+#     （两条门槛隔离样本已占用 [0,1) 与 [1,2)，任何再落在同一行的块都会区间重叠 ⇒
+#      `splice` 抛 ValueError ⇒ 该夹具的 compose/preview 一律 500，见 :1708 那条记载）。
+_RVBS_KEYWORD = "跨块搜索样本"
+_RVBS_EDIT_LINE = _RVBS_KEYWORD + " 可编辑行"      # label=text（白名单）⇒ canEdit 为真
+_RVBS_LOCK_LINE = _RVBS_KEYWORD + " 不可编辑行"    # label=chart（非白名单）⇒ canEdit 为假
+
 
 def _rvb_make_pdf(path, pages):
     """按给定页尺寸造多页文本 PDF（≥100 字符 ⇒ 非扫描件 ⇒ 不触发 OCR）"""
@@ -1630,11 +1639,11 @@ def _rvb_assert_suffix_not_in_library(suffix):
 
 
 def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False,
-              with_formula=False, with_formula_degraded=False):
+              with_formula=False, with_formula_degraded=False, with_search_samples=False):
     """造一个**带 layout.json** 的待审查任务并打开审查页；前置不成立返回 None。
 
     `extra_md` / `with_table` / `with_image` / `with_formula` / `with_formula_degraded`
-    均为 **opt-in**：默认与原先逐字一致（不影响 f12/f13 的夹具计数）。
+    / `with_search_samples` 均为 **opt-in**：默认与原先逐字一致（不影响 f12/f13 的夹具计数）。
     `with_image=True` 时把 9 个 image 块中的前几个挪进切片（另物化被引用的文件），
     供 f16 使用 —— 见函数内注释里「计数必须严格相等」那条。
     `with_table=True` 时追加一张**合成表格**（md 原文 + 对应块），供 f14 使用 ——
@@ -1744,6 +1753,20 @@ def _rvb_seed(page, suffix, extra_md="", with_table=False, with_image=False,
                         "page": 1, "bbox": None, "order": 10001, "global_block_id": 10001,
                         "start_line": _dl, "end_line": _dl + 1, "prefix": "", "suffix": "",
                         "clause_no": None})
+
+    if with_search_samples:
+        # 两块**同含关键词**、都进 md：一块可编辑（label=text 在白名单）、一块不可编辑
+        # （label=chart 不在白名单）⇒ 供 f18_6 造 `N > M`。
+        # ⚠️ 必须是**两条独立的新行**：同一条行区间会重叠（`splice` 抛 ValueError）。
+        #    追加在末尾 ⇒ 与所有真实块的区间天然不重叠，且 `aligned` 的追加顺序与 md 行号递增一致。
+        md = md + "\n\n" + _RVBS_EDIT_LINE + "\n" + _RVBS_LOCK_LINE
+        _sln = md.split("\n")
+        _e0, _e1 = len(_sln) - 2, len(_sln) - 1
+        _sbase = {"page": 1, "bbox": None, "prefix": "", "suffix": "", "clause_no": None}
+        aligned.append(dict(_sbase, label="text", content=_RVBS_EDIT_LINE, order=10002,
+                            global_block_id=10002, start_line=_e0, end_line=_e0 + 1))
+        aligned.append(dict(_sbase, label="chart", content=_RVBS_LOCK_LINE, order=10003,
+                            global_block_id=10003, start_line=_e1, end_line=_e1 + 1))
 
     task_id = _make_review_task(page, _rvb_task_code(suffix), _rvb_task_title(suffix),
                                 ext=".pdf")
@@ -5032,6 +5055,221 @@ CASES["f17"] = [f17_1_formula_block_offers_a_working_fix_entry,
                 # 按 Ruling 8 属**报告里的变异记录**、不是常驻用例 —— 本组条数以 runner 自报
                 # 那一行为准（`1–9` + `10–14` + 降级用例 = 15；派单里写的「14」是少算了一条）。
                 f17_15_formula_block_that_is_not_a_formula_line_degrades_visibly]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# f18：块审查页的**跨块搜索**（P4 Task 9；D2 裁定 = 搜索覆盖所有「进 md 的块」，
+#      替换（Task 10）只作用于**可编辑块** ⇒ 计数必须**分两个数**说清）
+#
+# ⚠️ 本组**要跑真实布局夹具**（`_rvb_seed` 会真实上传 + 写 layout.json）
+#    ⇒ 必须在**隔离实例**（8123 + 四条 `_probe_*` export）上跑，且跑前重拷副本库。
+# ══════════════════════════════════════════════════════════════════════════
+
+_RVBS_BOX = ".rvb-search-box"
+_RVBS_INFO = ".rvb-search-info"
+_RVBS_MARKS = ".rvb-block-bd mark.search-highlight"
+
+
+def _rvb_pick_keyword(page, tid):
+    """从夹具里**现挑**一个必然命中的关键词（既不写死数字、也不写死词）：
+
+    取所有「进 md 的块」正文里**最长的一段连续中文**的头 2 个字 —— 它必然落在该块里
+    ⇒ N ≥ 1（调用方仍会断言这一点，防夹具变化把它变成空转）。
+    """
+    return page.evaluate("""async (tid) => {
+        const d = await (await fetch(`/import/review/${tid}/layout`)).json();
+        const notIn = new Set(d.not_in_markdown || []);
+        let best = '';
+        for (const b of (d.blocks || [])) {
+            if (notIn.has(b.label)) continue;
+            const m = /[\\u4e00-\\u9fa5]{2,}/.exec(b.content || '');
+            if (m && m[0].length > best.length) best = m[0];
+        }
+        return best.slice(0, 2);
+    }""", tid)
+
+
+def _rvb_counts(page, tid, q, skip_not_in_md=True):
+    """★ 在探针里**现算**期望计数（不写死数字）：遍历 `/layout` 的原始 blocks，按与组件
+    严格同一套口径求和 ——
+
+      N = 所有「进 md 的块」里 `countIn(content, q)` 之和（OCR 原文域，不是渲染后的 DOM）；
+      M = 其中落在**可编辑块**上的和（有 span ∧ label ∈ `editable_labels`，= 前端 `canEdit`）。
+
+    `skip_not_in_md=False` 时**不排除**「不进 md 的块」—— 供 f18_5 证明排除真的生效
+    （否则关键词恰好只落在进 md 的块上时，两种口径给出同一个数，用例会**空转恒绿**）。
+
+    ⚠️ 计数用页面上的 `window.textSearch.countIn`（**共享底层**，与组件同源），但**遍历与
+       筛选是探针自己做的** —— 组件哪天换了判据，这里不会跟着漂移而掩盖它。
+    """
+    return page.evaluate("""async ({tid, q, skip}) => {
+        const d = await (await fetch(`/import/review/${tid}/layout`)).json();
+        const notIn = new Set(d.not_in_markdown || []);
+        const editable = new Set(d.editable_labels || []);
+        let N = 0, M = 0;
+        for (const b of (d.blocks || [])) {
+            if (skip && notIn.has(b.label)) continue;
+            const n = window.textSearch.countIn(b.content || '', q);
+            if (!n) continue;
+            N += n;
+            const hasSpan = b.start_line !== null && b.start_line !== undefined;
+            if (hasSpan && editable.has(b.label)) M += n;
+        }
+        return {N, M};
+    }""", {"tid": tid, "q": q, "skip": skip_not_in_md})
+
+
+def f18_1_toolbar_search_reports_a_count_matching_recomputation(page):
+    """工具条在右栏顶部；输入关键词后计数与**探针现算**的期望值一致。"""
+    tid = _rvb_seed(page, "s1")
+    assert tid is not None, "前置不成立：缺少参考夹具"
+    assert page.locator(_RVBS_BOX).count() == 1, "右栏顶部没有搜索框（工具条没做）"
+    q = _rvb_pick_keyword(page, tid)
+    assert q, "没能从夹具里挑出关键词"
+    c = _rvb_counts(page, tid, q)
+    assert c["N"] >= 1, f"挑出的关键词 {q!r} 在夹具里零命中 ⇒ 本用例失去判别力"
+    want = f"{c['N']} 个匹配 · {c['M']} 个可替换"
+
+    page.fill(_RVBS_BOX, q)
+
+    got = lambda: page.locator(_RVBS_INFO).inner_text().strip()      # noqa: E731
+    assert poll_until(page, lambda: got() == want, 5000), \
+        f"计数与现算值不符：界面 {got()!r}，期望 {want!r}（关键词 {q!r}）"
+
+
+def f18_2_hits_are_highlighted_and_the_table_stays_a_table(page):
+    """命中处出高亮；**表格仍是表格**。
+
+    判别性：旧源码审查页曾因「把整篇 md 重新转义再渲染」把 `<table>` 打成字面文本
+    （每敲一个字符预览里的表格就塌一次）。这里断言块正文里仍是一个**真** `<table>`。
+    """
+    tid = _rvb_seed(page, "s2", with_table=True)
+    assert tid is not None, "前置不成立（合成表没进去）"
+
+    page.fill(_RVBS_BOX, "探针表格")
+
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() > 0, 5000), \
+        "搜索后块正文里没有出现 .search-highlight 高亮"
+    assert page.locator(".rvb-block-bd table").count() >= 1, \
+        "搜索后表格没了：块正文被当成 markdown 重渲染 / 整篇转义了"
+    # ⚠️ 必须用 `text_content()` 而不是 `inner_text()`：`.rvb-block` 带 `content-visibility:auto`
+    #    ⇒ 屏幕外的块**不参与布局绘制**，`innerText` 直接返回空串（实测：命中的是列表最末
+    #    那张表，`.inner_text()` 得 `''`，而 `textContent` 正确给出「探针表格」）。
+    assert page.locator(_RVBS_MARKS).first.text_content().strip() == "探针表格", \
+        "高亮的不是命中的那段文字"
+
+
+def f18_3_clearing_the_box_drops_marks_and_leaves_block_text_intact(page):
+    """清空搜索框：高亮撤掉，且块文本与搜索前**逐字相同**（不得顺带重渲染/损坏内容）。"""
+    tid = _rvb_seed(page, "s3")
+    assert tid is not None, "前置不成立"
+    _snap = "() => [...document.querySelectorAll('.rvb-block-bd')].map(e => e.textContent)"
+    before = page.evaluate(_snap)
+    q = _rvb_pick_keyword(page, tid)
+    page.fill(_RVBS_BOX, q)
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() > 0, 5000), \
+        "前置：搜索后没有高亮"
+
+    page.fill(_RVBS_BOX, "")
+
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() == 0, 5000), \
+        "清空搜索框后高亮没撤掉（旧 <mark> 残留）"
+    after = page.evaluate(_snap)
+    assert len(after) == len(before), f"块数量变了（{len(before)} → {len(after)}）"
+    diff = [i for i, (a, b) in enumerate(zip(after, before)) if a != b]
+    assert not diff, f"清空搜索后这些块的文本被改动了（逐字比对）：下标 {diff[:10]}"
+
+
+def f18_4_repeating_the_search_does_not_nest_marks(page):
+    """★ 幂等：连搜两次同一词，`<mark>` 数**不变**（防「`<mark>` 再包一层」）。
+
+    ⚠️ 必须**真的跑两遍** `findMatches`（直接调组件方法、不经防抖），否则本用例会在
+       「第二次压根没搜」上**空转恒绿**。同词连搜只有 `markInto` 自带的前置 `clearMarks`
+       能挡住嵌套（组件对「本轮仍命中」的块是**不**主动清的）⇒ 这条真能咬住幂等性。
+    """
+    tid = _rvb_seed(page, "s4")
+    assert tid is not None, "前置不成立"
+    q = _rvb_pick_keyword(page, tid)
+    page.fill(_RVBS_BOX, q)
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() > 0, 5000), \
+        "前置：搜索后没有高亮"
+    n1 = page.locator(_RVBS_MARKS).count()
+
+    page.evaluate("""() => { const d = Alpine.$data(document.querySelector('.rvb-root'));
+                             d.findMatches(); d.findMatches(); }""")
+
+    n2 = page.locator(_RVBS_MARKS).count()
+    assert n2 > 0, "第二次搜索把高亮全弄没了"
+    assert n2 == n1, f"重复搜索后 <mark> 数变了（{n1} → {n2}）：再施加高亮时没先撤旧标记"
+    nested = page.evaluate("() => document.querySelectorAll("
+                           "'.rvb-block-bd mark.search-highlight mark.search-highlight').length")
+    assert nested == 0, f"出现了嵌套的 <mark>（{nested} 处）：高亮不是幂等的"
+
+
+def f18_5_blocks_not_in_markdown_are_not_counted(page):
+    """**不进 md 的块不计数**（D2）：拿这类块的正文当关键词，界面计数**不含**它。
+
+    判别性：同时现算「排除」与「不排除」两种口径并断言两者不等 —— 否则关键词恰好只落在
+    进 md 的块上时，两种口径同值，本用例会**空转恒绿**（本仓记过这类陷阱）。
+    """
+    tid = _rvb_seed(page, "s5")
+    assert tid is not None, "前置不成立"
+    q = page.evaluate("""async (tid) => {
+        const d = await (await fetch(`/import/review/${tid}/layout`)).json();
+        const notIn = new Set(d.not_in_markdown || []);
+        for (const b of (d.blocks || [])) {
+            if (!notIn.has(b.label)) continue;
+            const t = (b.content || '').trim();
+            if (t) return t.slice(0, 2);
+        }
+        return '';
+    }""", tid)
+    assert q, "夹具里没有带正文的「不进 md 的块」可用于本用例"
+    excl = _rvb_counts(page, tid, q)                            # 组件口径（排除）
+    naive = _rvb_counts(page, tid, q, skip_not_in_md=False)     # 不排除
+    assert naive["N"] > excl["N"], \
+        f"关键词 {q!r} 未落到被排除的块上（排除 {excl['N']} / 不排除 {naive['N']}）⇒ 失去判别力"
+    want = f"{excl['N']} 个匹配 · {excl['M']} 个可替换"
+
+    page.fill(_RVBS_BOX, q)
+
+    got = lambda: page.locator(_RVBS_INFO).inner_text().strip()      # noqa: E731
+    assert poll_until(page, lambda: got() == want, 5000), \
+        f"「不进 md 的块」被计入搜索了：界面 {got()!r}，期望 {want!r}（关键词 {q!r}）"
+
+
+def f18_6_match_and_replaceable_counts_are_both_reported(page):
+    """★ `N 个匹配 · M 个可替换` 两个数**各自正确**（D2：替换只作用于可编辑块）。
+
+    夹具：`with_search_samples=True` 造出「同含一个关键词」的两块 —— 一块可编辑
+    （label=text）、一块不可编辑（label=chart）⇒ **必然** `N > M`，且 M > 0
+    （否则「可替换」这一路没被验到）。两个数都**现算**，不写死。
+    """
+    tid = _rvb_seed(page, "s6", with_search_samples=True)
+    assert tid is not None, "前置不成立：缺少参考夹具"
+    q = _RVBS_KEYWORD
+    c = _rvb_counts(page, tid, q)
+    assert c["N"] > c["M"], f"夹具没造出 N > M 的场景（N={c['N']} M={c['M']}）"
+    assert c["M"] > 0, f"夹具里没有可编辑块命中（M=0）⇒「可替换」这一路没被验到"
+    want = f"{c['N']} 个匹配 · {c['M']} 个可替换"
+
+    page.fill(_RVBS_BOX, q)
+
+    info = page.locator(_RVBS_INFO)
+    assert poll_until(page, lambda: info.inner_text().strip() == want, 5000), \
+        f"两个数不对：界面 {info.inner_text()!r}，期望 {want!r}"
+    # `M < N` 时必须给出可读原因（title），否则用户不知道那 N−M 处为什么改不动
+    title = info.get_attribute("title") or ""
+    assert str(c["N"] - c["M"]) in title, \
+        f"`M < N` 但计数没有说明原因（title={title!r}）"
+
+
+CASES["f18"] = [f18_1_toolbar_search_reports_a_count_matching_recomputation,
+                f18_2_hits_are_highlighted_and_the_table_stays_a_table,
+                f18_3_clearing_the_box_drops_marks_and_leaves_block_text_intact,
+                f18_4_repeating_the_search_does_not_nest_marks,
+                f18_5_blocks_not_in_markdown_are_not_counted,
+                f18_6_match_and_replaceable_counts_are_both_reported]
 
 
 def _require_isolated_paths():

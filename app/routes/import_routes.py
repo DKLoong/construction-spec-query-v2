@@ -22,6 +22,7 @@ from app.parser.spec_prefix import (
 from app.ocr.pdf_extract import extract_text, is_scanned
 from app.ocr.layout import (
     finalize_layout, load_layout, splice, base_sha256, EDITABLE_TEXT_LABELS,
+    DEFAULT_NOT_IN_MARKDOWN,
 )
 from app.classifier.rule_engine import classify_clause, should_use_ai
 from app.classifier.batch_queue import try_enqueue
@@ -1264,6 +1265,11 @@ async def review_layout(task_id: str):
         "pages": layout.get("pages") or [],
         "stats": layout.get("stats") or {},
         "editable_labels": sorted(EDITABLE_TEXT_LABELS),
+        # ★ 「不进 markdown 的 label」名单（单一来源，与 `editable_labels` 同口径）。
+        #   P4 Task 9（D2）：块页跨块搜索只覆盖「进 md 的块」—— 页码/页眉页脚/图片等
+        #   不进 md ⇒ 搜出来的命中**永远改不动**，必须排除在计数之外。前端从这里读，
+        #   不得在 JS 里另写一份（会与后端漂移）。
+        "not_in_markdown": sorted(DEFAULT_NOT_IN_MARKDOWN),
     }
 
 

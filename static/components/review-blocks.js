@@ -28,6 +28,7 @@ function reviewBlocks() {
         sessionExpired: false, // 登录失效（拿到 HTML 而非 JSON）时置真，页面顶部给出重新登录出口
         pageImgErr: false,     // 左栏页图加载失败（同上：多半是登录失效拿到 HTML）
         editableLabels: [],    // 后端下发的可编辑 label 白名单（单一来源，不在此另写一份）
+        notInMarkdown: [],     // 后端下发的「不进 md 的 label」名单（同样单一来源；跨块搜索的排除判据）
         // 纯图块（OCR 不给 content，只给 page+bbox）⇒ 由后端按 bbox 裁页图来显示。
         // 与后端 `layout.py` 的 `not_in_markdown` 里那三个 `*_image` 对应；**只影响显示**。
         imageLabels: ['image', 'header_image', 'footer_image'],
@@ -80,6 +81,15 @@ function reviewBlocks() {
         cropRect: null,       // 裁剪框：**显示坐标**（CSS 像素，原点 = 图左上角）
         _cropDrag: null,
         _cropImg: null,       // 加进裁剪模式的那张 `<img>`（DOM 元素**不进响应式**）
+        // ── P4 Task 9：跨块搜索（工具条 + 计数 + DOM 高亮；替换/跳转是 Task 10）──────
+        // ⚠️ 这三项**只许**被工具条那一层（`x-for` **之外**）的绑定读：
+        //    块内读页面级状态 ⇒ 每次交互在 4000 块上各跑一遍（本仓性能铁律，记过 857ms 的事故）。
+        searchQuery: '',       // 搜索词（绑在工具条输入框上）
+        searchHits: [],        // 命中块：[{blockIdx, __i, count}]（字符串域计数，见 findMatches）
+        searchIdx: -1,         // 当前项下标（Task 10 的上一处/下一处用；本 Task 只维护不消费）
+        searchInfo: '',        // 计数字样「N 个匹配 · M 个可替换」
+        searchMsg: '',         // `M < N` 时的原因说明（挂 `title`，D2 的诚实口径）
+        _searchTimer: null,    // 搜索防抖（与 `_previewTimer` 分开，勿共用一个句柄）
 
 
         async init() {
@@ -99,6 +109,7 @@ function reviewBlocks() {
             }
             this.pages = data.pages || [];
             this.editableLabels = data.editable_labels || [];
+            this.notInMarkdown = data.not_in_markdown || [];
             // __i = 原下标：过滤/排序后仍能定位回 blocks（联动与 P2 的 edits 都用它）
             this.blocks = (data.blocks || []).map((b, i) => Object.assign({}, b, { __i: i }));
             this.curPage = this.pages.length ? this.pages[0].index : 1;
@@ -1609,10 +1620,18 @@ function reviewBlocks() {
             }
         },
 
-        /** 变更后 400 ms 防抖（实测最重产物 109 ms ⇒ 无需 spec §11.4 的降级方案） */
+        /** 变更后 400 ms 防抖（实测最重产物 109 ms ⇒ 无需 spec §11.4 的降级方案）
+         *
+         *  ★ 这里**同时**重扫搜索高亮：块的正文是 `x-html="renderBlock(b)"`，**任何重渲染都会
+         *    销毁块内的 `<mark>`** —— 保存编辑（以及 Task 10 的替换）之后必须重新施加。
+         *    挂在**这一个**收尾点上而不是逐个调用点，是因为调它的正是「块内容已变」的几条路径
+         *    （`saveEdit` 的五个分支 + `cancelEdit`），漏一处就会悄悄少一块高亮。
+         *    ⚠️ 空闲时（没搜索词、上一轮也没标过）`findMatches` 内部**不建 DOM 查询**，接近零开销。
+         *    ⚠️ 用的是**另一个**防抖句柄（`_searchTimer`），不要与 `_previewTimer` 合并。 */
         schedulePreview() {
             clearTimeout(this._previewTimer);
             this._previewTimer = setTimeout(() => this.refreshPreview(), 400);
+            this.scheduleSearch();
         },
 
         /** 点切分栏的条号 ⇒ 滚到并高亮它的块（依赖 Task 1 落库的 b.clause_no）。 */
@@ -1631,6 +1650,110 @@ function reviewBlocks() {
         /** 切分栏里某条是否应当高亮（= 属于当前聚焦块） */
         isClauseActive(no) {
             return this.activeIdx >= 0 && this.clausesOfBlock(this.activeIdx).includes(no);
+        },
+
+        // ── P4 Task 9：跨块搜索（工具条 + 计数 + DOM 高亮；替换/跳转是 Task 10）──────
+        //
+        // 口径（用户裁定 D2）：
+        //  · **搜索范围 = 所有「进 md 的块」**（label ∉ 后端下发的 `not_in_markdown`），
+        //    与「有没有 span」**无关** —— span 只决定左栏能否定位，不决定文本进不进 md。
+        //    顺手加 `hasSpan` 条件会造成「看得见却搜不到」，是**错误**的收窄。
+        //  · **计数域 = 字符串域**（`countIn(contentOf(b), q)`）；而高亮域是**文本节点**域
+        //    （不跨元素边界）。命中跨 `<strong>` / 跨表格单元格时两个域**必然不等** ——
+        //    这是**刻意**取舍：做精确对位要维护「源码偏移 ↔ DOM 文本节点」映射表，收益不抵
+        //    复杂度（旧源码审查页注释里记过同一结论）。
+        //    ⇒ 显示的数**一律用字符串域**；**绝不**为「两数相等」去改高亮实现。
+        //  · 本页**没有 textarea** ⇒ 与旧源码审查页（绑在源码偏移上）是**两套模型**，不共用。
+
+        /** 该块是否进 markdown（D2 的**唯一**计数判据；与有无 span 无关）。 */
+        inMarkdown(b) {
+            return this.notInMarkdown.indexOf(b.label) < 0;
+        },
+
+        /** 输入即全量扫描（真实产物 4000 块）⇒ 必须防抖；照抄本文件 `schedulePreview`。 */
+        scheduleSearch() {
+            clearTimeout(this._searchTimer);
+            this._searchTimer = setTimeout(() => this.findMatches(), 400);
+        },
+
+        /** 「清空」：**立即**撤（不等防抖），并把搜索词一并清掉（输入框由 `x-model` 跟随）。 */
+        clearSearch() {
+            this.searchQuery = '';
+            clearTimeout(this._searchTimer);
+            this.findMatches();
+        },
+
+        /** 扫描所有「进 md 的块」：`N` = 命中总数（字符串域），`M` = 落在**可编辑块**上的命中数。
+         *
+         *  ⚠️ **不得**把 `searchQuery` / `searchHits` 读进 `x-for` 里的块绑定：那会让每次输入
+         *     在 4000 块上各重算一遍（本仓记过 2.8 万遍 / 进编辑 857ms 的事故）。
+         *     块内的高亮一律走 `markInto` **命令式**改 DOM。 */
+        findMatches() {
+            const q = this.searchQuery;
+            const prev = this.searchHits;
+            let total = 0, repl = 0;
+            const hits = [];
+            if (q) {
+                for (let i = 0; i < this.blocks.length; i++) {
+                    const b = this.blocks[i];
+                    if (!this.inMarkdown(b)) continue;     // ← 不进 md 的块不计数（D2）
+                    const n = window.textSearch.countIn(this.contentOf(b), q);
+                    if (!n) continue;
+                    total += n;
+                    if (this.canEdit(b)) repl += n;        // 可替换 = 落在可编辑块上的命中
+                    hits.push({ blockIdx: i, __i: b.__i, count: n });
+                }
+            }
+            this.searchHits = hits;
+            this.searchIdx = hits.length ? 0 : -1;
+            this.searchInfo = q ? `${total} 个匹配 · ${repl} 个可替换` : '';
+            // 只在实际有「落在不可编辑块上的命中」时才说明原因（D2 的诚实口径）
+            this.searchMsg = (q && repl < total) ? `其中 ${total - repl} 处所在块不可编辑` : '';
+            // 空词且上一轮也没标过 ⇒ 无事可做（别白建一次 4000 项的 DOM 查询）
+            if (q || (prev && prev.length)) this._syncMarks(prev, hits, q);
+        },
+
+        /** 把 DOM 上的 `<mark>` 与本次命中对齐（**命令式**，只碰已渲染的块正文宿主）。
+         *
+         *  ★ 换词后旧标记的清理口径：**只清「上一轮命中、本轮不再命中」的块**。
+         *  为什么不是「清全部」、也不是「清上一轮全部」：
+         *   · 本轮**仍命中**的块交给 `markInto` 自带的**前置 `clearMarks`**（幂等）——
+         *     重复搜同一词因此不会把 `<mark>` 再包一层；
+         *   · 上一轮命中、本轮不再命中的块若不清，换词（含清空）后旧 `<mark>` 会**留在页面上**；
+         *   · 两处**都**清也不会错，但会让「谁在保证幂等」变得不可分辨 —— 任一处失效都测不出来
+         *     （本仓「变异不完整会被误读成探针失明」的教训）。
+         *  ⚠️ 只对**命中块**插标记（不遍历所有块）—— 4000 块全扫是白费。 */
+        _syncMarks(prev, hits, q) {
+            const bds = this._blockBds();
+            const now = new Set(hits.map((h) => h.blockIdx));
+            for (const h of prev || []) {
+                if (now.has(h.blockIdx)) continue;         // 仍命中的交给 markInto 去重
+                const host = bds[h.blockIdx];
+                if (host) window.textSearch.clearMarks(host);
+            }
+            if (!q) return;
+            for (const h of hits) {
+                const host = bds[h.blockIdx];
+                if (host) window.textSearch.markInto(host, q);   // 自带 clearMarks ⇒ 幂等
+            }
+        },
+
+        /** 块正文宿主表 `{块下标: .rvb-block-bd}`（一次取齐）。
+         *
+         *  ⚠️ 按 `data-block-idx` 建表，**不**依赖 `querySelectorAll` 的返回顺序：顺序一致只是
+         *     模板的**隐含**约定（`x-for` 的渲染顺序），而 `data-block-idx` 是**显式**契约
+         *     （模板与组件里到处按它取元素）—— 哪天列表加了过滤或虚拟化，前者会**静默错位**
+         *     （把标记插到别的块上）。
+         *  ⚠️ 一次取齐而不是逐块 `querySelector`：命中几百块时后者是 O(n²) 级的 DOM 查询。 */
+        _blockBds() {
+            const map = {};
+            const list = this.$refs.list;
+            for (const el of (list ? list.querySelectorAll('.rvb-block') : [])) {
+                const i = Number(el.getAttribute('data-block-idx'));
+                const bd = el.querySelector('.rvb-block-bd');
+                if (Number.isFinite(i) && bd) map[i] = bd;
+            }
+            return map;
         },
 
         // ── P2：提交链路（compose → confirm → 轮询） ──
