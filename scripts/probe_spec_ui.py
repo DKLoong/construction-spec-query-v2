@@ -3700,11 +3700,115 @@ def f16_5_delete_unlinks_only_and_keeps_the_file(page):
         "删除把原文件也删了 —— spec §8.4 要求**只解除引用**（否则会话内撤不回来）"
 
 
+def _rvb_enter_img_edit(page, suffix):
+    """造带图片块的夹具并进图片块编辑态，返回 (blocks 下标, __i, task_id)"""
+    idx, i, tid = _rvb_seed_image(page, suffix)
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("纠正")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000), \
+        "点了纠正但没进编辑态"
+    return idx, i, tid
+
+
+def _rvb_img_src(page):
+    """当前图片编辑态里那张图的 src（没有图返回 None）"""
+    return page.evaluate("() => { const im = document.querySelector('.rvb-img-edit img');"
+                         " return im ? im.getAttribute('src') : null; }")
+
+
+def f16_6_replace_via_file_picker(page):
+    """★ 入口一（点击选文件）：换图 → 保存，写进 `edits` 的必须是**相对** `imgs/…`。
+
+    相对 vs 绝对不能含糊：绝对路径（带 task_id）写进 md 就**不可移植**了 ——
+    长期目录与分发包都按 `imgs/…` 解析，而且它指向的是本任务的临时目录，任务一清就死。"""
+    import tempfile
+    from pathlib import Path as _P
+
+    idx, i, _tid = _rvb_enter_img_edit(page, "16f")
+    before = _rvb_img_src(page)
+    png = _P(tempfile.gettempdir()) / "rvb_replace.png"
+    png.write_bytes(_probe_png(12, 9))
+    page.locator(f'[data-block-idx="{idx}"] input[type="file"]').set_input_files(str(png))
+    assert poll_until(page, lambda: _rvb_img_src(page) != before, 10000), \
+        "选了文件，但编辑态里的图没换（上传失败？见 imgError）"
+    after = _rvb_img_src(page)
+    assert after.startswith("/import/review/"), f"编辑态里的 src 不是绝对路径：{after}"
+
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("保存")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000)
+    md = page.evaluate(f"() => ({_Q})().edits[{i}]")
+    assert md and 'src="imgs/' in md, f"edits 里必须是相对引用：{md!r}"
+    assert "/import/review/" not in md, f"edits 里混进了绝对路径（不可移植）：{md!r}"
+
+    # 只读态要能真的把新图渲染出来
+    html = page.evaluate(f"() => ({_Q})().renderBlock(({_Q})().blocks[{idx}])")
+    url = page.evaluate("""(h) => { const d = document.createElement('div'); d.innerHTML = h;
+        const im = d.querySelector('img'); return im ? im.getAttribute('src') : null; }""", html)
+    assert url and after.split("/imgs/")[1] in url, f"只读态没渲染新图：{html[:160]}"
+    assert page.evaluate("async (u) => (await fetch(u)).status", url) == 200, \
+        f"只读态里的新图取不到：{url}"
+
+
+def f16_7_replace_via_drop(page):
+    """★ 入口二（拖拽文件到块上）—— 与入口一共用同一落点，且保存后同样写相对引用。"""
+    _rvb_dispatch_with_file(page, "drop", "16g")
+
+
+def f16_8_replace_via_paste(page):
+    """★ 入口三（粘贴截图 / 位图）—— 同上。"""
+    _rvb_dispatch_with_file(page, "paste", "16h")
+
+
+def _rvb_dispatch_with_file(page, kind, suffix):
+    """合成一个带文件的 drop / paste 事件，并**先证明事件真的带上了文件**。
+
+    ⚠️ 这一步不能省（R5）：headless 里合成的 `DataTransfer` 可能装不进 `files`/`items`，
+    此时处理器根本收不到图 —— 只断言「src 变了」会红得像是实现坏了，而真相是**探针造假失败**。
+    故先断言事件里的文件数，再断言结果。"""
+    from base64 import b64encode
+
+    idx, i, _tid = _rvb_enter_img_edit(page, suffix)
+    before = _rvb_img_src(page)
+    b64 = b64encode(_probe_png(10, 7)).decode()
+    host_sel = f'[data-block-idx="{idx}"] .rvb-img-edit'
+    n = page.evaluate("""([sel, kind, b64]) => {
+        const bin = atob(b64); const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        const f = new File([arr], 'probe.png', {type: 'image/png'});
+        const dt = new DataTransfer(); dt.items.add(f);
+        const host = document.querySelector(sel);
+        if (!host) return -1;
+        let ev;
+        if (kind === 'drop') {
+            ev = new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt});
+        } else {
+            ev = new ClipboardEvent('paste',
+                {bubbles: true, cancelable: true, clipboardData: dt});
+        }
+        const carried = (kind === 'drop')
+            ? (ev.dataTransfer && ev.dataTransfer.files.length)
+            : (ev.clipboardData && ev.clipboardData.items.length);
+        host.dispatchEvent(ev);
+        return carried;
+    }""", [host_sel, kind, b64])
+    assert n == 1, f"合成的 {kind} 事件没带上文件（探针造假失败，**不是实现问题**）：carried={n}"
+
+    assert poll_until(page, lambda: _rvb_img_src(page) != before, 10000), \
+        f"{kind} 换图没生效（src 没变）"
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("保存")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000)
+    md = page.evaluate(f"() => ({_Q})().edits[{i}]")
+    assert md and 'src="imgs/' in md and "/import/review/" not in md, \
+        f"{kind} 保存后 edits 必须是相对引用：{md!r}"
+
+
 CASES["f16"] = [f16_1_upload_endpoint_roundtrip,
                 f16_2_image_block_enters_edit_and_shows_current_image,
                 f16_3_saving_unchanged_image_block_writes_nothing,
                 f16_4_edited_empty_image_block_does_not_fall_back_to_bbox_crop,
-                f16_5_delete_unlinks_only_and_keeps_the_file]
+                f16_5_delete_unlinks_only_and_keeps_the_file,
+                f16_6_replace_via_file_picker,
+                f16_7_replace_via_drop,
+                f16_8_replace_via_paste]
 
 
 def _require_isolated_paths():

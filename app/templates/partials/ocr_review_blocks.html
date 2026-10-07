@@ -254,12 +254,21 @@
                             <template x-if="imageLabels.includes(b.label)">
                             <div class="rvb-img-wrap">
                                 <div class="rvb-tools">
+                                    <!-- 三个入口汇到同一落点（`_imgApplyBlob` → `_uploadImage`）：
+                                         点击选文件 / 拖拽文件到下方 / 粘贴（截图、复制的位图）。 -->
+                                    <input type="file" accept="image/*" style="display:none"
+                                           @change="imgReplaceFromFile($event)">
+                                    <button type="button" @click="imgChooseFile($event)" style="margin:0"
+                                            title="从本机选一张图替换（也可直接把文件拖到下方，或粘贴截图）">选文件</button>
                                     <button type="button" @click="imgDelete()" style="margin:0"
                                             title="只解除本块的图片引用，原文件保留；点「取消」可撤回">删除图片</button>
                                 </div>
                                 <p class="rvb-img-err" x-show="imgError" x-cloak x-text="imgError"
                                    style="color:#c00;margin:0.25rem 0 0"></p>
-                                <div class="rvb-img-edit"></div>
+                                <!-- `tabindex` 是**粘贴入口**的前提：不加则宿主不可聚焦、收不到 paste -->
+                                <div class="rvb-img-edit" tabindex="0"
+                                     @dragover.prevent @drop.prevent="imgReplaceFromDrop($event)"
+                                     @paste="imgReplaceFromPaste($event)"></div>
                             </div>
                             </template>
                             <!-- ⚠️ 不给 `x-ref`：编辑框在 x-for 内，同名 x-ref 会被最后一项

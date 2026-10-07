@@ -590,6 +590,73 @@ function reviewBlocks() {
             host.innerHTML = '';
         },
 
+        // ── 图片替换的三个入口（spec §8.4）────────────────────────────
+        //
+        // 三条路**汇到同一落点**：`_uploadImage` → `POST /import/review/{id}/image`
+        // → 换成新文件名 → 宿主里的 `img.src` 换掉（绝对路径，编辑器里立刻可见）。
+        // 保存时才把绝对化还原成相对 `imgs/…` 写进 `edits`。
+
+        /** 三入口共用：Blob → 落盘 → 换宿主里的 `img.src`。
+         *
+         *  失败时**只置 `imgError`，不动块状态**（原图仍在、`edits` 未写）——
+         *  半途把用户的图弄没了比失败更坏。 */
+        async _imgApplyBlob(blob) {
+            if (!blob) return;
+            this.imgError = '';
+            try {
+                const filename = await this._uploadImage(blob);
+                const host = this._imgHost();
+                if (!host) return;
+                const url = this.imgAbsBase() + filename;
+                const img = host.querySelector('img');
+                if (img) {
+                    img.setAttribute('src', url);          // 立即可见（绝对路径）
+                } else {
+                    // 本来是**空壳**（未引用任何图 / 刚删过）：补一个进去。
+                    // 对齐包裹若还在，就塞进它的内部，别把包裹丢了。
+                    const shell = host.firstElementChild;
+                    const tpl = document.createElement('img');
+                    tpl.setAttribute('src', url);
+                    tpl.setAttribute('alt', 'Image');
+                    if (shell && shell.tagName !== 'IMG') shell.appendChild(tpl);
+                    else host.appendChild(tpl);
+                }
+            } catch (e) {
+                this.imgError = String((e && e.message) || e);
+            }
+        },
+
+        /** 入口一：点击选文件（按钮 → 隐藏的 `<input type=file>`） */
+        imgChooseFile(e) {
+            const wrap = e && e.target && e.target.closest('.rvb-img-wrap');
+            const input = wrap && wrap.querySelector('input[type="file"]');
+            if (input) input.click();
+        },
+
+        imgReplaceFromFile(e) {
+            const f = e.target && e.target.files && e.target.files[0];
+            if (f) this._imgApplyBlob(f);
+            if (e.target) e.target.value = '';   // 复位：允许连续选**同一个**文件
+        },
+
+        /** 入口二：拖拽文件到块上 */
+        imgReplaceFromDrop(e) {
+            const dt = e.dataTransfer;
+            const f = dt && dt.files && dt.files[0];
+            if (f) this._imgApplyBlob(f);
+        },
+
+        /** 入口三：粘贴（截图 / 复制的位图） */
+        imgReplaceFromPaste(e) {
+            const items = (e.clipboardData && e.clipboardData.items) || [];
+            for (const it of items) {
+                if (it.type && it.type.indexOf('image/') === 0) {
+                    this._imgApplyBlob(it.getAsFile());
+                    return;
+                }
+            }
+        },
+
         /** 块的当前内容：有编辑用编辑，否则用 OCR 原文（渲染与编辑共用同一取值）。
          *
          * ⚠️ **必须先读一次 `this.edits[i]`**（Task 6 实现者仪表化实测逼出）：Alpine 的响应式
