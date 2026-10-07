@@ -574,6 +574,22 @@ function reviewBlocks() {
             this._imgBaseline = host.innerHTML;
         },
 
+        /** 图片块：删除图片（**只解除引用，不删文件**）。
+         *
+         *  只动编辑器宿主，真正的落库发生在「保存」时 ⇒ 用户点「取消」即可撤回
+         *  （spec §8.4：删除必须保留会话内撤回能力）。文件的物理清理不在这里 ——
+         *  它归导入成功之后的存储治理（spec §19），那时会话已结束、撤回需求自然到期。 */
+        imgDelete() {
+            const host = this._imgHost();
+            if (!host) return;
+            if (!host.querySelector('img')) { this.imgError = '当前没有可删除的图片'; return; }
+            if (!host.querySelector('img')) { this.imgError = '当前没有可删除的图片'; return; }
+            this.imgError = '';
+            // 连**壳**一起去掉（对齐包裹的 span/div）：只摘 `<img>` 会剩一堆空标签，
+            // 渲染出来仍是一个空行。
+            host.innerHTML = '';
+        },
+
         /** 块的当前内容：有编辑用编辑，否则用 OCR 原文（渲染与编辑共用同一取值）。
          *
          * ⚠️ **必须先读一次 `this.edits[i]`**（Task 6 实现者仪表化实测逼出）：Alpine 的响应式

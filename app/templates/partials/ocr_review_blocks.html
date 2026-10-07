@@ -253,6 +253,10 @@
                                  与表格同理用 `x-if` 而非 `x-show`：图块只占少数，`x-show` 会白带节点。 -->
                             <template x-if="imageLabels.includes(b.label)">
                             <div class="rvb-img-wrap">
+                                <div class="rvb-tools">
+                                    <button type="button" @click="imgDelete()" style="margin:0"
+                                            title="只解除本块的图片引用，原文件保留；点「取消」可撤回">删除图片</button>
+                                </div>
                                 <p class="rvb-img-err" x-show="imgError" x-cloak x-text="imgError"
                                    style="color:#c00;margin:0.25rem 0 0"></p>
                                 <div class="rvb-img-edit"></div>

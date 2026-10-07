@@ -3582,12 +3582,13 @@ def _rvb_image_idx(page):
 
 
 def _rvb_seed_image(page, suffix):
-    """造带图片块的夹具并返回 (blocks 下标, __i)。"""
-    assert _rvb_seed(page, suffix, with_image=True) is not None, "前置不成立：缺少参考夹具"
+    """造带图片块的夹具并返回 (blocks 下标, __i, task_id)。"""
+    tid = _rvb_seed(page, suffix, with_image=True)
+    assert tid is not None, "前置不成立：缺少参考夹具"
     idx = _rvb_image_idx(page)
     assert idx >= 0, "夹具里没有已锚定的 image 块（配对计数不等？夹具问题，不是实现问题）"
     i = page.evaluate(f"() => ({_Q})().blocks[{idx}].__i")
-    return idx, i
+    return idx, i, tid
 
 
 def f16_1_upload_endpoint_roundtrip(page):
@@ -3623,7 +3624,7 @@ def f16_2_image_block_enters_edit_and_shows_current_image(page):
     ⚠️ 断言 `src` 必须是**绝对**路径：页 URL 是 `/import/review/{tid}`（无尾斜杠），
     相对 `imgs/…` 会解析成 `/import/review/imgs/…` ⇒ 404。只读态靠 `mdRender.rewriteImg`
     修，编辑态**没有**那层 —— 所以「能加载」与「src 是绝对的」要一起钉。"""
-    idx, _ = _rvb_seed_image(page, "16b")
+    idx, _, _tid = _rvb_seed_image(page, "16b")
     blk = page.locator(f'[data-block-idx="{idx}"]')
     # 断言**可见性**而不是 count：按钮一直在 DOM 里（`x-show` 只切 display），
     # 数它等于没测入口 —— 实测第一版就是这么放过了「按钮存在但不可见」，
@@ -3648,7 +3649,7 @@ def f16_3_saving_unchanged_image_block_writes_nothing(page):
 
     写了会同时坏两件事：凭空出现「已修改」标记；`_cropUrl` 的 edited-guard 生效
     ⇒ 只读态本该显示的 bbox 裁图**消失**（用户什么都没做，图却变了）。"""
-    idx, i = _rvb_seed_image(page, "16c")
+    idx, i, _tid = _rvb_seed_image(page, "16c")
     page.locator(f'[data-block-idx="{idx}"] button:has-text("纠正")').click()
     assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000)
     page.locator(f'[data-block-idx="{idx}"] button:has-text("保存")').click()
@@ -3664,7 +3665,7 @@ def f16_4_edited_empty_image_block_does_not_fall_back_to_bbox_crop(page):
 
     只按「内容非空」判会漏掉**删除**：删除后 `edits[i]` 是**空串**，
     空串会落回 bbox 裁图 ⇒ **删了又冒出来**，用户以为删除失败。"""
-    idx, i = _rvb_seed_image(page, "16d")
+    idx, i, _tid = _rvb_seed_image(page, "16d")
     before = page.evaluate(f"() => ({_Q})().renderBlock(({_Q})().blocks[{idx}])")
     assert "crop" in before, f"前置不成立：未编辑的图块本应显示 bbox 裁图：{before[:120]}"
     page.evaluate(f"() => {{ ({_Q})().edits[{i}] = ''; }}")
@@ -3672,10 +3673,38 @@ def f16_4_edited_empty_image_block_does_not_fall_back_to_bbox_crop(page):
     assert "crop" not in after, f"编辑过（删除）的图块回落到了 bbox 裁图：{after[:160]}"
 
 
+def f16_5_delete_unlinks_only_and_keeps_the_file(page):
+    """★ 删除**只解除文档引用**：md 里那一行被清掉，而**原文件仍在**（spec §8.4）。
+
+    「只解引用」不是洁癖：删除必须**保留会话内撤回能力**（用户要反复试「这一格到底要不要图」），
+    文件物理清理推迟到导入成功之后的存储治理（spec §19）。
+    只验「块里没图了」会放过「把文件也删了」—— 那要等用户点「取消」才发现撤不回来。"""
+    idx, i, tid = _rvb_seed_image(page, "16e")
+    src = page.evaluate(f"() => ({_Q})().blocks[{idx}].md_html")
+    fname = src.split('src="imgs/')[1].split('"')[0]
+    url = f"/import/review/{tid}/imgs/{fname}"
+    assert page.evaluate("async (u) => (await fetch(u)).status", url) == 200, \
+        "前置不成立：引用的文件本就取不到"
+
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("纠正")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == idx, 5000)
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("删除图片")').click()
+    page.locator(f'[data-block-idx="{idx}"] button:has-text("保存")').click()
+    assert poll_until(page, lambda: page.evaluate(f"() => ({_Q})().editingIdx") == -1, 5000), \
+        "保存后没退出编辑态"
+
+    assert page.evaluate(f"() => ({_Q})().edits[{i}]") == '', "删除后 edits 应为空串"
+    html = page.evaluate(f"() => ({_Q})().renderBlock(({_Q})().blocks[{idx}])")
+    assert "<img" not in html and "crop" not in html, f"删除后块里还有图：{html[:160]}"
+    assert page.evaluate("async (u) => (await fetch(u)).status", url) == 200, \
+        "删除把原文件也删了 —— spec §8.4 要求**只解除引用**（否则会话内撤不回来）"
+
+
 CASES["f16"] = [f16_1_upload_endpoint_roundtrip,
                 f16_2_image_block_enters_edit_and_shows_current_image,
                 f16_3_saving_unchanged_image_block_writes_nothing,
-                f16_4_edited_empty_image_block_does_not_fall_back_to_bbox_crop]
+                f16_4_edited_empty_image_block_does_not_fall_back_to_bbox_crop,
+                f16_5_delete_unlinks_only_and_keeps_the_file]
 
 
 def _require_isolated_paths():
