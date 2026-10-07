@@ -322,7 +322,10 @@
             <span x-text="'取图预览 · 第 ' + curPage + ' 页'"></span>
             <button type="button" class="secondary outline" @click="pickPreview = ''">关闭</button>
         </div>
-        <img :src="pickPreview" alt="取图预览">
+        <!-- `@error` 是兜底：正常路径已由 `_loadPreview` 的 fetch 验过，此处只在
+             「fetch 成功但随后文件没了」这类竞态下触发，免得留一个破图不看不管。 -->
+        <img :src="pickPreview" alt="取图预览"
+             @error="pickPreview = ''; pickMsg = '取图预览加载失败'">
         <p class="rvb-pick-pop-tip">原型阶段：只预览，未落盘、未插入单元格</p>
     </div>
 </div>

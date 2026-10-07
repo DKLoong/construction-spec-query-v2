@@ -54,8 +54,10 @@ function reviewBlocks() {
         pickMode: false,
         pickRect: null,       // 画布内 CSS 像素，**原点 = 页图左上角**（与 crop 端点的栅格坐标同源）
         pickPreview: '',      // 右键确认后裁出的图 URL（原型：只预览，不落盘不插入）
-        pickMsg: '',          // 模式内提示（框太小 / 页图尺寸未知）
+        pickMsg: '',          // 模式内提示（框太小 / 页图尺寸未知 / 取图失败）
         _pickDrag: null,
+        _pickSeq: 0,          // 取图请求序号：连点两次时只认最后一次的结果（初值必须给，否则 NaN）
+
 
         async init() {
             this.taskId = window.location.pathname.split('/').pop();
@@ -301,10 +303,43 @@ function reviewBlocks() {
             if (!window.imagePicker.isUsable(r)) { this.pickMsg = '选框太小，请重新框选'; return; }
             const g = window.imagePicker.toGrid(r, box.width, box.height, p.width, p.height);
             if (!g) { this.pickMsg = '页图尺寸未知，无法取图'; return; }
-            this.pickMsg = '';
-            this.pickPreview = `/import/review/${this.taskId}/crop/${this.curPage}.png`
+            this._loadPreview(`/import/review/${this.taskId}/crop/${this.curPage}.png`
                 + `?x=${g.x.toFixed(1)}&y=${g.y.toFixed(1)}&w=${g.w.toFixed(1)}`
-                + `&h=${g.h.toFixed(1)}&scale=1.5`;
+                + `&h=${g.h.toFixed(1)}&scale=1.5`);
+        },
+
+        /** 取图：**先自行 fetch 验一次，成功才把 URL 交给 `<img>`**。
+         *
+         * ⚠️ 为什么不直接把 URL 塞给 `<img>`（2026-10-07 事故）：`<img>` 加载失败时
+         *    **不给你任何错误信息** —— 页面上只剩一个破图占位，`pickMsg` 也是空的，
+         *    用户只能得出「功能坏了」的结论。真实原因是**任务被 TTL 清扫器删掉**后
+         *    crop 端点返回 `404 {"detail":"该页没有版面尺寸"}`。
+         *    自己 fetch 一次就能拿到**状态码与后端给的原因**并翻成人话；
+         *    代价是一次请求（服务端裁切结果有缓存，随后 `<img>` 那次命中同一份）。 */
+        async _loadPreview(url) {
+            const seq = ++this._pickSeq;     // 连点两次时，只认最后一次的结果
+            this.pickPreview = '';           // 先撤掉旧图：留着会与「失败」提示自相矛盾
+            this.pickMsg = '';
+            try {
+                const resp = await fetch(url);
+                if (seq !== this._pickSeq) return;
+                if (!resp.ok) {
+                    let detail = '';
+                    try { detail = ((await resp.json()) || {}).detail || ''; } catch (e) { detail = ''; }
+                    this.pickMsg = `取图失败（HTTP ${resp.status}）` + (detail ? `：${detail}` : '');
+                    return;
+                }
+                if (!(resp.headers.get('content-type') || '').includes('image')) {
+                    // 登录失效时后端 `302 → /login` 且 fetch 静默跟随 ⇒ 拿到 200 + HTML
+                    this.sessionExpired = true;
+                    this.pickMsg = '取图失败：登录已过期，请重新登录后再试';
+                    return;
+                }
+                this.pickPreview = url;
+            } catch (e) {
+                if (seq !== this._pickSeq) return;
+                this.pickMsg = '取图失败：' + e;
+            }
         },
 
         labelZh(label) {

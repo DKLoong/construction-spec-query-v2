@@ -3406,8 +3406,13 @@ def f15_13_confirm_maps_geometry_and_preview_really_loads(page):
     ox, oy = ib["x"] + 40, ib["y"] + 30
     _drag(page, ox, oy, ox + 300, oy + 80)
     page.mouse.click(ox + 150, oy + 40, button="right")
+    # 取图会**先 fetch 验一次**（见 `_loadPreview`）⇒ 预览 URL 不再瞬时落地，必须等它出结果。
+    # 判据要能区分「还在加载」与「已失败并给了提示」—— 否则会把失败误报成超时。
+    assert poll_until(page, lambda: bool(_rvb_pick(page)["preview"])
+                                  or bool(_rvb_pick(page)["msg"]), 15000), \
+        "右键确认后既没有预览也没有提示（异步取图没有落地）"
     st = _rvb_pick(page)
-    assert st["preview"], "右键确认没有产出预览 URL"
+    assert st["preview"], f"右键确认没有产出预览 URL：msg={st['msg']!r}"
     q = _q(st["preview"])
     # 容差 2：Chrome 把鼠标坐标截断到整数，亚像素拖不出来
     assert abs(q["x"] - 40) < 2 and abs(q["y"] - 30) < 2, f"原点折算不对：{q}（应约 40/30）"
@@ -3444,6 +3449,41 @@ def f15_14_no_selection_warns_and_mode_gates_contextmenu(page):
         "非取图模式下右键被 preventDefault 了（浏览器菜单被吃掉）"
 
 
+def f15_15_crop_failure_is_surfaced_not_silent(page):
+    """★ 2026-10-07 事故的回归：**任务在会话中途被清掉后，取图必须给可读原因，而不是一个白框**。
+
+    当时的实测症状：取图成功一次之后，后续每次只剩「图片占位符」，界面**一个字都不说**
+    （`pickMsg` 是空串）⇒ 用户误判成原型坏了。真相是任务被 TTL 清扫器删了，crop 端点
+    返回 **404 `{"detail":"该页没有版面尺寸"}`**，`<img>` 拿不到图就只剩破图占位。
+
+    这里用与清扫器**同一套**应用函数（`delete_task` + `_cleanup_task_artifacts`）制造该状态，
+    而不是自己删文件 —— 避免"造出来的故障"与线上那一种不是同一回事。"""
+    tid = _rvb_setup_pick(page, "p15")
+    vb = page.locator(".rvb-viewport").bounding_box()
+    ax, ay = vb["x"] + vb["width"] * 0.30, vb["y"] + 60
+
+    # 前置：任务还在时取图正常（否则下面的断言可能因为别的原因通过）
+    _drag(page, ax, ay, ax + 200, ay + 120)
+    page.mouse.click(ax + 100, ay + 60, button="right")
+    assert poll_until(page, lambda: page.evaluate(
+        "() => { const im = document.querySelector('.rvb-pick-pop img');"
+        " return !!im && im.naturalWidth > 0; }"), 15000), "前置不成立：任务还在时取图就没成功"
+
+    # 模拟清扫器：删台账行 + 清磁盘产物
+    from app.routes.import_routes import _cleanup_task_artifacts, delete_task
+    _cleanup_task_artifacts(tid)
+    delete_task(tid)
+
+    _drag(page, ax, ay + 200, ax + 200, ay + 320)
+    page.mouse.click(ax + 100, ay + 260, button="right")
+    assert poll_until(page, lambda: bool(_rvb_pick(page)["msg"]), 10000), \
+        "取图失败时**没有任何提示**（白框 —— 这正是 2026-10-07 事故的复现）"
+    st = _rvb_pick(page)
+    assert "404" in st["msg"], f"提示里应带上端点给的原因：{st['msg']!r}"
+    assert not st["preview"], f"失败时不该显示预览 URL：{st['preview']}"
+    assert page.locator(".rvb-pick-pop").is_hidden(), "失败时不该残留上一张预览浮层"
+
+
 CASES["f15"] = [f15_1_image_picker_loaded,
                 f15_2_normalize_handles_reverse_drag,
                 f15_3_clamp_rect_keeps_it_inside_the_page,
@@ -3457,7 +3497,8 @@ CASES["f15"] = [f15_1_image_picker_loaded,
                 f15_11_resize_handle_moves_only_its_edge,
                 f15_12_toggling_pick_mode_clears_selection,
                 f15_13_confirm_maps_geometry_and_preview_really_loads,
-                f15_14_no_selection_warns_and_mode_gates_contextmenu]
+                f15_14_no_selection_warns_and_mode_gates_contextmenu,
+                f15_15_crop_failure_is_surfaced_not_silent]
 
 
 def _require_isolated_paths():
