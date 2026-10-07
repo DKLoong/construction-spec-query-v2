@@ -107,8 +107,10 @@ def _startup_import_sweeper():
             try:
                 res = sweep_progress_store()
                 if res["rows"]:
-                    logger.info("导入任务台账回收：%d 行、磁盘 %d 份",
-                                res["rows"], res["disk"])
+                    # WARNING（非 INFO）：与 sweep_progress_store 里逐条的销毁记录同级 ——
+                    # 日志桥只转发 WARNING+，用 INFO 会让整次回收在 system_logs 里消失。
+                    logger.warning("导入任务台账回收：%d 行、磁盘 %d 份",
+                                   res["rows"], res["disk"])
             except Exception as e:
                 # 单轮失败不能终止线程（否则之后再也不清理）
                 logger.warning("导入任务台账回收失败: %s", e)

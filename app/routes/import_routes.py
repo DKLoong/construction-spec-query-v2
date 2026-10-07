@@ -239,8 +239,13 @@ def sweep_progress_store(now: float | None = None, *, delete_disk: bool = True) 
                 logger.warning("超期待审查任务的磁盘清理失败 task=%s: %s", task_id, e)
         delete_task(task_id)
         dropped += 1
-        logger.info("导入任务台账超期清理 task=%s status=%s action=%s",
-                    task_id, task.get("status"), action)
+        # ⚠️ 必须 WARNING，不能 INFO：这是**破坏性**动作（`drop_row_and_disk` 那条还会连
+        #    原文件与 OCR 产物一起删），而日志桥 `SystemLogsHandler` 只转发 WARNING+
+        #    （`app/logging_setup.py` 的两道门：name 以 `app.` 开头、级别 >= 阈值）。
+        #    2026-10-07 实测教训：用户「待审查任务连同磁盘被删」之后 `system_logs` 里
+        #    **一条痕迹都没有**，只能靠 outputs/uploads 的目录 mtime 反推。
+        logger.warning("导入任务台账超期清理 task=%s status=%s action=%s",
+                       task_id, task.get("status"), action)
     return {"rows": dropped, "disk": cleaned}
 
 # 向量索引分批写入的批大小：兼顾「批量语义」（勿退回逐条 add）与「写入进度可观测」

@@ -188,6 +188,37 @@ def test_sweep_expired_review_deletes_memory_and_disk(monkeypatch, _paths, _db):
     assert not (out / "ccccdddd").exists()
 
 
+def test_sweep_deletion_leaves_a_trace_the_log_bridge_would_forward(
+        monkeypatch, _paths, _db, caplog):
+    """★ 2026-10-07 事故的审计修复：**销毁必须留下「日志桥会转发」的记录**。
+
+    为什么断言的是「桥会转发」而不是「有日志记录」：`app/logging_setup.SystemLogsHandler`
+    有两道门 —— 记录名必须以 `app.` 开头、级别必须 >= 它自己的阈值（默认 WARNING）。
+    清扫器原先用 `logger.info`，**级别这道门过不去** ⇒ 2026-10-07 用户的
+    「待审查任务连同磁盘被删」在 `system_logs` 里**一条痕迹都没有**，只能靠
+    目录 mtime 反推。只断言「有日志」会原样放过这个缺陷。
+    """
+    up, out = _paths
+    (out / "eeeeffff").mkdir()
+    ir.create_task("eeeeffff")
+    ir._update_task("eeeeffff", status="review_needed")
+    _age_task(ir, "eeeeffff", REVIEW + 10)
+    _ttls(monkeypatch)
+
+    from app.logging_setup import SystemLogsHandler
+    gate = SystemLogsHandler().level        # 桥的转发阈值 —— 不写死 WARNING，跟着实现走
+
+    with caplog.at_level(1, logger="app.routes.import_routes"):
+        assert ir.sweep_progress_store(now=time.time())["rows"] == 1
+
+    hits = [r for r in caplog.records
+            if r.name.startswith("app.") and r.levelno >= gate
+            and "eeeeffff" in r.getMessage()]
+    assert hits, (
+        f"台账销毁没有留下可被日志桥转发的记录（桥要求 name 以 app. 开头且级别 >= {gate}）；"
+        f"实际记录：{[(r.name, r.levelno, r.getMessage()) for r in caplog.records]}")
+
+
 def test_sweep_skips_running_and_fresh(monkeypatch, _paths, _db):
     """运行中的、以及未超时的，一律不动"""
     for task_id, status, age in (("running1", "processing", 99999),
