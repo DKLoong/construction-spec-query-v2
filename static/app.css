@@ -1069,3 +1069,14 @@
    塞进去会溢出并把按钮压扁成竖排（实测）。字号与工具条按钮（0.72rem）对齐。 */
 .rvb-hint { color: var(--pico-muted-color); font-size: 0.72rem; margin: 0 0 0.3rem; }
 .rvb-hint kbd { font-size: 0.68rem; padding: 0 3px; }
+
+/* ── 跨块搜索高亮（P4 阶段二） ──
+   此前 `.search-highlight` 在**生产环境零样式**（只有 ui-demo-import-ocr.html:87 有一条 demo 规则），
+   实际吃到的只有 pico.custom.css 的 --pico-mark-background-color(#e8d8c8)。这里按 demo 口径补齐。
+   色号说明：底色/字色取自 demo 页既有规则（#f2d8a7 / #5c4a20），"当前项"用 app.css 里已有的
+   强调橙 #e8710a（与 .rvb-box--on / .rvb-block--on / .rvb-sel / .rvb-cell-sel / .rvb-session
+   等「当前/选中态」同一支，本文件里已有 9 处），**不新造色板**。
+   mark 自带底色+字色 ⇒ 自带对比度，深色主题下同样可读，不需要 @media 深色分支。 */
+.search-highlight { background: #f2d8a7; color: #5c4a20; border-radius: 2px; padding: 0 1px; }
+/* 当前项（上一处/下一处定位用，Task 10）：比周边高亮更醒目 */
+.search-highlight--on { background: #e8710a; color: #fff; outline: 1px solid #c85a05; }
