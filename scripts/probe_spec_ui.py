@@ -5347,6 +5347,15 @@ def f18_7_next_prev_moves_the_current_item_and_scrolls_the_block_list(page):
     # 列表滚到顶：点「上一个」⇒ 环形退到**最后一处**（列表底部）⇒ 必然滚动
     page.evaluate("() => { document.querySelector('.rvb-blocks').scrollTop = 0; }")
     st0 = page.evaluate("() => document.querySelector('.rvb-blocks').scrollTop")
+    # ★ 前置（Task 11 评审 Minor #2）：列表**真的能滚**才谈得上「跳转把它滚动了」。
+    #   本条**只**断言「≥3 个跨行块」，没断言「内容比容器高」—— 夹具一旦变短（块变少/正文变短），
+    #   跳转就**无需滚动**（目标已在视野内），本用例会以「scrollTop 没变」这种**真红**的形式
+    #   失败 —— 那是**夹具原因**，不是实现回归。把原因在此处**定位清楚**，别让它伪装成回归。
+    geo = page.evaluate("""() => { const l = document.querySelector('.rvb-blocks');
+        return {sh: l.scrollHeight, ch: l.clientHeight}; }""")
+    assert geo["sh"] > geo["ch"], \
+        (f"前置不成立：块列表当前**不可滚动**（scrollHeight={geo['sh']} ≤ clientHeight={geo['ch']}）"
+         f"⇒ 夹具太短，本用例失去判别力（跳转无需滚动即到位）")
 
     page.click(_RVBS_PREV)
 
@@ -5510,6 +5519,14 @@ def _rvb_formula_skip_count(page, tid, q, repl):
     「按原始 content 现算」的期望值**只在不写 edits 时**与组件同口径。本函数在 f18_12 里
     是**替换之前**调的（尚无 edits）⇒ 两侧同源；替换之后要断言的量一律走
     `edits[...]` 直接字符串比对或 `/preview` 条数，**不**再用 content 现算。
+
+    ⚠️（Task 11 评审 Minor #3）判定分支**逐条镜像**组件的 `_replaceInFormula`：
+      · 行**解析不出**公式行 ⇒ `continue`（不参与判定），最后一条公式行都没解析出来 ⇒ `!touched`
+        **也算跳过**（组件里那句 `if (!touched) return 'skipped-formula'`）；
+      · 某行解析出来但 `validate` 不过 ⇒ 跳过。
+    原版只复刻了「解析出来**且**校验失败」这一条 ⇒ 与组件**潜在分叉**（替换把公式结构整段
+    改没时两端口径会分叉）。现存输入（f18_12 的 `\\zzzq` 情形）不触发该分支，改口径**不**改变
+    本用例的期望值（已实测 f18_12 复绿且判别力不变）。
     """
     return page.evaluate("""async ({tid, q, repl}) => {
         const d = await (await fetch(`/import/review/${tid}/layout`)).json();
@@ -5524,12 +5541,16 @@ def _rvb_formula_skip_count(page, tid, q, repl):
             const cur = b.content || '';
             const next = cur.replace(rx, () => repl);
             if (next === cur) continue;                  // 这一块本来就没有命中
-            let bad = false;
+            let bad = false, touched = false;            // touched 镜像组件：至少有 1 条合法公式行
             for (const ln of window.mdInline.splitLines(next)) {
                 const p = window.formulaEditor.parseLine(window.mdInline.parseLine(ln).inner);
-                if (p && !window.formulaEditor.validate(p.tex, p.display).ok) { bad = true; break; }
+                if (!p) continue;                        // 该行不是公式行 ⇒ 不参与判定（镜像组件）
+                if (!window.formulaEditor.validate(p.tex, p.display).ok) { bad = true; break; }
+                touched = true;
             }
-            if (bad) skipped++;
+            // 镜像组件 `if (!touched) return 'skipped-formula'`：替换后行里再也找不到一条
+            // 合法公式行 ⇒ 同样算「跳过」（不猜）。
+            if (bad || !touched) skipped++;
         }
         return skipped;
     }""", {"tid": tid, "q": q, "repl": repl})
@@ -5618,6 +5639,88 @@ def f18_13_highlight_is_rebuilt_after_replacement(page):
     assert n > 0, "被替换过的块里没有重建高亮"
 
 
+def _rvb_locked_in_md_block(page, marker="非白名单"):
+    """`_rvb_seed` 里那块**门槛隔离样本**：label=`chart`（不在可编辑白名单）、有 span、
+    **进 md**（`chart` ∉ `not_in_markdown`）⇒ 正是 D2 的「不可编辑但进 md」块
+    （f18_6 的 `M < N` 里那不可替换的一半）。返回 `{idx, i, content, canEdit, inMarkdown,
+    hasSpan}`；找不到则 None。
+
+    `marker` 用内容子串把「门槛隔离样本」与 `with_search_samples` 造的另一块 chart 区分开
+    （后者内容含 `_RVBS_KEYWORD`）—— 与本文件既有 `_rvb_sample_block(page, label, key)` 同款手法。
+    """
+    return page.evaluate("""(marker) => {
+        const d = Alpine.$data(document.querySelector('.rvb-root'));
+        const i = d.blocks.findIndex((b) => b.label === 'chart' && (b.content || '').includes(marker));
+        if (i < 0) return null;
+        const b = d.blocks[i];
+        return {idx: i, i: b.__i, content: b.content || '',
+                canEdit: d.canEdit(b), inMarkdown: d.inMarkdown(b), hasSpan: d.hasSpan(b)};
+    }""", marker)
+
+
+def f18_14_replace_is_disabled_with_a_visible_reason_on_a_locked_hit(page):
+    """★ D2 硬要求：当前命中落在**不可编辑（但进 md）**的块上 ⇒ 「替换」**禁用** + **可见原因**。
+
+    夹具：直接复用 `_rvb_seed` **既有**的门槛隔离样本（label=`chart`、start_line=1、内容
+    「非白名单但有 span」）。它 **进 md**（`chart` ∉ `not_in_markdown`）却**不可编辑**
+    （`chart` ∉ 可编辑白名单）⇒ 正是 D2「命中在不可编辑块」的场景（`M < N` 里那不可替换的一半）。
+    **不新增夹具、不改任何既有组的默认值**（Task 11 派单首选）。
+
+    三条断言（缺一不可）：
+      ① 该块**有命中**：现算计数**恰好含它一次**（N==1）且高亮真的落在这块上、当前项就是它；
+      ② 「替换」按钮**处于禁用态**；
+      ③ **有可见的原因文案**（`.rvb-replace-lock` 的文本非空且点名块类型）——
+         ⚠️ 不得只靠 `:title`：本仓既有教训「禁用元素不弹 tooltip」⇒ title 只作**备用通道**
+         （顺带断言它也在，但可见文案是**独立**的一条，不许用 title 顶替）。
+
+    判别性（变异实测，见 Task 11 报告）：
+      · 让 `replaceCurrentDisabled()` 恒返回 false（禁用态没了）⇒ **② 红**；
+      · 保留禁用态、但把模板里 `.rvb-replace-lock` 的可见文案清空 ⇒ **③ 红**（用户看不到原因）
+        —— 证明 ③ 不是搭 ② 的便车、有**独立**判别力。
+    """
+    tid = _rvb_seed(page, "s14")             # 默认夹具即可：门槛隔离 chart 样本本就带着
+    assert tid is not None, "前置不成立：缺少参考夹具"
+    blk = _rvb_locked_in_md_block(page)
+    assert blk, "夹具里没有「不可编辑但进 md」的门槛隔离样本（chart）⇒ 本用例失去判别力"
+    assert blk["inMarkdown"] is True, "样本块不在 md 里 ⇒ 不是 D2 要证的那一类"
+    assert blk["hasSpan"] is True, "样本块没有 span ⇒ 隔离语义变了（不再是「只违反白名单」）"
+    assert blk["canEdit"] is False, "样本块竟然可编辑 ⇒ 本用例失去判别力"
+    q = blk["content"].strip()
+    assert q, "样本块内容为空 ⇒ 无法用作搜索关键词"
+
+    # ① 该块**有命中**：现算计数必须**恰好**含它一次（N==1 现证样本词唯一，防夹具漂移让用例错位）
+    c = _rvb_counts(page, tid, q)
+    assert c["N"] == 1, f"关键词 {q!r} 现算命中数不是 1（N={c['N']}）⇒ 夹具漂移"
+    assert c["M"] == 0, f"该命中竟被算作「可替换」（M={c['M']}）⇒ 与 D2 口径不符"
+
+    page.fill(_RVBS_BOX, q)
+    assert poll_until(page, lambda: page.locator(_RVBS_MARKS).count() == 1, 5000), \
+        "搜索后该块没有命中高亮（计数说命中、DOM 未标 ⇒ 两域脱节）"
+    # 高亮必须落在**这一块**的正文里（且当前项就是它）—— 不是别处的同名词
+    n_in = page.evaluate(f"""() => document.querySelectorAll(
+        '[data-block-idx="{blk['idx']}"] .rvb-block-bd mark.search-highlight').length""")
+    assert n_in == 1, f"命中高亮不在门槛隔离样本块里（该块内 {n_in} 处）"
+    cur = _rvb_cur_block(page)
+    assert cur and cur["idx"] == blk["idx"], f"当前命中不在那个不可编辑块上：{cur!r}"
+
+    # ② 「替换」按钮**处于禁用态**
+    assert page.locator(_RVBS_REPLONE).count() == 1, "工具条里没有「替换」按钮"
+    assert page.locator(_RVBS_REPLONE).is_disabled(), \
+        "当前命中在不可编辑块上，但「替换」按钮**没有禁用**（点下去只会静默失败）"
+
+    # ③ **可见**的原因文案（独立的一条，不许用 :title 顶替）
+    lock = page.locator(_RVBS_RLOCK)
+    assert lock.count() == 1, "工具条里没有 `.rvb-replace-lock`（可见原因）元素"
+    assert lock.is_visible(), "`.rvb-replace-lock` 存在但不可见 ⇒ 用户看不到原因"
+    txt = lock.inner_text().strip()
+    assert txt, "`.rvb-replace-lock` 是空的 ⇒ 只靠不弹的 title，等同静默"
+    # 文案必须**点明块类型**（`_syncReplaceLock` 用 `labelZh`；`chart` ⇒ 「图表」）
+    assert "图表" in txt, f"可见原因没点明块类型（`chart` → 「图表」）：{txt!r}"
+    # 备用通道：按钮自身也带同一份 title（禁用元素不弹 tooltip ⇒ 只作备份，不作主证）
+    assert (page.locator(_RVBS_REPLONE).get_attribute("title") or "").strip() == txt, \
+        "「替换」按钮的 title 备用通道与可见原因文案不一致"
+
+
 CASES["f18"] = [f18_1_toolbar_search_reports_a_count_matching_recomputation,
                 f18_2_hits_are_highlighted_and_the_table_stays_a_table,
                 f18_3_clearing_the_box_drops_marks_and_leaves_block_text_intact,
@@ -5630,7 +5733,8 @@ CASES["f18"] = [f18_1_toolbar_search_reports_a_count_matching_recomputation,
                 f18_10_replace_all_changes_multiple_blocks,
                 f18_11_table_replace_does_not_touch_html_tags,
                 f18_12_formula_replace_that_would_break_latex_is_skipped_and_reported,
-                f18_13_highlight_is_rebuilt_after_replacement]
+                f18_13_highlight_is_rebuilt_after_replacement,
+                f18_14_replace_is_disabled_with_a_visible_reason_on_a_locked_hit]
 
 
 def _require_isolated_paths():
